@@ -2,23 +2,30 @@
 
 use super::protocol::{CodexActivePermissionProfile, ConfigReadResponse, ThreadOpenResponse};
 use crate::models::{
-    ChatError, ChatErrorCode, ChatResult, McpStatusRead, ProviderAuthoritySupport, SafetyMode,
+    ChatError, ChatErrorCode, ChatResult, McpStatusRead, ProviderAuthoritySupport,
+    ProviderFolderCapability, ProviderInternalMcpConfig, ProviderOrganizationalScope, SafetyMode,
 };
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+/// The permission profile of organizational runs that write their working directory.
 pub(super) const ORGANIZATIONAL_PERMISSION_PROFILE: &str = "ganbaru_organizational";
+/// The permission profile of organizational runs that only read their working directory.
+pub(super) const ORGANIZATIONAL_READ_PERMISSION_PROFILE: &str = "ganbaru_organizational_read";
 pub(super) const INTERNAL_MCP_TOKEN_ENVIRONMENT: &str = "GANBARU_CHAT_MCP_TOKEN";
 
 const MAX_MCP_SERVER_NAMES: usize = 3_200;
 const MAX_PERMISSION_PROFILES: usize = 3_200;
 const MAX_MCP_SERVER_NAME_BYTES: usize = 1_000;
-const ORGANIZATIONAL_PROFILE_TOML: &str =
-    r#"{filesystem={":minimal"="read",":workspace_roots"={"."="write"}},network={enabled=false}}"#;
 const ORGANIZATIONAL_SHELL_ENVIRONMENT_TOML: &str =
     r#"{inherit="core",ignore_default_excludes=false,experimental_use_profile=false,set={}}"#;
+/// Codex features no organizational run loads. The code-mode host stays on: current Codex
+/// models reach every tool, including the internal host tools, only through its `exec` tool,
+/// which evaluates JavaScript in a V8 isolate without Node, file system, network, or imports,
+/// so the nested tools left below decide what a run can touch. `view_image` reads any local
+/// path, so it stays off.
 const DISABLED_ORGANIZATIONAL_FEATURES: &[&str] = &[
     "apps",
     "artifact",
@@ -27,7 +34,6 @@ const DISABLED_ORGANIZATIONAL_FEATURES: &[&str] = &[
     "browser_use_external",
     "browser_use_full_cdp_access",
     "code_mode.enabled",
-    "code_mode_host",
     "computer_use",
     "enable_mcp_apps",
     "external_agent_memory_import",
@@ -49,8 +55,95 @@ const DISABLED_ORGANIZATIONAL_FEATURES: &[&str] = &[
     "skill_search",
     "standalone_web_search",
     "use_agent_identity",
+    "view_image",
     "workspace_dependencies",
 ];
+/// Codex features that load a shell tool, off unless the scope runs commands.
+const SHELL_FEATURES: &[&str] = &["shell_tool", "unified_exec"];
+
+/// The Codex launch shape that enforces an organizational scope.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum CodexOrganizationalAccess {
+    /// A read-only working directory without a shell: a conversation or a read grant.
+    Read,
+    /// A writable working directory without a shell: an edit grant.
+    Edit,
+    /// A writable working directory whose commands run in the Codex sandbox: execute, publish,
+    /// and scratch targets.
+    Commands,
+}
+
+impl CodexOrganizationalAccess {
+    /// The access of a launch under `internal_mcp`: none for a direct run, and an error for an
+    /// organizational run that carries no authorized scope.
+    pub(super) fn for_launch(
+        internal_mcp: Option<&ProviderInternalMcpConfig>,
+    ) -> ChatResult<Option<Self>> {
+        match internal_mcp {
+            Some(server) if server.organizational_authority => server
+                .organizational_scope
+                .map(|scope| Some(Self::for_scope(scope)))
+                .ok_or_else(organizational_permission_error),
+            _ => Ok(None),
+        }
+    }
+
+    pub(super) fn for_scope(scope: ProviderOrganizationalScope) -> Self {
+        match scope {
+            ProviderOrganizationalScope::Conversation
+            | ProviderOrganizationalScope::Folder {
+                capability: ProviderFolderCapability::Read,
+            } => Self::Read,
+            ProviderOrganizationalScope::Folder {
+                capability: ProviderFolderCapability::Edit,
+            } => Self::Edit,
+            ProviderOrganizationalScope::Folder {
+                capability: ProviderFolderCapability::Execute | ProviderFolderCapability::Publish,
+            }
+            | ProviderOrganizationalScope::Scratch => Self::Commands,
+        }
+    }
+
+    /// The permission profile the launch defines, selects by default, and names on every thread
+    /// and turn, so thread-open verification proves the root access of the scope.
+    pub(super) fn permission_profile(self) -> &'static str {
+        match self {
+            Self::Read => ORGANIZATIONAL_READ_PERMISSION_PROFILE,
+            Self::Edit | Self::Commands => ORGANIZATIONAL_PERMISSION_PROFILE,
+        }
+    }
+
+    fn workspace_access(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Edit | Self::Commands => "write",
+        }
+    }
+
+    fn runs_commands(self) -> bool {
+        self == Self::Commands
+    }
+
+    fn profile_toml(self) -> String {
+        format!(
+            r#"{{filesystem={{":minimal"="read",":workspace_roots"={{"."="{}"}}}},network={{enabled=false}}}}"#,
+            self.workspace_access()
+        )
+    }
+
+    /// Every feature the launch turns off and verification requires to read back as off.
+    fn disabled_features(self) -> impl Iterator<Item = &'static str> {
+        let shell: &[&str] = if self.runs_commands() {
+            &[]
+        } else {
+            SHELL_FEATURES
+        };
+        DISABLED_ORGANIZATIONAL_FEATURES
+            .iter()
+            .chain(shell)
+            .copied()
+    }
+}
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -66,12 +159,19 @@ pub(super) struct PermissionProfileSummary {
     pub allowed: bool,
 }
 
+/// The boundaries an organizational Codex launch proves before dispatch. Read and edit launches
+/// drop the shell tools, and every launch names a permission profile whose root access matches
+/// the scope and whose network is off. Commands run in the Codex sandbox, and no organizational
+/// approval reaches a person or the automatic reviewer: Ganbaru declines every native approval
+/// request, and approve-for-me runs use the `never` policy, so a write or command the sandbox
+/// refuses fails instead of retrying outside it. Commands therefore never count as person
+/// approved.
 pub(super) fn organizational_authority_support() -> ProviderAuthoritySupport {
     ProviderAuthoritySupport {
         isolated_conversation: true,
         internal_host_tools: true,
-        deny_shell: false,
-        read_only_root: false,
+        deny_shell: true,
+        read_only_root: true,
         writable_root: true,
         confined_commands: true,
         network_boundary: true,
@@ -80,22 +180,23 @@ pub(super) fn organizational_authority_support() -> ProviderAuthoritySupport {
     }
 }
 
-pub(super) fn append_organizational_base_arguments(arguments: &mut Vec<String>) {
+pub(super) fn append_organizational_base_arguments(
+    arguments: &mut Vec<String>,
+    access: CodexOrganizationalAccess,
+) {
+    let profile = access.permission_profile();
     push_config(
         arguments,
-        format!("permissions.{ORGANIZATIONAL_PERMISSION_PROFILE}={ORGANIZATIONAL_PROFILE_TOML}"),
+        format!("permissions.{profile}={}", access.profile_toml()),
     );
-    push_config(
-        arguments,
-        format!("default_permissions=\"{ORGANIZATIONAL_PERMISSION_PROFILE}\""),
-    );
+    push_config(arguments, format!("default_permissions=\"{profile}\""));
     push_config(arguments, "allow_login_shell=false".to_string());
     push_config(arguments, "web_search=\"disabled\"".to_string());
     push_config(
         arguments,
         format!("shell_environment_policy={ORGANIZATIONAL_SHELL_ENVIRONMENT_TOML}"),
     );
-    for feature in DISABLED_ORGANIZATIONAL_FEATURES {
+    for feature in access.disabled_features() {
         push_config(arguments, format!("features.{feature}=false"));
     }
 }
@@ -161,33 +262,35 @@ pub(super) fn mcp_server_names(response: ConfigReadResponse) -> ChatResult<Vec<S
 pub(super) fn verify_organizational_effective_config(
     response: ConfigReadResponse,
     internal_mcp: Option<(&str, &str)>,
+    access: CodexOrganizationalAccess,
 ) -> ChatResult<()> {
     let config = response
         .config
         .as_object()
         .ok_or_else(|| organizational_configuration_error("config response"))?;
     if config.get("default_permissions").and_then(Value::as_str)
-        != Some(ORGANIZATIONAL_PERMISSION_PROFILE)
+        != Some(access.permission_profile())
         || config.get("allow_login_shell").and_then(Value::as_bool) != Some(false)
         || config.get("web_search").and_then(Value::as_str) != Some("disabled")
     {
         return Err(organizational_configuration_error("hosted tool boundary"));
     }
-    verify_organizational_profile(config)?;
+    verify_organizational_profile(config, access)?;
     verify_organizational_shell_environment(config)?;
-    verify_disabled_features(config)?;
+    verify_disabled_features(config, access)?;
     verify_effective_mcp_servers(config, internal_mcp)
 }
 
 pub(super) fn verify_permission_profile_list(
     response: &PermissionProfileListResponse,
+    access: CodexOrganizationalAccess,
 ) -> ChatResult<()> {
     if response.next_cursor.is_some()
         || response.data.len() > MAX_PERMISSION_PROFILES
         || !response
             .data
             .iter()
-            .any(|profile| profile.id == ORGANIZATIONAL_PERMISSION_PROFILE && profile.allowed)
+            .any(|profile| profile.id == access.permission_profile() && profile.allowed)
     {
         return Err(organizational_permission_error());
     }
@@ -198,10 +301,11 @@ pub(super) fn verify_organizational_thread_open(
     mode: SafetyMode,
     workspace: &Path,
     response: &ThreadOpenResponse,
+    access: CodexOrganizationalAccess,
 ) -> ChatResult<()> {
     let expected = organizational_safety(mode)?;
     let expected_profile = CodexActivePermissionProfile {
-        id: ORGANIZATIONAL_PERMISSION_PROFILE.to_string(),
+        id: access.permission_profile().to_string(),
         extends: None,
     };
     if response.active_permission_profile.as_ref() != Some(&expected_profile)
@@ -241,22 +345,23 @@ pub(super) fn verify_organizational_mcp_status(
     Ok(())
 }
 
+#[derive(Debug)]
 pub(super) struct OrganizationalSafety {
     pub approval_policy: &'static str,
     pub approvals_reviewer: &'static str,
 }
 
+/// The Codex approval settings of an organizational run. Ask keeps `on-request` with the person
+/// as reviewer, so every request to retry outside the sandbox reaches the router, which declines
+/// it. Approve-for-me and full access use `never`, because the automatic reviewer approves writes
+/// outside the working directory and retries outside the sandbox; the sandbox then decides alone.
 pub(super) fn organizational_safety(mode: SafetyMode) -> ChatResult<OrganizationalSafety> {
     match mode {
         SafetyMode::AskForApproval => Ok(OrganizationalSafety {
             approval_policy: "on-request",
             approvals_reviewer: "user",
         }),
-        SafetyMode::ApproveForMe => Ok(OrganizationalSafety {
-            approval_policy: "on-request",
-            approvals_reviewer: "auto_review",
-        }),
-        SafetyMode::FullAccess => Ok(OrganizationalSafety {
+        SafetyMode::ApproveForMe | SafetyMode::FullAccess => Ok(OrganizationalSafety {
             approval_policy: "never",
             approvals_reviewer: "user",
         }),
@@ -264,11 +369,14 @@ pub(super) fn organizational_safety(mode: SafetyMode) -> ChatResult<Organization
     }
 }
 
-fn verify_organizational_profile(config: &serde_json::Map<String, Value>) -> ChatResult<()> {
+fn verify_organizational_profile(
+    config: &serde_json::Map<String, Value>,
+    access: CodexOrganizationalAccess,
+) -> ChatResult<()> {
     let profile = config
         .get("permissions")
         .and_then(Value::as_object)
-        .and_then(|profiles| profiles.get(ORGANIZATIONAL_PERMISSION_PROFILE))
+        .and_then(|profiles| profiles.get(access.permission_profile()))
         .and_then(Value::as_object)
         .ok_or_else(organizational_permission_error)?;
     if profile.get("extends").is_some_and(|value| !value.is_null()) {
@@ -293,7 +401,7 @@ fn verify_organizational_profile(config: &serde_json::Map<String, Value>) -> Cha
         .and_then(Value::as_object)
         .ok_or_else(organizational_permission_error)?;
     if workspace_rules.len() != 1
-        || workspace_rules.get(".").and_then(Value::as_str) != Some("write")
+        || workspace_rules.get(".").and_then(Value::as_str) != Some(access.workspace_access())
     {
         return Err(organizational_permission_error());
     }
@@ -352,12 +460,15 @@ fn verify_organizational_shell_environment(
     Ok(())
 }
 
-fn verify_disabled_features(config: &serde_json::Map<String, Value>) -> ChatResult<()> {
+fn verify_disabled_features(
+    config: &serde_json::Map<String, Value>,
+    access: CodexOrganizationalAccess,
+) -> ChatResult<()> {
     let features = config
         .get("features")
         .and_then(Value::as_object)
         .ok_or_else(organizational_permission_error)?;
-    for feature in DISABLED_ORGANIZATIONAL_FEATURES {
+    for feature in access.disabled_features() {
         let mut value = Value::Object(features.clone());
         for component in feature.split('.') {
             value = value

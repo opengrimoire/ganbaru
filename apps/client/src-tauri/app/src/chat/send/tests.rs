@@ -1250,7 +1250,7 @@ async fn organizational_sends_require_the_exact_authorized_target_mode_and_enfor
     assert_eq!(error.code, ChatErrorCode::Permission);
 }
 
-/// Support that confines commands itself, as Codex declares it, plus every other boundary.
+/// Support that confines commands itself, like Codex, plus every other boundary.
 const CONFINING_SUPPORT: ProviderAuthoritySupport = ProviderAuthoritySupport {
     isolated_conversation: true,
     internal_host_tools: true,

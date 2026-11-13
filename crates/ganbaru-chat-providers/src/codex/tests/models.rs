@@ -47,7 +47,7 @@ fn safety_modes_map_to_exact_codex_policies() {
         modes(SafetyMode::Custom, InteractionMode::Build),
         None,
         None,
-        false,
+        None,
     )
     .unwrap();
     assert!(custom.get("approvalPolicy").is_none());
@@ -55,10 +55,8 @@ fn safety_modes_map_to_exact_codex_policies() {
     assert!(custom.get("sandbox").is_none());
 }
 
-#[test]
-fn organizational_requests_use_permission_profiles_without_legacy_sandbox_fields() {
-    let workspace = Path::new("/workspace");
-    let request: SendTurnRequest = serde_json::from_value(json!({
+fn organizational_turn_request(safety_mode: &str) -> SendTurnRequest {
+    serde_json::from_value(json!({
         "command": { "clientCommandId": "command-1", "expectedThreadRevision": 3 },
         "sessionId": "session-1",
         "turnId": "chat-turn-1",
@@ -67,44 +65,162 @@ fn organizational_requests_use_permission_profiles_without_legacy_sandbox_fields
         "mentions": [],
         "modelId": "gpt-5.4",
         "modelOptions": [],
-        "modes": { "safetyMode": "ask_for_approval", "interactionMode": "build" }
+        "modes": { "safetyMode": safety_mode, "interactionMode": "build" }
     }))
-    .unwrap();
+    .unwrap()
+}
 
-    let thread = thread_open_params(
-        None,
-        workspace,
-        request.modes,
-        request.model_id.as_ref(),
-        None,
-        true,
-    )
-    .unwrap();
+fn folder(capability: ProviderFolderCapability) -> ProviderOrganizationalScope {
+    ProviderOrganizationalScope::Folder { capability }
+}
+
+const ALL_ACCESSES: [CodexOrganizationalAccess; 3] = [
+    CodexOrganizationalAccess::Read,
+    CodexOrganizationalAccess::Edit,
+    CodexOrganizationalAccess::Commands,
+];
+
+#[test]
+fn organizational_scopes_map_to_the_narrowest_codex_access() {
+    assert_eq!(
+        CodexOrganizationalAccess::for_scope(ProviderOrganizationalScope::Conversation),
+        CodexOrganizationalAccess::Read
+    );
+    assert_eq!(
+        CodexOrganizationalAccess::for_scope(folder(ProviderFolderCapability::Read)),
+        CodexOrganizationalAccess::Read
+    );
+    assert_eq!(
+        CodexOrganizationalAccess::for_scope(folder(ProviderFolderCapability::Edit)),
+        CodexOrganizationalAccess::Edit
+    );
+    for scope in [
+        folder(ProviderFolderCapability::Execute),
+        folder(ProviderFolderCapability::Publish),
+        ProviderOrganizationalScope::Scratch,
+    ] {
+        assert_eq!(
+            CodexOrganizationalAccess::for_scope(scope),
+            CodexOrganizationalAccess::Commands
+        );
+    }
+    assert_eq!(
+        CodexOrganizationalAccess::Read.permission_profile(),
+        ORGANIZATIONAL_READ_PERMISSION_PROFILE
+    );
+    assert_eq!(
+        CodexOrganizationalAccess::Edit.permission_profile(),
+        ORGANIZATIONAL_PERMISSION_PROFILE
+    );
+    assert_eq!(
+        CodexOrganizationalAccess::Commands.permission_profile(),
+        ORGANIZATIONAL_PERMISSION_PROFILE
+    );
+}
+
+#[test]
+fn organizational_launch_access_fails_closed_without_a_scope() {
+    let server = |organizational_authority, organizational_scope| ProviderInternalMcpConfig {
+        name: "ganbaru-chat".to_string(),
+        url: "http://127.0.0.1:41827/mcp".to_string(),
+        bearer_token: "token".to_string(),
+        organizational_authority,
+        pre_approved_tools: Vec::new(),
+        organizational_scope,
+    };
+
+    assert_eq!(CodexOrganizationalAccess::for_launch(None).unwrap(), None);
+    assert_eq!(
+        CodexOrganizationalAccess::for_launch(Some(&server(false, None))).unwrap(),
+        None
+    );
+    assert_eq!(
+        CodexOrganizationalAccess::for_launch(Some(&server(
+            true,
+            Some(folder(ProviderFolderCapability::Edit))
+        )))
+        .unwrap(),
+        Some(CodexOrganizationalAccess::Edit)
+    );
+    let error = CodexOrganizationalAccess::for_launch(Some(&server(true, None))).unwrap_err();
+    assert_eq!(error.code, ChatErrorCode::Permission);
+}
+
+#[test]
+fn organizational_requests_name_the_scope_profile_without_legacy_sandbox_fields() {
+    let workspace = Path::new("/workspace");
+    let request = organizational_turn_request("ask_for_approval");
+
+    for access in ALL_ACCESSES {
+        let thread = thread_open_params(
+            None,
+            workspace,
+            request.modes,
+            request.model_id.as_ref(),
+            None,
+            Some(access),
+        )
+        .unwrap();
+        let turn = turn_start_params(
+            "provider-thread-1",
+            workspace,
+            "fallback-model",
+            &request,
+            None,
+            Some(access),
+            false,
+        )
+        .unwrap();
+
+        for params in [&thread, &turn] {
+            assert_eq!(params["permissions"], access.permission_profile());
+            assert_eq!(params["runtimeWorkspaceRoots"], json!(["/workspace"]));
+            assert_eq!(params["approvalPolicy"], "on-request");
+            assert_eq!(params["approvalsReviewer"], "user");
+            assert!(params.get("sandbox").is_none());
+            assert!(params.get("sandboxPolicy").is_none());
+        }
+    }
+}
+
+#[test]
+fn organizational_safety_never_reaches_the_automatic_reviewer() {
+    let ask = organizational_safety(SafetyMode::AskForApproval).unwrap();
+    assert_eq!(
+        (ask.approval_policy, ask.approvals_reviewer),
+        ("on-request", "user")
+    );
+    for mode in [SafetyMode::ApproveForMe, SafetyMode::FullAccess] {
+        let safety = organizational_safety(mode).unwrap();
+        assert_eq!(
+            (safety.approval_policy, safety.approvals_reviewer),
+            ("never", "user")
+        );
+    }
+    assert_eq!(
+        organizational_safety(SafetyMode::Custom).unwrap_err().code,
+        ChatErrorCode::Permission
+    );
+
+    let request = organizational_turn_request("approve_for_me");
     let turn = turn_start_params(
         "provider-thread-1",
-        workspace,
+        Path::new("/workspace"),
         "fallback-model",
         &request,
         None,
-        true,
+        Some(CodexOrganizationalAccess::Edit),
         false,
     )
     .unwrap();
-
-    for params in [&thread, &turn] {
-        assert_eq!(params["permissions"], ORGANIZATIONAL_PERMISSION_PROFILE);
-        assert_eq!(params["runtimeWorkspaceRoots"], json!(["/workspace"]));
-        assert_eq!(params["approvalPolicy"], "on-request");
-        assert_eq!(params["approvalsReviewer"], "user");
-        assert!(params.get("sandbox").is_none());
-        assert!(params.get("sandboxPolicy").is_none());
-    }
+    assert_eq!(turn["approvalPolicy"], "never");
+    assert_eq!(turn["approvalsReviewer"], "user");
 }
 
 #[test]
 fn organizational_launch_arguments_replace_authority_and_disable_inherited_mcp() {
     let mut arguments = Vec::new();
-    append_organizational_base_arguments(&mut arguments);
+    append_organizational_base_arguments(&mut arguments, CodexOrganizationalAccess::Commands);
     append_disabled_mcp_arguments(
         &mut arguments,
         &["user-server".to_string(), "ganbaru-chat".to_string()],
@@ -141,13 +257,62 @@ fn organizational_launch_arguments_replace_authority_and_disable_inherited_mcp()
 }
 
 #[test]
+fn organizational_launch_arguments_follow_the_scope_access() {
+    let arguments = |access| {
+        let mut arguments = Vec::new();
+        append_organizational_base_arguments(&mut arguments, access);
+        arguments
+    };
+    let has = |arguments: &[String], expected: &str| {
+        arguments.iter().any(|argument| argument == expected)
+    };
+
+    let read = arguments(CodexOrganizationalAccess::Read);
+    assert!(has(
+        &read,
+        r#"permissions.ganbaru_organizational_read={filesystem={":minimal"="read",":workspace_roots"={"."="read"}},network={enabled=false}}"#
+    ));
+    assert!(has(
+        &read,
+        "default_permissions=\"ganbaru_organizational_read\""
+    ));
+    let edit = arguments(CodexOrganizationalAccess::Edit);
+    assert!(has(
+        &edit,
+        r#"permissions.ganbaru_organizational={filesystem={":minimal"="read",":workspace_roots"={"."="write"}},network={enabled=false}}"#
+    ));
+    assert!(has(&edit, "default_permissions=\"ganbaru_organizational\""));
+    for arguments in [&read, &edit] {
+        assert!(has(arguments, "features.shell_tool=false"));
+        assert!(has(arguments, "features.unified_exec=false"));
+    }
+
+    let commands = arguments(CodexOrganizationalAccess::Commands);
+    assert!(!commands.iter().any(|argument| {
+        argument.starts_with("features.shell_tool") || argument.starts_with("features.unified_exec")
+    }));
+    for arguments in [&read, &edit, &commands] {
+        assert!(has(arguments, "features.view_image=false"));
+        assert!(has(arguments, "features.code_mode.enabled=false"));
+        assert!(has(arguments, "features.multi_agent=false"));
+        assert!(has(arguments, "web_search=\"disabled\""));
+        assert!(has(arguments, "allow_login_shell=false"));
+        assert!(
+            !arguments
+                .iter()
+                .any(|argument| argument.starts_with("features.code_mode_host"))
+        );
+    }
+}
+
+#[test]
 fn organizational_verification_rejects_profile_and_root_mismatches() {
-    let response = |profile: &str, root: &str| ThreadOpenResponse {
+    let response = |profile: &str, root: &str, policy: &str| ThreadOpenResponse {
         thread: CodexThread {
             id: "provider-thread-1".to_string(),
         },
         model: "gpt-5.4".to_string(),
-        approval_policy: json!("on-request"),
+        approval_policy: json!(policy),
         approvals_reviewer: "user".to_string(),
         sandbox: json!({ "type": "workspaceWrite" }),
         active_permission_profile: Some(CodexActivePermissionProfile {
@@ -156,102 +321,219 @@ fn organizational_verification_rejects_profile_and_root_mismatches() {
         }),
         runtime_workspace_roots: vec![PathBuf::from(root)],
     };
+    let verify = |mode, response: &ThreadOpenResponse, access| {
+        verify_organizational_thread_open(mode, Path::new("/workspace"), response, access)
+    };
+    let ask = SafetyMode::AskForApproval;
+    let read = CodexOrganizationalAccess::Read;
+    let edit = CodexOrganizationalAccess::Edit;
 
     assert!(
-        verify_organizational_thread_open(
-            SafetyMode::AskForApproval,
-            Path::new("/workspace"),
-            &response(ORGANIZATIONAL_PERMISSION_PROFILE, "/workspace"),
+        verify(
+            ask,
+            &response(
+                ORGANIZATIONAL_PERMISSION_PROFILE,
+                "/workspace",
+                "on-request"
+            ),
+            edit
         )
         .is_ok()
     );
     assert!(
-        verify_organizational_thread_open(
-            SafetyMode::AskForApproval,
-            Path::new("/workspace"),
-            &response("user-profile", "/workspace"),
+        verify(
+            ask,
+            &response(
+                ORGANIZATIONAL_READ_PERMISSION_PROFILE,
+                "/workspace",
+                "on-request"
+            ),
+            read
+        )
+        .is_ok()
+    );
+    assert!(
+        verify(
+            SafetyMode::ApproveForMe,
+            &response(ORGANIZATIONAL_PERMISSION_PROFILE, "/workspace", "never"),
+            edit
+        )
+        .is_ok()
+    );
+    assert!(
+        verify(
+            SafetyMode::ApproveForMe,
+            &response(
+                ORGANIZATIONAL_PERMISSION_PROFILE,
+                "/workspace",
+                "on-request"
+            ),
+            edit
         )
         .is_err()
     );
     assert!(
-        verify_organizational_thread_open(
-            SafetyMode::AskForApproval,
-            Path::new("/workspace"),
-            &response(ORGANIZATIONAL_PERMISSION_PROFILE, "/other"),
+        verify(
+            ask,
+            &response(
+                ORGANIZATIONAL_PERMISSION_PROFILE,
+                "/workspace",
+                "on-request"
+            ),
+            read
+        )
+        .is_err()
+    );
+    assert!(
+        verify(
+            ask,
+            &response("user-profile", "/workspace", "on-request"),
+            edit
+        )
+        .is_err()
+    );
+    assert!(
+        verify(
+            ask,
+            &response(ORGANIZATIONAL_PERMISSION_PROFILE, "/other", "on-request"),
+            edit
+        )
+        .is_err()
+    );
+}
+
+fn verify_config(config: Value, access: CodexOrganizationalAccess) -> ChatResult<()> {
+    verify_organizational_effective_config(
+        ConfigReadResponse { config },
+        Some(("ganbaru-chat", "http://127.0.0.1:41827/mcp")),
+        access,
+    )
+}
+
+#[test]
+fn organizational_config_requires_one_enabled_internal_mcp_server() {
+    for access in ALL_ACCESSES {
+        assert!(verify_config(organizational_config(access), access).is_ok());
+        let mut extra = organizational_config(access);
+        extra["mcp_servers"]["openaiDeveloperDocs"]["enabled"] = json!(true);
+        assert!(verify_config(extra, access).is_err());
+    }
+}
+
+#[test]
+fn organizational_config_rejects_a_shell_the_scope_does_not_grant() {
+    for access in [
+        CodexOrganizationalAccess::Read,
+        CodexOrganizationalAccess::Edit,
+    ] {
+        for feature in ["shell_tool", "unified_exec"] {
+            let mut config = organizational_config(access);
+            config["features"][feature] = json!(true);
+            assert!(verify_config(config, access).is_err(), "{feature}");
+            let mut missing = organizational_config(access);
+            missing["features"].as_object_mut().unwrap().remove(feature);
+            assert!(verify_config(missing, access).is_err(), "{feature}");
+        }
+    }
+    let mut image = organizational_config(CodexOrganizationalAccess::Commands);
+    image["features"]["view_image"] = json!(true);
+    assert!(verify_config(image, CodexOrganizationalAccess::Commands).is_err());
+}
+
+#[test]
+fn organizational_config_rejects_root_access_wider_than_the_scope() {
+    let read = CodexOrganizationalAccess::Read;
+    let mut writable = organizational_config(read);
+    writable["permissions"][ORGANIZATIONAL_READ_PERMISSION_PROFILE]["filesystem"][":workspace_roots"]
+        ["."] = json!("write");
+    assert!(verify_config(writable, read).is_err());
+
+    let mut wrong_default = organizational_config(read);
+    wrong_default["default_permissions"] = json!(ORGANIZATIONAL_PERMISSION_PROFILE);
+    assert!(verify_config(wrong_default, read).is_err());
+
+    let edit_config = organizational_config(CodexOrganizationalAccess::Edit);
+    assert!(verify_config(edit_config, read).is_err());
+
+    // A trusted project config merges its own filesystem rules into the launch profile.
+    let edit = CodexOrganizationalAccess::Edit;
+    let mut merged_root = organizational_config(edit);
+    merged_root["permissions"][ORGANIZATIONAL_PERMISSION_PROFILE]["filesystem"][":root"] =
+        json!("write");
+    assert!(verify_config(merged_root, edit).is_err());
+
+    let mut network = organizational_config(edit);
+    network["permissions"][ORGANIZATIONAL_PERMISSION_PROFILE]["network"]["enabled"] = json!(true);
+    assert!(verify_config(network, edit).is_err());
+}
+
+#[test]
+fn organizational_profile_list_requires_the_scope_profile() {
+    let list = |ids: &[&str]| PermissionProfileListResponse {
+        data: ids
+            .iter()
+            .map(|id| PermissionProfileSummary {
+                id: id.to_string(),
+                allowed: true,
+            })
+            .collect(),
+        next_cursor: None,
+    };
+    let read = CodexOrganizationalAccess::Read;
+
+    assert!(
+        verify_permission_profile_list(&list(&[ORGANIZATIONAL_READ_PERMISSION_PROFILE]), read)
+            .is_ok()
+    );
+    assert!(
+        verify_permission_profile_list(&list(&[ORGANIZATIONAL_PERMISSION_PROFILE]), read).is_err()
+    );
+    assert!(
+        verify_permission_profile_list(
+            &list(&[ORGANIZATIONAL_READ_PERMISSION_PROFILE]),
+            CodexOrganizationalAccess::Commands
         )
         .is_err()
     );
 }
 
 #[test]
-fn organizational_config_requires_one_enabled_internal_mcp_server() {
-    let config = |extra_enabled: bool| ConfigReadResponse {
-        config: json!({
-            "default_permissions": ORGANIZATIONAL_PERMISSION_PROFILE,
-            "allow_login_shell": false,
-            "web_search": "disabled",
-            "shell_environment_policy": {
-                "inherit": "core",
-                "ignore_default_excludes": false,
-                "experimental_use_profile": false,
-                "set": {}
-            },
-            "permissions": {
-                (ORGANIZATIONAL_PERMISSION_PROFILE): {
-                    "filesystem": {
-                        ":minimal": "read",
-                        ":workspace_roots": { ".": "write" }
-                    },
-                    "network": { "enabled": false }
-                }
-            },
-            "features": {
-                "apps": false,
-                "artifact": false,
-                "auth_elicitation": false,
-                "browser_use": false,
-                "browser_use_external": false,
-                "browser_use_full_cdp_access": false,
-                "code_mode": { "enabled": false },
-                "code_mode_host": false,
-                "computer_use": false,
-                "enable_mcp_apps": false,
-                "external_agent_memory_import": false,
-                "hooks": false,
-                "image_generation": false,
-                "in_app_browser": false,
-                "memories": false,
-                "multi_agent": false,
-                "multi_agent_v2": false,
-                "network_proxy": false,
-                "plugin_sharing": false,
-                "plugins": false,
-                "recommended_plugins": false,
-                "remote_plugin": false,
-                "request_permissions_tool": false,
-                "respect_system_proxy": false,
-                "shell_snapshot": false,
-                "skill_mcp_dependency_install": false,
-                "skill_search": false,
-                "standalone_web_search": false,
-                "use_agent_identity": false,
-                "workspace_dependencies": false
-            },
-            "mcp_servers": {
-                "ganbaru-chat": {
-                    "enabled": true,
-                    "required": true,
-                    "url": "http://127.0.0.1:41827/mcp",
-                    "bearer_token_env_var": "GANBARU_CHAT_MCP_TOKEN"
-                },
-                "user-server": { "enabled": extra_enabled }
-            }
-        }),
-    };
+fn organizational_sessions_decline_every_native_approval() {
+    for method in [
+        "item/fileChange/requestApproval",
+        "item/commandExecution/requestApproval",
+    ] {
+        assert_eq!(
+            organizational_approval_denial(method),
+            Some(json!({ "decision": "decline" }))
+        );
+    }
+    assert_eq!(
+        organizational_approval_denial("item/permissions/requestApproval"),
+        Some(json!({ "permissions": {}, "scope": "turn" }))
+    );
+    assert_eq!(
+        organizational_approval_denial("item/tool/requestUserInput"),
+        None
+    );
+    assert_eq!(
+        organizational_approval_denial("mcpServer/elicitation/request"),
+        None
+    );
+}
 
-    let expected = Some(("ganbaru-chat", "http://127.0.0.1:41827/mcp"));
-    assert!(verify_organizational_effective_config(config(false), expected).is_ok());
-    assert!(verify_organizational_effective_config(config(true), expected).is_err());
+#[test]
+fn organizational_authority_support_claims_only_enforced_boundaries() {
+    let support = organizational_authority_support();
+    assert!(support.isolated_conversation);
+    assert!(support.internal_host_tools);
+    assert!(support.deny_shell);
+    assert!(support.read_only_root);
+    assert!(support.writable_root);
+    assert!(support.confined_commands);
+    assert!(support.network_boundary);
+    assert!(!support.person_approved_commands);
+    assert!(!support.classified_publish);
 }
 
 #[test]
@@ -313,7 +595,7 @@ fn turn_builder_preserves_model_traits_modes_and_verified_images() {
         "fallback-model",
         &request,
         None,
-        false,
+        None,
         false,
     )
     .unwrap();
@@ -350,7 +632,7 @@ fn turn_builder_preserves_model_traits_modes_and_verified_images() {
         "fallback-model",
         &standard_request,
         None,
-        false,
+        None,
         false,
     )
     .unwrap();
@@ -371,7 +653,7 @@ fn turn_builder_preserves_model_traits_modes_and_verified_images() {
         "fallback-model",
         &custom_request,
         Some(&custom_safety),
-        false,
+        None,
         false,
     )
     .unwrap();
@@ -387,7 +669,7 @@ fn turn_builder_preserves_model_traits_modes_and_verified_images() {
             "fallback-model",
             &escaping,
             None,
-            false,
+            None,
             false,
         )
         .is_err()

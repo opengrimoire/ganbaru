@@ -191,84 +191,177 @@ fn driver_fixture_covers_fresh_plan_interrupt_and_shutdown() {
     });
 }
 
+fn organizational_scope_driver(
+    workspace: &Path,
+    scope: Option<ProviderOrganizationalScope>,
+) -> (CodexProviderDriver, Arc<AppServerFixtureState>) {
+    fixture_driver_with(workspace, FixtureScenario::Organizational, |config| {
+        if let Some(server) = config.internal_mcp.as_mut() {
+            server.organizational_scope = scope;
+        }
+    })
+}
+
 #[test]
 fn organizational_fixture_verifies_permissions_and_mcp_before_dispatch() {
     crate::test_block_on(async {
-        let workspace = TestDirectory::new("driver-organizational");
-        let (mut driver, fixture) =
-            fixture_driver(workspace.path(), FixtureScenario::Organizational);
+        for (scope, expected_profile) in [
+            (
+                ProviderOrganizationalScope::Conversation,
+                ORGANIZATIONAL_READ_PERMISSION_PROFILE,
+            ),
+            (
+                ProviderOrganizationalScope::Folder {
+                    capability: ProviderFolderCapability::Read,
+                },
+                ORGANIZATIONAL_READ_PERMISSION_PROFILE,
+            ),
+            (
+                ProviderOrganizationalScope::Folder {
+                    capability: ProviderFolderCapability::Edit,
+                },
+                ORGANIZATIONAL_PERMISSION_PROFILE,
+            ),
+            (
+                ProviderOrganizationalScope::Folder {
+                    capability: ProviderFolderCapability::Execute,
+                },
+                ORGANIZATIONAL_PERMISSION_PROFILE,
+            ),
+            (
+                ProviderOrganizationalScope::Scratch,
+                ORGANIZATIONAL_PERMISSION_PROFILE,
+            ),
+        ] {
+            let workspace = TestDirectory::new("driver-organizational");
+            let (mut driver, fixture) = organizational_scope_driver(workspace.path(), Some(scope));
+            let sink: Arc<dyn ProviderEventSink> = Arc::new(RecordingSink::default());
+            let snapshot = driver
+                .start_session(
+                    start_request(workspace.path()),
+                    sink,
+                    &context("organizational-start"),
+                )
+                .await
+                .unwrap();
+
+            driver
+                .send_turn(
+                    fixture_turn(&snapshot.session_id, "build"),
+                    &context("organizational-send"),
+                )
+                .await
+                .unwrap();
+
+            let received = fixture.received();
+            let thread = received
+                .iter()
+                .find(|message| message["method"] == "thread/start")
+                .unwrap();
+            let turn = received
+                .iter()
+                .find(|message| message["method"] == "turn/start")
+                .unwrap();
+            for request in [thread, turn] {
+                assert_eq!(request["params"]["permissions"], expected_profile);
+                assert_eq!(
+                    request["params"]["runtimeWorkspaceRoots"],
+                    json!([workspace.path()])
+                );
+                assert!(request["params"].get("sandbox").is_none());
+                assert!(request["params"].get("sandboxPolicy").is_none());
+            }
+            let turn_position = received
+                .iter()
+                .position(|message| message["method"] == "turn/start")
+                .unwrap();
+            let mcp_status_positions = received
+                .iter()
+                .enumerate()
+                .filter_map(|(index, message)| {
+                    (message["method"] == "mcpServerStatus/list").then_some(index)
+                })
+                .collect::<Vec<_>>();
+            assert!(mcp_status_positions.len() >= 2);
+            assert!(
+                mcp_status_positions
+                    .iter()
+                    .any(|index| *index < turn_position)
+            );
+            for request_id in [
+                "fixture-organizational-escalation",
+                "fixture-organizational-file-change",
+            ] {
+                let response = wait_for_fixture_message(&fixture, |message| {
+                    message["id"] == request_id && message.get("result").is_some()
+                })
+                .await;
+                assert_eq!(response["result"]["decision"], "decline", "{request_id}");
+            }
+
+            driver
+                .stop_session(
+                    StopSessionRequest {
+                        session_id: snapshot.session_id,
+                        force: true,
+                    },
+                    &context("organizational-stop"),
+                )
+                .await
+                .unwrap();
+        }
+    });
+}
+
+#[test]
+fn organizational_session_without_a_scope_fails_before_launch() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("driver-organizational-unscoped");
+        let (mut driver, fixture) = organizational_scope_driver(workspace.path(), None);
         let sink: Arc<dyn ProviderEventSink> = Arc::new(RecordingSink::default());
-        let snapshot = driver
+        let error = driver
             .start_session(
                 start_request(workspace.path()),
                 sink,
-                &context("organizational-start"),
+                &context("organizational-unscoped-start"),
             )
             .await
-            .unwrap();
+            .unwrap_err();
 
-        driver
-            .send_turn(
-                fixture_turn(&snapshot.session_id, "build"),
-                &context("organizational-send"),
-            )
-            .await
-            .unwrap();
+        assert_eq!(error.code, ChatErrorCode::Permission);
+        assert_eq!(fixture.connections.load(Ordering::Acquire), 0);
+    });
+}
 
-        let received = fixture.received();
-        let thread = received
-            .iter()
-            .find(|message| message["method"] == "thread/start")
-            .unwrap();
-        let turn = received
-            .iter()
-            .find(|message| message["method"] == "turn/start")
-            .unwrap();
-        for request in [thread, turn] {
-            assert_eq!(
-                request["params"]["permissions"],
-                ORGANIZATIONAL_PERMISSION_PROFILE
-            );
-            assert_eq!(
-                request["params"]["runtimeWorkspaceRoots"],
-                json!([workspace.path()])
-            );
-            assert!(request["params"].get("sandbox").is_none());
-            assert!(request["params"].get("sandboxPolicy").is_none());
-        }
-        let turn_position = received
-            .iter()
-            .position(|message| message["method"] == "turn/start")
-            .unwrap();
-        let mcp_status_positions = received
-            .iter()
-            .enumerate()
-            .filter_map(|(index, message)| {
-                (message["method"] == "mcpServerStatus/list").then_some(index)
-            })
-            .collect::<Vec<_>>();
-        assert!(mcp_status_positions.len() >= 2);
-        assert!(
-            mcp_status_positions
-                .iter()
-                .any(|index| *index < turn_position)
+#[test]
+fn organizational_session_rejects_a_profile_wider_than_the_scope() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("driver-organizational-mismatch");
+        let (mut driver, fixture) = organizational_scope_driver(
+            workspace.path(),
+            Some(ProviderOrganizationalScope::Folder {
+                capability: ProviderFolderCapability::Read,
+            }),
         );
-        let escalation_response = wait_for_fixture_message(&fixture, |message| {
-            message["id"] == "fixture-organizational-escalation" && message.get("result").is_some()
-        })
-        .await;
-        assert_eq!(escalation_response["result"]["decision"], "decline");
-
-        driver
-            .stop_session(
-                StopSessionRequest {
-                    session_id: snapshot.session_id,
-                    force: true,
-                },
-                &context("organizational-stop"),
+        // The app server reports the writable profile although the launch asked for read.
+        *fixture.organizational_access.lock().unwrap() = Some(CodexOrganizationalAccess::Edit);
+        let sink: Arc<dyn ProviderEventSink> = Arc::new(RecordingSink::default());
+        let error = driver
+            .start_session(
+                start_request(workspace.path()),
+                sink,
+                &context("organizational-mismatch-start"),
             )
             .await
-            .unwrap();
+            .unwrap_err();
+
+        assert_eq!(error.code, ChatErrorCode::ConfigurationInvalid);
+        assert!(
+            !fixture
+                .received()
+                .iter()
+                .any(|message| message["method"] == "thread/start")
+        );
     });
 }
 

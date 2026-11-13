@@ -85,7 +85,7 @@ struct CodexLiveSession {
     mcp_reload: CodexMcpReloadState,
     /// The developer instructions `thread/start` or `thread/resume` carried, if any.
     open_instructions: Option<String>,
-    organizational: bool,
+    organizational: Option<CodexOrganizationalAccess>,
     internal_mcp_name: Option<String>,
 }
 
@@ -609,7 +609,7 @@ impl ProviderDriver for CodexProviderDriver {
             // stays authoritative.
             ensure_no_retry_in_flight(&*live.route.lock().map_err(|_| driver_state_error())?)?;
             let client = live.connection.client();
-            let command = if live.organizational {
+            let command = if live.organizational.is_some() {
                 None
             } else {
                 codex_native_command(&request)
@@ -627,7 +627,7 @@ impl ProviderDriver for CodexProviderDriver {
                 .provider_thread_id
                 .clone()
                 .ok_or_else(|| protocol_identifier_error("provider thread"))?;
-            if live.organizational {
+            if live.organizational.is_some() {
                 let status =
                     Self::fetch_mcp_status(&client, Some(&provider_thread_id), context).await?;
                 let internal_name = live.internal_mcp_name.as_deref().ok_or_else(|| {
@@ -641,22 +641,23 @@ impl ProviderDriver for CodexProviderDriver {
             if let Some(command) = command {
                 return dispatch_codex_command(live, request, command, context).await;
             }
-            let custom_safety =
-                if !live.organizational && request.modes.safety_mode == SafetyMode::Custom {
-                    let response = client
-                        .request(
-                            "config/read",
-                            json!({ "cwd": live.workspace.to_string_lossy() }),
-                            context,
-                        )
-                        .await
-                        .map_err(|error| error.to_chat_error("config read"))?;
-                    let response: ConfigReadResponse = decode_response(response, "config response")
-                        .map_err(|error| error.to_chat_error("config read"))?;
-                    Some(custom_safety_settings(response)?)
-                } else {
-                    None
-                };
+            let custom_safety = if live.organizational.is_none()
+                && request.modes.safety_mode == SafetyMode::Custom
+            {
+                let response = client
+                    .request(
+                        "config/read",
+                        json!({ "cwd": live.workspace.to_string_lossy() }),
+                        context,
+                    )
+                    .await
+                    .map_err(|error| error.to_chat_error("config read"))?;
+                let response: ConfigReadResponse = decode_response(response, "config response")
+                    .map_err(|error| error.to_chat_error("config read"))?;
+                Some(custom_safety_settings(response)?)
+            } else {
+                None
+            };
             let params = turn_start_params(
                 &provider_thread_id,
                 &live.workspace,

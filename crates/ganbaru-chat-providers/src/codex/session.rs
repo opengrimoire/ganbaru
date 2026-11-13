@@ -204,7 +204,6 @@ async fn route_server_request(
             resources,
             rpc_id.clone(),
             method,
-            object,
             &route,
             &provenance,
         )
@@ -372,45 +371,20 @@ async fn decline_elicitation(
     resources.sink.emit(warning).await
 }
 
+/// Declines every native Codex approval of an organizational session, whatever thread sent it.
+///
+/// Codex asks for these only after its sandbox refused a write or command, and accepting one
+/// retries the operation outside the sandbox, even when the request names no wider root, so no
+/// answer other than decline keeps the scope. Requests from subagent threads carry their own
+/// thread ids and are declined the same way.
 async fn deny_organizational_authority_escalation(
     resources: &CodexRouterResources,
     rpc_id: Value,
     method: &str,
-    object: &Map<String, Value>,
     route: &CodexRouteState,
     provenance: &CodexRequestProvenance,
 ) -> ChatResult<bool> {
-    let response = match method {
-        "item/permissions/requestApproval" => Some(json!({
-            "permissions": {},
-            "scope": "turn",
-        })),
-        "item/fileChange/requestApproval"
-            if object
-                .get("grantRoot")
-                .is_some_and(|value| !value.is_null()) =>
-        {
-            Some(json!({ "decision": "decline" }))
-        }
-        "item/commandExecution/requestApproval"
-            if object
-                .get("additionalPermissions")
-                .is_some_and(|value| !value.is_null())
-                || object
-                    .get("networkApprovalContext")
-                    .is_some_and(|value| !value.is_null())
-                || object
-                    .get("proposedExecpolicyAmendment")
-                    .is_some_and(|value| !value.is_null())
-                || object
-                    .get("proposedNetworkPolicyAmendments")
-                    .is_some_and(|value| !value.is_null()) =>
-        {
-            Some(json!({ "decision": "decline" }))
-        }
-        _ => None,
-    };
-    let Some(response) = response else {
+    let Some(response) = organizational_approval_denial(method) else {
         return Ok(false);
     };
     resources
@@ -437,6 +411,21 @@ async fn deny_organizational_authority_escalation(
         )?)
         .await?;
     Ok(true)
+}
+
+/// The answer that refuses a native approval request of an organizational session, or none for
+/// a request that is not a native approval.
+pub(super) fn organizational_approval_denial(method: &str) -> Option<Value> {
+    match method {
+        "item/permissions/requestApproval" => Some(json!({
+            "permissions": {},
+            "scope": "turn",
+        })),
+        "item/fileChange/requestApproval" | "item/commandExecution/requestApproval" => {
+            Some(json!({ "decision": "decline" }))
+        }
+        _ => None,
+    }
 }
 
 /// What a Codex approval panel shows besides the provider's title, and whether Allow for session

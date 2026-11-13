@@ -9,7 +9,8 @@ use super::organizational::*;
 use super::protocol::*;
 use super::session::{
     CodexApprovalResponse, PendingCodexRequest, PendingCodexRequestKind, PendingCodexRequests,
-    approval_display, provider_request_id, resolve_codex_approval, resolve_codex_user_input,
+    approval_display, organizational_approval_denial, provider_request_id, resolve_codex_approval,
+    resolve_codex_user_input,
 };
 use super::transport::{
     CodexInboundMessage, CodexRpcConnection, CodexRpcFailure, MAX_JSONL_MESSAGE_BYTES,
@@ -164,11 +165,20 @@ struct AppServerFixtureState {
     received: Mutex<Vec<Value>>,
     closed: AtomicBool,
     connections: AtomicU64,
+    /// The launch access of an organizational fixture, which its verified responses report.
+    organizational_access: Mutex<Option<CodexOrganizationalAccess>>,
 }
 
 impl AppServerFixtureState {
     fn received(&self) -> Vec<Value> {
         self.received.lock().unwrap().clone()
+    }
+
+    fn organizational_access(&self) -> CodexOrganizationalAccess {
+        self.organizational_access
+            .lock()
+            .unwrap()
+            .expect("organizational fixture access")
     }
 }
 
@@ -186,7 +196,6 @@ fn fixture_driver_with(
     adjust: impl FnOnce(&mut ProviderInstanceConfig),
 ) -> (CodexProviderDriver, Arc<AppServerFixtureState>) {
     let mut config = configuration(workspace, None);
-    adjust(&mut config);
     if scenario == FixtureScenario::Organizational {
         config.internal_mcp = Some(ProviderInternalMcpConfig {
             name: "ganbaru-chat".to_string(),
@@ -194,13 +203,18 @@ fn fixture_driver_with(
             bearer_token: "fixture-token".to_string(),
             organizational_authority: true,
             pre_approved_tools: Vec::new(),
-            organizational_scope: Some(
-                ganbaru_chat_contracts::models::ProviderOrganizationalScope::Conversation,
-            ),
+            organizational_scope: Some(ProviderOrganizationalScope::Conversation),
         });
     }
+    adjust(&mut config);
+    let access = CodexOrganizationalAccess::for_launch(config.internal_mcp.as_ref())
+        .ok()
+        .flatten();
     let mut driver = CodexProviderDriver::new(config).unwrap();
-    let state = Arc::new(AppServerFixtureState::default());
+    let state = Arc::new(AppServerFixtureState {
+        organizational_access: Mutex::new(access),
+        ..AppServerFixtureState::default()
+    });
     let factory_state = Arc::clone(&state);
     let home = workspace.to_path_buf();
     driver.set_connection_factory(Arc::new(move |_working_directory| {
@@ -225,6 +239,85 @@ fn fixture_driver_with(
         ))
     }));
     (driver, state)
+}
+
+/// The effective configuration a verified organizational launch reads back for `access`.
+fn organizational_config(access: CodexOrganizationalAccess) -> Value {
+    let profile = access.permission_profile();
+    let root_access = if access == CodexOrganizationalAccess::Read {
+        "read"
+    } else {
+        "write"
+    };
+    let mut config = json!({
+        "default_permissions": profile,
+        "allow_login_shell": false,
+        "web_search": "disabled",
+        "shell_environment_policy": {
+            "inherit": "core",
+            "ignore_default_excludes": false,
+            "experimental_use_profile": false,
+            "set": {}
+        },
+        "permissions": {
+            (profile): {
+                "filesystem": {
+                    ":minimal": "read",
+                    ":workspace_roots": { ".": root_access }
+                },
+                "network": { "enabled": false }
+            }
+        },
+        "features": {
+            "apps": false,
+            "artifact": false,
+            "auth_elicitation": false,
+            "browser_use": false,
+            "browser_use_external": false,
+            "browser_use_full_cdp_access": false,
+            "code_mode": { "enabled": false },
+            "code_mode_host": true,
+            "computer_use": false,
+            "enable_mcp_apps": false,
+            "external_agent_memory_import": false,
+            "hooks": false,
+            "image_generation": false,
+            "in_app_browser": false,
+            "memories": false,
+            "multi_agent": false,
+            "multi_agent_v2": false,
+            "network_proxy": false,
+            "plugin_sharing": false,
+            "plugins": false,
+            "recommended_plugins": false,
+            "remote_plugin": false,
+            "request_permissions_tool": false,
+            "respect_system_proxy": false,
+            "shell_snapshot": false,
+            "shell_tool": true,
+            "skill_mcp_dependency_install": false,
+            "skill_search": false,
+            "standalone_web_search": false,
+            "unified_exec": true,
+            "use_agent_identity": false,
+            "view_image": false,
+            "workspace_dependencies": false
+        },
+        "mcp_servers": {
+            "ganbaru-chat": {
+                "enabled": true,
+                "required": true,
+                "url": "http://127.0.0.1:41827/mcp",
+                "bearer_token_env_var": "GANBARU_CHAT_MCP_TOKEN"
+            },
+            "openaiDeveloperDocs": { "enabled": false }
+        }
+    });
+    if access != CodexOrganizationalAccess::Commands {
+        config["features"]["shell_tool"] = json!(false);
+        config["features"]["unified_exec"] = json!(false);
+    }
+    config
 }
 
 async fn write_fixture_message<W>(writer: &mut W, message: Value)
@@ -373,67 +466,7 @@ async fn run_app_server_fixture<R, W>(
                             }
                         })
                     } else {
-                        json!({
-                            "default_permissions": ORGANIZATIONAL_PERMISSION_PROFILE,
-                            "allow_login_shell": false,
-                            "web_search": "disabled",
-                            "shell_environment_policy": {
-                                "inherit": "core",
-                                "ignore_default_excludes": false,
-                                "experimental_use_profile": false,
-                                "set": {}
-                            },
-                            "permissions": {
-                                (ORGANIZATIONAL_PERMISSION_PROFILE): {
-                                    "filesystem": {
-                                        ":minimal": "read",
-                                        ":workspace_roots": { ".": "write" }
-                                    },
-                                    "network": { "enabled": false }
-                                }
-                            },
-                            "features": {
-                                "apps": false,
-                                "artifact": false,
-                                "auth_elicitation": false,
-                                "browser_use": false,
-                                "browser_use_external": false,
-                                "browser_use_full_cdp_access": false,
-                                "code_mode": { "enabled": false },
-                                "code_mode_host": false,
-                                "computer_use": false,
-                                "enable_mcp_apps": false,
-                                "external_agent_memory_import": false,
-                                "hooks": false,
-                                "image_generation": false,
-                                "in_app_browser": false,
-                                "memories": false,
-                                "multi_agent": false,
-                                "multi_agent_v2": false,
-                                "network_proxy": false,
-                                "plugin_sharing": false,
-                                "plugins": false,
-                                "recommended_plugins": false,
-                                "remote_plugin": false,
-                                "request_permissions_tool": false,
-                                "respect_system_proxy": false,
-                                "shell_snapshot": false,
-                                "skill_mcp_dependency_install": false,
-                                "skill_search": false,
-                                "standalone_web_search": false,
-                                "use_agent_identity": false,
-                                "workspace_dependencies": false
-                            },
-                            "mcp_servers": {
-                                "openaiDeveloperDocs": { "enabled": false },
-                                "ganbaru-chat": {
-                                    "enabled": true,
-                                    "required": true,
-                                    "url": "http://127.0.0.1:41827/mcp",
-                                    "bearer_token_env_var": "GANBARU_CHAT_MCP_TOKEN"
-                                }
-                            }
-                        })
+                        organizational_config(state.organizational_access())
                     }
                 } else {
                     json!({
@@ -464,7 +497,7 @@ async fn run_app_server_fixture<R, W>(
                         "id": id,
                         "result": {
                             "data": [{
-                                "id": ORGANIZATIONAL_PERMISSION_PROFILE,
+                                "id": state.organizational_access().permission_profile(),
                                 "allowed": true
                             }],
                             "nextCursor": null
@@ -705,6 +738,22 @@ async fn run_app_server_fixture<R, W>(
                                 "additionalPermissions": {
                                     "network": { "enabled": true }
                                 }
+                            }
+                        }),
+                    )
+                    .await;
+                    // A subagent's plain retry outside the sandbox names no wider root.
+                    write_fixture_message(
+                        &mut writer,
+                        json!({
+                            "id": "fixture-organizational-file-change",
+                            "method": "item/fileChange/requestApproval",
+                            "params": {
+                                "threadId": "fixture-subagent-thread",
+                                "turnId": "fixture-subagent-turn",
+                                "itemId": "fixture-file-change-item",
+                                "reason": "command failed; retry without sandbox?",
+                                "grantRoot": null
                             }
                         }),
                     )

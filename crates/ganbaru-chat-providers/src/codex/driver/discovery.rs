@@ -59,23 +59,51 @@ impl CodexProviderDriver {
         }
     }
 
+    /// Proves every organizational launch shape against this Codex before any support is
+    /// reported, so a version that rejects one shape reports no organizational support at all.
     async fn probe_organizational_authority(
         &self,
         working_directory: &Path,
         context: &DriverOperationContext,
     ) -> ChatResult<ProviderAuthoritySupport> {
+        // Inherited MCP server names do not depend on the access, so one inspection serves
+        // every shape.
         let disabled_mcp_servers = self
             .organizational_mcp_server_names(
                 working_directory,
                 ProjectConfigurationAccess::Restricted,
+                CodexOrganizationalAccess::Read,
                 context,
             )
             .await?;
+        for access in [
+            CodexOrganizationalAccess::Read,
+            CodexOrganizationalAccess::Edit,
+            CodexOrganizationalAccess::Commands,
+        ] {
+            self.probe_organizational_access(
+                working_directory,
+                access,
+                &disabled_mcp_servers,
+                context,
+            )
+            .await?;
+        }
+        Ok(organizational_authority_support())
+    }
+
+    async fn probe_organizational_access(
+        &self,
+        working_directory: &Path,
+        access: CodexOrganizationalAccess,
+        disabled_mcp_servers: &[String],
+        context: &DriverOperationContext,
+    ) -> ChatResult<()> {
         let (mut connection, layout) = self.spawn_connection(
             working_directory,
             ProjectConfigurationAccess::Restricted,
-            true,
-            &disabled_mcp_servers,
+            Some(access),
+            disabled_mcp_servers,
             false,
         )?;
         let client = connection.client();
@@ -108,7 +136,7 @@ impl CodexProviderDriver {
                 .map_err(|error| error.to_chat_error("organizational authority config"))?;
             let config: ConfigReadResponse = decode_response(config, "config response")
                 .map_err(|error| error.to_chat_error("organizational authority config"))?;
-            verify_organizational_effective_config(config, None)?;
+            verify_organizational_effective_config(config, None, access)?;
             let profiles = client
                 .request(
                     "permissionProfile/list",
@@ -124,12 +152,13 @@ impl CodexProviderDriver {
             let profiles: PermissionProfileListResponse =
                 decode_response(profiles, "permission profile list response")
                     .map_err(|error| error.to_chat_error("organizational permission profiles"))?;
-            verify_permission_profile_list(&profiles)?;
+            verify_permission_profile_list(&profiles, access)?;
             let modes = TurnModeSnapshot {
                 safety_mode: SafetyMode::AskForApproval,
                 interaction_mode: InteractionMode::Build,
             };
-            let mut params = thread_open_params(None, working_directory, modes, None, None, true)?;
+            let mut params =
+                thread_open_params(None, working_directory, modes, None, None, Some(access))?;
             params
                 .as_object_mut()
                 .ok_or_else(|| {
@@ -146,17 +175,21 @@ impl CodexProviderDriver {
                 .map_err(|error| error.to_chat_error("organizational authority thread"))?;
             let response: ThreadOpenResponse = decode_response(response, "thread open response")
                 .map_err(|error| error.to_chat_error("organizational authority thread"))?;
-            verify_organizational_thread_open(modes.safety_mode, working_directory, &response)?;
-            Ok(organizational_authority_support())
+            verify_organizational_thread_open(
+                modes.safety_mode,
+                working_directory,
+                &response,
+                access,
+            )
         }
         .await;
         let stop_result = connection
             .stop(SESSION_GRACEFUL_STOP, SESSION_FORCE_STOP)
             .await;
         match result {
-            Ok(support) => {
+            Ok(()) => {
                 stop_result?;
-                Ok(support)
+                Ok(())
             }
             Err(error) => Err(error),
         }
@@ -302,7 +335,7 @@ impl CodexProviderDriver {
         let Some(live) = self.live.as_ref() else {
             return Ok(None);
         };
-        if live.organizational
+        if live.organizational.is_some()
             || working_directory.is_some_and(|directory| directory != live.workspace)
             || live
                 .terminal_error

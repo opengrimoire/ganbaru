@@ -1,6 +1,6 @@
 //! Typed Codex app-server request builders and response decoders.
 
-use super::organizational::{ORGANIZATIONAL_PERMISSION_PROFILE, organizational_safety};
+use super::organizational::{CodexOrganizationalAccess, organizational_safety};
 use super::transport::CodexRpcFailure;
 use crate::models::{
     ChatError, ChatResult, InteractionMode, MAX_DEVELOPER_INSTRUCTIONS_BYTES, ModelAvailability,
@@ -360,7 +360,7 @@ pub fn thread_open_params(
     modes: TurnModeSnapshot,
     model_id: Option<&ModelId>,
     developer_instructions: Option<&str>,
-    organizational: bool,
+    organizational: Option<CodexOrganizationalAccess>,
 ) -> ChatResult<Value> {
     validate_optional_text(
         developer_instructions,
@@ -371,7 +371,7 @@ pub fn thread_open_params(
         "cwd".to_string(),
         Value::String(workspace.to_string_lossy().into_owned()),
     )]);
-    if organizational {
+    if let Some(access) = organizational {
         let safety = organizational_safety(modes.safety_mode)?;
         params.insert(
             "approvalPolicy".to_string(),
@@ -383,7 +383,7 @@ pub fn thread_open_params(
         );
         params.insert(
             "permissions".to_string(),
-            Value::String(ORGANIZATIONAL_PERMISSION_PROFILE.to_string()),
+            Value::String(access.permission_profile().to_string()),
         );
         params.insert(
             "runtimeWorkspaceRoots".to_string(),
@@ -460,7 +460,7 @@ pub fn turn_start_params(
     fallback_model: &str,
     request: &SendTurnRequest,
     custom_safety: Option<&CodexCustomSafetySettings>,
-    organizational: bool,
+    organizational: Option<CodexOrganizationalAccess>,
     instructions_at_open: bool,
 ) -> ChatResult<Value> {
     if request.prompt.len() > MAX_PROMPT_BYTES || request.prompt.contains('\0') {
@@ -548,7 +548,7 @@ pub fn turn_start_params(
             Value::String(request.turn_id.as_str().to_string()),
         ),
     ]);
-    if organizational {
+    if let Some(access) = organizational {
         let safety = organizational_safety(request.modes.safety_mode)?;
         params.insert(
             "approvalPolicy".to_string(),
@@ -560,7 +560,7 @@ pub fn turn_start_params(
         );
         params.insert(
             "permissions".to_string(),
-            Value::String(ORGANIZATIONAL_PERMISSION_PROFILE.to_string()),
+            Value::String(access.permission_profile().to_string()),
         );
         params.insert(
             "runtimeWorkspaceRoots".to_string(),

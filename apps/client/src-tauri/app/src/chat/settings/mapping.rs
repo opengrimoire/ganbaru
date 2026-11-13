@@ -5,7 +5,9 @@ use crate::chat::settings_commands::ProviderInstanceRead;
 use ganbaru_chat_contracts::config::ChatPortableProviderConfig;
 use ganbaru_chat_contracts::models::{
     ChatResult, ProviderInstanceConfig, ProviderInstanceId, ProviderModelCatalog,
+    ProviderProbeResult,
 };
+use ganbaru_chat_providers::{ProviderDriverFactory, ProviderDriverRegistry};
 use std::collections::BTreeMap;
 
 pub(crate) fn read_provider(
@@ -47,15 +49,35 @@ pub(crate) fn provider_instance_read(
         unknown_fields: portable.unknown_fields.clone(),
     };
     let runtime_review = runtime_review_reads(&pending_portable_items(&configuration, device));
+    let last_probe = device
+        .and_then(|entry| entry.last_probe.clone())
+        .map(|probe| with_current_authority_support(probe, &configuration));
     ProviderInstanceRead {
         configuration,
         runtime_review,
-        last_probe: device.and_then(|entry| entry.last_probe.clone()),
+        last_probe,
         last_successful_probe_at: device.and_then(|entry| entry.last_successful_probe_at.clone()),
         model_catalog: device
             .and_then(|entry| entry.model_catalog.clone())
             .map(ProviderModelCatalog::without_deprecated_models),
     }
+}
+
+/// Replaces a stored probe's authority support with what the current driver
+/// enforces for this configuration. Authority support depends on the driver
+/// build and configuration rather than on the probed executable, so a probe
+/// saved by an older build would otherwise keep reporting outdated support
+/// until the provider is probed again. A configuration the driver rejects
+/// reports no support, matching the send gate, which cannot start that driver.
+fn with_current_authority_support(
+    mut probe: ProviderProbeResult,
+    configuration: &ProviderInstanceConfig,
+) -> ProviderProbeResult {
+    probe.authority_support = ProviderDriverRegistry
+        .create_driver(configuration.clone())
+        .map(|driver| driver.authority_support())
+        .unwrap_or_default();
+    probe
 }
 
 pub(crate) fn portable_configuration(

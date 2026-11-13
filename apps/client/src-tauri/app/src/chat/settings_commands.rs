@@ -710,6 +710,52 @@ mod tests {
     }
 
     #[test]
+    fn provider_read_reports_the_current_driver_authority_over_a_stored_probe() {
+        let configuration: ProviderInstanceConfig = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "instanceId": "claude",
+            "familyId": "claude",
+            "label": "Claude",
+            "enabled": true,
+            "executable": "claude",
+            "providerHome": null,
+            "launchArguments": [],
+            "environment": {},
+            "credentialReferences": {},
+            "visibleModelIds": [],
+            "favoriteModelIds": [],
+            "providerConfig": { "schemaVersion": 1, "value": {} }
+        }))
+        .unwrap();
+        let stale_probe: ProviderProbeResult = serde_json::from_value(serde_json::json!({
+            "instanceId": "claude",
+            "state": "healthy",
+            "version": "2.1.323",
+            "accountLabel": null,
+            "capabilities": { "entries": [] },
+            "authoritySupport": ganbaru_chat_contracts::models::ProviderAuthoritySupport::default(),
+            "checkedAt": "2026-07-23T03:18:50.240Z",
+            "detail": null
+        }))
+        .unwrap();
+        let device = ChatProviderDeviceState {
+            last_probe: Some(stale_probe.clone()),
+            ..ChatProviderDeviceState::default()
+        };
+        let devices =
+            std::collections::BTreeMap::from([(configuration.instance_id.clone(), device)]);
+
+        let read = provider_instance_read(&portable_configuration(&configuration), &devices);
+        let probe = read.last_probe.expect("stored probe stays visible");
+
+        assert!(probe.authority_support.read_only_root);
+        assert!(probe.authority_support.writable_root);
+        assert!(probe.authority_support.person_approved_commands);
+        assert_eq!(probe.version, stale_probe.version);
+        assert_eq!(probe.checked_at, stale_probe.checked_at);
+    }
+
+    #[test]
     fn successful_provider_probe_persists_its_model_catalog() {
         let probe: ProviderProbeResult = serde_json::from_value(serde_json::json!({
             "instanceId": "claude",

@@ -60,6 +60,7 @@ export const chat = {
     participantTitle: "This name was edited on two devices",
     teammateTitle: "This teammate was edited on two devices",
     channelTitle: "This channel was edited on two devices",
+    channelNoteTitle: "This channel note was edited on two devices",
     messageTitle: "This message was edited on two devices",
     messageIn: (channel: string) => `In #${channel}`,
     hint: "Choose the version to keep.",

@@ -23,6 +23,7 @@ export type ChatAgentUpdatePresentation =
   | { kind: "host_question"; assignmentId: string; choices: string[] }
   | { kind: "host_report"; assignmentId: string; reportKind: HostReportKind }
   | { kind: "schedule_proposal"; assignmentId: string; proposal: ChatScheduleProposal }
+  | { kind: "note_proposal"; assignmentId: string }
   | {
     kind: "delegation_outcome";
     parentAssignmentId: string;
@@ -46,6 +47,9 @@ export function chatAgentUpdatePresentation(richContent: VersionedJson): ChatAge
   if (assignmentId === null || payload.source !== HOST_TOOL_UPDATE_SOURCE) return null;
   if (updateKind === "question") {
     return { kind: "host_question", assignmentId, choices: questionChoices(payload.choices) };
+  }
+  if (updateKind === "note_proposal") {
+    return payload.kind === "note_proposal" ? { kind: "note_proposal", assignmentId } : null;
   }
   if (updateKind === "schedule_proposal") {
     const proposal = scheduleProposal(payload);

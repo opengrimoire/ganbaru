@@ -5,4 +5,5 @@ export * from "./session";
 export * from "./conflicts";
 export * from "./provenance";
 export * from "./scheduling";
+export * from "./channel-notes";
 export * from "./notifications";

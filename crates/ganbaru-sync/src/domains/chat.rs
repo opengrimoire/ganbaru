@@ -34,17 +34,18 @@ use crate::codec;
 use crate::manifest::OwnedTable;
 use crate::manifest::vault::chat::{
     ADAPTER, ASSIGNMENTS_TABLE, ATTACHMENT_REFERENCES, ATTACHMENTS_CLASS,
-    CHANNEL_MEMBERSHIPS_TABLE, CHANNEL_TARGETS_TABLE, CHANNELS_TABLE, CONVERSATION_CURSORS_TABLE,
-    CONVERSATIONS_TABLE, ENVIRONMENT_TARGETS_TABLE, FOLDER_GRANTS_TABLE, FOLDER_TARGETS_TABLE,
-    INPUTS_TABLE, ITEMS_TABLE, MEMBERSHIPS_TABLE, MESSAGES_TABLE, PARTICIPANT_TARGETS_TABLE,
-    PARTICIPANTS_TABLE, PATH_TARGETS_TABLE, POLICY_REVISIONS_TABLE, PROFILE_REVISIONS_TABLE,
-    PROFILES_TABLE, RECURRENCES_TABLE, REFERENCES_TABLE, REPLY_CURSORS_TABLE, REPLY_THREADS_TABLE,
-    REVISIONS_TABLE, SCHEDULED_ATTACHMENT_REFERENCES, SCHEDULED_REFERENCES, SCHEDULED_TABLE,
-    SEMANTIC_UPDATES_TABLE, TEAMMATES_TABLE, assignment_group, channel_group,
-    channel_membership_group, conversation_group, folder_grant_group, input_group, item_group,
-    membership_group, message_group, participant_group, policy_revision_group, profile_group,
-    profile_revision_group, read_cursor_group, recurrence_group, reply_thread_group,
-    scheduled_group, semantic_update_group, teammate_group, timeline_group,
+    CHANNEL_MEMBERSHIPS_TABLE, CHANNEL_NOTES_TABLE, CHANNEL_TARGETS_TABLE, CHANNELS_TABLE,
+    CONVERSATION_CURSORS_TABLE, CONVERSATIONS_TABLE, ENVIRONMENT_TARGETS_TABLE,
+    FOLDER_GRANTS_TABLE, FOLDER_TARGETS_TABLE, INPUTS_TABLE, ITEMS_TABLE, MEMBERSHIPS_TABLE,
+    MESSAGES_TABLE, PARTICIPANT_TARGETS_TABLE, PARTICIPANTS_TABLE, PATH_TARGETS_TABLE,
+    POLICY_REVISIONS_TABLE, PROFILE_REVISIONS_TABLE, PROFILES_TABLE, RECURRENCES_TABLE,
+    REFERENCES_TABLE, REPLY_CURSORS_TABLE, REPLY_THREADS_TABLE, REVISIONS_TABLE,
+    SCHEDULED_ATTACHMENT_REFERENCES, SCHEDULED_REFERENCES, SCHEDULED_TABLE, SEMANTIC_UPDATES_TABLE,
+    TEAMMATES_TABLE, assignment_group, channel_group, channel_membership_group, channel_note_group,
+    conversation_group, folder_grant_group, input_group, item_group, membership_group,
+    message_group, participant_group, policy_revision_group, profile_group, profile_revision_group,
+    read_cursor_group, recurrence_group, reply_thread_group, scheduled_group,
+    semantic_update_group, teammate_group, timeline_group,
 };
 
 /// Characters of a display name after trimming.
@@ -98,6 +99,8 @@ pub const FOLDER_CAPABILITIES: [&str; 5] = ["publish", "execute", "edit", "read"
 pub const MAX_CHANNEL_NAME_CHARS: usize = 80;
 /// Characters of a channel topic.
 pub const MAX_CHANNEL_TOPIC_CHARS: usize = 250;
+/// Characters of a channel note body after trimming.
+pub use ganbaru_sync_contracts::chat_channel_notes::MAX_CHANNEL_NOTE_CHARS;
 /// Conversation kinds.
 pub const CONVERSATION_KINDS: [&str; 3] = ["channel", "direct_message", "task_discussion"];
 /// Conversation membership roles, least restrictive first.
@@ -621,6 +624,19 @@ fn validate_channel(group: GroupId, fields: &[Field]) -> Result<(), AdapterError
     }
 }
 
+fn validate_channel_note(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (channel_note_group::CREATED, [_channel, created_at]) => timestamp(created_at),
+        (channel_note_group::PROVENANCE, [_source_item, _proposed_by]) => Ok(()),
+        (channel_note_group::BODY, [body, _edited_by]) => {
+            trimmed(body, MAX_CHANNEL_NOTE_CHARS, "chat channel note body")
+        }
+        (channel_note_group::LIFECYCLE, [deleted_at]) => optional_timestamp(deleted_at),
+        (channel_note_group::UPDATED, [at]) => timestamp(at),
+        _ => Err(AdapterError("chat channel note value")),
+    }
+}
+
 /// Text of at most `max` UTF-8 bytes.
 fn within_bytes(field: &Field, max: usize, what: &'static str) -> Result<(), AdapterError> {
     if text(field)?.len() <= max {
@@ -953,6 +969,10 @@ fn presented_markdown(table: TableId, values: &[(GroupId, Value)]) -> Option<Str
     match table {
         REVISIONS_TABLE => match group_value(timeline_group::CREATED)?.get(1)? {
             Field::Text(markdown) => Some(markdown.clone()),
+            _ => None,
+        },
+        CHANNEL_NOTES_TABLE => match group_value(channel_note_group::BODY)?.first()? {
+            Field::Text(body) => Some(body.clone()),
             _ => None,
         },
         SCHEDULED_TABLE => {
@@ -1589,6 +1609,7 @@ impl DomainAdapter for ChatAdapter {
         } else if (table == CHANNELS_TABLE && group == channel_group::LIFECYCLE)
             || (table == CONVERSATIONS_TABLE && group == conversation_group::LIFECYCLE)
             || (table == MESSAGES_TABLE && group == message_group::LIFECYCLE)
+            || (table == CHANNEL_NOTES_TABLE && group == channel_note_group::LIFECYCLE)
         {
             lifecycle_priority(value.fields())
         } else if table == ASSIGNMENTS_TABLE && group == assignment_group::STATE {
@@ -1637,6 +1658,8 @@ impl DomainAdapter for ChatAdapter {
             validate_folder_grant(group, fields)
         } else if table == CHANNELS_TABLE {
             validate_channel(group, fields)
+        } else if table == CHANNEL_NOTES_TABLE {
+            validate_channel_note(group, fields)
         } else if table == REPLY_THREADS_TABLE {
             validate_reply_thread(group, fields)
         } else if table == ITEMS_TABLE {
@@ -1713,9 +1736,9 @@ impl DomainAdapter for ChatAdapter {
     }
 
     /// A participant presents its display name, a teammate its role, and a channel its name with
-    /// its topic as the preview. A message revision and a scheduled message present their
-    /// Markdown as the preview, unchanged so it can be copied back. Other rows present nothing:
-    /// a message's text lives in its revisions, outside the row's values.
+    /// its topic as the preview. A message revision, a scheduled message, and a channel note
+    /// present their text as the preview, unchanged so it can be copied back. Other rows present
+    /// nothing: a message's text lives in its revisions, outside the row's values.
     fn presentation(&self, table: TableId, values: &[(GroupId, Value)]) -> Presentation {
         if let Some(markdown) = presented_markdown(table, values) {
             return Presentation {

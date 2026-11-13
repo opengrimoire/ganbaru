@@ -1,5 +1,6 @@
 export * from "./commands";
 export * from "./channels";
+export * from "./channel-notes";
 export * from "./common";
 export * from "./config";
 export * from "./drafts";

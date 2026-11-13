@@ -408,6 +408,11 @@ export class ChatStore {
     return this.organizationalController.scheduledMessagesVersion;
   }
 
+  /** Changes when channel notes or note proposal states may have changed in this or another pane. */
+  get channelNotesVersion(): number {
+    return this.organizationalController.channelNotesVersion;
+  }
+
   get selectedChannel(): ChatChannelRead | null {
     return this.selectedChannelId
       ? this.channelNavigationController.find(this.selectedChannelId)
@@ -809,6 +814,12 @@ export class ChatStore {
     const scheduled = await this.organizationalController.retryScheduled(id);
     this.publishChannelChange(channelId);
     return scheduled;
+  }
+
+  /** Records that this pane changed the notes of `channelId`, so open note views here and in other panes and windows reread. */
+  channelNotesChanged(channelId: ChatChannelId): void {
+    this.organizationalController.channelNotesVersion += 1;
+    this.publishChannelChange(channelId);
   }
 
   /** Schedules the message a person confirmed from a teammate's schedule proposal in the selected channel. */
@@ -1376,6 +1387,7 @@ export class ChatStore {
     const channelId = this.selectedChannelId;
     if (!isCurrentVault() || !channelId || !this.channelNavigationController.find(channelId)) return;
     this.organizationalController.scheduledMessagesVersion += 1;
+    this.organizationalController.channelNotesVersion += 1;
     await this.loadChannelMessages(channelId, true);
     if (this.openReplyThreadId && isCurrentVault()) await this.loadReplyThread(this.openReplyThreadId, true);
   }
@@ -1394,6 +1406,7 @@ export class ChatStore {
     const channelId = this.selectedChannelId;
     if (!isCurrentVault() || !channelId || !changes.channelIds.has(channelId)) return;
     this.organizationalController.scheduledMessagesVersion += 1;
+    this.organizationalController.channelNotesVersion += 1;
     await this.loadChannelMessages(channelId, true);
     if (this.openReplyThreadId && isCurrentVault()) await this.loadReplyThread(this.openReplyThreadId, true);
   }

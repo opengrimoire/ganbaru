@@ -2,6 +2,7 @@
   import { untrack } from "svelte";
   import Pencil from "@lucide/svelte/icons/pencil";
   import Settings2 from "@lucide/svelte/icons/settings-2";
+  import StickyNote from "@lucide/svelte/icons/sticky-note";
   import UserRoundPlus from "@lucide/svelte/icons/user-round-plus";
   import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
@@ -25,6 +26,7 @@
   import { cn } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import { CHAT_OPEN_MEMBERS_EVENT, type ChatOpenMembersDetail } from "./members-panel-events";
+  import { CHAT_OPEN_CHANNEL_NOTES_EVENT, type ChatOpenChannelNotesDetail } from "./channel-notes-panel-events";
   import Notice from "$lib/components/ui/Notice.svelte";
 
   /**
@@ -80,6 +82,13 @@
   function editChannel(): void {
     onClose();
     paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-edit-channel", { detail: { channelId: channel.id } }));
+  }
+
+  /** The notes panel anchors where this panel did, so this one closes before asking the header to open it. */
+  function openNotes(): void {
+    const channelId = channel.id;
+    onClose();
+    paneEvents.dispatchEvent(new CustomEvent(CHAT_OPEN_CHANNEL_NOTES_EVENT, { detail: { channelId } satisfies ChatOpenChannelNotesDetail }));
   }
 
   /** Settings covers the panel, so it closes now and asks the header to reopen it with the picker once Settings is gone. */
@@ -157,6 +166,8 @@
       <button bind:this={addButton} type="button" class={footerActionClass(mobile)} aria-haspopup="dialog" aria-expanded={pickerOpen} onclick={() => { pickerOpen = true; }}><UserRoundPlus size={ACTION_ICON_SIZE} strokeWidth={ACTION_ICON_STROKE} /><span class="truncate">{t("chat.organization.addMembers")}</span></button>
       <div class="mx-1 h-5 border-l border-border/70" aria-hidden="true"></div>
       <button type="button" class={footerActionClass(mobile)} onclick={editChannel}><Pencil size={ACTION_ICON_SIZE} strokeWidth={ACTION_ICON_STROKE} /><span class="truncate">{t("chat.organization.editChannel")}</span></button>
+      <div class="mx-1 h-5 border-l border-border/70" aria-hidden="true"></div>
+      <button type="button" class={footerActionClass(mobile)} aria-haspopup="dialog" data-chat-channel-notes-trigger onclick={openNotes}><StickyNote size={ACTION_ICON_SIZE} strokeWidth={ACTION_ICON_STROKE} /><span class="truncate">{t("chat.channelNotes.open")}</span></button>
     </div>
   </footer>
 {/snippet}

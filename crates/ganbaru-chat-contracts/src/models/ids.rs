@@ -141,6 +141,11 @@ chat_identifier!(
     MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
 );
 chat_identifier!(
+    ChatChannelNoteId,
+    "Chat channel note ID",
+    MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
+);
+chat_identifier!(
     ChatAccessProfileId,
     "Chat access profile ID",
     MAX_ORGANIZATIONAL_IDENTIFIER_BYTES

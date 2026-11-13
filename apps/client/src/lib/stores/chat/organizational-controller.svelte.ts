@@ -54,6 +54,8 @@ export class ChatOrganizationalController {
   drafts = $state<Record<string, ChatOrganizationalDraft>>({});
   scrollPositions = $state<Record<string, number>>({});
   scheduledMessagesVersion = $state(0);
+  /** Bumped when channel notes or note proposal states may have changed, so open note views reread. */
+  channelNotesVersion = $state(0);
   /** Steer or queue choice per destination, kept across posts so the next reply defaults to it. */
   followupRoutings = $state<Record<string, ChatFollowupRouting>>({});
 
@@ -64,6 +66,7 @@ export class ChatOrganizationalController {
     this.scrollPositions = {};
     this.followupRoutings = {};
     this.scheduledMessagesVersion += 1;
+    this.channelNotesVersion += 1;
   }
 
   draft(destination: string): ChatOrganizationalDraft {

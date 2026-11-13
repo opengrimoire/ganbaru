@@ -4,7 +4,8 @@ use super::home::*;
 use super::instructions::{ClaudeSessionInstructions, session_instructions};
 use super::normalizer::{ClaudeEventNormalizer, ClaudeRouteState};
 use super::organizational::{
-    ClaudeOrganizationalDeadline, organizational_route, verify_mcp_status,
+    ClaudeOrganizationalDeadline, ClaudeOrganizationalPermissions, organizational_route,
+    verify_mcp_status,
 };
 use super::protocol::*;
 use super::session::*;
@@ -58,9 +59,9 @@ pub(super) struct ClaudeLiveSession {
     pub(super) effective_model: Option<ModelId>,
     pub(super) effective_effort: Option<String>,
     pub(super) effective_fast_mode: Option<bool>,
-    /// Whether the session runs under the organizational launch surface, which also fixes the
-    /// per-turn permission mode mapping.
-    pub(super) organizational: bool,
+    /// The scope of a session under the organizational launch surface, which also fixes the
+    /// per-turn permission mode mapping; none for direct sessions.
+    pub(super) organizational: Option<ProviderOrganizationalScope>,
     /// The gate 2 deadline an organizational session arms with each user message.
     pub(super) organizational_deadline: Option<ClaudeOrganizationalDeadline>,
     /// The instructions in the session system prompt, with the file that carries them when
@@ -222,12 +223,14 @@ impl ClaudeProviderDriver {
                     name: &server.name,
                     url: &server.url,
                 }),
-                organizational: server.filter(|server| server.organizational_authority).map(
-                    |server| ClaudeOrganizationalLaunch {
+                organizational: match (server, self.organizational_scope()?) {
+                    (Some(server), Some(scope)) => Some(ClaudeOrganizationalLaunch {
                         internal_server_name: &server.name,
                         pre_approved_tools: &server.pre_approved_tools,
-                    },
-                ),
+                        scope,
+                    }),
+                    _ => None,
+                },
                 cli_version: Some(version),
                 ..options
             },
@@ -267,6 +270,7 @@ impl ClaudeProviderDriver {
         let workspace = canonical_verified_workspace(input.workspace())?;
         let home = resolve_claude_home(&self.configuration)?;
         let organizational = self.organizational_authority();
+        let organizational_scope = self.organizational_scope()?;
         let continuation_group_id = home.continuation_group_with_authority(organizational)?;
         input.verify_continuation(&continuation_group_id)?;
         let cursor = input.resume_cursor(&self.configuration.instance_id)?;
@@ -361,8 +365,15 @@ impl ClaudeProviderDriver {
         let expected_shutdown = Arc::new(AtomicBool::new(false));
         let terminal_error = Arc::new(Mutex::new(None));
         let inbound = connection.take_inbound()?;
+        let organizational_permissions = organizational_server
+            .as_deref()
+            .zip(organizational_scope)
+            .map(|(server, scope)| {
+                ClaudeOrganizationalPermissions::new(scope, workspace.clone(), server)
+            });
         let (organizational_deadline, organizational_route) = organizational_server
-            .map(|server| organizational_route(server, connection.kill_handle()))
+            .zip(organizational_scope)
+            .map(|(server, scope)| organizational_route(server, scope, connection.kill_handle()))
             .unzip();
         let router_task = spawn_claude_router(ClaudeRouterResources {
             client: connection.client(),
@@ -374,6 +385,7 @@ impl ClaudeProviderDriver {
             expected_shutdown: Arc::clone(&expected_shutdown),
             terminal_error: Arc::clone(&terminal_error),
             organizational: organizational_route,
+            organizational_permissions,
             memory_limit: connection.memory_limit_watch(),
         });
         let capabilities = claude_capabilities();
@@ -423,7 +435,7 @@ impl ClaudeProviderDriver {
             effective_model: model,
             effective_effort: effort,
             effective_fast_mode: fast_mode,
-            organizational,
+            organizational: organizational_scope,
             organizational_deadline,
             instructions,
         });
@@ -446,6 +458,22 @@ impl ClaudeProviderDriver {
             .internal_mcp
             .as_ref()
             .is_some_and(|server| server.organizational_authority)
+    }
+
+    /// The scope an organizational launch enforces, or none for direct runs.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed when the internal server carries organizational authority without a
+    /// scope, because the launch could not tell which tool surface to load.
+    pub(super) fn organizational_scope(&self) -> ChatResult<Option<ProviderOrganizationalScope>> {
+        match self.configuration.internal_mcp.as_ref() {
+            Some(server) if server.organizational_authority => server
+                .organizational_scope
+                .map(Some)
+                .ok_or_else(organizational_permission_error),
+            _ => Ok(None),
+        }
     }
 
     /// The internal server an organizational session must report, or none for direct runs.

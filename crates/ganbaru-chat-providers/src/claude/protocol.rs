@@ -175,9 +175,10 @@ pub const CLAUDE_COMPATIBILITY: ProviderCompatibilityRange = ProviderCompatibili
     ceiling_exclusive: Some("3.0.0"),
 };
 
-/// Teammate launches need `--restricted` (2.1.248), its messaging socket fix (2.1.290), and
-/// the late-registered tool fix (2.1.295).
-pub const MINIMUM_ORGANIZATIONAL_CLAUDE_VERSION: ClaudeVersion = ClaudeVersion::new(2, 1, 305);
+/// Teammate launches need `--restricted` (2.1.248), its messaging socket fix (2.1.290), the
+/// late-registered tool fix (2.1.295), and `permissions.blockWritesOutsideWorkingDirectories`
+/// together with a `--setting-sources` value that ignores left-out files (2.1.314).
+pub const MINIMUM_ORGANIZATIONAL_CLAUDE_VERSION: ClaudeVersion = ClaudeVersion::new(2, 1, 314);
 
 impl VersionOrder for ClaudeVersion {
     fn parse_version(value: &str) -> ChatResult<Self> {
@@ -266,16 +267,18 @@ pub struct ClaudeInternalMcpLaunch<'a> {
 
 /// The fail-closed launch surface of an organizational Claude run.
 ///
-/// It sees only the internal server, loads no settings files, loads only the allowlisted
-/// built-in tools, and cannot reach the denied ones. Every organizational Claude run is
-/// conversation-only, because the Claude authority support bits enforce no folder target, so
-/// the Bash denial always applies.
+/// It sees only the internal server, loads no settings files, loads only the built-in tools
+/// its scope allows, and cannot reach the denied ones. The file tools are confined to the
+/// working directory, and the shell, when the scope loads it, asks the person for every
+/// command.
 #[derive(Clone, Copy, Debug)]
 pub struct ClaudeOrganizationalLaunch<'a> {
     pub internal_server_name: &'a str,
     /// Internal server tools the run calls without an approval prompt, passed as
     /// `--allowedTools`. Each one names a tool of the internal server.
     pub pre_approved_tools: &'a [String],
+    /// The authorized target the launch enforces.
+    pub scope: ProviderOrganizationalScope,
 }
 
 /// The comma-joined `--allowedTools` value of an organizational launch, or `None` when it
@@ -308,29 +311,94 @@ fn pre_approved_tools_argument(
     Ok(Some(organizational.pre_approved_tools.join(",")))
 }
 
-/// Built-in tools an organizational Claude run may load, passed as `--tools`.
+/// The built-in tools one organizational scope loads, passed as `--tools`, and the tools it
+/// denies on top of that allowlist as defense in depth, passed as `--disallowed-tools`.
 ///
-/// They are the local file tools, the planning and question tools the driver maps, and the
-/// todo list. Anything else the CLI ships (the shell, subagents, the network, schedules, other
-/// sessions, skills, worktrees) stays unloaded, and the startup gate fails the session when
-/// the init report carries a built-in tool outside this list. Internal MCP tools are not
-/// built-in and survive the allowlist.
-pub const ORGANIZATIONAL_ALLOWED_TOOLS: [&str; 9] = [
-    "Read",
-    "Edit",
-    "Write",
-    "Glob",
-    "Grep",
-    "NotebookEdit",
-    "ExitPlanMode",
-    "AskUserQuestion",
-    "TodoWrite",
-];
+/// Every scope loads the reading tools, the planning and question tools the driver maps, and
+/// the todo list. Edit scopes add the file writing tools, and command scopes add the shell.
+/// Anything else the CLI ships (subagents, the network, schedules, other sessions, skills,
+/// worktrees) stays unloaded, and the startup gate fails the session when the init report
+/// carries a built-in tool outside the allowlist. Internal MCP tools are not built-in and
+/// survive the allowlist.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClaudeOrganizationalTools {
+    pub allowed: &'static [&'static str],
+    pub disallowed: &'static [&'static str],
+}
 
-/// Tools an organizational Claude run never reaches, denied on top of the allowlist as defense
-/// in depth: subagents, the network, and the shell.
-pub const ORGANIZATIONAL_DISALLOWED_TOOLS: [&str; 5] =
-    ["Task", "Agent", "WebFetch", "WebSearch", "Bash"];
+const READ_ONLY_TOOLS: ClaudeOrganizationalTools = ClaudeOrganizationalTools {
+    allowed: &[
+        "Read",
+        "Glob",
+        "Grep",
+        "ExitPlanMode",
+        "AskUserQuestion",
+        "TodoWrite",
+    ],
+    disallowed: &[
+        "Task",
+        "Agent",
+        "WebFetch",
+        "WebSearch",
+        "Bash",
+        "Edit",
+        "Write",
+        "NotebookEdit",
+    ],
+};
+
+const EDIT_TOOLS: ClaudeOrganizationalTools = ClaudeOrganizationalTools {
+    allowed: &[
+        "Read",
+        "Edit",
+        "Write",
+        "Glob",
+        "Grep",
+        "NotebookEdit",
+        "ExitPlanMode",
+        "AskUserQuestion",
+        "TodoWrite",
+    ],
+    disallowed: &["Task", "Agent", "WebFetch", "WebSearch", "Bash"],
+};
+
+const COMMAND_TOOLS: ClaudeOrganizationalTools = ClaudeOrganizationalTools {
+    allowed: &[
+        "Read",
+        "Edit",
+        "Write",
+        "Glob",
+        "Grep",
+        "NotebookEdit",
+        "ExitPlanMode",
+        "AskUserQuestion",
+        "TodoWrite",
+        "Bash",
+    ],
+    disallowed: &["Task", "Agent", "WebFetch", "WebSearch"],
+};
+
+/// The tool surface of one organizational scope.
+pub fn organizational_tools(scope: ProviderOrganizationalScope) -> ClaudeOrganizationalTools {
+    match scope {
+        ProviderOrganizationalScope::Conversation
+        | ProviderOrganizationalScope::Folder {
+            capability: ProviderFolderCapability::Read,
+        } => READ_ONLY_TOOLS,
+        ProviderOrganizationalScope::Folder {
+            capability: ProviderFolderCapability::Edit,
+        } => EDIT_TOOLS,
+        ProviderOrganizationalScope::Folder {
+            capability: ProviderFolderCapability::Execute | ProviderFolderCapability::Publish,
+        }
+        | ProviderOrganizationalScope::Scratch => COMMAND_TOOLS,
+    }
+}
+
+/// Whether the scope loads the shell, whose every command the person approves.
+pub fn organizational_runs_commands(scope: ProviderOrganizationalScope) -> bool {
+    organizational_tools(scope).allowed.contains(&"Bash")
+}
 
 /// Setting sources an organizational launch loads: none, so no user, project, or local file
 /// adds MCP servers, hooks, agents, plugins, or environment.
@@ -352,9 +420,11 @@ pub fn launch_arguments(
         Some(organizational) => {
             validate_organizational_launch_arguments(configured)?;
             match options.internal_mcp {
-                Some(server) if server.name == organizational.internal_server_name => {
-                    Some((server, pre_approved_tools_argument(organizational)?))
-                }
+                Some(server) if server.name == organizational.internal_server_name => Some((
+                    server,
+                    organizational,
+                    pre_approved_tools_argument(organizational)?,
+                )),
                 _ => return Err(organizational_permission_error()),
             }
         }
@@ -374,7 +444,10 @@ pub fn launch_arguments(
         "--replay-user-messages".to_string(),
     ]);
     let permission_mode = match organizational_server {
-        Some(_) => Some(organizational_permission_mode(options.modes)?),
+        Some((_, organizational, _)) => Some(organizational_permission_mode(
+            options.modes,
+            organizational.scope,
+        )?),
         None => permission_mode(options.modes),
     };
     if let Some(permission_mode) = permission_mode {
@@ -420,11 +493,15 @@ pub fn launch_arguments(
         arguments.push("--effort".to_string());
         arguments.push(effort.to_string());
     }
-    if let Some(settings) = launch_settings(options.fast_mode) {
+    let organizational_scope = options
+        .organizational
+        .map(|organizational| organizational.scope);
+    if let Some(settings) = launch_settings(options.fast_mode, organizational_scope) {
         arguments.push("--settings".to_string());
         arguments.push(settings);
     }
-    if let Some((server, pre_approved_tools)) = organizational_server {
+    if let Some((server, organizational, pre_approved_tools)) = organizational_server {
+        let tools = organizational_tools(organizational.scope);
         // Configured arguments never reach an organizational launch, so nothing follows the
         // variadic deny list.
         arguments.extend([
@@ -443,9 +520,9 @@ pub fn launch_arguments(
         }
         arguments.extend([
             "--tools".to_string(),
-            ORGANIZATIONAL_ALLOWED_TOOLS.join(","),
+            tools.allowed.join(","),
             "--disallowed-tools".to_string(),
-            ORGANIZATIONAL_DISALLOWED_TOOLS.join(","),
+            tools.disallowed.join(","),
         ]);
         return Ok(arguments);
     }
@@ -549,10 +626,15 @@ pub fn internal_mcp_config_argument(name: &str, url: &str) -> ChatResult<String>
 
 /// Maps the modes of an organizational run to its permission mode.
 ///
-/// AskForApproval asks before edits in Build and stays read-only in Plan. Other safety modes
-/// are refused, because organizational targetless runs admit only AskForApproval.
-pub fn organizational_permission_mode(modes: TurnModeSnapshot) -> ChatResult<&'static str> {
-    if modes.safety_mode != SafetyMode::AskForApproval {
+/// A scope that loads the shell admits only AskForApproval, because the person approving each
+/// command is its confinement. It asks before edits and commands in Build and stays read-only
+/// in Plan. A scope without the shell maps every safety mode to the same asking modes, since
+/// its tool surface, not the safety mode, bounds what the run can reach.
+pub fn organizational_permission_mode(
+    modes: TurnModeSnapshot,
+    scope: ProviderOrganizationalScope,
+) -> ChatResult<&'static str> {
+    if organizational_runs_commands(scope) && modes.safety_mode != SafetyMode::AskForApproval {
         return Err(organizational_permission_error());
     }
     Ok(match modes.interaction_mode {
@@ -573,11 +655,34 @@ pub fn organizational_permission_error() -> ChatError {
 /// Serializes the one `--settings` object a launch passes, or none when it would be empty.
 ///
 /// Every launch setting joins this object, because the CLI reads a single `--settings` value.
-/// A configured `--settings` argument stays refused for every run.
-pub fn launch_settings(fast_mode: Option<bool>) -> Option<String> {
+/// A configured `--settings` argument stays refused for every run. An organizational launch
+/// confines the file tools to the working directory, and a scope that loads the shell asks
+/// for every command: the ask rule outranks the read-only commands manual mode runs unasked,
+/// and plan mode keeps its classifier from approving commands.
+pub fn launch_settings(
+    fast_mode: Option<bool>,
+    organizational: Option<ProviderOrganizationalScope>,
+) -> Option<String> {
     let mut settings = Map::new();
     if let Some(fast_mode) = fast_mode {
         settings.insert("fastMode".to_string(), Value::Bool(fast_mode));
+    }
+    if let Some(scope) = organizational {
+        let mut permissions = Map::from_iter([
+            (
+                "blockReadsOutsideWorkingDirectories".to_string(),
+                Value::Bool(true),
+            ),
+            (
+                "blockWritesOutsideWorkingDirectories".to_string(),
+                Value::Bool(true),
+            ),
+        ]);
+        if organizational_runs_commands(scope) {
+            permissions.insert("ask".to_string(), json!(["Bash"]));
+            settings.insert("useAutoModeDuringPlan".to_string(), Value::Bool(false));
+        }
+        settings.insert("permissions".to_string(), Value::Object(permissions));
     }
     (!settings.is_empty()).then(|| Value::Object(settings).to_string())
 }

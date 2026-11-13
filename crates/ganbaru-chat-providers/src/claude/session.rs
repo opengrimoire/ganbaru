@@ -4,7 +4,8 @@ use super::approvals::{approval_subject, session_grants, session_permission_upda
 use super::driver::SESSION_FORCE_STOP;
 use super::normalizer::{ClaudeEventNormalizer, ClaudePlanSource, ClaudeRouteState};
 use super::organizational::{
-    ClaudeGateAction, ClaudeOrganizationalGate, ClaudeOrganizationalRoute,
+    ClaudeGateAction, ClaudeOrganizationalGate, ClaudeOrganizationalPermissions,
+    ClaudeOrganizationalRoute,
 };
 use super::protocol::{
     control_error, control_success, organizational_permission_error, protocol_error,
@@ -67,6 +68,8 @@ pub struct ClaudeRouterResources {
     pub terminal_error: Arc<Mutex<Option<ChatError>>>,
     /// Present for organizational sessions, whose tool surface is verified before routing.
     pub organizational: Option<ClaudeOrganizationalRoute>,
+    /// Present for organizational sessions, whose permission requests stay inside the scope.
+    pub organizational_permissions: Option<ClaudeOrganizationalPermissions>,
     /// Tells whether the resource scope's memory ceiling stopped the provider; `None` when unscoped.
     pub memory_limit: Option<crate::process::systemd_scope::MemoryLimitWatch>,
 }
@@ -231,7 +234,11 @@ async fn route_provider_request(
         .get("request")
         .and_then(Value::as_object)
         .ok_or_else(|| protocol_error("control request body"))?;
-    let routed = route_control_request(control_request_id, request)?;
+    let routed = route_scoped_control_request(
+        control_request_id,
+        request,
+        resources.organizational_permissions.as_ref(),
+    )?;
     if let Some(response) = routed.immediate_response {
         resources
             .client
@@ -447,9 +454,21 @@ pub(super) fn claims_routed_plan(
     }
 }
 
+#[cfg(test)]
 pub fn route_control_request(
     control_request_id: &str,
     request: &Map<String, Value>,
+) -> ChatResult<RoutedClaudeRequest> {
+    route_scoped_control_request(control_request_id, request, None)
+}
+
+/// Routes one control request. Under an organizational policy, a request outside the scope is
+/// denied without reaching the person, and no approval offers a session-wide grant, because
+/// shell rules, extra directories, and accepting edits would all widen the boundary.
+pub fn route_scoped_control_request(
+    control_request_id: &str,
+    request: &Map<String, Value>,
+    organizational: Option<&ClaudeOrganizationalPermissions>,
 ) -> ChatResult<RoutedClaudeRequest> {
     let subtype = required_text(request, "subtype")?;
     if subtype != "can_use_tool" {
@@ -475,6 +494,23 @@ pub fn route_control_request(
         .filter(|value| value.is_object())
         .cloned()
         .ok_or_else(|| protocol_error("permission tool input"))?;
+    if let Some(message) = organizational.and_then(|policy| policy.denial(tool_name, &tool_input)) {
+        return Ok(RoutedClaudeRequest {
+            pending: None,
+            event: CanonicalEvent::Unknown(UnknownEvent {
+                source_type: "claude/organizational/denied".to_string(),
+                summary: "Ganbaru denied a teammate tool request outside its scope".to_string(),
+                safe_payload: Some(VersionedJson {
+                    schema_version: 1,
+                    value: json!({ "toolName": bounded_text(tool_name, MAX_TEXT_BYTES) }),
+                }),
+            }),
+            immediate_response: Some(control_success(
+                control_request_id,
+                json!({ "behavior": "deny", "message": message }),
+            )?),
+        });
+    }
     let provider_request_id = ProviderRequestId::new(control_request_id.to_string())
         .map_err(|_| protocol_error("permission request ID"))?;
     if tool_name == "AskUserQuestion" {
@@ -514,7 +550,11 @@ pub fn route_control_request(
         .and_then(Value::as_str)
         .or_else(|| request.get("decision_reason").and_then(Value::as_str))
         .map(|value| bounded_text(value, MAX_TEXT_BYTES));
-    let session_grants = session_grants(request.get("permission_suggestions"));
+    let session_grants = if organizational.is_some() {
+        Vec::new()
+    } else {
+        session_grants(request.get("permission_suggestions"))
+    };
     let mut allowed_decisions = vec![approval_option(
         "allow_once",
         "Allow once",

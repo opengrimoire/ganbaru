@@ -7,13 +7,13 @@
 //! deadline armed by the first user message bounds the wait. Any failure stops the process.
 
 use super::protocol::{
-    ORGANIZATIONAL_ALLOWED_TOOLS, ORGANIZATIONAL_DISALLOWED_TOOLS, control_error, control_success,
-    organizational_permission_error,
+    control_error, control_success, organizational_permission_error, organizational_tools,
 };
 use super::transport::{ClaudeConnectionKill, ClaudeJsonlClient, ClaudeTransportFailure};
 use crate::DriverOperationContext;
-use crate::models::ChatResult;
+use crate::models::{ChatResult, ProviderOrganizationalScope};
 use serde_json::{Map, Value, json};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::watch;
 use tokio::time::Instant;
@@ -58,21 +58,21 @@ pub fn verify_organizational_mcp(
 }
 
 /// Gate 2: the init report holds exactly the connected internal server, no tool from another
-/// MCP server, and only allowlisted built-in tools, never a denied one. An allowlisted tool may
-/// be absent, because the CLI drops names it does not ship.
+/// MCP server, and only built-in tools the scope allows, never one it denies. An allowed tool
+/// may be absent, because the CLI drops names it does not ship.
 pub fn verify_organizational_init(
     init: &ClaudeInitReport,
     expected_server: &str,
+    scope: ProviderOrganizationalScope,
 ) -> ChatResult<()> {
+    let tools = organizational_tools(scope);
     verify_servers(&init.mcp_servers, expected_server, &[MCP_SERVER_CONNECTED])?;
     let internal_prefix = format!("mcp__{expected_server}__");
     for tool in &init.tools {
         if tool.starts_with(&internal_prefix) {
             continue;
         }
-        if !ORGANIZATIONAL_ALLOWED_TOOLS.contains(&tool.as_str())
-            || ORGANIZATIONAL_DISALLOWED_TOOLS.contains(&tool.as_str())
-        {
+        if !tools.allowed.contains(&tool.as_str()) || tools.disallowed.contains(&tool.as_str()) {
             return Err(organizational_permission_error());
         }
     }
@@ -194,6 +194,8 @@ impl ClaudeOrganizationalDeadline {
 /// The router's half of organizational verification.
 pub struct ClaudeOrganizationalRoute {
     pub expected_server: String,
+    /// The scope whose tool surface each init report must match.
+    pub scope: ProviderOrganizationalScope,
     pub deadline: watch::Receiver<Option<Instant>>,
     pub kill: ClaudeConnectionKill,
 }
@@ -201,6 +203,7 @@ pub struct ClaudeOrganizationalRoute {
 /// Creates the paired deadline handles for one organizational session.
 pub fn organizational_route(
     expected_server: String,
+    scope: ProviderOrganizationalScope,
     kill: ClaudeConnectionKill,
 ) -> (ClaudeOrganizationalDeadline, ClaudeOrganizationalRoute) {
     let (sender, deadline) = watch::channel(None);
@@ -208,6 +211,7 @@ pub fn organizational_route(
         ClaudeOrganizationalDeadline { sender },
         ClaudeOrganizationalRoute {
             expected_server,
+            scope,
             deadline,
             kill,
         },
@@ -285,7 +289,9 @@ impl ClaudeOrganizationalGate {
             .as_object()
             .ok_or_else(organizational_permission_error)
             .and_then(parse_init_report)
-            .and_then(|init| verify_organizational_init(&init, &self.route.expected_server))
+            .and_then(|init| {
+                verify_organizational_init(&init, &self.route.expected_server, self.route.scope)
+            })
             .is_ok();
         if !passed {
             self.discard();
@@ -342,5 +348,95 @@ fn unverified_reply(frame: &Value) -> ChatResult<Value> {
         )
     } else {
         control_error(request_id, UNVERIFIED_CONTROL_REQUEST)
+    }
+}
+
+/// Message a denied organizational permission request returns to the CLI.
+const OUTSIDE_SCOPE_DENIAL: &str =
+    "This teammate run cannot use that tool or path. Stay inside the working directory.";
+
+/// Permission routing of an organizational session, as defense in depth behind the launch
+/// surface: tools the scope does not allow and file paths outside the working directory are
+/// denied before they reach the person, and nothing grants a session-wide rule.
+#[derive(Clone, Debug)]
+pub struct ClaudeOrganizationalPermissions {
+    scope: ProviderOrganizationalScope,
+    root: PathBuf,
+    internal_prefix: String,
+}
+
+impl ClaudeOrganizationalPermissions {
+    /// Builds the routing policy for a session rooted at the working directory. The root is
+    /// canonicalized when it exists; a root that cannot be resolved admits no file path.
+    pub fn new(scope: ProviderOrganizationalScope, root: PathBuf, expected_server: &str) -> Self {
+        Self {
+            scope,
+            root: std::fs::canonicalize(&root).unwrap_or(root),
+            internal_prefix: format!("mcp__{expected_server}__"),
+        }
+    }
+
+    /// The denial message for a permission request outside the scope, or none when the
+    /// request may reach the person. Shell commands always reach the person.
+    pub fn denial(&self, tool_name: &str, input: &Value) -> Option<&'static str> {
+        if tool_name.starts_with(&self.internal_prefix) {
+            return None;
+        }
+        let tools = organizational_tools(self.scope);
+        if !tools.allowed.contains(&tool_name) || tools.disallowed.contains(&tool_name) {
+            return Some(OUTSIDE_SCOPE_DENIAL);
+        }
+        let path = match tool_name {
+            "Read" | "Edit" | "Write" => Some(input.get("file_path")),
+            "NotebookEdit" => Some(input.get("notebook_path")),
+            "Glob" | "Grep" => input.get("path").filter(|path| !path.is_null()).map(Some),
+            _ => None,
+        };
+        let path_inside = match path {
+            None => true,
+            Some(Some(Value::String(path))) => inside_root(&self.root, path),
+            Some(_) => false,
+        };
+        let pattern_inside = tool_name != "Glob"
+            || input
+                .get("pattern")
+                .and_then(Value::as_str)
+                .is_some_and(|pattern| pattern_stays_inside(&self.root, pattern));
+        (!path_inside || !pattern_inside).then_some(OUTSIDE_SCOPE_DENIAL)
+    }
+}
+
+/// Whether a Glob pattern stays under `root`: it never climbs with `..` or starts from the
+/// home directory, and an absolute pattern starts with the root.
+fn pattern_stays_inside(root: &Path, pattern: &str) -> bool {
+    let pattern = Path::new(pattern);
+    !pattern.as_os_str().is_empty()
+        && !pattern.to_string_lossy().starts_with('~')
+        && !pattern
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+        && (pattern.is_relative() || pattern.starts_with(root))
+}
+
+/// Whether `raw` resolves inside `root`. A relative path resolves against the root, and the
+/// nearest existing ancestor is canonicalized so symbolic links and parent components cannot
+/// lead out. A missing component that climbs, or a path the CLI would expand from the home
+/// directory, counts as outside.
+fn inside_root(root: &Path, raw: &str) -> bool {
+    if raw.is_empty() || raw.starts_with('~') || raw.contains('\0') {
+        return false;
+    }
+    let candidate = root.join(raw);
+    let mut existing = candidate.as_path();
+    loop {
+        if let Ok(canonical) = std::fs::canonicalize(existing) {
+            return canonical.starts_with(root);
+        }
+        // A missing final component that is not a plain name, such as `..`, has no file
+        // name, so the walk stops there and the path counts as outside.
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(_)) => existing = parent,
+            _ => return false,
+        }
     }
 }

@@ -131,8 +131,11 @@ fn organizational_configuration(home: &Path, organizational: bool) -> ProviderIn
         bearer_token: "test-token".to_string(),
         organizational_authority: organizational,
         pre_approved_tools: Vec::new(),
-        organizational_scope: organizational
-            .then_some(crate::models::ProviderOrganizationalScope::Conversation),
+        organizational_scope: organizational.then_some(
+            crate::models::ProviderOrganizationalScope::Folder {
+                capability: crate::models::ProviderFolderCapability::Edit,
+            },
+        ),
     });
     configuration
 }

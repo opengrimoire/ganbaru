@@ -46,17 +46,20 @@ impl ProviderDriver for ClaudeProviderDriver {
         claude_capabilities()
     }
 
+    /// Teammate launches load only the tools their scope allows, confine the file tools to
+    /// the working directory, deny the network tools, and relay every shell command to the
+    /// person. Claude cannot confine the commands themselves or classify publication.
     fn authority_support(&self) -> ProviderAuthoritySupport {
         ProviderAuthoritySupport {
             isolated_conversation: true,
             internal_host_tools: true,
-            deny_shell: false,
-            read_only_root: false,
-            writable_root: false,
+            deny_shell: true,
+            read_only_root: true,
+            writable_root: true,
             confined_commands: false,
-            network_boundary: false,
+            network_boundary: true,
             classified_publish: false,
-            person_approved_commands: false,
+            person_approved_commands: true,
         }
     }
 
@@ -231,8 +234,8 @@ impl ProviderDriver for ClaudeProviderDriver {
                 && requested_effort != live.effective_effort)
                 || (requested_fast_mode.is_some()
                     && requested_fast_mode != live.effective_fast_mode);
-            let permission_mode = if live.organizational {
-                Some(organizational_permission_mode(request.modes)?)
+            let permission_mode = if let Some(scope) = live.organizational {
+                Some(organizational_permission_mode(request.modes, scope)?)
             } else {
                 permission_mode(request.modes)
             };

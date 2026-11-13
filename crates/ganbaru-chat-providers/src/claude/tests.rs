@@ -901,10 +901,22 @@ fn unsupported_control_subtype_gets_error_response() {
 
 #[test]
 fn launch_settings_merge_into_one_object_or_none() {
-    assert_eq!(launch_settings(None), None);
+    assert_eq!(launch_settings(None, None), None);
     assert_eq!(
-        launch_settings(Some(false)).as_deref(),
+        launch_settings(Some(false), None).as_deref(),
         Some(r#"{"fastMode":false}"#)
+    );
+    assert_eq!(
+        launch_settings(None, Some(ProviderOrganizationalScope::Conversation)).as_deref(),
+        Some(
+            r#"{"permissions":{"blockReadsOutsideWorkingDirectories":true,"blockWritesOutsideWorkingDirectories":true}}"#
+        )
+    );
+    assert_eq!(
+        launch_settings(Some(true), Some(ProviderOrganizationalScope::Scratch)).as_deref(),
+        Some(
+            r#"{"fastMode":true,"useAutoModeDuringPlan":false,"permissions":{"blockReadsOutsideWorkingDirectories":true,"blockWritesOutsideWorkingDirectories":true,"ask":["Bash"]}}"#
+        )
     );
 }
 

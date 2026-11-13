@@ -1122,3 +1122,123 @@ async fn delegation_reads_show_the_child_origin_and_the_parent_delegated_work() 
         .unwrap();
     assert!(none.is_empty(), "a child thread lists no work of its own");
 }
+
+/// Gives `assignment_id` a budget of `token_limit` and `seconds_limit` with `used_tokens` and
+/// `used_seconds` counted, and the helper's policy the default `helper_default`, as synced rows.
+async fn seed_parent_budget(
+    pool: &SqlitePool,
+    (token_limit, seconds_limit): (Option<i64>, Option<i64>),
+    (used_tokens, used_seconds): (i64, i64),
+    helper_default: Option<i64>,
+) {
+    let id = derived_id(
+        ganbaru_sync_contracts::chat_usage::ASSIGNMENT_BUDGET_KEY_PREFIX,
+        &[PARENT],
+    )
+    .unwrap();
+    let mut transaction = pool.begin().await.unwrap();
+    sqlx::query("UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1")
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    if token_limit.is_some() || seconds_limit.is_some() {
+        sqlx::query(
+            "INSERT INTO chat_assignment_budgets
+                (id, assignment_id, token_limit, working_seconds_limit, set_at,
+                 used_counted_tokens, used_working_seconds)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(PARENT)
+        .bind(token_limit)
+        .bind(seconds_limit)
+        .bind(NOW)
+        .bind(used_tokens)
+        .bind(used_seconds)
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    }
+    sqlx::query("UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1")
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+    super::super::tests::save_policy_with_default_token_limit(
+        pool,
+        HELPER,
+        "policy:helper",
+        helper_default,
+    )
+    .await;
+}
+
+/// The token and working seconds limits of `child`'s budget, if it has one.
+async fn child_budget(
+    pool: &SqlitePool,
+    child: &ChatWorkAssignmentId,
+) -> Option<(Option<i64>, Option<i64>)> {
+    sqlx::query_as(
+        "SELECT token_limit, working_seconds_limit FROM chat_assignment_budgets
+         WHERE assignment_id = ?",
+    )
+    .bind(child.as_str())
+    .fetch_optional(pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn delegated_child_budget_clamps_to_parent_remaining() {
+    let cases = [
+        // The parent's remaining amounts, below the helper default.
+        (
+            (Some(20_000), Some(600)),
+            (15_000, 100),
+            Some(10_000),
+            Some((Some(5_000), Some(500))),
+        ),
+        // The helper default, below what the parent has left.
+        (
+            (Some(20_000), None),
+            (2_000, 0),
+            Some(10_000),
+            Some((Some(10_000), None)),
+        ),
+        // A spent parent still leaves its child the minimum.
+        (
+            (Some(20_000), Some(600)),
+            (25_000, 600),
+            None,
+            Some((Some(1_000), Some(60))),
+        ),
+        // A parent without a budget gives only the default.
+        (
+            (None, None),
+            (0, 0),
+            Some(10_000),
+            Some((Some(10_000), None)),
+        ),
+        ((None, None), (0, 0), None, None),
+    ];
+    for (index, (limits, used, helper_default, expected)) in cases.into_iter().enumerate() {
+        let pool = pool_with_helper().await;
+        seed_parent_budget(&pool, limits, used, helper_default).await;
+
+        let created = delegate(
+            &pool,
+            &Caller::root(),
+            HELPER,
+            &parent_folders(),
+            &format!("request-budget-{index}"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            child_budget(&pool, &created.child.assignment_id).await,
+            expected,
+            "case {index}"
+        );
+    }
+}

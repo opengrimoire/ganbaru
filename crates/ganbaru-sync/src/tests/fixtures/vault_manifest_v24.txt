@@ -650,7 +650,7 @@ table 353 chat_teammates replicated key participant_id rule any never_deleted
   group 4 max updated_at:timestamp
   check current_policy_revision_id,current_policy_safety_mode within 2
 table 354 chat_teammate_policy_revisions replicated key id rule any never_deleted
-  group 0 immutable teammate_id:row_key->353:cascade provider_instance_id:text(..=1024) model_selection_schema_version:integer(1..=9223372036854775807) model_selection_data:text(..=16384) effort:optional_text(..=32) speed:optional_text(..=32) provider_options_schema_version:integer(1..=9223372036854775807) provider_options_data:text(..=16384) interaction_mode:text(..=32) created_at:timestamp safety_mode:text(..=32)
+  group 0 immutable teammate_id:row_key->353:cascade provider_instance_id:text(..=1024) model_selection_schema_version:integer(1..=9223372036854775807) model_selection_data:text(..=16384) effort:optional_text(..=32) speed:optional_text(..=32) provider_options_schema_version:integer(1..=9223372036854775807) provider_options_data:text(..=16384) interaction_mode:text(..=32) created_at:timestamp safety_mode:text(..=32) default_assignment_token_limit:optional_integer(1000..=1000000000000)
 table 355 chat_access_profiles replicated key id rule any redirects never_deleted
   group 0 immutable builtin_key:optional_text(..=32) created_at:timestamp
   group 1 register display_name:trimmed_text(1..=160)
@@ -784,3 +784,17 @@ table 396 chat_work_assignment_inputs replicated key id rule any
 table 397 chat_work_semantic_updates replicated key item_id rule any
   key parent 371
   group 0 immutable assignment_id:row_key->395:cascade update_kind:text(..=32) payload_schema_version:integer(1..=9223372036854775807) payload_data:text(..=196608) created_at:timestamp
+table 398 chat_assignment_budgets replicated key id rule any
+  derived key exists 4 inputs assignment_id prefix budget
+  group 0 immutable assignment_id:row_key->395:cascade
+  group 1 register token_limit:optional_integer(1000..=1000000000000) working_seconds_limit:optional_integer(60..=8640000) set_by_participant_id:optional_text(..=1024) set_at:timestamp
+  group 2 max used_counted_tokens:integer(0..=1000000000000)
+  group 3 max used_working_seconds:integer(0..=8640000)
+  group 4 register
+  check token_limit,working_seconds_limit within 1
+table 399 chat_teammate_usage_daily replicated key id rule any
+  owner key tag chat-usage: device_id
+  group 0 immutable device_id:trimmed_text(1..=160) teammate_id:row_key->353:cascade local_date:text(..=10)
+  group 1 max counted_tokens:integer(0..=1000000000000)
+  group 2 max working_seconds:integer(0..=8640000)
+  group 3 max run_count:integer(0..=100000)

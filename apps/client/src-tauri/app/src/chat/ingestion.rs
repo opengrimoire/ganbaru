@@ -1,7 +1,8 @@
 //! Tauri change delivery for the core Chat event ingestor.
 
 use ganbaru_chat_contracts::models::{
-    ChatChangeNotification, ChatError, ChatErrorCode, ChatResult,
+    ChatChangeNotification, ChatError, ChatErrorCode, ChatProjectionKey, ChatResult,
+    ChatWorkAssignmentId,
 };
 use tauri::{Emitter, Runtime};
 
@@ -19,6 +20,12 @@ impl<R: Runtime> TauriChatChangeEmitter<R> {
 
 impl<R: Runtime> ChatChangeEmitter for TauriChatChangeEmitter<R> {
     fn emit(&self, notification: &ChatChangeNotification) -> ChatResult<()> {
+        if notification
+            .changed_projection_keys
+            .contains(&ChatProjectionKey::Organizational)
+        {
+            super::usage_summaries::wake(&self.app);
+        }
         self.app.emit(CHAT_CHANGE_EVENT, notification).map_err(|_| {
             ChatError::new(
                 ChatErrorCode::Internal,
@@ -26,6 +33,11 @@ impl<R: Runtime> ChatChangeEmitter for TauriChatChangeEmitter<R> {
                 true,
             )
         })
+    }
+
+    fn budget_limit_reached(&self, assignment_id: &ChatWorkAssignmentId) -> ChatResult<()> {
+        super::budget_enforcement::queue_stop(&self.app, assignment_id);
+        Ok(())
     }
 }
 
@@ -44,5 +56,18 @@ pub(crate) async fn notify_rows_changed<R: Runtime>(
         .and_then(|notification| TauriChatChangeEmitter::new(app.clone()).emit(&notification));
     if let Err(error) = delivered {
         eprintln!("Chat change notification failed with code {:?}", error.code);
+    }
+}
+
+/// Event that tells views organizational Chat rows changed for work without a thread.
+pub(crate) const CHAT_ORGANIZATION_CHANGE_EVENT: &str = "chat://organization-change";
+
+/// Tells views that a committed write changed organizational rows of work that has no thread to
+/// name, such as work a limit stopped before its provider thread started. Delivery is best
+/// effort: the write already committed, and the next change or reload shows it.
+pub(crate) fn notify_organization_changed<R: Runtime>(app: &tauri::AppHandle<R>) {
+    super::usage_summaries::wake(app);
+    if app.emit(CHAT_ORGANIZATION_CHANGE_EVENT, ()).is_err() {
+        eprintln!("Chat organization change notification failed");
     }
 }

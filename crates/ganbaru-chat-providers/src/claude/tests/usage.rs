@@ -264,3 +264,44 @@ fn each_turn_reports_only_its_own_requests() {
     let second = run(&mut state, vec![result(json!({}))]);
     assert_eq!(usage_events(&second)[0].context_tokens, None);
 }
+
+#[test]
+fn both_turn_usage_reports_are_scoped_to_the_turn() {
+    let mut state = active_state();
+    let events = run(&mut state, vec![result(json!({}))]);
+    assert_eq!(
+        usage_events(&events)[0].count_scope,
+        Some(UsageCountScope::Turn)
+    );
+    assert_eq!(
+        completed_usage(&events).and_then(|usage| usage.count_scope),
+        Some(UsageCountScope::Turn)
+    );
+}
+
+#[test]
+fn a_failed_turn_reports_its_usage_for_the_turn_before_it_aborts() {
+    let mut state = active_state();
+    let mut failed = result(json!({}));
+    failed["subtype"] = json!("error_during_execution");
+    failed["is_error"] = json!(true);
+    let events = run(&mut state, vec![failed]);
+    let usage_index = events
+        .iter()
+        .position(|event| matches!(event.event, CanonicalEvent::ThreadUsageUpdated(_)))
+        .expect("the failed turn should report its usage");
+    let aborted_index = events
+        .iter()
+        .position(|event| matches!(event.event, CanonicalEvent::TurnAborted(_)))
+        .expect("the turn should abort");
+    assert!(usage_index < aborted_index);
+    assert_eq!(
+        events[usage_index].turn_id.as_ref().map(ChatTurnId::as_str),
+        Some("turn-1")
+    );
+    let usage = usage_events(&events)[0];
+    assert_eq!(usage.input_tokens, Some(7));
+    assert_eq!(usage.cache_write_input_tokens, Some(3));
+    assert_eq!(usage.cached_input_tokens, Some(90));
+    assert_eq!(usage.output_tokens, Some(5));
+}

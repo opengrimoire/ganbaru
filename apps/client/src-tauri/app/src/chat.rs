@@ -2,6 +2,8 @@
 //! mobile exposes provider-free channels, coordination, and preferences.
 
 pub(crate) mod authority_epoch;
+#[cfg(desktop)]
+pub(crate) mod budget_enforcement;
 pub mod channels;
 #[cfg(desktop)]
 pub mod checkpoint_commands;
@@ -72,6 +74,7 @@ pub mod terminal_commands;
 pub mod threads;
 #[cfg(desktop)]
 pub(crate) mod turns;
+pub mod usage_summaries;
 #[cfg(desktop)]
 pub mod workspace;
 // Mobile registers provider-free settings under the same command path as desktop.

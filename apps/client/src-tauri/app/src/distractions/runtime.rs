@@ -406,12 +406,7 @@ fn settle_usage_read(
 
 /// The observation's calendar date, the same form a usage projection carries.
 fn observation_local_date(observation: &accounting::Observation) -> Result<String, String> {
-    Ok(
-        ganbaru_civil_time::instant_to_local(observation.wall_ms, &observation.zone)?
-            .date()
-            .format("%Y-%m-%d")
-            .to_string(),
-    )
+    ganbaru_civil_time::local_date_key(observation.wall_ms, &observation.zone)
 }
 
 struct Pending {

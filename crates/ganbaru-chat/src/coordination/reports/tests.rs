@@ -10,7 +10,7 @@ pub(crate) const TEAMMATE: &str = "participant:reports-helper";
 const OWNER: &str = "participant:local-owner";
 pub(crate) const ASSIGNMENT: &str = "assignment:reports";
 pub(crate) const RUN: &str = "run:reports-1";
-const TURN: &str = "turn:reports-1";
+pub(crate) const TURN: &str = "turn:reports-1";
 pub(crate) const THREAD: &str = "reply:reports";
 
 /// A migrated in-memory pool. Foreign keys stay off, and the run is seeded as a sync apply, so
@@ -149,7 +149,7 @@ async fn report(
     record_host_report(&mut connection, call(request), kind, body, NOW).await
 }
 
-async fn states(pool: &SqlitePool) -> (String, String) {
+pub(crate) async fn states(pool: &SqlitePool) -> (String, String) {
     sqlx::query_as(
         "SELECT assignment.state, run.state FROM chat_work_assignments assignment
          JOIN chat_agent_runs run ON run.assignment_id = assignment.id
@@ -162,7 +162,7 @@ async fn states(pool: &SqlitePool) -> (String, String) {
 }
 
 /// Every teammate update in the reply thread, as `(update kind, markdown)`.
-async fn updates(pool: &SqlitePool) -> Vec<(String, String)> {
+pub(crate) async fn updates(pool: &SqlitePool) -> Vec<(String, String)> {
     sqlx::query_as(
         "SELECT semantic.update_kind, revision.normalized_markdown
          FROM chat_work_semantic_updates semantic
@@ -789,5 +789,122 @@ mod projection {
                 ("result".to_owned(), "Work completed.".to_owned()),
             ]
         );
+    }
+
+    fn usage_report(input: u64, output: u64) -> crate::events::ThreadUsageUpdatedEvent {
+        crate::events::ThreadUsageUpdatedEvent {
+            input_tokens: Some(input),
+            output_tokens: Some(output),
+            cached_input_tokens: Some(0),
+            cache_write_input_tokens: Some(0),
+            context_tokens: None,
+            context_limit: None,
+            cost: None,
+            count_scope: Some(crate::events::UsageCountScope::Turn),
+        }
+    }
+
+    fn runtime_event(event_id: &str, event: CanonicalEvent) -> CanonicalRuntimeEvent {
+        CanonicalRuntimeEvent {
+            schema_version: 1,
+            event_id: ChatEventId::new(event_id.to_owned()).unwrap(),
+            provider_family_id: ProviderFamilyId::new("claude".to_owned()).unwrap(),
+            provider_instance_id: ProviderInstanceId::new("claude-local".to_owned()).unwrap(),
+            thread_id: ChatThreadId::new("thread:reports".to_owned()).unwrap(),
+            created_at: UtcTimestamp::new(LATER.to_owned()).unwrap(),
+            turn_id: Some(ChatTurnId::new(TURN.to_owned()).unwrap()),
+            provider_turn_id: None,
+            provider_item_id: None,
+            provider_request_id: None,
+            provider_task_id: None,
+            provider_reference: None,
+            event,
+            redacted_diagnostic: None,
+        }
+    }
+
+    async fn counted_tokens(pool: &SqlitePool) -> Option<i64> {
+        sqlx::query_scalar("SELECT counted_tokens FROM chat_agent_run_usage WHERE run_id = ?")
+            .bind(RUN)
+            .fetch_optional(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn usage_event_updates_run_counters_in_one_transaction() {
+        let pool = migrated_pool().await;
+        seed(&pool, "working", "working").await;
+        let usage = runtime_event(
+            "event:reports-usage",
+            CanonicalEvent::ThreadUsageUpdated(usage_report(30, 12)),
+        );
+
+        let mut transaction = pool.begin().await.unwrap();
+        let organizational = project_provider_event_in_transaction(&mut transaction, &usage)
+            .await
+            .unwrap();
+        assert!(
+            !organizational.projected,
+            "usage changes no organizational state"
+        );
+        transaction.rollback().await.unwrap();
+        assert_eq!(counted_tokens(&pool).await, None, "the counters roll back");
+
+        let mut transaction = pool.begin().await.unwrap();
+        project_provider_event_in_transaction(&mut transaction, &usage)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+        assert_eq!(counted_tokens(&pool).await, Some(42));
+        assert_eq!(states(&pool).await.1, "working");
+    }
+
+    #[tokio::test]
+    async fn usage_on_the_completed_turn_counts_once_after_its_report() {
+        let pool = migrated_pool().await;
+        seed(&pool, "working", "working").await;
+        seed_turn(&pool, "[]").await;
+        let usage = runtime_event(
+            "event:reports-usage",
+            CanonicalEvent::ThreadUsageUpdated(usage_report(30, 12)),
+        );
+        let completed = runtime_event(
+            "event:reports-completed",
+            CanonicalEvent::TurnCompleted(TurnCompletedEvent {
+                state: ChatTurnState::Completed,
+                stop_reason: None,
+                usage: Some(usage_report(30, 12)),
+                changed_files: Vec::new(),
+            }),
+        );
+        for runtime in [&usage, &completed] {
+            let mut transaction = pool.begin().await.unwrap();
+            project_provider_event_in_transaction(&mut transaction, runtime)
+                .await
+                .unwrap();
+            transaction.commit().await.unwrap();
+        }
+        assert_eq!(counted_tokens(&pool).await, Some(42));
+        assert_eq!(states(&pool).await.1, "completed");
+    }
+
+    #[tokio::test]
+    async fn usage_event_for_settled_run_is_ignored() {
+        let pool = migrated_pool().await;
+        seed(&pool, "failed", "failed").await;
+        let mut transaction = pool.begin().await.unwrap();
+        let organizational = project_provider_event_in_transaction(
+            &mut transaction,
+            &runtime_event(
+                "event:reports-late-usage",
+                CanonicalEvent::ThreadUsageUpdated(usage_report(30, 12)),
+            ),
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+        assert!(!organizational.projected);
+        assert_eq!(counted_tokens(&pool).await, None);
     }
 }

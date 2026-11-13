@@ -25,6 +25,11 @@ export function listenForChatChanges(
   return Promise.resolve(() => {});
 }
 
+/** Mobile Chat runs no local work, so no native organizational row changes are emitted. */
+export function listenForChatOrganizationChanges(_onChange: () => void): Promise<StopChatChangeListener> {
+  return Promise.resolve(() => {});
+}
+
 /** Private local scratch inspection is unavailable on mobile. */
 export function loadChatScratchManager(): Promise<ChatScratchManagerComponent> {
   return Promise.reject(new Error("Private Chat scratch inspection is unavailable on mobile"));

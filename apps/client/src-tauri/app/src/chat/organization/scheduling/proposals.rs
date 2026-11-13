@@ -138,6 +138,7 @@ pub(super) async fn confirmation_command(
             also_send_to_channel: false,
             followup_routing: None,
             model_override: None,
+            budget: None,
         },
         recurrence: request.recurrence,
     })

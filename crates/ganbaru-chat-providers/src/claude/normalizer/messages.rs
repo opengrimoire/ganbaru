@@ -274,17 +274,19 @@ impl ClaudeEventNormalizer {
                 recoverable: true,
             })
         };
-        events.push(self.event(state, "result", turn_id, None, None, event)?);
+        // The usage report precedes the event that ends the turn, so a failed or interrupted
+        // turn still counts what it spent before its run settles.
         if let Some(usage) = usage {
             events.push(self.event(
                 state,
                 "result/usage",
-                None,
+                turn_id.clone(),
                 None,
                 None,
                 CanonicalEvent::ThreadUsageUpdated(usage),
             )?);
         }
+        events.push(self.event(state, "result", turn_id, None, None, event)?);
         events.push(
             self.event(
                 state,

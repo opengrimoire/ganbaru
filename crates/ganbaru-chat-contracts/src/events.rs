@@ -153,11 +153,30 @@ pub struct ThreadRevertedEvent {
     pub provider_history_action: String,
 }
 
+/// What the token counts and cost of a usage report cover.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageCountScope {
+    /// One model request.
+    Request,
+    /// The running total of the current turn.
+    Turn,
+    /// The provider thread's lifetime total.
+    ThreadCumulative,
+}
+
+/// Token usage and context fill a provider reported.
+///
+/// Counts follow one convention for every provider: input tokens neither read from nor written
+/// to the prompt cache, cache reads, cache writes, and output tokens with reasoning included.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadUsageUpdatedEvent {
+    /// Input tokens neither read from nor written to the prompt cache.
     pub input_tokens: Option<u64>,
+    /// Output tokens, reasoning included.
     pub output_tokens: Option<u64>,
+    /// Input tokens read from the provider's prompt cache.
     pub cached_input_tokens: Option<u64>,
     /// Input tokens written to the provider's prompt cache, when the provider reports them.
     #[serde(default)]
@@ -165,6 +184,10 @@ pub struct ThreadUsageUpdatedEvent {
     pub context_tokens: Option<u64>,
     pub context_limit: Option<u64>,
     pub cost: Option<ProviderAttributedCost>,
+    /// What the counts and cost cover; `None` when the provider does not document it, and such
+    /// a report is never counted toward usage.
+    #[serde(default)]
+    pub count_scope: Option<UsageCountScope>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

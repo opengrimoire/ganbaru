@@ -709,6 +709,8 @@ fn usage_update(update: &Map<String, Value>) -> Option<ThreadUsageUpdatedEvent> 
         context_tokens: Some(used),
         context_limit: Some(size),
         cost,
+        // ACP reports no token counts, so the update has nothing to count.
+        count_scope: None,
     })
 }
 

@@ -25,15 +25,17 @@
 use ganbaru_sync_contracts::bounds::{MAX_DEVICE_ID_BYTES, MAX_ORDER_KEY_BYTES};
 use ganbaru_sync_contracts::builtin_profiles::{BUILTIN_ACCESS_PROFILES, builtin_profile_key};
 use ganbaru_sync_contracts::chat_recurrence;
+use ganbaru_sync_contracts::chat_usage::teammate_usage_key;
 use ganbaru_sync_contracts::{Field, GroupId, GroupValue, OrderKey, RowKey, TableId, Value};
 use ganbaru_working_folders::UtcTimestamp;
 
 use crate::adapter::{AdapterError, DomainAdapter, OfferedRows, Presentation};
 use crate::assets::AssetRef;
 use crate::codec;
+use crate::domains::distractions::is_usage_date;
 use crate::manifest::OwnedTable;
 use crate::manifest::vault::chat::{
-    ADAPTER, ASSIGNMENTS_TABLE, ATTACHMENT_REFERENCES, ATTACHMENTS_CLASS,
+    ADAPTER, ASSIGNMENT_BUDGETS_TABLE, ASSIGNMENTS_TABLE, ATTACHMENT_REFERENCES, ATTACHMENTS_CLASS,
     CHANNEL_MEMBERSHIPS_TABLE, CHANNEL_NOTES_TABLE, CHANNEL_TARGETS_TABLE, CHANNELS_TABLE,
     CONVERSATION_CURSORS_TABLE, CONVERSATIONS_TABLE, ENVIRONMENT_TARGETS_TABLE,
     FOLDER_GRANTS_TABLE, FOLDER_TARGETS_TABLE, INPUTS_TABLE, ITEMS_TABLE, MEMBERSHIPS_TABLE,
@@ -41,11 +43,12 @@ use crate::manifest::vault::chat::{
     POLICY_REVISIONS_TABLE, PROFILE_REVISIONS_TABLE, PROFILES_TABLE, RECURRENCES_TABLE,
     REFERENCES_TABLE, REPLY_CURSORS_TABLE, REPLY_THREADS_TABLE, REVISIONS_TABLE,
     SCHEDULED_ATTACHMENT_REFERENCES, SCHEDULED_REFERENCES, SCHEDULED_TABLE, SEMANTIC_UPDATES_TABLE,
-    TEAMMATES_TABLE, assignment_group, channel_group, channel_membership_group, channel_note_group,
-    conversation_group, folder_grant_group, input_group, item_group, membership_group,
-    message_group, participant_group, policy_revision_group, profile_group, profile_revision_group,
-    read_cursor_group, recurrence_group, reply_thread_group, scheduled_group,
-    semantic_update_group, teammate_group, timeline_group,
+    TEAMMATE_USAGE_DAILY_TABLE, TEAMMATES_TABLE, assignment_group, budget_group, channel_group,
+    channel_membership_group, channel_note_group, conversation_group, folder_grant_group,
+    input_group, item_group, membership_group, message_group, participant_group,
+    policy_revision_group, profile_group, profile_revision_group, read_cursor_group,
+    recurrence_group, reply_thread_group, scheduled_group, semantic_update_group, teammate_group,
+    teammate_usage_group, timeline_group,
 };
 
 /// Characters of a display name after trimming.
@@ -416,6 +419,7 @@ fn validate_policy_revision(group: GroupId, fields: &[Field]) -> Result<(), Adap
                 mode,
                 created_at,
                 safety,
+                _default_token_limit,
             ],
         ) => {
             bounded(
@@ -634,6 +638,66 @@ fn validate_channel_note(group: GroupId, fields: &[Field]) -> Result<(), Adapter
         (channel_note_group::LIFECYCLE, [deleted_at]) => optional_timestamp(deleted_at),
         (channel_note_group::UPDATED, [at]) => timestamp(at),
         _ => Err(AdapterError("chat channel note value")),
+    }
+}
+
+/// The limits of an assignment budget set at least one limit; their bounds and the used amounts
+/// are bounded by the manifest.
+fn validate_budget(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (budget_group::IDENTITY, [_]) | (budget_group::EXISTS, []) => Ok(()),
+        (budget_group::LIMITS, [tokens, seconds, _set_by, set_at]) => {
+            if matches!(tokens, Field::Null) && matches!(seconds, Field::Null) {
+                return Err(AdapterError("chat assignment budget sets no limit"));
+            }
+            timestamp(set_at)
+        }
+        (budget_group::USED_TOKENS | budget_group::USED_WORKING, [_used]) => Ok(()),
+        _ => Err(AdapterError("chat assignment budget value")),
+    }
+}
+
+/// The bucket of a daily teammate usage row names a calendar date; the counts are bounded by the
+/// manifest.
+fn validate_teammate_usage(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (teammate_usage_group::BUCKET, [_device, _teammate, Field::Text(date)]) => {
+            if is_usage_date(date) {
+                Ok(())
+            } else {
+                Err(AdapterError("chat teammate usage date"))
+            }
+        }
+        (
+            teammate_usage_group::TOKENS
+            | teammate_usage_group::WORKING
+            | teammate_usage_group::RUNS,
+            [_count],
+        ) => Ok(()),
+        _ => Err(AdapterError("chat teammate usage value")),
+    }
+}
+
+/// A daily teammate usage row that carries its bucket is keyed by that bucket, so one device
+/// writes one row per teammate and day.
+fn validate_teammate_usage_row(row: &RowKey, groups: &[GroupValue]) -> Result<(), AdapterError> {
+    let Some(bucket) = groups
+        .iter()
+        .find(|value| value.group == teammate_usage_group::BUCKET)
+    else {
+        return Ok(());
+    };
+    let [
+        Field::Text(device),
+        Field::Text(teammate),
+        Field::Text(date),
+    ] = bucket.value.fields()
+    else {
+        return Err(AdapterError("chat teammate usage bucket"));
+    };
+    match teammate_usage_key(device, teammate, date) {
+        Ok(expected) if expected == *row => Ok(()),
+        _ => Err(AdapterError("chat teammate usage key")),
     }
 }
 
@@ -1631,6 +1695,8 @@ impl DomainAdapter for ChatAdapter {
             validate_participant_row(row, groups)
         } else if table == PROFILES_TABLE {
             validate_profile_row(row, groups)
+        } else if table == TEAMMATE_USAGE_DAILY_TABLE {
+            validate_teammate_usage_row(row, groups)
         } else {
             Ok(())
         }
@@ -1690,6 +1756,10 @@ impl DomainAdapter for ChatAdapter {
             validate_input(group, fields)
         } else if table == SEMANTIC_UPDATES_TABLE {
             validate_semantic_update(group, fields)
+        } else if table == ASSIGNMENT_BUDGETS_TABLE {
+            validate_budget(group, fields)
+        } else if table == TEAMMATE_USAGE_DAILY_TABLE {
+            validate_teammate_usage(group, fields)
         } else {
             Ok(())
         }
@@ -1856,6 +1926,7 @@ mod tests {
             t("build"),
             t(AT),
             t(safety),
+            Field::Null,
         ])
     }
 

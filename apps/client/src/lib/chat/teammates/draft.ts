@@ -12,6 +12,7 @@ export interface TeammateProfileDraftSnapshotInput {
   modelOptions: readonly ModelOptionSelection[];
   effort: string | null;
   speed: string | null;
+  defaultAssignmentTokenLimit: number | null;
 }
 
 export interface TeammateExecutionSummary {
@@ -78,6 +79,7 @@ export function teammateProfileDraftSnapshot(
     modelOptions,
     effort: input.effort,
     speed: input.speed,
+    defaultAssignmentTokenLimit: input.defaultAssignmentTokenLimit,
   });
 }
 

@@ -2,6 +2,7 @@ import * as chatApi from "$lib/api/chat";
 import type {
   ChatChannelId,
   ChatChannelRead,
+  ChatAssignmentBudgetInput,
   ChatAssignmentModelOverride,
   ChatExecutionTarget,
   ChatFollowupRouting,
@@ -37,6 +38,8 @@ export interface ChatOrganizationalPostOptions {
   followupRouting?: ChatFollowupRouting;
   /** Model for the new work the post starts, over the teammate default. */
   modelOverride?: ChatAssignmentModelOverride;
+  /** Budget for the new work the post starts, over the teammate default. */
+  budget?: ChatAssignmentBudgetInput;
 }
 
 export interface ChatOrganizationalControllerOptions {
@@ -109,6 +112,7 @@ export class ChatOrganizationalController {
       alsoSendToChannel: options.alsoSendToChannel ?? false,
       ...(options.followupRouting ? { followupRouting: options.followupRouting } : {}),
       ...(options.modelOverride ? { modelOverride: cloneData(options.modelOverride) } : {}),
+      ...(options.budget ? { budget: { ...options.budget } } : {}),
     });
     this.setDraft(destination, emptyOrganizationalDraft());
     await this.options.loadChannelMessages(channel.id, true);

@@ -120,7 +120,7 @@ describe("timeline read model projection", () => {
 
   it("attaches duration, model, usage, and deduplicated changed files to the final answer", () => {
     const changed = { relativePath: "src/app.ts", previousRelativePath: null, additions: 4, deletions: 1, binary: false, status: "modified" };
-    const usage = { inputTokens: 10, outputTokens: 4, cachedInputTokens: 2, cacheWriteInputTokens: null, contextTokens: 16, contextLimit: 100, cost: null };
+    const usage = { inputTokens: 10, outputTokens: 4, cachedInputTokens: 2, cacheWriteInputTokens: null, contextTokens: 16, contextLimit: 100, cost: null, countScope: null };
     const projection = projectTimelineReadModel(
       [messageRead("message:answer", 2, "Done", { streamingState: "streaming" })],
       [turnRead("completed", { completedAt: "2026-07-21T14:00:12.500Z", modelId: "gpt-5.1", usage, changedFiles: [changed, changed] })],

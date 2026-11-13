@@ -132,14 +132,23 @@ impl CodexEventNormalizer {
         // `total` sums the whole thread, which budgets count; `last` covers the newest model
         // request, whose size is the current context fill.
         let last = usage.get("last").and_then(Value::as_object);
+        let cached_input_tokens = unsigned(total, "cachedInputTokens");
+        let cache_write_input_tokens = unsigned(total, "cacheWriteInputTokens");
+        // Codex counts cache reads and writes inside `inputTokens`.
+        let input_tokens = unsigned(total, "inputTokens").map(|input| {
+            input
+                .saturating_sub(cached_input_tokens.unwrap_or(0))
+                .saturating_sub(cache_write_input_tokens.unwrap_or(0))
+        });
         let event = ThreadUsageUpdatedEvent {
-            input_tokens: unsigned(total, "inputTokens"),
+            input_tokens,
             output_tokens: unsigned(total, "outputTokens"),
-            cached_input_tokens: unsigned(total, "cachedInputTokens"),
-            cache_write_input_tokens: unsigned(total, "cacheWriteInputTokens"),
+            cached_input_tokens,
+            cache_write_input_tokens,
             context_tokens: last.and_then(|last| unsigned(last, "totalTokens")),
             context_limit: unsigned(usage, "modelContextWindow"),
             cost: None,
+            count_scope: Some(UsageCountScope::ThreadCumulative),
         };
         Ok(vec![self.event(
             state,

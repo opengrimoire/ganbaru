@@ -9,6 +9,7 @@ import {
   CONTENT_STREAM_KINDS,
   PROVIDER_SESSION_STATES,
   REQUEST_RESOLUTION_STATES,
+  USAGE_COUNT_SCOPES,
   type AccountStatusEvent,
   type ApprovalDecision,
   type ApprovalDecisionOption,
@@ -199,6 +200,7 @@ export function parseThreadUsage(value: unknown, label: string): ThreadUsageUpda
     contextTokens: readNullable(record.contextTokens, `${label}.contextTokens`, readNonNegativeSafeInteger),
     contextLimit: readNullable(record.contextLimit, `${label}.contextLimit`, readNonNegativeSafeInteger),
     cost: readNullable(record.cost, `${label}.cost`, parseProviderCost),
+    countScope: readNullable(record.countScope ?? null, `${label}.countScope`, (entry, entryLabel) => readEnum(entry, USAGE_COUNT_SCOPES, entryLabel)),
   };
 }
 

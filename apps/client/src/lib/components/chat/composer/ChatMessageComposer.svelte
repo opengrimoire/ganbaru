@@ -22,6 +22,7 @@
     ChatAiTeammateRead,
     ChatAttachmentRead,
     ChatAssignmentInputRead,
+    ChatAssignmentBudgetInput,
     ChatAssignmentModelOverride,
     ChatAssignmentReviewRequest,
     ChatAssignmentTargetRead,
@@ -72,7 +73,8 @@
   } from "$lib/chat/composer/message-references";
   import { chatErrorMessage, chatErrorReason } from "$lib/chat/error-presentation";
   import { parseChatMessageReference } from "$lib/chat/validation";
-  import { formatList } from "$lib/i18n/formatters";
+  import { formatDateTime, formatList } from "$lib/i18n/formatters";
+  import { budgetStoppedAt, providerLimitNotice } from "$lib/chat/budgets/budget-model";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { formatShortcut } from "$lib/keyboard-shortcuts";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
@@ -83,7 +85,9 @@
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import ChatAssignmentBudgetBar from "$lib/components/chat/timeline/ChatAssignmentBudgetBar.svelte";
   import ChatAssignmentReviewCard from "./ChatAssignmentReviewCard.svelte";
+  import ChatBudgetControl from "./ChatBudgetControl.svelte";
   import ChatComposerFrame from "./ChatComposerFrame.svelte";
   import ChatComposerInfoPanel from "./ChatComposerInfoPanel.svelte";
   import ChatComposerSuggestionMenu from "./ChatComposerSuggestionMenu.svelte";
@@ -264,6 +268,8 @@
   let modelOverrideId = $state<string | null>(null);
   /** The teammate the chosen model belongs to, so a model never carries over to another teammate. */
   let modelOverrideTeammateId: string | null = null;
+  /** Limits chosen for the new work of a post, or `null` for the teammate default; reset with the model. */
+  let budgetOverride = $state<ChatAssignmentBudgetInput | null>(null);
   let assignmentInputs = $state<ChatAssignmentInputRead[]>([]);
   let assignmentInputsRequest = 0;
   /** The waiting reply the editor holds; the destination draft stays in the store until the edit ends. */
@@ -413,6 +419,20 @@
     : scheduledFor
       ? t("chat.composer.modelOverride.scheduled")
       : null);
+  const budgetDisabledReason = $derived(activeAssignment
+    ? t("chat.composer.budget.activeWork")
+    : scheduledFor
+      ? t("chat.composer.budget.scheduled")
+      : null);
+  /** The limit a failed assignment of this thread stopped at, when its budget stopped it. */
+  const budgetStop = $derived(threadAssignment ? budgetStoppedAt(threadAssignment, chat.replyThread?.replies ?? []) : null);
+  /** The provider limit that stopped or holds the work of this thread, with its reset time when known. */
+  const providerLimit = $derived(threadComposer
+    ? providerLimitNotice(threadAssignment, chat.replyThread?.replies ?? [], interactionState?.rateLimitStatus ?? null)
+    : null);
+  const genericFailureNotice = $derived(failedAssignment !== null
+    && !(budgetStop !== null && threadAssignment?.budget)
+    && !(providerLimit !== null && failedAssignment.stateReason === "provider_usage_limit"));
   // A reply that started work which can no longer be stopped is that work's settled trigger, not a waiting reply.
   const pendingRows = $derived(pendingInputRows(assignmentInputs)
     .filter((row) => activeAssignment !== null || !pendingInputStartsWork(row.input)));
@@ -471,6 +491,7 @@
       if (teammateId === modelOverrideTeammateId) return;
       modelOverrideTeammateId = teammateId;
       modelOverrideId = null;
+      budgetOverride = null;
     });
   });
 
@@ -1517,6 +1538,7 @@
     teammateAccess = null;
     assignmentTargets = [];
     modelOverrideId = null;
+    budgetOverride = null;
     disclosureBlocker = null;
     dismissedMentionSuggestions = [];
     editorController?.setDocument(editorDocument, []);
@@ -1557,10 +1579,12 @@
       } else {
         const routing = activeAssignment ? followupRouting : null;
         const modelOverride = postModelOverride();
+        const budget = postBudget();
         const result = await chat.postOrganizationalMessage(destination, {
           alsoSendToChannel: threadComposer && alsoSendToChannel,
           ...(routing ? { followupRouting: routing } : {}),
           ...(modelOverride ? { modelOverride } : {}),
+          ...(budget ? { budget } : {}),
         });
         routingNotice = routing === "steer" && result.routedAs === "queue"
           ? t("chat.composer.routing.downgraded")
@@ -1581,12 +1605,32 @@
     return { providerManagedModel: false, modelId: modelOverrideId, modelOptions: [] };
   }
 
+  /** The budget a post asks its new work to start with, when the user chose one and the post can carry it. */
+  function postBudget(): ChatAssignmentBudgetInput | null {
+    return budgetDisabledReason || !targetTeammateId ? null : budgetOverride;
+  }
+
+  /** Saves new limits for the work of this thread; `null` removes its budget. */
+  async function saveThreadBudget(assignmentId: ChatWorkAssignmentId, budget: ChatAssignmentBudgetInput | null): Promise<void> {
+    if (budget) await chat.setAssignmentBudget(assignmentId, budget);
+    else await chat.clearAssignmentBudget(assignmentId);
+  }
+
+  function providerLimitMessage(resetsAt: string | null): string {
+    return resetsAt === null
+      ? t("chat.composer.budget.providerLimitUntimed")
+      : t("chat.composer.budget.providerLimit", formatDateTime(localization.locale, Date.parse(resetsAt), { hour: "numeric", minute: "2-digit" }));
+  }
+
   /** The localized reason a post was refused, or the failure message when the refusal names no known reason. */
   function postRefusalMessage(cause: unknown): string {
     switch (chatErrorReason(cause)) {
       case "model_override_on_active_work": return t("chat.composer.postRefusals.modelOverrideOnActiveWork");
       case "model_override_without_teammate": return t("chat.composer.postRefusals.modelOverrideWithoutTeammate");
       case "model_override_needs_mention": return t("chat.composer.postRefusals.modelOverrideNeedsMention");
+      case "budget_on_active_work": return t("chat.composer.postRefusals.budgetOnActiveWork");
+      case "budget_without_teammate": return t("chat.composer.postRefusals.budgetWithoutTeammate");
+      case "budget_needs_new_work": return t("chat.composer.postRefusals.budgetNeedsNewWork");
       default: return chatErrorMessage(cause);
     }
   }
@@ -2002,7 +2046,14 @@
 
 <div class="composer-stack">
   <span class="sr-only" aria-live="polite">{announcement}</span>
-  {#if failedAssignment}
+  {#if threadAssignment?.budget}
+    {@const budgetedAssignmentId = threadAssignment.id}
+    <ChatAssignmentBudgetBar budget={threadAssignment.budget} teammateName={threadAssignment.teammate.displayName} stoppedAt={budgetStop} onSaveLimits={(budget) => saveThreadBudget(budgetedAssignmentId, budget)} onRetry={retryFailedAssignment} />
+  {/if}
+  {#if providerLimit}
+    <Notice class="assignment-notice" role="status" tone="warning" message={providerLimitMessage(providerLimit.resetsAt)} retryLabel={failedAssignment ? t("chat.organization.retry") : undefined} onRetry={failedAssignment ? retryFailedAssignment : undefined} copy={false} />
+  {/if}
+  {#if genericFailureNotice}
     <Notice class="assignment-notice" role="status" message={t("chat.organization.workStopped")} retryLabel={t("chat.organization.retry")} onRetry={retryFailedAssignment} copy={false} />
   {/if}
   {#if assignmentAwaitingReview}
@@ -2154,6 +2205,7 @@
       {#snippet trailing()}
         {#if targetTeammate?.latestPolicy}
           <ChatModelOverrideControl provider={targetProvider} policy={targetTeammate.latestPolicy} modelId={modelOverrideId} disabledReason={modelOverrideDisabledReason} onChange={(modelId) => { modelOverrideId = modelId; }} />
+          <ChatBudgetControl budget={budgetOverride} teammateDefaultTokens={targetTeammate.latestPolicy.defaultAssignmentTokenLimit} disabledReason={budgetDisabledReason} onChange={(budget) => { budgetOverride = budget; }} />
         {/if}
         {#if followupRouting && !scheduledFor && !editingInput}
           <span class="routing-select" data-chat-followup-routing>

@@ -8,7 +8,7 @@ pub mod secret_names;
 
 #[cfg(test)]
 mod tests {
-    use crate::events::ThreadUsageUpdatedEvent;
+    use crate::events::{ThreadUsageUpdatedEvent, UsageCountScope};
     use crate::models::{ChatError, ChatErrorCode};
     use serde_json::json;
 
@@ -42,9 +42,11 @@ mod tests {
             context_tokens: Some(23),
             context_limit: Some(200_000),
             cost: None,
+            count_scope: Some(UsageCountScope::ThreadCumulative),
         };
         let value = serde_json::to_value(&usage).unwrap();
         assert_eq!(value["cacheWriteInputTokens"], json!(7));
+        assert_eq!(value["countScope"], json!("thread_cumulative"));
         assert_eq!(
             serde_json::from_value::<ThreadUsageUpdatedEvent>(value).unwrap(),
             usage
@@ -56,6 +58,10 @@ mod tests {
         });
         let read = serde_json::from_value::<ThreadUsageUpdatedEvent>(stored).unwrap();
         assert_eq!(read.cache_write_input_tokens, None);
+        assert_eq!(
+            read.count_scope, None,
+            "a report without a scope is never counted"
+        );
         assert_eq!(read.context_tokens, Some(23));
     }
 

@@ -197,6 +197,9 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_assignment_context_sources",
             "chat_agent_runs",
             "chat_agent_run_delivered_sources",
+            "chat_agent_run_usage",
+            "chat_teammate_usage_daily",
+            "chat_assignment_budgets",
             "chat_secret_requests",
             "chat_agent_run_attempt_immutable",
             "chat_assignment_dispatch_jobs",
@@ -1801,6 +1804,215 @@ fn delivered_sources_follow_their_run_and_accept_only_known_kinds() {
                 .await
                 .unwrap();
         assert_eq!(remaining, 0);
+    });
+}
+
+#[test]
+fn run_usage_schema_starts_with_the_run_checks_counts_and_follows_its_run() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let (counted, since): (i64, Option<String>) = sqlx::query_as(
+            "SELECT counted_tokens, working_since FROM chat_agent_run_usage
+             WHERE run_id = 'run-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(counted, 0);
+        assert_eq!(since.as_deref(), Some("2026-10-23T00:00:00.000Z"));
+
+        for invalid in [
+            "UPDATE chat_agent_run_usage SET input_tokens = 5 WHERE run_id = 'run-1'",
+            "UPDATE chat_agent_run_usage SET input_tokens = -1, counted_tokens = -1
+             WHERE run_id = 'run-1'",
+            "UPDATE chat_agent_run_usage SET cost_amount = 0.5 WHERE run_id = 'run-1'",
+            "UPDATE chat_agent_run_usage SET cost_amount = 0.5, cost_currency = ''
+             WHERE run_id = 'run-1'",
+            "UPDATE chat_agent_run_usage SET thread_input_tokens_last = 3 WHERE run_id = 'run-1'",
+            "UPDATE chat_agent_run_usage SET scope_unknown_logged = 2 WHERE run_id = 'run-1'",
+            "UPDATE chat_agent_run_usage SET working_seconds = -1 WHERE run_id = 'run-1'",
+        ] {
+            assert!(
+                sqlx::query(AssertSqlSafe(invalid))
+                    .execute(&pool)
+                    .await
+                    .is_err(),
+                "{invalid}"
+            );
+        }
+        sqlx::query(
+            "UPDATE chat_agent_run_usage
+             SET input_tokens = 10, cached_input_tokens = 90, cache_write_input_tokens = 2,
+                 output_tokens = 5, counted_tokens = 17, cost_amount = 0.5, cost_currency = 'USD',
+                 thread_input_tokens_last = 10, thread_cached_input_tokens_last = 90,
+                 thread_cache_write_input_tokens_last = 2, thread_output_tokens_last = 5
+             WHERE run_id = 'run-1'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query("DELETE FROM chat_agent_runs WHERE id = 'run-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let remaining: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM chat_agent_run_usage WHERE run_id = 'run-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining, 0);
+    });
+}
+
+#[test]
+fn assignment_budgets_need_a_bounded_limit_and_follow_their_assignment() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let insert = |id: &str, tokens: Option<i64>, seconds: Option<i64>| {
+            sqlx::query(
+                "INSERT INTO chat_assignment_budgets
+                     (id, assignment_id, token_limit, working_seconds_limit, set_at)
+                 VALUES (?, 'assignment-1', ?, ?, '2026-11-13T00:00:00.000Z')",
+            )
+            .bind(id.to_owned())
+            .bind(tokens)
+            .bind(seconds)
+            .execute(&pool)
+        };
+        assert!(insert("budget-none", None, None).await.is_err());
+        assert!(insert("budget-small", Some(999), None).await.is_err());
+        assert!(insert("budget-short", None, Some(59)).await.is_err());
+        assert!(insert("budget-long", None, Some(8_640_001)).await.is_err());
+        insert("budget-1", Some(1_000), None).await.unwrap();
+        assert!(
+            insert("budget-2", None, Some(60)).await.is_err(),
+            "one budget per assignment"
+        );
+        for invalid in [
+            "UPDATE chat_assignment_budgets SET token_limit = NULL WHERE id = 'budget-1'",
+            "UPDATE chat_assignment_budgets SET used_counted_tokens = -1 WHERE id = 'budget-1'",
+            "UPDATE chat_assignment_budgets SET used_working_seconds = 8640001
+             WHERE id = 'budget-1'",
+        ] {
+            assert!(
+                sqlx::query(AssertSqlSafe(invalid))
+                    .execute(&pool)
+                    .await
+                    .is_err(),
+                "{invalid}"
+            );
+        }
+        let used: (i64, i64) = sqlx::query_as(
+            "SELECT used_counted_tokens, used_working_seconds
+             FROM chat_assignment_budgets WHERE id = 'budget-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(used, (0, 0));
+
+        let policy_limit = |limit: i64| {
+            sqlx::query(
+                "INSERT INTO chat_teammate_policy_revisions
+                     (id, teammate_id, provider_instance_id, model_selection_data, created_at,
+                      default_assignment_token_limit)
+                 SELECT 'policy-limit-' || ?, teammate_id, provider_instance_id,
+                        model_selection_data, created_at, ?
+                 FROM chat_teammate_policy_revisions LIMIT 1",
+            )
+            .bind(limit)
+            .bind(limit)
+            .execute(&pool)
+        };
+        assert!(policy_limit(999).await.is_err());
+        policy_limit(20_000).await.unwrap();
+
+        sqlx::query("DELETE FROM chat_work_assignments WHERE id = 'assignment-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_assignment_budgets")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(remaining, 0);
+    });
+}
+
+#[test]
+fn teammate_usage_days_check_dates_and_counts_and_follow_their_teammate() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let insert = |id: &str, date: &str, tokens: i64, seconds: i64, runs: i64| {
+            sqlx::query(
+                "INSERT INTO chat_teammate_usage_daily
+                     (id, device_id, teammate_id, local_date, counted_tokens, working_seconds,
+                      run_count)
+                 VALUES (?, 'device-a', 'participant-teammate', ?, ?, ?, ?)",
+            )
+            .bind(id.to_owned())
+            .bind(date.to_owned())
+            .bind(tokens)
+            .bind(seconds)
+            .bind(runs)
+            .execute(&pool)
+        };
+        insert("usage-1", "2026-11-12", 10, 60, 1).await.unwrap();
+        assert!(insert("usage-2", "2026/11/12", 0, 0, 0).await.is_err());
+        assert!(insert("usage-3", "2026-11-1", 0, 0, 0).await.is_err());
+        assert!(insert("usage-4", "2026-11-13", -1, 0, 0).await.is_err());
+        assert!(
+            insert("usage-5", "2026-11-13", 0, 8_640_001, 0)
+                .await
+                .is_err()
+        );
+        assert!(
+            insert("usage-6", "2026-11-13", 0, 0, 100_001)
+                .await
+                .is_err()
+        );
+
+        for invalid in [
+            "UPDATE chat_agent_run_usage SET summarized_counted_tokens = -1 WHERE run_id = 'run-1'",
+            "UPDATE chat_agent_run_usage SET summarized_working_seconds = -1 WHERE run_id = 'run-1'",
+            "UPDATE chat_agent_run_usage SET summarized_run = 2 WHERE run_id = 'run-1'",
+        ] {
+            assert!(
+                sqlx::query(AssertSqlSafe(invalid))
+                    .execute(&pool)
+                    .await
+                    .is_err(),
+                "{invalid}"
+            );
+        }
+
+        for statement in [
+            "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
+             VALUES ('participant-idle', 'ai_teammate', 'Idle',
+                     '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z')",
+            "INSERT INTO chat_teammates (participant_id, role, created_at, updated_at)
+             VALUES ('participant-idle', 'Waits', '2026-10-23T00:00:00.000Z',
+                     '2026-10-23T00:00:00.000Z')",
+            "INSERT INTO chat_teammate_usage_daily
+                 (id, device_id, teammate_id, local_date, counted_tokens, working_seconds, run_count)
+             VALUES ('usage-idle', 'device-a', 'participant-idle', '2026-11-12', 1, 1, 1)",
+            "DELETE FROM chat_teammates WHERE participant_id = 'participant-idle'",
+        ] {
+            sqlx::query(AssertSqlSafe(statement))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let remaining: Vec<String> =
+            sqlx::query_scalar("SELECT id FROM chat_teammate_usage_daily ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining, ["usage-1"]);
     });
 }
 

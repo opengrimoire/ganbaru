@@ -1,5 +1,5 @@
 use super::*;
-use crate::events::{RateLimitStatusEvent, ThreadUsageUpdatedEvent};
+use crate::events::{RateLimitStatusEvent, ThreadUsageUpdatedEvent, UsageCountScope};
 
 fn normalizer_and_state() -> (CodexEventNormalizer, CodexRouteState) {
     let normalizer = CodexEventNormalizer::new(
@@ -80,11 +80,16 @@ fn context_fill_comes_from_the_newest_request_and_counts_from_the_thread_total()
     );
     assert_eq!(usage.context_tokens, Some(41_500));
     assert_eq!(usage.context_limit, Some(272_000));
-    assert_eq!(usage.input_tokens, Some(250_000));
+    assert_eq!(
+        usage.input_tokens,
+        Some(61_000),
+        "cache reads and writes leave the uncached input"
+    );
     assert_eq!(usage.output_tokens, Some(12_000));
     assert_eq!(usage.cached_input_tokens, Some(180_000));
     assert_eq!(usage.cache_write_input_tokens, Some(9_000));
     assert_eq!(usage.cost, None);
+    assert_eq!(usage.count_scope, Some(UsageCountScope::ThreadCumulative));
 }
 
 #[test]
@@ -102,8 +107,20 @@ fn context_fill_is_unknown_without_the_newest_request() {
     );
     assert_eq!(usage.context_tokens, None);
     assert_eq!(usage.context_limit, None);
-    assert_eq!(usage.input_tokens, Some(250_000));
+    assert_eq!(usage.input_tokens, Some(70_000));
     assert_eq!(usage.cache_write_input_tokens, None);
+}
+
+#[test]
+fn usage_input_never_goes_below_zero_when_cache_counts_exceed_it() {
+    let (normalizer, mut state) = normalizer_and_state();
+    let usage = usage_event(
+        &normalizer,
+        &mut state,
+        json!({ "total": breakdown(100, 80, 40, 5), "modelContextWindow": null }),
+    );
+    assert_eq!(usage.input_tokens, Some(0));
+    assert_eq!(usage.count_scope, Some(UsageCountScope::ThreadCumulative));
 }
 
 #[test]

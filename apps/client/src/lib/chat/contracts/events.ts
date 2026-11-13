@@ -113,8 +113,15 @@ export interface ProviderAttributedCost {
   providerReported: boolean;
 }
 
+/** What the counts and cost of a usage report cover: one model request, the turn so far, or the provider thread's lifetime. */
+export const USAGE_COUNT_SCOPES = ["request", "turn", "thread_cumulative"] as const;
+export type UsageCountScope = (typeof USAGE_COUNT_SCOPES)[number];
+
+/** Token usage and context fill a provider reported. Input excludes cache reads and writes, and output includes reasoning. */
 export interface ThreadUsageUpdatedEvent {
+  /** Input tokens neither read from nor written to the prompt cache. */
   inputTokens: number | null;
+  /** Output tokens, reasoning included. */
   outputTokens: number | null;
   cachedInputTokens: number | null;
   /** Input tokens written to the provider prompt cache; null when unreported or stored before the field existed. */
@@ -122,6 +129,8 @@ export interface ThreadUsageUpdatedEvent {
   contextTokens: number | null;
   contextLimit: number | null;
   cost: ProviderAttributedCost | null;
+  /** What the counts cover; null when the provider does not document it, and such a report is never counted. */
+  countScope: UsageCountScope | null;
 }
 
 export interface TurnStartedEvent {

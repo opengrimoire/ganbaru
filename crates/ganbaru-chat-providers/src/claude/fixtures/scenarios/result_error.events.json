@@ -31,14 +31,15 @@
       "turn": "turn-1"
     },
     {
+      "type": "thread_usage_updated",
+      "turn": "turn-1"
+    },
+    {
       "type": "turn_aborted",
       "turn": "turn-1",
       "state": "failed",
       "reason": "Credit balance is too low",
       "recoverable": true
-    },
-    {
-      "type": "thread_usage_updated"
     },
     {
       "type": "thread_metadata_updated"

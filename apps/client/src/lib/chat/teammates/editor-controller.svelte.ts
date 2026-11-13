@@ -27,6 +27,7 @@ import {
 } from "./access";
 import { conversationAccessProfile, defaultChannelAccessInput } from "./channel-membership";
 import { teammateExecutionSummary, teammateInstructionsTooLong, teammateProfileDraftSnapshot } from "./draft";
+import { parseTokenLimitInput } from "$lib/chat/budgets/budget-model";
 import {
   cloneChatTeammateStudioDraft,
   compareChatTeammateStudioDrafts,
@@ -84,6 +85,8 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
   let modelOptions = $state<ModelOptionSelection[]>([]);
   let effort = $state<string | null>(null);
   let speed = $state<string | null>(null);
+  let defaultAssignmentTokenLimit = $state<number | null>(null);
+  let defaultTokenLimitText = $state("");
   let providerOptions = $state<VersionedJson>({ schemaVersion: 1, value: {} });
   let profileExpectedRevision = $state(0);
   let profileAvatar = $state<VersionedJson>({ schemaVersion: 1, value: { kind: "initials" } });
@@ -119,6 +122,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
   const modelSelectionValid = $derived(providerManagedModel !== Boolean(modelId));
   const normalizedDisplayName = $derived(displayName.trim().toLocaleLowerCase());
   const instructionsTooLong = $derived(teammateInstructionsTooLong(instructions));
+  const defaultTokenLimitInvalid = $derived(parseTokenLimitInput(defaultTokenLimitText).kind === "invalid");
   const nameTaken = $derived(Boolean(normalizedDisplayName && allTeammates.some((teammate) => (
     teammate.participant.id !== selectedId
       && teammate.participant.displayName.trim().toLocaleLowerCase() === normalizedDisplayName
@@ -142,6 +146,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     modelOptions,
     effort,
     speed,
+    defaultAssignmentTokenLimit,
   }));
   const currentAccessSnapshot = $derived(JSON.stringify({
     channels: teammateAccessDraftSnapshot(accessDraft),
@@ -164,6 +169,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
       && modelSelectionValid
       && !nameTaken
       && !instructionsTooLong
+      && !defaultTokenLimitInvalid
       && accessErrors.length === 0
       && providerResourceBlockers.length === 0
       && dirty
@@ -210,6 +216,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
         modelOptions: copyModelOptionSelections(modelOptions),
         effort,
         speed,
+        defaultAssignmentTokenLimit,
         providerOptions: copyVersionedJson(providerOptions),
       },
       channels: copyChannelAccessInputs(accessDraft),
@@ -239,6 +246,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
         modelOptions: options,
         effort: summary.effort ?? policy?.effort ?? null,
         speed: summary.speed ?? policy?.speed ?? null,
+        defaultAssignmentTokenLimit: policy?.defaultAssignmentTokenLimit ?? null,
         providerOptions: copyVersionedJson(
           policy?.providerOptions ?? { schemaVersion: 1, value: {} },
         ),
@@ -267,6 +275,20 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     };
   }
 
+  /** Sets the default token limit from a read or draft, and the field text that shows it. */
+  function setDefaultAssignmentTokenLimit(limit: number | null): void {
+    defaultAssignmentTokenLimit = limit;
+    defaultTokenLimitText = limit === null ? "" : String(limit);
+  }
+
+  /** Takes the field text; an empty field sets no default, and text the backend would refuse blocks saving. */
+  function editDefaultTokenLimit(text: string): void {
+    defaultTokenLimitText = text;
+    const parsed = parseTokenLimitInput(text);
+    if (parsed.kind === "empty") defaultAssignmentTokenLimit = null;
+    if (parsed.kind === "valid") defaultAssignmentTokenLimit = parsed.value;
+  }
+
   function applyStudioDraft(draft: ChatTeammateStudioDraft): void {
     const copy = cloneChatTeammateStudioDraft(draft);
     displayName = copy.profile.displayName;
@@ -279,6 +301,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     modelOptions = copy.profile.modelOptions;
     effort = copy.profile.effort;
     speed = copy.profile.speed;
+    setDefaultAssignmentTokenLimit(copy.profile.defaultAssignmentTokenLimit);
     providerOptions = copy.profile.providerOptions;
     accessDraft = copy.channels;
   }
@@ -355,6 +378,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     const summary = teammateExecutionSummary(modelOptions, resolved?.model ?? null);
     effort = summary.effort;
     speed = summary.speed;
+    setDefaultAssignmentTokenLimit(null);
     providerOptions = { schemaVersion: 1, value: {} };
     profileExpectedRevision = 0;
     profileAvatar = { schemaVersion: 1, value: { kind: "initials" } };
@@ -406,6 +430,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     const summary = teammateExecutionSummary(modelOptions, selectedModel);
     effort = summary.effort ?? teammate.latestPolicy?.effort ?? null;
     speed = summary.speed ?? teammate.latestPolicy?.speed ?? null;
+    setDefaultAssignmentTokenLimit(teammate.latestPolicy?.defaultAssignmentTokenLimit ?? null);
     providerOptions = copyVersionedJson(
       teammate.latestPolicy?.providerOptions ?? { schemaVersion: 1, value: {} },
     );
@@ -659,6 +684,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
       modelOptions: copyModelOptionSelections(draft.profile.modelOptions),
       effort: draft.profile.effort,
       speed: draft.profile.speed,
+      defaultAssignmentTokenLimit: draft.profile.defaultAssignmentTokenLimit,
       providerOptions: copyVersionedJson(draft.profile.providerOptions),
     };
   }
@@ -800,6 +826,10 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     get modelId() { return modelId; },
     get providerManagedModel() { return providerManagedModel; },
     get modelOptions() { return modelOptions; },
+    get defaultAssignmentTokenLimit() { return defaultAssignmentTokenLimit; },
+    get defaultTokenLimitText() { return defaultTokenLimitText; },
+    get defaultTokenLimitInvalid() { return defaultTokenLimitInvalid; },
+    editDefaultTokenLimit,
     get accessDraft() { return accessDraft; },
     set accessDraft(value: typeof accessDraft) { accessDraft = value; },
     get accessConfirmationImpact() { return accessConfirmationImpact; },

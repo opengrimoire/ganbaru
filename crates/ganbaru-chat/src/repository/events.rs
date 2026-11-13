@@ -4,7 +4,7 @@ use crate::events::{
 };
 use crate::models::{
     ActivityStatus, ChatChangeNotification, ChatError, ChatErrorCode, ChatProjectionKey,
-    ChatResult, ChatThreadId, UtcTimestamp, VersionedJson,
+    ChatResult, ChatThreadId, ChatWorkAssignmentId, UtcTimestamp, VersionedJson,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -27,6 +27,9 @@ pub struct AppendCanonicalEventRequest {
 pub struct AppendCanonicalEventResult {
     pub event: CanonicalStoredEvent,
     pub notification: ChatChangeNotification,
+    /// The assignment the event stopped at a budget limit, whose provider session the caller
+    /// stops.
+    pub budget_stop: Option<ChatWorkAssignmentId>,
 }
 
 pub async fn append_canonical_event(
@@ -165,12 +168,12 @@ pub async fn append_canonical_event(
             true,
         ));
     }
-    if crate::coordination::projection::project_provider_event_in_transaction(
+    let projection = crate::coordination::projection::project_provider_event_in_transaction(
         &mut transaction,
         &request.runtime,
     )
-    .await?
-    {
+    .await?;
+    if projection.projected {
         changed_projection_keys.push(ChatProjectionKey::Organizational);
     }
     transaction.commit().await.map_err(persistence_error)?;
@@ -189,6 +192,7 @@ pub async fn append_canonical_event(
             revision: next_revision,
             changed_projection_keys,
         },
+        budget_stop: projection.budget_stop,
     })
 }
 

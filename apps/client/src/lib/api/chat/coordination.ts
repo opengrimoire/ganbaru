@@ -7,6 +7,9 @@ import type {
   ChatParticipantId,
   ChatReplyThreadId,
   ChatWorkAssignmentId,
+  ChatAssignmentBudgetInput,
+  ChatAssignmentBudgetRead,
+  ChatTeammateUsageDayRead,
   ChatAssignmentInputEditRequest,
   ChatAssignmentInputId,
   ChatAssignmentInputRead,
@@ -56,6 +59,8 @@ import type {
 } from "$lib/chat/contracts";
 import {
   parseChatChannel,
+  parseChatAssignmentBudget,
+  parseChatTeammateUsageDay,
   parseChatChannels,
   parseChatAiTeammate,
   parseChatAiTeammates,
@@ -559,4 +564,35 @@ export async function cancelChatAssignmentInput(inputId: ChatAssignmentInputId):
   return parseChatAssignmentInput(await invoke<unknown>("chat_cancel_assignment_input", {
     dbUrl: await ensureDbUrl(), inputId,
   }));
+}
+
+/** Sets the token and working time limits of an assignment, keeping what its work already used. */
+export async function setChatAssignmentBudget(
+  assignmentId: ChatWorkAssignmentId,
+  budget: ChatAssignmentBudgetInput,
+): Promise<ChatAssignmentBudgetRead> {
+  return parseChatAssignmentBudget(await invoke<unknown>("chat_set_assignment_budget", {
+    dbUrl: await ensureDbUrl(),
+    assignmentId,
+    tokenLimit: budget.tokenLimit,
+    workingSecondsLimit: budget.workingSecondsLimit,
+  }));
+}
+
+/** Clears the budget of an assignment, so its work runs without a limit. */
+export async function clearChatAssignmentBudget(assignmentId: ChatWorkAssignmentId): Promise<void> {
+  await invoke<unknown>("chat_clear_assignment_budget", { dbUrl: await ensureDbUrl(), assignmentId });
+}
+
+/** Reads a teammate's usage per local day from `fromDate` to `toDate` (`YYYY-MM-DD`, both included). */
+export async function readChatTeammateUsage(
+  teammateId: ChatParticipantId,
+  fromDate: string,
+  toDate: string,
+): Promise<ChatTeammateUsageDayRead[]> {
+  const days = await invoke<unknown>("chat_read_teammate_usage", {
+    dbUrl: await ensureDbUrl(), teammateId, fromDate, toDate,
+  });
+  if (!Array.isArray(days)) throw new Error("Chat teammate usage must be an array");
+  return days.map((day: unknown, index) => parseChatTeammateUsageDay(day, `Chat teammate usage day ${index}`));
 }

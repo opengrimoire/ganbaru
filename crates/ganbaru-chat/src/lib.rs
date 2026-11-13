@@ -34,6 +34,8 @@ pub mod source_control;
 pub mod state;
 pub mod sync_effects;
 pub mod timeline;
+pub mod usage_counters;
+pub mod usage_summaries;
 #[cfg(feature = "native-runtime")]
 pub mod workspace;
 

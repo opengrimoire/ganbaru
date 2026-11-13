@@ -19,6 +19,7 @@ import type {
   ChatScheduledMessageRead,
   ChatAiTeammateRead,
   ChatWorkAssignmentId,
+  ChatAssignmentBudgetInput,
   ChatAssignmentReviewRequest,
   ChatAttachmentRead,
   ChatDraftMention,
@@ -946,6 +947,20 @@ export class ChatStore {
     if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
   }
 
+  /** Sets the limits of an assignment, keeping what its work used, and rereads the reply thread that shows it. */
+  async setAssignmentBudget(assignmentId: ChatWorkAssignmentId, budget: ChatAssignmentBudgetInput): Promise<void> {
+    await chatApi.setChatAssignmentBudget(assignmentId, budget);
+    this.publishChannelChange(this.selectedChannelId);
+    if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
+  }
+
+  /** Removes the budget of an assignment and rereads the open reply thread. */
+  async clearAssignmentBudget(assignmentId: ChatWorkAssignmentId): Promise<void> {
+    await chatApi.clearChatAssignmentBudget(assignmentId);
+    this.publishChannelChange(this.selectedChannelId);
+    if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
+  }
+
   /**
    * Starts waiting work with the details the user saw and rereads what it changed. Resolves false when the work
    * changed since then, which started nothing and refreshes the offer instead.
@@ -1304,15 +1319,18 @@ export class ChatStore {
         this.threadCollectionController.upsert(thread);
       }
     }
-    if (plan.organizational) {
-      this.refreshReviewQueue();
-      const channelId = this.selectedChannelId;
-      if (channelId) await this.loadChannelMessages(channelId, true);
-      if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
-    }
+    if (plan.organizational) await this.handleOrganizationChange();
     if (threadId !== this.selectedThreadId) return;
     if (plan.timeline) await this.timelineController.refreshLatest(threadId);
     if (plan.interaction) await this.refreshInteraction(threadId);
+  }
+
+  /** Rereads the review queue, the open channel, and the open reply thread after organizational rows changed natively. */
+  async handleOrganizationChange(): Promise<void> {
+    this.refreshReviewQueue();
+    const channelId = this.selectedChannelId;
+    if (channelId) await this.loadChannelMessages(channelId, true);
+    if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
   }
 
   private publishChannelChange(channelId: ChatChannelId | null): void {

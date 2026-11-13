@@ -405,6 +405,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::channels::chat_set_channel_read,
             chat::organization::chat_list_teammates,
             chat::organization::chat_read_teammate,
+            chat::usage_summaries::chat_read_teammate_usage,
             chat::organization::chat_create_teammate,
             chat::organization::chat_archive_teammate,
             chat::organization::access::chat_list_access_profiles,
@@ -457,6 +458,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::organization::chat_list_review_queue,
             chat::organization::chat_edit_assignment_input,
             chat::organization::chat_cancel_assignment_input,
+            chat::organization::chat_set_assignment_budget,
+            chat::organization::chat_clear_assignment_budget,
             chat::organization::chat_review_assignment,
             chat::organization::chat_retry_assignment,
             chat::organization::chat_start_mentioned_assignment,
@@ -1080,6 +1083,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             app.manage(chat::sync::AssignmentWaker::new(app.handle().clone()));
             chat::revocation::start_job_drain(app.handle());
             chat::cleanup_service::start(app.handle());
+            chat::usage_summaries::start(app.handle());
+            chat::budget_enforcement::start(app.handle());
             #[cfg(target_os = "linux")]
             tauri::async_runtime::spawn(ganbaru_chat_providers::process::probe_resource_scope());
             music::setup_youtube_host(app.handle())?;

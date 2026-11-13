@@ -96,10 +96,7 @@ pub(super) async fn derive_usage_projection<R: Runtime>(
             let zone = ganbaru_civil_time::system_zone()?;
             let checked_at = now_utc();
             let local_date =
-                ganbaru_civil_time::instant_to_local(checked_at.timestamp_millis(), &zone)?
-                    .date()
-                    .format("%Y-%m-%d")
-                    .to_string();
+                ganbaru_civil_time::local_date_key(checked_at.timestamp_millis(), &zone)?;
             Ok::<_, String>((root, config, local_date, checked_at))
         })
         .await
@@ -148,13 +145,10 @@ pub(super) async fn derive_usage_projection<R: Runtime>(
         {
             return Err("native usage context changed during the read".into());
         }
-        let current_date = ganbaru_civil_time::instant_to_local(
+        let current_date = ganbaru_civil_time::local_date_key(
             now_epoch_ms(),
             &ganbaru_civil_time::system_zone()?,
-        )?
-        .date()
-        .format("%Y-%m-%d")
-        .to_string();
+        )?;
         if current_date != local_date {
             return Err("native usage date changed during the read".into());
         }

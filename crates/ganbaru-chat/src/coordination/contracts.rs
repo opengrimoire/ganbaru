@@ -17,6 +17,9 @@ pub struct ChatTeammatePolicyInput {
     pub effort: Option<String>,
     pub speed: Option<String>,
     pub provider_options: VersionedJson,
+    /// Token limit of a new assignment of the teammate; `None` sets none.
+    #[serde(default)]
+    pub default_assignment_token_limit: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -243,6 +246,20 @@ pub struct PostChatMessageCommand {
     /// that reaches active work, or a scheduled post, refuses it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_override: Option<ChatAssignmentModelOverride>,
+    /// Budget for the new assignment this post starts, over the teammate's default. A post
+    /// that reaches active work, or a scheduled post, refuses it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<ChatAssignmentBudgetInput>,
+}
+
+/// Token and working time limits of one assignment; at least one is set.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatAssignmentBudgetInput {
+    #[serde(default)]
+    pub token_limit: Option<u64>,
+    #[serde(default)]
+    pub working_seconds_limit: Option<u64>,
 }
 
 /// Model selection one assignment runs with instead of its teammate's default. Effort is one

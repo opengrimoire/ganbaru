@@ -158,6 +158,7 @@ impl ClaudeUsageTracker {
                 .filter(|tokens| *tokens > 0),
             context_limit: self.context_limit(object, route_model),
             cost,
+            count_scope: Some(UsageCountScope::Turn),
         })
     }
 

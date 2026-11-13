@@ -1,0 +1,20 @@
+[package]
+name = "ganbaru-sandbox"
+version = "0.1.0"
+description = "Kernel-enforced confinement for the processes Chat teammates run"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "ganbaru-sandbox"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = { workspace = true }
+libc = { workspace = true }
+seccompiler = { workspace = true }

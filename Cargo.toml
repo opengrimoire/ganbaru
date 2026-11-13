@@ -28,6 +28,7 @@ members = [
   "crates/ganbaru-pomodoro",
   "crates/ganbaru-projects",
   "crates/ganbaru-quick-notes",
+  "crates/ganbaru-sandbox",
   "crates/ganbaru-sync",
   "crates/ganbaru-sync-contracts",
   "crates/ganbaru-sync-replica",
@@ -84,6 +85,7 @@ ganbaru-contacts = { path = "crates/ganbaru-contacts" }
 ganbaru-pomodoro = { path = "crates/ganbaru-pomodoro" }
 ganbaru-projects = { path = "crates/ganbaru-projects" }
 ganbaru-quick-notes = { path = "crates/ganbaru-quick-notes" }
+ganbaru-sandbox = { path = "crates/ganbaru-sandbox" }
 ganbaru-sync = { path = "crates/ganbaru-sync" }
 ganbaru-sync-contracts = { path = "crates/ganbaru-sync-contracts" }
 ganbaru-sync-replica = { path = "crates/ganbaru-sync-replica" }
@@ -103,6 +105,7 @@ jiff = { version = "0.2.37", default-features = false, features = [
   "tzdb-bundle-platform",
 ] }
 keyring = "4.1.5"
+landlock = "=0.4.7"
 libc = "0.2"
 libsqlite3-sys = { version = "0.37", default-features = false }
 mdns-sd = { version = "=0.21.6", default-features = false }
@@ -159,6 +162,7 @@ rustix = { version = "1.1.4", default-features = false, features = ["std", "proc
 rustls = { version = "0.23.45", default-features = false, features = ["ring"] }
 qrcode = { version = "0.14.1", default-features = false }
 quircs = "0.10.3"
+seccompiler = "=0.5.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.9"

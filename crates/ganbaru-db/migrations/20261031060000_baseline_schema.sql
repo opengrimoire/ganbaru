@@ -143,26 +143,6 @@ CREATE INDEX idx_theme_tokens_kind ON theme_tokens(theme_id, kind);
 
 -- Themes triggers.
 
-CREATE TRIGGER sync_values_themes_insert
-BEFORE INSERT ON themes
-WHEN ((typeof(NEW.id) = 'text' AND instr(CAST(NEW.id AS BLOB), x'00') = 0 AND trim(NEW.id) <> '' AND length(CAST(NEW.id AS BLOB)) <= 128)
-    AND (typeof(NEW.created_at_ms) = 'integer' AND NEW.created_at_ms BETWEEN 0 AND 9223372036854775807)
-    AND (typeof(NEW.seed_blend_canvas) = 'text' AND instr(CAST(NEW.seed_blend_canvas AS BLOB), x'00') = 0 AND length(NEW.seed_blend_canvas) <= 9 AND length(CAST(NEW.seed_blend_canvas AS BLOB)) <= 262144)
-    AND (typeof(NEW.seed_icon_label) = 'text' AND instr(CAST(NEW.seed_icon_label AS BLOB), x'00') = 0 AND length(NEW.seed_icon_label) <= 5 AND length(CAST(NEW.seed_icon_label AS BLOB)) <= 262144)
-    AND (typeof(NEW.seed_calendar_default_mode) = 'text' AND instr(CAST(NEW.seed_calendar_default_mode AS BLOB), x'00') = 0 AND length(NEW.seed_calendar_default_mode) <= 10 AND length(CAST(NEW.seed_calendar_default_mode AS BLOB)) <= 262144)
-    AND (typeof(NEW.seed_calendar_default_custom) = 'text' AND instr(CAST(NEW.seed_calendar_default_custom AS BLOB), x'00') = 0 AND length(NEW.seed_calendar_default_custom) <= 9 AND length(CAST(NEW.seed_calendar_default_custom AS BLOB)) <= 262144)
-    AND (typeof(NEW.display_name) = 'text' AND instr(CAST(NEW.display_name AS BLOB), x'00') = 0 AND length(trim(NEW.display_name)) BETWEEN 1 AND 60 AND length(CAST(NEW.display_name AS BLOB)) <= 262144)
-    AND (typeof(NEW.icon_label) = 'text' AND instr(CAST(NEW.icon_label AS BLOB), x'00') = 0 AND length(NEW.icon_label) <= 5 AND length(CAST(NEW.icon_label AS BLOB)) <= 262144)
-    AND (typeof(NEW.blend_canvas) = 'text' AND instr(CAST(NEW.blend_canvas AS BLOB), x'00') = 0 AND length(NEW.blend_canvas) <= 9 AND length(CAST(NEW.blend_canvas AS BLOB)) <= 262144)
-    AND (typeof(NEW.derivation_engine_version) = 'integer' AND NEW.derivation_engine_version BETWEEN 0 AND 9223372036854775807)
-    AND (typeof(NEW.calendar_default_mode) = 'text' AND instr(CAST(NEW.calendar_default_mode AS BLOB), x'00') = 0 AND length(NEW.calendar_default_mode) <= 10 AND length(CAST(NEW.calendar_default_mode AS BLOB)) <= 262144)
-    AND (typeof(NEW.calendar_default_custom) = 'text' AND instr(CAST(NEW.calendar_default_custom AS BLOB), x'00') = 0 AND length(NEW.calendar_default_custom) <= 9 AND length(CAST(NEW.calendar_default_custom AS BLOB)) <= 262144)
-    AND (typeof(NEW.upgrade_dismissed_engine_version) = 'integer' AND NEW.upgrade_dismissed_engine_version BETWEEN 0 AND 9223372036854775807)
-    AND (typeof(NEW.updated_at_ms) = 'integer' AND NEW.updated_at_ms BETWEEN 0 AND 9223372036854775807)) IS NOT 1
-BEGIN
-    SELECT RAISE(ABORT, 'Replicated row values are invalid');
-END;
-
 CREATE TRIGGER sync_values_themes_update
 BEFORE UPDATE OF created_at_ms, seed_blend_canvas, seed_icon_label, seed_calendar_default_mode, seed_calendar_default_custom, display_name, icon_label, blend_canvas, derivation_engine_version, calendar_default_mode, calendar_default_custom, upgrade_dismissed_engine_version, updated_at_ms ON themes
 WHEN ((typeof(NEW.created_at_ms) = 'integer' AND NEW.created_at_ms BETWEEN 0 AND 9223372036854775807)
@@ -358,6 +338,26 @@ BEGIN
     ON CONFLICT (table_id, row_key) DO UPDATE SET mask = mask | excluded.mask;
 END;
 
+CREATE TRIGGER sync_values_themes_insert
+BEFORE INSERT ON themes
+WHEN ((typeof(NEW.id) = 'text' AND instr(CAST(NEW.id AS BLOB), x'00') = 0 AND trim(NEW.id) <> '' AND length(CAST(NEW.id AS BLOB)) <= 128 AND length(CAST(NEW.id AS BLOB)) <= 64 AND NEW.id GLOB '[a-z0-9]*' AND NEW.id NOT GLOB '*[^a-z0-9-]*' AND NEW.id NOT IN ('light', 'dark'))
+    AND (typeof(NEW.created_at_ms) = 'integer' AND NEW.created_at_ms BETWEEN 0 AND 9223372036854775807)
+    AND (typeof(NEW.seed_blend_canvas) = 'text' AND instr(CAST(NEW.seed_blend_canvas AS BLOB), x'00') = 0 AND length(NEW.seed_blend_canvas) <= 9 AND length(CAST(NEW.seed_blend_canvas AS BLOB)) <= 262144)
+    AND (typeof(NEW.seed_icon_label) = 'text' AND instr(CAST(NEW.seed_icon_label AS BLOB), x'00') = 0 AND length(NEW.seed_icon_label) <= 5 AND length(CAST(NEW.seed_icon_label AS BLOB)) <= 262144)
+    AND (typeof(NEW.seed_calendar_default_mode) = 'text' AND instr(CAST(NEW.seed_calendar_default_mode AS BLOB), x'00') = 0 AND length(NEW.seed_calendar_default_mode) <= 10 AND length(CAST(NEW.seed_calendar_default_mode AS BLOB)) <= 262144)
+    AND (typeof(NEW.seed_calendar_default_custom) = 'text' AND instr(CAST(NEW.seed_calendar_default_custom AS BLOB), x'00') = 0 AND length(NEW.seed_calendar_default_custom) <= 9 AND length(CAST(NEW.seed_calendar_default_custom AS BLOB)) <= 262144)
+    AND (typeof(NEW.display_name) = 'text' AND instr(CAST(NEW.display_name AS BLOB), x'00') = 0 AND length(trim(NEW.display_name)) BETWEEN 1 AND 60 AND length(CAST(NEW.display_name AS BLOB)) <= 262144)
+    AND (typeof(NEW.icon_label) = 'text' AND instr(CAST(NEW.icon_label AS BLOB), x'00') = 0 AND length(NEW.icon_label) <= 5 AND length(CAST(NEW.icon_label AS BLOB)) <= 262144)
+    AND (typeof(NEW.blend_canvas) = 'text' AND instr(CAST(NEW.blend_canvas AS BLOB), x'00') = 0 AND length(NEW.blend_canvas) <= 9 AND length(CAST(NEW.blend_canvas AS BLOB)) <= 262144)
+    AND (typeof(NEW.derivation_engine_version) = 'integer' AND NEW.derivation_engine_version BETWEEN 0 AND 9223372036854775807)
+    AND (typeof(NEW.calendar_default_mode) = 'text' AND instr(CAST(NEW.calendar_default_mode AS BLOB), x'00') = 0 AND length(NEW.calendar_default_mode) <= 10 AND length(CAST(NEW.calendar_default_mode AS BLOB)) <= 262144)
+    AND (typeof(NEW.calendar_default_custom) = 'text' AND instr(CAST(NEW.calendar_default_custom AS BLOB), x'00') = 0 AND length(NEW.calendar_default_custom) <= 9 AND length(CAST(NEW.calendar_default_custom AS BLOB)) <= 262144)
+    AND (typeof(NEW.upgrade_dismissed_engine_version) = 'integer' AND NEW.upgrade_dismissed_engine_version BETWEEN 0 AND 9223372036854775807)
+    AND (typeof(NEW.updated_at_ms) = 'integer' AND NEW.updated_at_ms BETWEEN 0 AND 9223372036854775807)) IS NOT 1
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row values are invalid');
+END;
+
 -- 3. Contacts: Person identity, contact cards, and contact requests.
 
 CREATE TABLE contact_card (
@@ -443,25 +443,6 @@ CREATE TRIGGER contact_card_prevent_delete
 BEFORE DELETE ON contact_card
 BEGIN
     SELECT RAISE(ABORT, 'The contact card cannot be deleted');
-END;
-
-CREATE TRIGGER sync_values_contact_card_insert
-BEFORE INSERT ON contact_card
-WHEN ((typeof(NEW.key) = 'text' AND instr(CAST(NEW.key AS BLOB), x'00') = 0 AND trim(NEW.key) <> '' AND length(CAST(NEW.key AS BLOB)) <= 128)
-    AND (typeof(NEW.card_nonce) = 'text' AND instr(CAST(NEW.card_nonce AS BLOB), x'00') = 0 AND length(NEW.card_nonce) <= 22 AND length(CAST(NEW.card_nonce AS BLOB)) <= 262144)
-    AND (typeof(NEW.card_revision) = 'integer' AND NEW.card_revision BETWEEN 1 AND 9223372036854775807)
-    AND (typeof(NEW.updated_at) = 'text' AND instr(CAST(NEW.updated_at AS BLOB), x'00') = 0 AND trim(NEW.updated_at) <> '' AND length(CAST(NEW.updated_at AS BLOB)) <= 64)) IS NOT 1
-BEGIN
-    SELECT RAISE(ABORT, 'Replicated row values are invalid');
-END;
-
-CREATE TRIGGER sync_values_contact_card_update
-BEFORE UPDATE OF card_nonce, card_revision, updated_at ON contact_card
-WHEN ((typeof(NEW.card_nonce) = 'text' AND instr(CAST(NEW.card_nonce AS BLOB), x'00') = 0 AND length(NEW.card_nonce) <= 22 AND length(CAST(NEW.card_nonce AS BLOB)) <= 262144)
-    AND (typeof(NEW.card_revision) = 'integer' AND NEW.card_revision BETWEEN 1 AND 9223372036854775807)
-    AND (typeof(NEW.updated_at) = 'text' AND instr(CAST(NEW.updated_at AS BLOB), x'00') = 0 AND trim(NEW.updated_at) <> '' AND length(CAST(NEW.updated_at AS BLOB)) <= 64)) IS NOT 1
-BEGIN
-    SELECT RAISE(ABORT, 'Replicated row values are invalid');
 END;
 
 CREATE TRIGGER sync_immutable_contact_card
@@ -723,6 +704,25 @@ BEGIN
     SELECT RAISE(ABORT, 'The person identity cannot change');
 END;
 
+CREATE TRIGGER sync_values_contact_card_insert
+BEFORE INSERT ON contact_card
+WHEN ((typeof(NEW.key) = 'text' AND instr(CAST(NEW.key AS BLOB), x'00') = 0 AND trim(NEW.key) <> '' AND length(CAST(NEW.key AS BLOB)) <= 128)
+    AND (typeof(NEW.card_nonce) = 'text' AND instr(CAST(NEW.card_nonce AS BLOB), x'00') = 0 AND length(NEW.card_nonce) <= 22 AND length(CAST(NEW.card_nonce AS BLOB)) <= 262144)
+    AND (typeof(NEW.card_revision) = 'integer' AND NEW.card_revision BETWEEN 1 AND 1000000000)
+    AND (typeof(NEW.updated_at) = 'text' AND instr(CAST(NEW.updated_at AS BLOB), x'00') = 0 AND trim(NEW.updated_at) <> '' AND length(CAST(NEW.updated_at AS BLOB)) <= 64)) IS NOT 1
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row values are invalid');
+END;
+
+CREATE TRIGGER sync_values_contact_card_update
+BEFORE UPDATE OF card_nonce, card_revision, updated_at ON contact_card
+WHEN ((typeof(NEW.card_nonce) = 'text' AND instr(CAST(NEW.card_nonce AS BLOB), x'00') = 0 AND length(NEW.card_nonce) <= 22 AND length(CAST(NEW.card_nonce AS BLOB)) <= 262144)
+    AND (typeof(NEW.card_revision) = 'integer' AND NEW.card_revision BETWEEN 1 AND 1000000000)
+    AND (typeof(NEW.updated_at) = 'text' AND instr(CAST(NEW.updated_at AS BLOB), x'00') = 0 AND trim(NEW.updated_at) <> '' AND length(CAST(NEW.updated_at AS BLOB)) <= 64)) IS NOT 1
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row values are invalid');
+END;
+
 -- 4. Projects: Projects, their structure and tasks, custom fields, views, and working folder bindings.
 
 CREATE TABLE project_groups (
@@ -745,7 +745,7 @@ CREATE INDEX idx_project_groups_order ON project_groups(order_key, id);
 
 CREATE TABLE projects (
   id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
-  group_id TEXT NOT NULL REFERENCES project_groups(id) ON DELETE CASCADE,
+  group_id TEXT REFERENCES project_groups(id) ON DELETE SET NULL,
   name TEXT NOT NULL CHECK (trim(name) <> ''),
   icon TEXT NOT NULL DEFAULT 'folder' CHECK (trim(icon) <> ''),
   color INTEGER CHECK (color IS NULL OR (color >= 0 AND color < 32)),
@@ -1201,13 +1201,31 @@ CREATE TABLE project_working_folders (
 CREATE INDEX idx_project_working_folders_project_active
 ON project_working_folders(project_id, archived_at, sort_order, display_name COLLATE NOCASE, id);
 
+-- Where this vault keeps each managed project folder. A managed working folder row replicates the
+-- folder name its creating device chose; every vault copy claims its own folder for the row here,
+-- so two projects that concurrent devices gave the same name never share a folder. The table is
+-- not replicated: it travels with the vault database beside the `projects/` folders it names, in
+-- snapshot copies and backups alike. `folder_key` is the case-folded name, since Windows and macOS
+-- file systems ignore case.
+CREATE TABLE project_managed_folder_locations (
+  working_folder_id TEXT PRIMARY KEY NOT NULL
+      REFERENCES project_working_folders(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  folder_name TEXT NOT NULL CHECK (
+      length(CAST(folder_name AS BLOB)) BETWEEN 1 AND 240
+      AND instr(folder_name, '/') = 0
+      AND instr(folder_name, char(92)) = 0
+      AND folder_name NOT LIKE '.%'
+  ),
+  folder_key TEXT NOT NULL UNIQUE CHECK (length(CAST(folder_key AS BLOB)) BETWEEN 1 AND 960)
+) STRICT;
+
 -- Projects seed rows.
 
 INSERT INTO project_groups (id, name, icon, color, collapsed, hidden_at, archived_at, created_at, updated_at, order_key, icon_byte_size) VALUES
   ('group-routine', 'Routine', 'lucide:repeat', 0, 0, NULL, NULL, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'c000', NULL);
 
 INSERT INTO projects (id, group_id, name, icon, color, status, default_event_duration_minutes, default_pomodoro_mode, default_pomodoro_preset_key, default_pomodoro_focus_minutes, default_pomodoro_short_break_minutes, default_pomodoro_long_break_minutes, default_pomodoro_long_break_after_focus_count, focus_playlist_id, break_playlist_id, work_environment_id, blocker_ruleset_id, created_at, updated_at, default_event_name, default_idle_settings_source, default_idle_pause_enabled, default_idle_threshold_minutes, default_event_time_mode, notes_default_open_mode, notes_history_retention_days, order_key, icon_byte_size) VALUES
-  ('project-routine-learning', 'group-routine', 'Learning', 'lucide:graduation-cap', 8, 'active', NULL, 'preset', 'adaptive', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 'global', 1, 3, 'timed', NULL, NULL, 'c000', NULL),
+  ('project-routine-learning', 'group-routine', 'Learning', 'lucide:graduation-cap', 8, 'active', NULL, 'preset', 'balanced', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 'global', 1, 3, 'timed', NULL, NULL, 'c000', NULL),
   ('project-routine-reading', 'group-routine', 'Reading', 'lucide:book-open', 25, 'active', NULL, 'none', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 'global', 1, 3, 'timed', NULL, NULL, 'c001', NULL),
   ('project-routine-exercise', 'group-routine', 'Exercise', 'lucide:sport-shoe', 0, 'active', NULL, 'none', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 'global', 1, 3, 'timed', NULL, NULL, 'c002', NULL),
   ('project-routine-hygiene', 'group-routine', 'Hygiene', 'lucide:bath', 15, 'active', NULL, 'none', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 'global', 1, 3, 'timed', NULL, NULL, 'c003', NULL),
@@ -1423,18 +1441,32 @@ INSERT INTO project_views (id, project_id, view_type, name, created_at, updated_
   ('view-project-routine-social-chat', 'project-routine-social', 'chat', NULL, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'c003');
 
 INSERT INTO project_working_folders (id, project_id, display_name, kind, managed_relative_path, repository_kind, repository_identity, sort_order, created_at, updated_at, archived_at, revision) VALUES
-  ('working-folder-routine-learning', 'project-routine-learning', 'Learning', 'managed', 'projects/project-routine-learning', 'none', NULL, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 1),
-  ('working-folder-routine-reading', 'project-routine-reading', 'Reading', 'managed', 'projects/project-routine-reading', 'none', NULL, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 1),
-  ('working-folder-routine-exercise', 'project-routine-exercise', 'Exercise', 'managed', 'projects/project-routine-exercise', 'none', NULL, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 1),
-  ('working-folder-routine-hygiene', 'project-routine-hygiene', 'Hygiene', 'managed', 'projects/project-routine-hygiene', 'none', NULL, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 1),
-  ('working-folder-routine-eat', 'project-routine-eat', 'Eating', 'managed', 'projects/project-routine-eat', 'none', NULL, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 1),
-  ('working-folder-routine-commute', 'project-routine-commute', 'Commute', 'managed', 'projects/project-routine-commute', 'none', NULL, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 1),
-  ('working-folder-routine-social', 'project-routine-social', 'Social', 'managed', 'projects/project-routine-social', 'none', NULL, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 1),
-  ('working-folder-routine-chores', 'project-routine-chores', 'Chores', 'managed', 'projects/project-routine-chores', 'none', NULL, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 1),
-  ('working-folder-routine-leisure', 'project-routine-leisure', 'Leisure', 'managed', 'projects/project-routine-leisure', 'none', NULL, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 1),
-  ('working-folder-routine-meditate', 'project-routine-meditate', 'Meditate', 'managed', 'projects/project-routine-meditate', 'none', NULL, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 1),
-  ('working-folder-routine-health', 'project-routine-health', 'Health', 'managed', 'projects/project-routine-health', 'none', NULL, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 1),
-  ('working-folder-routine-sleep', 'project-routine-sleep', 'Sleep', 'managed', 'projects/project-routine-sleep', 'none', NULL, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 1);
+  ('working-folder-routine-learning', 'project-routine-learning', 'Learning', 'managed', 'projects/Learning', 'none', NULL, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 1),
+  ('working-folder-routine-reading', 'project-routine-reading', 'Reading', 'managed', 'projects/Reading', 'none', NULL, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 1),
+  ('working-folder-routine-exercise', 'project-routine-exercise', 'Exercise', 'managed', 'projects/Exercise', 'none', NULL, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 1),
+  ('working-folder-routine-hygiene', 'project-routine-hygiene', 'Hygiene', 'managed', 'projects/Hygiene', 'none', NULL, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 1),
+  ('working-folder-routine-eat', 'project-routine-eat', 'Eating', 'managed', 'projects/Eating', 'none', NULL, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 1),
+  ('working-folder-routine-commute', 'project-routine-commute', 'Commute', 'managed', 'projects/Commute', 'none', NULL, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 1),
+  ('working-folder-routine-social', 'project-routine-social', 'Social', 'managed', 'projects/Social', 'none', NULL, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 1),
+  ('working-folder-routine-chores', 'project-routine-chores', 'Chores', 'managed', 'projects/Chores', 'none', NULL, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 1),
+  ('working-folder-routine-leisure', 'project-routine-leisure', 'Leisure', 'managed', 'projects/Leisure', 'none', NULL, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 1),
+  ('working-folder-routine-meditate', 'project-routine-meditate', 'Meditate', 'managed', 'projects/Meditate', 'none', NULL, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 1),
+  ('working-folder-routine-health', 'project-routine-health', 'Health', 'managed', 'projects/Health', 'none', NULL, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 1),
+  ('working-folder-routine-sleep', 'project-routine-sleep', 'Sleep', 'managed', 'projects/Sleep', 'none', NULL, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL, 1);
+
+INSERT INTO project_managed_folder_locations (working_folder_id, folder_name, folder_key) VALUES
+  ('working-folder-routine-learning', 'Learning', 'learning'),
+  ('working-folder-routine-reading', 'Reading', 'reading'),
+  ('working-folder-routine-exercise', 'Exercise', 'exercise'),
+  ('working-folder-routine-hygiene', 'Hygiene', 'hygiene'),
+  ('working-folder-routine-eat', 'Eating', 'eating'),
+  ('working-folder-routine-commute', 'Commute', 'commute'),
+  ('working-folder-routine-social', 'Social', 'social'),
+  ('working-folder-routine-chores', 'Chores', 'chores'),
+  ('working-folder-routine-leisure', 'Leisure', 'leisure'),
+  ('working-folder-routine-meditate', 'Meditate', 'meditate'),
+  ('working-folder-routine-health', 'Health', 'health'),
+  ('working-folder-routine-sleep', 'Sleep', 'sleep');
 
 -- Projects triggers.
 
@@ -6353,24 +6385,6 @@ BEGIN
         mask = mask | excluded.mask, created = 1, deleted = 0;
 END;
 
-CREATE TRIGGER pomodoro_segments_single_active_insert
-BEFORE INSERT ON pomodoro_segments
-WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
-    AND NEW.status = 'active'
-    AND EXISTS (SELECT 1 FROM pomodoro_segments WHERE status = 'active')
-BEGIN
-    SELECT RAISE(ABORT, 'Focus keeps one active segment');
-END;
-
-CREATE TRIGGER pomodoro_segments_single_active_update
-BEFORE UPDATE OF status ON pomodoro_segments
-WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
-    AND NEW.status = 'active'
-    AND EXISTS (SELECT 1 FROM pomodoro_segments WHERE status = 'active' AND id IS NOT NEW.id)
-BEGIN
-    SELECT RAISE(ABORT, 'Focus keeps one active segment');
-END;
-
 CREATE TRIGGER sync_values_pomodoro_segments_insert
 BEFORE INSERT ON pomodoro_segments
 WHEN ((typeof(NEW.id) = 'text' AND instr(CAST(NEW.id AS BLOB), x'00') = 0 AND trim(NEW.id) <> '' AND length(CAST(NEW.id AS BLOB)) <= 128)
@@ -6811,6 +6825,32 @@ BEGIN
     SELECT 224, OLD.run_id, 16, 0, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER)
     WHERE EXISTS (SELECT 1 FROM pomodoro_runs AS sync_owner WHERE sync_owner.id = OLD.run_id AND EXISTS (SELECT 1 FROM pomodoro_runs AS sync_publisher WHERE sync_publisher.id = sync_owner.id AND (ended_at IS NOT NULL)))
     ON CONFLICT (table_id, row_key) DO UPDATE SET mask = mask | excluded.mask;
+END;
+
+CREATE TRIGGER pomodoro_segments_single_active_insert
+BEFORE INSERT ON pomodoro_segments
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+    AND NEW.status = 'active'
+    AND EXISTS (
+        SELECT 1 FROM pomodoro_segments AS s
+        JOIN pomodoro_runs AS r ON r.id = s.run_id
+        WHERE s.status = 'active' AND r.ended_at IS NULL
+    )
+BEGIN
+    SELECT RAISE(ABORT, 'Focus keeps one active segment');
+END;
+
+CREATE TRIGGER pomodoro_segments_single_active_update
+BEFORE UPDATE OF status ON pomodoro_segments
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+    AND NEW.status = 'active'
+    AND EXISTS (
+        SELECT 1 FROM pomodoro_segments AS s
+        JOIN pomodoro_runs AS r ON r.id = s.run_id
+        WHERE s.status = 'active' AND r.ended_at IS NULL AND s.id IS NOT NEW.id
+    )
+BEGIN
+    SELECT RAISE(ABORT, 'Focus keeps one active segment');
 END;
 
 -- 7. Music: Music library, playlists, review, soundscapes, session state, and search.
@@ -13457,6 +13497,12 @@ CREATE TABLE chat_teammate_policy_revisions (
   created_at TEXT NOT NULL CHECK (length(created_at) >= 20),
   safety_mode TEXT NOT NULL DEFAULT 'ask_for_approval' CHECK (
       safety_mode IN ('ask_for_approval', 'approve_for_me', 'full_access', 'custom')
+  ),
+  -- The default token limit a new assignment of the teammate starts with; null sets none.
+  default_assignment_token_limit INTEGER
+  CHECK (
+      default_assignment_token_limit IS NULL
+      OR default_assignment_token_limit BETWEEN 1000 AND 1000000000000
   )
 ) STRICT;
 CREATE INDEX idx_chat_teammate_policy_revisions_teammate
@@ -13517,7 +13563,67 @@ CREATE TABLE chat_work_assignments (
   revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
   settled_at TEXT CHECK (settled_at IS NULL OR length(settled_at) >= 20),
   created_at TEXT NOT NULL CHECK (length(created_at) >= 20),
-  updated_at TEXT NOT NULL CHECK (length(updated_at) >= 20)
+  updated_at TEXT NOT NULL CHECK (length(updated_at) >= 20),
+  -- The outcome of a review of ready-for-review work, beside the completion it judges. The
+  -- reviewer has no foreign key, since a participant row may arrive through sync after the
+  -- review, and takes the participant id bounds: at most 128 bytes and no control characters.
+  review_outcome TEXT CHECK (
+      review_outcome IS NULL OR review_outcome IN ('accepted', 'changes_requested')
+  ),
+  reviewed_at TEXT CHECK (
+      reviewed_at IS NULL OR length(reviewed_at) >= 20
+  ),
+  reviewed_by_participant_id TEXT CHECK (
+      reviewed_by_participant_id IS NULL OR (
+          length(CAST(reviewed_by_participant_id AS BLOB)) BETWEEN 1 AND 128
+          AND instr(CAST(reviewed_by_participant_id AS BLOB), x'00') = 0
+          AND reviewed_by_participant_id NOT GLOB
+              '*[' || char(1) || '-' || char(31) || char(127) || '-' || char(159) || ']*'
+      )
+  ),
+  -- The model a person asked for with the assignment it starts: its selection schema version and
+  -- data together, or neither when the assignment runs with its teammate's model.
+  override_model_selection_schema_version INTEGER CHECK (
+      override_model_selection_schema_version IS NULL OR override_model_selection_schema_version >= 1
+  ),
+  override_model_selection_data TEXT CHECK (
+      override_model_selection_data IS NULL OR (
+          length(override_model_selection_data) <= 16384
+          AND json_valid(override_model_selection_data)
+          AND json_type(override_model_selection_data) = 'object'
+      )
+  ),
+  -- Delegated work names its parent, its depth below the root (at most 2), the objective and
+  -- expected result the parent wrote, and the folder ceiling it may never exceed, as a JSON
+  -- array of working folder ids with a capability. All five are null with depth 0 on an
+  -- assignment that nobody delegated. They are fixed at creation and the child is deleted with
+  -- its parent.
+  parent_assignment_id TEXT
+      REFERENCES chat_work_assignments(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  delegation_depth INTEGER NOT NULL DEFAULT 0 CHECK (
+      delegation_depth BETWEEN 0 AND 2
+  ),
+  delegation_objective TEXT CHECK (
+      delegation_objective IS NULL OR length(delegation_objective) <= 4000
+  ),
+  delegation_expected_result TEXT CHECK (
+      delegation_expected_result IS NULL OR length(delegation_expected_result) <= 2000
+  ),
+  delegation_folder_ceiling TEXT CHECK (
+      delegation_folder_ceiling IS NULL OR (
+          json_valid(delegation_folder_ceiling) AND json_type(delegation_folder_ceiling) = 'array'
+      )
+  ),
+  CHECK (
+      (review_outcome IS NULL AND reviewed_at IS NULL AND reviewed_by_participant_id IS NULL)
+      OR (
+          review_outcome IS NOT NULL AND reviewed_at IS NOT NULL
+          AND reviewed_by_participant_id IS NOT NULL AND state = 'completed'
+      )
+  ),
+  CHECK (
+      (override_model_selection_schema_version IS NULL) = (override_model_selection_data IS NULL)
+  )
 ) STRICT;
 CREATE INDEX idx_chat_work_assignments_thread
 ON chat_work_assignments(reply_thread_id, state, created_at, id);
@@ -13525,6 +13631,19 @@ CREATE INDEX idx_chat_work_assignments_teammate
 ON chat_work_assignments(teammate_id, state, updated_at DESC, id);
 CREATE INDEX idx_chat_work_assignments_trigger
 ON chat_work_assignments(triggering_message_item_id);
+CREATE INDEX idx_chat_work_assignments_parent
+ON chat_work_assignments(parent_assignment_id)
+WHERE parent_assignment_id IS NOT NULL;
+-- The review queue and the channel attention aggregate read open assignments by state across
+-- every reply thread, newest first, and skip assignments a later one continues. The partial
+-- index covers the four states that wait for the person, and the successor index answers the
+-- probe for a later assignment naming this one.
+CREATE INDEX idx_chat_work_assignments_attention
+ON chat_work_assignments(state, updated_at DESC, id)
+WHERE state IN ('waiting_for_answer', 'waiting_for_approval', 'ready_for_review', 'failed');
+CREATE INDEX idx_chat_work_assignments_previous
+ON chat_work_assignments(previous_assignment_id)
+WHERE previous_assignment_id IS NOT NULL;
 
 CREATE TABLE chat_assignment_authorization_revisions (
   id TEXT PRIMARY KEY NOT NULL CHECK (length(id) BETWEEN 1 AND 1024),
@@ -13764,6 +13883,7 @@ CREATE TABLE chat_turns (
       CHECK (invalidated_at IS NULL OR length(invalidated_at) >= 20),
   invalidation_reason TEXT
       CHECK (invalidation_reason IS NULL OR length(invalidation_reason) BETWEEN 1 AND 1000),
+  change_sequence INTEGER NOT NULL DEFAULT 0 CHECK (change_sequence >= 0),
   UNIQUE (thread_id, ordinal),
   CHECK (
       (error_schema_version IS NULL AND error_data IS NULL)
@@ -13776,6 +13896,7 @@ CREATE TABLE chat_turns (
 ) STRICT;
 CREATE INDEX idx_chat_turns_thread_ordinal
 ON chat_turns(thread_id, ordinal DESC, id);
+CREATE INDEX idx_chat_turns_thread_change ON chat_turns(thread_id, change_sequence);
 
 CREATE TABLE chat_activities (
   id TEXT PRIMARY KEY NOT NULL CHECK (length(id) BETWEEN 1 AND 1024),
@@ -13798,12 +13919,14 @@ CREATE TABLE chat_activities (
       output_artifact_reference IS NULL OR length(output_artifact_reference) BETWEEN 1 AND 1024
   ),
   created_at TEXT NOT NULL CHECK (length(created_at) >= 20),
-  updated_at TEXT NOT NULL CHECK (length(updated_at) >= 20)
+  updated_at TEXT NOT NULL CHECK (length(updated_at) >= 20),
+  change_sequence INTEGER NOT NULL DEFAULT 0 CHECK (change_sequence >= 0)
 ) STRICT;
 CREATE INDEX idx_chat_activities_thread_sequence
 ON chat_activities(thread_id, sequence_anchor, id);
 CREATE INDEX idx_chat_activities_turn
 ON chat_activities(turn_id, sequence_anchor, id);
+CREATE INDEX idx_chat_activities_thread_change ON chat_activities(thread_id, change_sequence);
 
 CREATE TABLE chat_agent_runs (
   id TEXT PRIMARY KEY NOT NULL CHECK (length(id) BETWEEN 1 AND 1024),
@@ -13833,6 +13956,27 @@ CREATE TABLE chat_agent_runs (
   settled_at TEXT CHECK (settled_at IS NULL OR length(settled_at) >= 20),
   created_at TEXT NOT NULL CHECK (length(created_at) >= 20),
   updated_at TEXT NOT NULL CHECK (length(updated_at) >= 20),
+  -- Why the run started and what context it delivered, so a later run in the same reply thread
+  -- can decide whether to continue the native session and which sources it still has to send.
+  attempt_reason TEXT NOT NULL DEFAULT 'fresh' CHECK (
+      attempt_reason IN ('fresh', 'continuation', 'handoff', 'retry')
+  ),
+  handoff_reason TEXT CHECK (
+      handoff_reason IS NULL
+      OR handoff_reason IN ('key_changed', 'authority_revoked', 'native_session_lost')
+  ),
+  instructions_sha256 TEXT CHECK (
+      instructions_sha256 IS NULL OR length(instructions_sha256) = 64
+  ),
+  model_selection_sha256 TEXT CHECK (
+      model_selection_sha256 IS NULL OR length(model_selection_sha256) = 64
+  ),
+  context_delivery TEXT NOT NULL DEFAULT 'full' CHECK (
+      context_delivery IN ('full', 'delta')
+  ),
+  delivered_context_bytes INTEGER NOT NULL DEFAULT 0 CHECK (
+      delivered_context_bytes BETWEEN 0 AND 131072
+  ),
   FOREIGN KEY (working_folder_id, project_id)
       REFERENCES project_working_folders(id, project_id)
       ON UPDATE CASCADE ON DELETE CASCADE,
@@ -13850,6 +13994,20 @@ CREATE INDEX idx_chat_agent_runs_authorization
 ON chat_agent_runs(authorization_revision_id, state, id);
 CREATE INDEX idx_chat_agent_runs_provider_thread
 ON chat_agent_runs(provider_thread_id, assignment_id);
+
+-- Context sources a run delivered to its native session, keyed by content so an edited source
+-- counts as undelivered. Rows exist only for runs whose launch reached the provider.
+CREATE TABLE chat_agent_run_delivered_sources (
+  run_id TEXT NOT NULL REFERENCES chat_agent_runs(id)
+      ON UPDATE CASCADE ON DELETE CASCADE,
+  source_id TEXT NOT NULL CHECK (length(source_id) BETWEEN 1 AND 1024),
+  content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+  delivery_kind TEXT NOT NULL CHECK (
+      delivery_kind IN ('package', 'pointer', 'steer', 'queued_continuation', 'removal')
+  ),
+  delivered_at TEXT NOT NULL CHECK (length(delivered_at) >= 20),
+  PRIMARY KEY (run_id, source_id, content_sha256)
+) STRICT, WITHOUT ROWID;
 
 CREATE TABLE chat_communication_message_revisions (
   id TEXT PRIMARY KEY NOT NULL CHECK (length(id) BETWEEN 1 AND 1024),
@@ -13942,6 +14100,9 @@ CREATE TABLE chat_assignment_context_packages (
   excluded_channel_message_count INTEGER NOT NULL DEFAULT 0 CHECK (excluded_channel_message_count >= 0),
   sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
   created_at TEXT NOT NULL CHECK (length(created_at) >= 20),
+  -- The live channel notes of the channel that did not fit the notes budget.
+  excluded_channel_note_count INTEGER NOT NULL DEFAULT 0
+      CHECK (excluded_channel_note_count >= 0),
   UNIQUE (assignment_id, revision)
 ) STRICT;
 
@@ -13949,7 +14110,10 @@ CREATE TABLE chat_assignment_context_sources (
   context_package_id TEXT NOT NULL REFERENCES chat_assignment_context_packages(id)
       ON UPDATE CASCADE ON DELETE CASCADE,
   source_kind TEXT NOT NULL CHECK (
-      source_kind IN ('trigger', 'thread_root', 'thread_reply', 'channel_message', 'attachment', 'resource')
+      source_kind IN (
+          'trigger', 'thread_root', 'thread_reply', 'channel_message', 'attachment', 'resource',
+          'channel_note'
+      )
   ),
   source_id TEXT NOT NULL CHECK (length(source_id) BETWEEN 1 AND 1024),
   source_revision INTEGER NOT NULL DEFAULT 1 CHECK (source_revision >= 1),
@@ -13972,10 +14136,28 @@ CREATE TABLE chat_assignment_dispatch_jobs (
   claim_token TEXT CHECK (claim_token IS NULL OR length(claim_token) BETWEEN 1 AND 1024),
   last_error TEXT CHECK (last_error IS NULL OR length(last_error) <= 4000),
   created_at TEXT NOT NULL CHECK (length(created_at) >= 20),
-  updated_at TEXT NOT NULL CHECK (length(updated_at) >= 20)
+  updated_at TEXT NOT NULL CHECK (length(updated_at) >= 20),
+  -- The acceptance digest of what the job's post or Start agreed to run. A job without one holds
+  -- no consent and returns its assignment to Start here.
+  consented_digest TEXT CHECK (
+      consented_digest IS NULL OR length(consented_digest) = 64
+  )
 ) STRICT;
 CREATE INDEX idx_chat_assignment_dispatch_jobs_ready
 ON chat_assignment_dispatch_jobs(state, available_at, created_at, id);
+
+-- The execution target a post chose for work it created on this device without queueing its
+-- dispatch, as when no one here consented to the post. The dispatch that Start here or a
+-- recorded acceptance queues later freezes the context on this target, then drops the row.
+CREATE TABLE chat_assignment_requested_targets (
+  assignment_id TEXT PRIMARY KEY NOT NULL REFERENCES chat_work_assignments(id)
+      ON UPDATE CASCADE ON DELETE CASCADE,
+  target_data TEXT NOT NULL CHECK (
+      length(target_data) <= 4096
+      AND json_valid(target_data) AND json_type(target_data) = 'object'
+  ),
+  created_at TEXT NOT NULL CHECK (length(created_at) >= 20)
+) STRICT;
 
 CREATE TABLE chat_drafts (
   id TEXT PRIMARY KEY NOT NULL CHECK (length(id) BETWEEN 1 AND 1024),
@@ -14029,12 +14211,40 @@ CREATE TABLE chat_messages (
       json_valid(content_metadata_data) AND json_type(content_metadata_data) = 'object'
   ),
   created_at TEXT NOT NULL CHECK (length(created_at) >= 20),
-  updated_at TEXT NOT NULL CHECK (length(updated_at) >= 20)
+  updated_at TEXT NOT NULL CHECK (length(updated_at) >= 20),
+  change_sequence INTEGER NOT NULL DEFAULT 0 CHECK (change_sequence >= 0)
 ) STRICT;
 CREATE INDEX idx_chat_messages_thread_sequence
 ON chat_messages(thread_id, sequence_anchor, id);
 CREATE INDEX idx_chat_messages_turn
 ON chat_messages(turn_id, sequence_anchor, id);
+CREATE INDEX idx_chat_messages_thread_change ON chat_messages(thread_id, change_sequence);
+
+-- Device-local change clock per provider thread, so the timeline can reread only the rows that
+-- changed. Every insert, update, and delete of a timeline row advances the thread's clock and
+-- stamps the row (or a removal record) with the new value. Triggers cover every writer, including
+-- checkpoint restore invalidation and projection rebuilds, which write rows without an event.
+-- Writers that already know the next value set change_sequence themselves, and the guards skip
+-- the trigger's second write of that row. The clock row is created with a NOT EXISTS guard, not
+-- INSERT OR IGNORE, because an upsert that fires a trigger replaces the trigger's conflict clause.
+-- The triggers do not run while sync applies remote changes; sync never writes these device-local
+-- tables.
+CREATE TABLE chat_timeline_change_clocks (
+  thread_id TEXT PRIMARY KEY NOT NULL REFERENCES chat_threads(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  last_change INTEGER NOT NULL CHECK (last_change >= 0),
+  removals_pruned_through INTEGER NOT NULL DEFAULT 0 CHECK (removals_pruned_through >= 0)
+) STRICT;
+
+CREATE TABLE chat_timeline_removals (
+  thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  change_sequence INTEGER NOT NULL CHECK (change_sequence >= 1),
+  item_id TEXT NOT NULL CHECK (length(item_id) BETWEEN 1 AND 1024),
+  removed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      CHECK (length(removed_at) >= 20),
+  PRIMARY KEY (thread_id, change_sequence)
+) STRICT;
+
+CREATE INDEX idx_chat_timeline_removals_removed_at ON chat_timeline_removals(removed_at);
 
 CREATE TABLE chat_attachments (
   id TEXT PRIMARY KEY NOT NULL CHECK (length(id) BETWEEN 1 AND 1024),
@@ -14401,7 +14611,12 @@ CREATE TABLE chat_host_tool_invocations (
   ),
   response_bytes INTEGER NOT NULL DEFAULT 0 CHECK (response_bytes >= 0),
   truncated INTEGER NOT NULL DEFAULT 0 CHECK (truncated IN (0, 1)),
-  created_at TEXT NOT NULL CHECK (length(created_at) >= 20)
+  created_at TEXT NOT NULL CHECK (length(created_at) >= 20),
+  -- The class of the internal host-tool call, so call limits are counted per class and a
+  -- teammate that spent its reads can still ask or report.
+  tool_class TEXT NOT NULL DEFAULT 'read' CHECK (
+      tool_class IN ('read', 'edit', 'destructive', 'delegate', 'ask', 'report', 'secret', 'schedule')
+  )
 ) STRICT;
 CREATE INDEX idx_chat_host_tool_invocations_authorization
 ON chat_host_tool_invocations(authorization_revision_id, created_at, id);
@@ -14420,7 +14635,10 @@ CREATE TABLE chat_host_tool_returned_message_revisions (
 CREATE TABLE chat_organizational_command_receipts (
   client_command_id TEXT PRIMARY KEY NOT NULL CHECK (length(client_command_id) BETWEEN 1 AND 1024),
   command_kind TEXT NOT NULL CHECK (
-      command_kind IN ('post_message', 'publish_teammate', 'update_membership', 'assignment_action')
+      command_kind IN (
+          'post_message', 'publish_teammate', 'update_membership', 'assignment_action',
+          'channel_note'
+      )
   ),
   state TEXT NOT NULL CHECK (state IN ('accepted', 'completed', 'failed')),
   result_schema_version INTEGER CHECK (result_schema_version IS NULL OR result_schema_version >= 1),
@@ -14433,7 +14651,22 @@ CREATE TABLE chat_organizational_command_receipts (
 CREATE TABLE chat_participant_reference_targets (
   reference_id TEXT PRIMARY KEY NOT NULL REFERENCES chat_message_references(id)
       ON UPDATE CASCADE ON DELETE CASCADE,
-  participant_id TEXT NOT NULL CHECK (length(participant_id) BETWEEN 1 AND 1024)
+  participant_id TEXT NOT NULL CHECK (length(participant_id) BETWEEN 1 AND 1024),
+  -- The mention of the teammate a post invokes keeps the override the post asked for, so a
+  -- Start of a mention that recorded no work, on a device other than the poster, runs with it.
+  override_model_selection_schema_version INTEGER CHECK (
+      override_model_selection_schema_version IS NULL OR override_model_selection_schema_version >= 1
+  ),
+  override_model_selection_data TEXT CHECK (
+      override_model_selection_data IS NULL OR (
+          length(override_model_selection_data) <= 16384
+          AND json_valid(override_model_selection_data)
+          AND json_type(override_model_selection_data) = 'object'
+      )
+  ),
+  CHECK (
+      (override_model_selection_schema_version IS NULL) = (override_model_selection_data IS NULL)
+  )
 ) STRICT;
 
 CREATE TABLE chat_pending_requests (
@@ -14482,10 +14715,12 @@ CREATE TABLE chat_plans (
   state TEXT NOT NULL CHECK (state IN ('proposed', 'accepted', 'dismissed', 'implemented')),
   implementation_turn_id TEXT,
   created_at TEXT NOT NULL CHECK (length(created_at) >= 20),
-  updated_at TEXT NOT NULL CHECK (length(updated_at) >= 20)
+  updated_at TEXT NOT NULL CHECK (length(updated_at) >= 20),
+  change_sequence INTEGER NOT NULL DEFAULT 0 CHECK (change_sequence >= 0)
 ) STRICT;
 CREATE INDEX idx_chat_plans_thread_sequence
 ON chat_plans(thread_id, sequence_anchor, id);
+CREATE INDEX idx_chat_plans_thread_change ON chat_plans(thread_id, change_sequence);
 
 CREATE TABLE chat_preview_tool_invocations (
   id TEXT PRIMARY KEY NOT NULL CHECK (length(id) BETWEEN 1 AND 1024),
@@ -14731,6 +14966,10 @@ CREATE TABLE chat_scheduled_message_dispatch (
   claimed_at TEXT CHECK (claimed_at IS NULL OR length(claimed_at) >= 20),
   claim_token TEXT CHECK (claim_token IS NULL OR length(claim_token) BETWEEN 1 AND 1024),
   updated_at TEXT NOT NULL CHECK (length(updated_at) >= 20),
+  -- Skipped occurrences of a repeating message, and the end of a quiet period an occurrence
+  -- waits for.
+  skipped_occurrences INTEGER NOT NULL DEFAULT 0 CHECK (skipped_occurrences >= 0),
+  deferred_until TEXT CHECK (deferred_until IS NULL OR length(deferred_until) >= 20),
   CHECK ((claimed_at IS NULL) = (claim_token IS NULL))
 ) STRICT;
 CREATE INDEX idx_chat_scheduled_message_dispatch_ready
@@ -15013,12 +15252,32 @@ CREATE TABLE chat_work_assignment_inputs (
       delivery_state IN ('pending', 'delivered', 'failed', 'ignored')
   ),
   created_at TEXT NOT NULL CHECK (length(created_at) >= 20),
-  delivered_at TEXT CHECK (delivered_at IS NULL OR length(delivered_at) >= 20)
+  delivered_at TEXT CHECK (delivered_at IS NULL OR length(delivered_at) >= 20),
+  -- The revision of the input message that reached the run. It has no foreign key, like the
+  -- message's current revision, since a revision row may arrive through sync after the delivery
+  -- that names it.
+  delivered_revision_id TEXT CHECK (
+      delivered_revision_id IS NULL OR length(delivered_revision_id) BETWEEN 1 AND 1024
+  )
 ) STRICT;
 CREATE INDEX idx_chat_work_assignment_inputs_assignment
 ON chat_work_assignment_inputs(assignment_id, ordinal, id);
 CREATE INDEX idx_chat_work_assignment_inputs_message
 ON chat_work_assignment_inputs(message_item_id);
+
+-- The execution target a post chose when it became a pending reply to work awaiting review on
+-- this device without settling it, as when no one here consented to the post. The follow-up
+-- that Start here or restart recovery creates from that reply runs on this target, and the
+-- row goes once the reply leaves the reviewed work.
+CREATE TABLE chat_assignment_input_requested_targets (
+  input_id TEXT PRIMARY KEY NOT NULL REFERENCES chat_work_assignment_inputs(id)
+      ON UPDATE CASCADE ON DELETE CASCADE,
+  target_data TEXT NOT NULL CHECK (
+      length(target_data) <= 4096
+      AND json_valid(target_data) AND json_type(target_data) = 'object'
+  ),
+  created_at TEXT NOT NULL CHECK (length(created_at) >= 20)
+) STRICT;
 
 CREATE TABLE chat_work_semantic_updates (
   item_id TEXT PRIMARY KEY NOT NULL REFERENCES chat_conversation_items(id)
@@ -15026,7 +15285,10 @@ CREATE TABLE chat_work_semantic_updates (
   assignment_id TEXT NOT NULL REFERENCES chat_work_assignments(id)
       ON UPDATE CASCADE ON DELETE CASCADE,
   update_kind TEXT NOT NULL CHECK (
-      update_kind IN ('plan', 'replan', 'question', 'approval', 'failure', 'result', 'review')
+      update_kind IN (
+          'plan', 'replan', 'question', 'approval', 'failure', 'result', 'review',
+          'delegation', 'schedule_proposal', 'note_proposal'
+      )
   ),
   payload_schema_version INTEGER NOT NULL DEFAULT 1 CHECK (payload_schema_version >= 1),
   payload_data TEXT NOT NULL CHECK (json_valid(payload_data) AND json_type(payload_data) = 'object'),
@@ -15085,6 +15347,179 @@ CREATE TABLE chat_worktrees (
 ) STRICT;
 CREATE INDEX idx_chat_worktrees_cleanup
 ON chat_worktrees(cleanup_state, updated_at, execution_environment_id);
+
+-- Secret requests a running teammate opens so a person can hand it a value through a private
+-- file. The row never holds the value. Runs are device-local, so the requests of a run stay on
+-- the device that executes it.
+CREATE TABLE chat_secret_requests (
+  id TEXT PRIMARY KEY NOT NULL CHECK (length(id) BETWEEN 1 AND 128),
+  run_id TEXT NOT NULL REFERENCES chat_agent_runs(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  assignment_id TEXT NOT NULL REFERENCES chat_work_assignments(id)
+      ON UPDATE CASCADE ON DELETE CASCADE,
+  label TEXT NOT NULL CHECK (length(trim(label)) BETWEEN 1 AND 120),
+  purpose TEXT NOT NULL CHECK (length(trim(purpose)) BETWEEN 1 AND 500),
+  state TEXT NOT NULL CHECK (state IN ('pending', 'provided', 'declined', 'expired')),
+  created_at TEXT NOT NULL CHECK (length(created_at) >= 20),
+  expires_at TEXT NOT NULL CHECK (length(expires_at) >= 20),
+  resolved_at TEXT CHECK (resolved_at IS NULL OR length(resolved_at) >= 20)
+) STRICT;
+
+CREATE INDEX idx_chat_secret_requests_run
+  ON chat_secret_requests(run_id, state);
+
+CREATE INDEX idx_chat_secret_requests_assignment
+  ON chat_secret_requests(assignment_id);
+
+-- Repeating scheduled messages. A recurrence row holds the rule of one scheduled message and
+-- the progress its executing device advances after each occurrence; it replicates under an id
+-- derived from the scheduled message and is deleted with it.
+CREATE TABLE chat_scheduled_message_recurrences (
+  id TEXT PRIMARY KEY NOT NULL CHECK (length(id) BETWEEN 1 AND 128),
+  scheduled_message_id TEXT NOT NULL REFERENCES chat_scheduled_messages(id)
+      ON UPDATE CASCADE ON DELETE CASCADE,
+  rule_kind TEXT NOT NULL CHECK (rule_kind IN ('interval', 'fixed_time')),
+  interval_minutes INTEGER CHECK (
+      interval_minutes IS NULL OR interval_minutes BETWEEN 60 AND 43200
+  ),
+  local_minute INTEGER CHECK (local_minute IS NULL OR local_minute BETWEEN 0 AND 1439),
+  weekdays_mask INTEGER CHECK (weekdays_mask IS NULL OR weekdays_mask BETWEEN 1 AND 127),
+  time_zone TEXT NOT NULL CHECK (length(trim(time_zone)) BETWEEN 1 AND 255),
+  quiet_policy TEXT NOT NULL CHECK (quiet_policy IN ('defer', 'ignore')),
+  next_occurrence_at TEXT NOT NULL CHECK (length(next_occurrence_at) >= 20),
+  fired_count INTEGER NOT NULL DEFAULT 0 CHECK (fired_count >= 0),
+  created_at TEXT NOT NULL CHECK (length(created_at) >= 20),
+  updated_at TEXT NOT NULL CHECK (length(updated_at) >= 20),
+  CHECK ((rule_kind = 'interval') = (interval_minutes IS NOT NULL)),
+  CHECK ((rule_kind = 'fixed_time') = (local_minute IS NOT NULL AND weekdays_mask IS NOT NULL))
+) STRICT;
+CREATE INDEX idx_chat_scheduled_message_recurrences_message
+ON chat_scheduled_message_recurrences(scheduled_message_id);
+CREATE INDEX idx_chat_scheduled_message_recurrences_next
+ON chat_scheduled_message_recurrences(next_occurrence_at, scheduled_message_id);
+
+-- Channel notes: short facts and preferences people save for a channel's teammates. A note is
+-- written by a person or accepted by one from a teammate proposal; the local triggers refuse a
+-- note whose current wording names no person, and removing a person keeps their notes with a
+-- null editor. A deleted note keeps its row so a concurrent edit on another device stays deleted.
+CREATE TABLE chat_channel_notes (
+  id TEXT PRIMARY KEY NOT NULL CHECK (length(id) BETWEEN 1 AND 128),
+  channel_id TEXT NOT NULL REFERENCES chat_channels(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  source_item_id TEXT REFERENCES chat_conversation_items(id)
+      ON UPDATE CASCADE ON DELETE SET NULL,
+  proposed_by_participant_id TEXT REFERENCES chat_participants(id)
+      ON UPDATE CASCADE ON DELETE SET NULL,
+  body TEXT NOT NULL CHECK (length(trim(body)) BETWEEN 1 AND 1000),
+  edited_by_participant_id TEXT REFERENCES chat_participants(id)
+      ON UPDATE CASCADE ON DELETE SET NULL,
+  revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+  deleted_at TEXT CHECK (deleted_at IS NULL OR length(deleted_at) >= 20),
+  created_at TEXT NOT NULL CHECK (length(created_at) >= 20),
+  updated_at TEXT NOT NULL CHECK (length(updated_at) >= 20)
+) STRICT;
+CREATE INDEX idx_chat_channel_notes_channel
+ON chat_channel_notes(channel_id, deleted_at, updated_at);
+CREATE INDEX idx_chat_channel_notes_source_item
+ON chat_channel_notes(source_item_id);
+CREATE INDEX idx_chat_channel_notes_proposed_by
+ON chat_channel_notes(proposed_by_participant_id);
+CREATE INDEX idx_chat_channel_notes_edited_by
+ON chat_channel_notes(edited_by_participant_id);
+
+-- Usage of each agent run on the device that executes it. Token counts follow the provider
+-- usage convention (input excludes cache reads and writes, output includes reasoning), and
+-- counted tokens are input plus cache writes plus output. The thread columns hold the last
+-- thread totals a provider reported, so cumulative reports count only their increase. Working
+-- time accumulates while the run is working and never while it waits for a person.
+CREATE TABLE chat_agent_run_usage (
+  run_id TEXT PRIMARY KEY NOT NULL REFERENCES chat_agent_runs(id)
+      ON UPDATE CASCADE ON DELETE CASCADE,
+  input_tokens INTEGER NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
+  cached_input_tokens INTEGER NOT NULL DEFAULT 0 CHECK (cached_input_tokens >= 0),
+  cache_write_input_tokens INTEGER NOT NULL DEFAULT 0 CHECK (cache_write_input_tokens >= 0),
+  output_tokens INTEGER NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
+  counted_tokens INTEGER NOT NULL DEFAULT 0 CHECK (
+      counted_tokens >= 0
+      AND counted_tokens = input_tokens + cache_write_input_tokens + output_tokens
+  ),
+  cost_amount REAL CHECK (cost_amount IS NULL OR cost_amount >= 0),
+  cost_currency TEXT CHECK (cost_currency IS NULL OR length(cost_currency) BETWEEN 1 AND 16),
+  thread_input_tokens_last INTEGER CHECK (
+      thread_input_tokens_last IS NULL OR thread_input_tokens_last >= 0
+  ),
+  thread_cached_input_tokens_last INTEGER CHECK (
+      thread_cached_input_tokens_last IS NULL OR thread_cached_input_tokens_last >= 0
+  ),
+  thread_cache_write_input_tokens_last INTEGER CHECK (
+      thread_cache_write_input_tokens_last IS NULL OR thread_cache_write_input_tokens_last >= 0
+  ),
+  thread_output_tokens_last INTEGER CHECK (
+      thread_output_tokens_last IS NULL OR thread_output_tokens_last >= 0
+  ),
+  thread_cost_last REAL CHECK (thread_cost_last IS NULL OR thread_cost_last >= 0),
+  working_seconds INTEGER NOT NULL DEFAULT 0 CHECK (working_seconds >= 0),
+  working_since TEXT CHECK (working_since IS NULL OR length(working_since) >= 20),
+  scope_unknown_logged INTEGER NOT NULL DEFAULT 0 CHECK (scope_unknown_logged IN (0, 1)),
+  updated_at TEXT NOT NULL CHECK (length(updated_at) >= 20),
+  -- What this device already added to its daily summaries from each run, so a flush adds only the
+  -- usage since the last one and counts each run once.
+  summarized_counted_tokens INTEGER NOT NULL DEFAULT 0
+      CHECK (summarized_counted_tokens >= 0),
+  summarized_working_seconds INTEGER NOT NULL DEFAULT 0
+      CHECK (summarized_working_seconds >= 0),
+  summarized_run INTEGER NOT NULL DEFAULT 0 CHECK (summarized_run IN (0, 1)),
+  CHECK ((cost_amount IS NULL) = (cost_currency IS NULL)),
+  CHECK (
+      (thread_input_tokens_last IS NULL) = (thread_cached_input_tokens_last IS NULL)
+      AND (thread_input_tokens_last IS NULL) = (thread_cache_write_input_tokens_last IS NULL)
+      AND (thread_input_tokens_last IS NULL) = (thread_output_tokens_last IS NULL)
+  )
+) STRICT;
+
+-- Daily teammate usage: what one device's runs of one teammate used during one local day. Each
+-- device writes only its own rows, keyed by its owner tag, and the counts only grow, so devices
+-- converge on per-device rows that readers sum. Rows hold counts and dates only.
+CREATE TABLE chat_teammate_usage_daily (
+  id TEXT PRIMARY KEY NOT NULL CHECK (length(id) BETWEEN 1 AND 128),
+  device_id TEXT NOT NULL CHECK (length(trim(device_id)) BETWEEN 1 AND 160),
+  teammate_id TEXT NOT NULL REFERENCES chat_teammates(participant_id)
+      ON UPDATE CASCADE ON DELETE CASCADE,
+  local_date TEXT NOT NULL CHECK (
+      length(local_date) = 10
+      AND substr(local_date, 5, 1) = '-'
+      AND substr(local_date, 8, 1) = '-'
+  ),
+  counted_tokens INTEGER NOT NULL CHECK (counted_tokens BETWEEN 0 AND 1000000000000),
+  working_seconds INTEGER NOT NULL CHECK (working_seconds BETWEEN 0 AND 8640000),
+  run_count INTEGER NOT NULL CHECK (run_count BETWEEN 0 AND 100000)
+) STRICT;
+CREATE INDEX idx_chat_teammate_usage_daily_teammate_date
+ON chat_teammate_usage_daily(teammate_id, local_date);
+
+-- Assignment budgets: the token and working time limits a person set on one assignment, and what
+-- its executing device recorded as used. The id derives from the assignment, so devices that set
+-- a budget concurrently create one row. Limits are one register; used amounts only grow.
+CREATE TABLE chat_assignment_budgets (
+  id TEXT PRIMARY KEY NOT NULL CHECK (length(id) BETWEEN 1 AND 128),
+  assignment_id TEXT NOT NULL UNIQUE REFERENCES chat_work_assignments(id)
+      ON UPDATE CASCADE ON DELETE CASCADE,
+  token_limit INTEGER CHECK (
+      token_limit IS NULL OR token_limit BETWEEN 1000 AND 1000000000000
+  ),
+  working_seconds_limit INTEGER CHECK (
+      working_seconds_limit IS NULL OR working_seconds_limit BETWEEN 60 AND 8640000
+  ),
+  set_by_participant_id TEXT CHECK (
+      set_by_participant_id IS NULL OR length(set_by_participant_id) BETWEEN 1 AND 1024
+  ),
+  set_at TEXT NOT NULL CHECK (length(set_at) >= 20),
+  used_counted_tokens INTEGER NOT NULL DEFAULT 0 CHECK (
+      used_counted_tokens BETWEEN 0 AND 1000000000000
+  ),
+  used_working_seconds INTEGER NOT NULL DEFAULT 0 CHECK (
+      used_working_seconds BETWEEN 0 AND 8640000
+  ),
+  CHECK (token_limit IS NOT NULL OR working_seconds_limit IS NOT NULL)
+) STRICT;
 
 -- Chat seed rows.
 
@@ -15844,49 +16279,6 @@ BEGIN
     SELECT RAISE(ABORT, 'Teammate policy revisions are immutable');
 END;
 
-CREATE TRIGGER sync_values_chat_teammate_policy_revisions_insert
-BEFORE INSERT ON chat_teammate_policy_revisions
-WHEN ((typeof(NEW.id) = 'text' AND instr(CAST(NEW.id AS BLOB), x'00') = 0 AND trim(NEW.id) <> '' AND length(CAST(NEW.id AS BLOB)) <= 128)
-    AND (NEW.teammate_id IS NULL OR (typeof(NEW.teammate_id) = 'text' AND instr(CAST(NEW.teammate_id AS BLOB), x'00') = 0 AND trim(NEW.teammate_id) <> '' AND length(CAST(NEW.teammate_id AS BLOB)) <= 128))
-    AND (typeof(NEW.provider_instance_id) = 'text' AND instr(CAST(NEW.provider_instance_id AS BLOB), x'00') = 0 AND length(NEW.provider_instance_id) <= 1024 AND length(CAST(NEW.provider_instance_id AS BLOB)) <= 262144)
-    AND (typeof(NEW.model_selection_schema_version) = 'integer' AND NEW.model_selection_schema_version BETWEEN 1 AND 9223372036854775807)
-    AND (typeof(NEW.model_selection_data) = 'text' AND instr(CAST(NEW.model_selection_data AS BLOB), x'00') = 0 AND length(NEW.model_selection_data) <= 16384 AND length(CAST(NEW.model_selection_data AS BLOB)) <= 262144)
-    AND (NEW.effort IS NULL OR (typeof(NEW.effort) = 'text' AND instr(CAST(NEW.effort AS BLOB), x'00') = 0 AND length(NEW.effort) <= 32 AND length(CAST(NEW.effort AS BLOB)) <= 262144))
-    AND (NEW.speed IS NULL OR (typeof(NEW.speed) = 'text' AND instr(CAST(NEW.speed AS BLOB), x'00') = 0 AND length(NEW.speed) <= 32 AND length(CAST(NEW.speed AS BLOB)) <= 262144))
-    AND (typeof(NEW.provider_options_schema_version) = 'integer' AND NEW.provider_options_schema_version BETWEEN 1 AND 9223372036854775807)
-    AND (typeof(NEW.provider_options_data) = 'text' AND instr(CAST(NEW.provider_options_data AS BLOB), x'00') = 0 AND length(NEW.provider_options_data) <= 16384 AND length(CAST(NEW.provider_options_data AS BLOB)) <= 262144)
-    AND (typeof(NEW.interaction_mode) = 'text' AND instr(CAST(NEW.interaction_mode AS BLOB), x'00') = 0 AND length(NEW.interaction_mode) <= 32 AND length(CAST(NEW.interaction_mode AS BLOB)) <= 262144)
-    AND (typeof(NEW.created_at) = 'text' AND instr(CAST(NEW.created_at AS BLOB), x'00') = 0 AND trim(NEW.created_at) <> '' AND length(CAST(NEW.created_at AS BLOB)) <= 64)
-    AND (typeof(NEW.safety_mode) = 'text' AND instr(CAST(NEW.safety_mode AS BLOB), x'00') = 0 AND length(NEW.safety_mode) <= 32 AND length(CAST(NEW.safety_mode AS BLOB)) <= 262144)) IS NOT 1
-BEGIN
-    SELECT RAISE(ABORT, 'Replicated row values are invalid');
-END;
-
-CREATE TRIGGER sync_values_chat_teammate_policy_revisions_update
-BEFORE UPDATE OF teammate_id, provider_instance_id, model_selection_schema_version, model_selection_data, effort, speed, provider_options_schema_version, provider_options_data, interaction_mode, created_at, safety_mode ON chat_teammate_policy_revisions
-WHEN ((NEW.teammate_id IS NULL OR (typeof(NEW.teammate_id) = 'text' AND instr(CAST(NEW.teammate_id AS BLOB), x'00') = 0 AND trim(NEW.teammate_id) <> '' AND length(CAST(NEW.teammate_id AS BLOB)) <= 128))
-    AND (typeof(NEW.provider_instance_id) = 'text' AND instr(CAST(NEW.provider_instance_id AS BLOB), x'00') = 0 AND length(NEW.provider_instance_id) <= 1024 AND length(CAST(NEW.provider_instance_id AS BLOB)) <= 262144)
-    AND (typeof(NEW.model_selection_schema_version) = 'integer' AND NEW.model_selection_schema_version BETWEEN 1 AND 9223372036854775807)
-    AND (typeof(NEW.model_selection_data) = 'text' AND instr(CAST(NEW.model_selection_data AS BLOB), x'00') = 0 AND length(NEW.model_selection_data) <= 16384 AND length(CAST(NEW.model_selection_data AS BLOB)) <= 262144)
-    AND (NEW.effort IS NULL OR (typeof(NEW.effort) = 'text' AND instr(CAST(NEW.effort AS BLOB), x'00') = 0 AND length(NEW.effort) <= 32 AND length(CAST(NEW.effort AS BLOB)) <= 262144))
-    AND (NEW.speed IS NULL OR (typeof(NEW.speed) = 'text' AND instr(CAST(NEW.speed AS BLOB), x'00') = 0 AND length(NEW.speed) <= 32 AND length(CAST(NEW.speed AS BLOB)) <= 262144))
-    AND (typeof(NEW.provider_options_schema_version) = 'integer' AND NEW.provider_options_schema_version BETWEEN 1 AND 9223372036854775807)
-    AND (typeof(NEW.provider_options_data) = 'text' AND instr(CAST(NEW.provider_options_data AS BLOB), x'00') = 0 AND length(NEW.provider_options_data) <= 16384 AND length(CAST(NEW.provider_options_data AS BLOB)) <= 262144)
-    AND (typeof(NEW.interaction_mode) = 'text' AND instr(CAST(NEW.interaction_mode AS BLOB), x'00') = 0 AND length(NEW.interaction_mode) <= 32 AND length(CAST(NEW.interaction_mode AS BLOB)) <= 262144)
-    AND (typeof(NEW.created_at) = 'text' AND instr(CAST(NEW.created_at AS BLOB), x'00') = 0 AND trim(NEW.created_at) <> '' AND length(CAST(NEW.created_at AS BLOB)) <= 64)
-    AND (typeof(NEW.safety_mode) = 'text' AND instr(CAST(NEW.safety_mode AS BLOB), x'00') = 0 AND length(NEW.safety_mode) <= 32 AND length(CAST(NEW.safety_mode AS BLOB)) <= 262144)) IS NOT 1
-BEGIN
-    SELECT RAISE(ABORT, 'Replicated row values are invalid');
-END;
-
-CREATE TRIGGER sync_immutable_chat_teammate_policy_revisions
-BEFORE UPDATE OF id, teammate_id, provider_instance_id, model_selection_schema_version, model_selection_data, effort, speed, provider_options_schema_version, provider_options_data, interaction_mode, created_at, safety_mode ON chat_teammate_policy_revisions
-WHEN OLD.id IS NOT NEW.id COLLATE BINARY
-    OR ((OLD.teammate_id IS NOT NEW.teammate_id COLLATE BINARY OR OLD.provider_instance_id IS NOT NEW.provider_instance_id COLLATE BINARY OR OLD.model_selection_schema_version IS NOT NEW.model_selection_schema_version OR OLD.model_selection_data IS NOT NEW.model_selection_data COLLATE BINARY OR OLD.effort IS NOT NEW.effort COLLATE BINARY OR OLD.speed IS NOT NEW.speed COLLATE BINARY OR OLD.provider_options_schema_version IS NOT NEW.provider_options_schema_version OR OLD.provider_options_data IS NOT NEW.provider_options_data COLLATE BINARY OR OLD.interaction_mode IS NOT NEW.interaction_mode COLLATE BINARY OR OLD.created_at IS NOT NEW.created_at COLLATE BINARY OR OLD.safety_mode IS NOT NEW.safety_mode COLLATE BINARY) AND (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0)
-BEGIN
-    SELECT RAISE(ABORT, 'Replicated row keys and creation times cannot change');
-END;
-
 CREATE TRIGGER sync_recreate_chat_teammate_policy_revisions
 BEFORE INSERT ON chat_teammate_policy_revisions
 WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
@@ -16135,96 +16527,6 @@ WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
 BEGIN
     INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
     VALUES (372, OLD.item_id, 0, 0, 1, CAST(unixepoch('subsec') * 1000 AS INTEGER))
-    ON CONFLICT (table_id, row_key) DO UPDATE SET deleted = 1;
-END;
-
-CREATE TRIGGER sync_values_chat_work_assignments_insert
-BEFORE INSERT ON chat_work_assignments
-WHEN ((typeof(NEW.id) = 'text' AND instr(CAST(NEW.id AS BLOB), x'00') = 0 AND trim(NEW.id) <> '' AND length(CAST(NEW.id AS BLOB)) <= 128)
-    AND (NEW.reply_thread_id IS NULL OR (typeof(NEW.reply_thread_id) = 'text' AND instr(CAST(NEW.reply_thread_id AS BLOB), x'00') = 0 AND trim(NEW.reply_thread_id) <> '' AND length(CAST(NEW.reply_thread_id AS BLOB)) <= 128))
-    AND (NEW.teammate_id IS NULL OR (typeof(NEW.teammate_id) = 'text' AND instr(CAST(NEW.teammate_id AS BLOB), x'00') = 0 AND trim(NEW.teammate_id) <> '' AND length(CAST(NEW.teammate_id AS BLOB)) <= 128))
-    AND (NEW.triggering_message_item_id IS NULL OR (typeof(NEW.triggering_message_item_id) = 'text' AND instr(CAST(NEW.triggering_message_item_id AS BLOB), x'00') = 0 AND trim(NEW.triggering_message_item_id) <> '' AND length(CAST(NEW.triggering_message_item_id AS BLOB)) <= 128))
-    AND (NEW.executing_device_id IS NULL OR (typeof(NEW.executing_device_id) = 'text' AND instr(CAST(NEW.executing_device_id AS BLOB), x'00') = 0 AND length(NEW.executing_device_id) <= 160 AND length(CAST(NEW.executing_device_id AS BLOB)) <= 262144))
-    AND (typeof(NEW.created_at) = 'text' AND instr(CAST(NEW.created_at AS BLOB), x'00') = 0 AND trim(NEW.created_at) <> '' AND length(CAST(NEW.created_at AS BLOB)) <= 64)
-    AND (NEW.previous_assignment_id IS NULL OR (typeof(NEW.previous_assignment_id) = 'text' AND instr(CAST(NEW.previous_assignment_id AS BLOB), x'00') = 0 AND trim(NEW.previous_assignment_id) <> '' AND length(CAST(NEW.previous_assignment_id AS BLOB)) <= 128))
-    AND (typeof(NEW.state) = 'text' AND instr(CAST(NEW.state AS BLOB), x'00') = 0 AND length(NEW.state) <= 32 AND length(CAST(NEW.state AS BLOB)) <= 262144)
-    AND (NEW.state_reason IS NULL OR (typeof(NEW.state_reason) = 'text' AND instr(CAST(NEW.state_reason AS BLOB), x'00') = 0 AND length(NEW.state_reason) <= 4000 AND length(CAST(NEW.state_reason AS BLOB)) <= 262144))
-    AND (NEW.settled_at IS NULL OR (typeof(NEW.settled_at) = 'text' AND instr(CAST(NEW.settled_at AS BLOB), x'00') = 0 AND trim(NEW.settled_at) <> '' AND length(CAST(NEW.settled_at AS BLOB)) <= 64))
-    AND (typeof(NEW.updated_at) = 'text' AND instr(CAST(NEW.updated_at AS BLOB), x'00') = 0 AND trim(NEW.updated_at) <> '' AND length(CAST(NEW.updated_at AS BLOB)) <= 64)) IS NOT 1
-BEGIN
-    SELECT RAISE(ABORT, 'Replicated row values are invalid');
-END;
-
-CREATE TRIGGER sync_values_chat_work_assignments_update
-BEFORE UPDATE OF reply_thread_id, teammate_id, triggering_message_item_id, executing_device_id, created_at, previous_assignment_id, state, state_reason, settled_at, updated_at ON chat_work_assignments
-WHEN ((NEW.reply_thread_id IS NULL OR (typeof(NEW.reply_thread_id) = 'text' AND instr(CAST(NEW.reply_thread_id AS BLOB), x'00') = 0 AND trim(NEW.reply_thread_id) <> '' AND length(CAST(NEW.reply_thread_id AS BLOB)) <= 128))
-    AND (NEW.teammate_id IS NULL OR (typeof(NEW.teammate_id) = 'text' AND instr(CAST(NEW.teammate_id AS BLOB), x'00') = 0 AND trim(NEW.teammate_id) <> '' AND length(CAST(NEW.teammate_id AS BLOB)) <= 128))
-    AND (NEW.triggering_message_item_id IS NULL OR (typeof(NEW.triggering_message_item_id) = 'text' AND instr(CAST(NEW.triggering_message_item_id AS BLOB), x'00') = 0 AND trim(NEW.triggering_message_item_id) <> '' AND length(CAST(NEW.triggering_message_item_id AS BLOB)) <= 128))
-    AND (NEW.executing_device_id IS NULL OR (typeof(NEW.executing_device_id) = 'text' AND instr(CAST(NEW.executing_device_id AS BLOB), x'00') = 0 AND length(NEW.executing_device_id) <= 160 AND length(CAST(NEW.executing_device_id AS BLOB)) <= 262144))
-    AND (typeof(NEW.created_at) = 'text' AND instr(CAST(NEW.created_at AS BLOB), x'00') = 0 AND trim(NEW.created_at) <> '' AND length(CAST(NEW.created_at AS BLOB)) <= 64)
-    AND (NEW.previous_assignment_id IS NULL OR (typeof(NEW.previous_assignment_id) = 'text' AND instr(CAST(NEW.previous_assignment_id AS BLOB), x'00') = 0 AND trim(NEW.previous_assignment_id) <> '' AND length(CAST(NEW.previous_assignment_id AS BLOB)) <= 128))
-    AND (typeof(NEW.state) = 'text' AND instr(CAST(NEW.state AS BLOB), x'00') = 0 AND length(NEW.state) <= 32 AND length(CAST(NEW.state AS BLOB)) <= 262144)
-    AND (NEW.state_reason IS NULL OR (typeof(NEW.state_reason) = 'text' AND instr(CAST(NEW.state_reason AS BLOB), x'00') = 0 AND length(NEW.state_reason) <= 4000 AND length(CAST(NEW.state_reason AS BLOB)) <= 262144))
-    AND (NEW.settled_at IS NULL OR (typeof(NEW.settled_at) = 'text' AND instr(CAST(NEW.settled_at AS BLOB), x'00') = 0 AND trim(NEW.settled_at) <> '' AND length(CAST(NEW.settled_at AS BLOB)) <= 64))
-    AND (typeof(NEW.updated_at) = 'text' AND instr(CAST(NEW.updated_at AS BLOB), x'00') = 0 AND trim(NEW.updated_at) <> '' AND length(CAST(NEW.updated_at AS BLOB)) <= 64)) IS NOT 1
-BEGIN
-    SELECT RAISE(ABORT, 'Replicated row values are invalid');
-END;
-
-CREATE TRIGGER sync_immutable_chat_work_assignments
-BEFORE UPDATE OF id, reply_thread_id, teammate_id, triggering_message_item_id, executing_device_id, created_at ON chat_work_assignments
-WHEN OLD.id IS NOT NEW.id COLLATE BINARY
-    OR ((OLD.reply_thread_id IS NOT NEW.reply_thread_id COLLATE BINARY OR OLD.teammate_id IS NOT NEW.teammate_id COLLATE BINARY OR OLD.triggering_message_item_id IS NOT NEW.triggering_message_item_id COLLATE BINARY OR OLD.executing_device_id IS NOT NEW.executing_device_id COLLATE BINARY OR OLD.created_at IS NOT NEW.created_at COLLATE BINARY) AND (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0)
-BEGIN
-    SELECT RAISE(ABORT, 'Replicated row keys and creation times cannot change');
-END;
-
-CREATE TRIGGER sync_recreate_chat_work_assignments
-BEFORE INSERT ON chat_work_assignments
-WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
-    AND EXISTS (SELECT 1 FROM sync_rows WHERE table_id = 395 AND row_key = NEW.id)
-    AND NOT EXISTS (SELECT 1 FROM chat_work_assignments WHERE id = NEW.id)
-BEGIN
-    SELECT RAISE(ABORT, 'A published row key cannot be created again');
-END;
-
-CREATE TRIGGER sync_capture_chat_work_assignments_insert
-AFTER INSERT ON chat_work_assignments
-WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
-BEGIN
-    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
-    VALUES (395, NEW.id, 15, 1, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER))
-    ON CONFLICT (table_id, row_key) DO UPDATE SET
-        mask = mask | excluded.mask, created = 1, deleted = 0;
-END;
-
-CREATE TRIGGER sync_capture_chat_work_assignments_update
-AFTER UPDATE ON chat_work_assignments
-WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
-BEGIN
-    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
-    SELECT 395, NEW.id, changed.mask, 0, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER)
-    FROM (
-        SELECT
-            (CASE WHEN OLD.previous_assignment_id IS NOT NEW.previous_assignment_id COLLATE BINARY
-                AND NOT (NEW.previous_assignment_id IS NULL AND NOT EXISTS (SELECT 1 FROM chat_work_assignments WHERE id = OLD.previous_assignment_id))
-                THEN 2 ELSE 0 END)
-            | (CASE WHEN OLD.state IS NOT NEW.state COLLATE BINARY OR OLD.state_reason IS NOT NEW.state_reason COLLATE BINARY OR OLD.settled_at IS NOT NEW.settled_at COLLATE BINARY
-                THEN 4 ELSE 0 END)
-            | (CASE WHEN OLD.updated_at IS NOT NEW.updated_at COLLATE BINARY
-                THEN 8 ELSE 0 END)
-            AS mask
-    ) AS changed
-    WHERE changed.mask <> 0
-    ON CONFLICT (table_id, row_key) DO UPDATE SET mask = mask | excluded.mask;
-END;
-
-CREATE TRIGGER sync_capture_chat_work_assignments_delete
-AFTER DELETE ON chat_work_assignments
-WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
-BEGIN
-    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
-    VALUES (395, OLD.id, 0, 0, 1, CAST(unixepoch('subsec') * 1000 AS INTEGER))
     ON CONFLICT (table_id, row_key) DO UPDATE SET deleted = 1;
 END;
 
@@ -17279,72 +17581,6 @@ BEGIN
     ON CONFLICT (table_id, row_key) DO UPDATE SET deleted = 1;
 END;
 
-CREATE TRIGGER sync_values_chat_participant_reference_targets_insert
-BEFORE INSERT ON chat_participant_reference_targets
-WHEN ((typeof(NEW.reference_id) = 'text' AND instr(CAST(NEW.reference_id AS BLOB), x'00') = 0 AND trim(NEW.reference_id) <> '' AND length(CAST(NEW.reference_id AS BLOB)) <= 128)
-    AND (NEW.participant_id IS NULL OR (typeof(NEW.participant_id) = 'text' AND instr(CAST(NEW.participant_id AS BLOB), x'00') = 0 AND trim(NEW.participant_id) <> '' AND length(CAST(NEW.participant_id AS BLOB)) <= 128))) IS NOT 1
-BEGIN
-    SELECT RAISE(ABORT, 'Replicated row values are invalid');
-END;
-
-CREATE TRIGGER sync_values_chat_participant_reference_targets_update
-BEFORE UPDATE OF participant_id ON chat_participant_reference_targets
-WHEN ((NEW.participant_id IS NULL OR (typeof(NEW.participant_id) = 'text' AND instr(CAST(NEW.participant_id AS BLOB), x'00') = 0 AND trim(NEW.participant_id) <> '' AND length(CAST(NEW.participant_id AS BLOB)) <= 128))) IS NOT 1
-BEGIN
-    SELECT RAISE(ABORT, 'Replicated row values are invalid');
-END;
-
-CREATE TRIGGER sync_immutable_chat_participant_reference_targets
-BEFORE UPDATE OF reference_id, participant_id ON chat_participant_reference_targets
-WHEN OLD.reference_id IS NOT NEW.reference_id COLLATE BINARY
-    OR ((OLD.participant_id IS NOT NEW.participant_id COLLATE BINARY) AND (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0)
-BEGIN
-    SELECT RAISE(ABORT, 'Replicated row keys and creation times cannot change');
-END;
-
-CREATE TRIGGER sync_recreate_chat_participant_reference_targets
-BEFORE INSERT ON chat_participant_reference_targets
-WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
-    AND EXISTS (SELECT 1 FROM sync_rows WHERE table_id = 377 AND row_key = NEW.reference_id)
-    AND NOT EXISTS (SELECT 1 FROM chat_participant_reference_targets WHERE reference_id = NEW.reference_id)
-BEGIN
-    SELECT RAISE(ABORT, 'A published row key cannot be created again');
-END;
-
-CREATE TRIGGER sync_capture_chat_participant_reference_targets_insert
-AFTER INSERT ON chat_participant_reference_targets
-WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
-BEGIN
-    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
-    VALUES (377, NEW.reference_id, 1, 1, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER))
-    ON CONFLICT (table_id, row_key) DO UPDATE SET
-        mask = mask | excluded.mask, created = 1, deleted = 0;
-END;
-
-CREATE TRIGGER sync_capture_chat_participant_reference_targets_update
-AFTER UPDATE ON chat_participant_reference_targets
-WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
-BEGIN
-    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
-    SELECT 377, NEW.reference_id, changed.mask, 0, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER)
-    FROM (
-        SELECT
-            0
-            AS mask
-    ) AS changed
-    WHERE changed.mask <> 0
-    ON CONFLICT (table_id, row_key) DO UPDATE SET mask = mask | excluded.mask;
-END;
-
-CREATE TRIGGER sync_capture_chat_participant_reference_targets_delete
-AFTER DELETE ON chat_participant_reference_targets
-WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
-BEGIN
-    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
-    VALUES (377, OLD.reference_id, 0, 0, 1, CAST(unixepoch('subsec') * 1000 AS INTEGER))
-    ON CONFLICT (table_id, row_key) DO UPDATE SET deleted = 1;
-END;
-
 CREATE TRIGGER sync_values_chat_reply_thread_read_cursors_insert
 BEFORE INSERT ON chat_reply_thread_read_cursors
 WHEN ((typeof(NEW.sync_key) = 'text' AND instr(CAST(NEW.sync_key AS BLOB), x'00') = 0 AND trim(NEW.sync_key) <> '' AND length(CAST(NEW.sync_key AS BLOB)) <= 128)
@@ -18055,155 +18291,6 @@ BEGIN
     ON CONFLICT (table_id, row_key) DO UPDATE SET deleted = 1;
 END;
 
-CREATE TRIGGER sync_values_chat_work_assignment_inputs_insert
-BEFORE INSERT ON chat_work_assignment_inputs
-WHEN ((typeof(NEW.id) = 'text' AND instr(CAST(NEW.id AS BLOB), x'00') = 0 AND trim(NEW.id) <> '' AND length(CAST(NEW.id AS BLOB)) <= 128)
-    AND (NEW.message_item_id IS NULL OR (typeof(NEW.message_item_id) = 'text' AND instr(CAST(NEW.message_item_id AS BLOB), x'00') = 0 AND trim(NEW.message_item_id) <> '' AND length(CAST(NEW.message_item_id AS BLOB)) <= 128))
-    AND (typeof(NEW.created_at) = 'text' AND instr(CAST(NEW.created_at AS BLOB), x'00') = 0 AND trim(NEW.created_at) <> '' AND length(CAST(NEW.created_at AS BLOB)) <= 64)
-    AND (NEW.assignment_id IS NULL OR (typeof(NEW.assignment_id) = 'text' AND instr(CAST(NEW.assignment_id AS BLOB), x'00') = 0 AND trim(NEW.assignment_id) <> '' AND length(CAST(NEW.assignment_id AS BLOB)) <= 128))
-    AND (typeof(NEW.ordinal) = 'integer' AND NEW.ordinal BETWEEN 1 AND 9223372036854775807)
-    AND (typeof(NEW.routing_kind) = 'text' AND instr(CAST(NEW.routing_kind AS BLOB), x'00') = 0 AND length(NEW.routing_kind) <= 32 AND length(CAST(NEW.routing_kind AS BLOB)) <= 262144)
-    AND (typeof(NEW.delivery_state) = 'text' AND instr(CAST(NEW.delivery_state AS BLOB), x'00') = 0 AND length(NEW.delivery_state) <= 32 AND length(CAST(NEW.delivery_state AS BLOB)) <= 262144)
-    AND (NEW.delivered_at IS NULL OR (typeof(NEW.delivered_at) = 'text' AND instr(CAST(NEW.delivered_at AS BLOB), x'00') = 0 AND trim(NEW.delivered_at) <> '' AND length(CAST(NEW.delivered_at AS BLOB)) <= 64))) IS NOT 1
-BEGIN
-    SELECT RAISE(ABORT, 'Replicated row values are invalid');
-END;
-
-CREATE TRIGGER sync_values_chat_work_assignment_inputs_update
-BEFORE UPDATE OF message_item_id, created_at, assignment_id, ordinal, routing_kind, delivery_state, delivered_at ON chat_work_assignment_inputs
-WHEN ((NEW.message_item_id IS NULL OR (typeof(NEW.message_item_id) = 'text' AND instr(CAST(NEW.message_item_id AS BLOB), x'00') = 0 AND trim(NEW.message_item_id) <> '' AND length(CAST(NEW.message_item_id AS BLOB)) <= 128))
-    AND (typeof(NEW.created_at) = 'text' AND instr(CAST(NEW.created_at AS BLOB), x'00') = 0 AND trim(NEW.created_at) <> '' AND length(CAST(NEW.created_at AS BLOB)) <= 64)
-    AND (NEW.assignment_id IS NULL OR (typeof(NEW.assignment_id) = 'text' AND instr(CAST(NEW.assignment_id AS BLOB), x'00') = 0 AND trim(NEW.assignment_id) <> '' AND length(CAST(NEW.assignment_id AS BLOB)) <= 128))
-    AND (typeof(NEW.ordinal) = 'integer' AND NEW.ordinal BETWEEN 1 AND 9223372036854775807)
-    AND (typeof(NEW.routing_kind) = 'text' AND instr(CAST(NEW.routing_kind AS BLOB), x'00') = 0 AND length(NEW.routing_kind) <= 32 AND length(CAST(NEW.routing_kind AS BLOB)) <= 262144)
-    AND (typeof(NEW.delivery_state) = 'text' AND instr(CAST(NEW.delivery_state AS BLOB), x'00') = 0 AND length(NEW.delivery_state) <= 32 AND length(CAST(NEW.delivery_state AS BLOB)) <= 262144)
-    AND (NEW.delivered_at IS NULL OR (typeof(NEW.delivered_at) = 'text' AND instr(CAST(NEW.delivered_at AS BLOB), x'00') = 0 AND trim(NEW.delivered_at) <> '' AND length(CAST(NEW.delivered_at AS BLOB)) <= 64))) IS NOT 1
-BEGIN
-    SELECT RAISE(ABORT, 'Replicated row values are invalid');
-END;
-
-CREATE TRIGGER sync_immutable_chat_work_assignment_inputs
-BEFORE UPDATE OF id, message_item_id ON chat_work_assignment_inputs
-WHEN OLD.id IS NOT NEW.id COLLATE BINARY
-    OR ((OLD.message_item_id IS NOT NEW.message_item_id COLLATE BINARY) AND (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0)
-BEGIN
-    SELECT RAISE(ABORT, 'Replicated row keys and creation times cannot change');
-END;
-
-CREATE TRIGGER sync_capture_chat_work_assignment_inputs_insert
-AFTER INSERT ON chat_work_assignment_inputs
-WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
-BEGIN
-    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
-    VALUES (396, NEW.id, 31, 1, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER))
-    ON CONFLICT (table_id, row_key) DO UPDATE SET
-        mask = mask | excluded.mask, created = 1, deleted = 0;
-END;
-
-CREATE TRIGGER sync_capture_chat_work_assignment_inputs_update
-AFTER UPDATE ON chat_work_assignment_inputs
-WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
-BEGIN
-    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
-    SELECT 396, NEW.id, changed.mask, 0, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER)
-    FROM (
-        SELECT
-            (CASE WHEN OLD.created_at IS NOT NEW.created_at COLLATE BINARY
-                THEN 2 ELSE 0 END)
-            | (CASE WHEN (OLD.assignment_id IS NOT NEW.assignment_id COLLATE BINARY
-                AND NOT (NEW.assignment_id IS NULL AND NOT EXISTS (SELECT 1 FROM chat_work_assignments WHERE id = OLD.assignment_id))) OR OLD.ordinal IS NOT NEW.ordinal OR OLD.routing_kind IS NOT NEW.routing_kind COLLATE BINARY
-                THEN 4 ELSE 0 END)
-            | (CASE WHEN OLD.delivery_state IS NOT NEW.delivery_state COLLATE BINARY OR OLD.delivered_at IS NOT NEW.delivered_at COLLATE BINARY
-                THEN 8 ELSE 0 END)
-            AS mask
-    ) AS changed
-    WHERE changed.mask <> 0
-    ON CONFLICT (table_id, row_key) DO UPDATE SET mask = mask | excluded.mask;
-END;
-
-CREATE TRIGGER sync_capture_chat_work_assignment_inputs_delete
-AFTER DELETE ON chat_work_assignment_inputs
-WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
-BEGIN
-    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
-    VALUES (396, OLD.id, 0, 0, 1, CAST(unixepoch('subsec') * 1000 AS INTEGER))
-    ON CONFLICT (table_id, row_key) DO UPDATE SET deleted = 1;
-END;
-
-CREATE TRIGGER sync_values_chat_work_semantic_updates_insert
-BEFORE INSERT ON chat_work_semantic_updates
-WHEN ((typeof(NEW.item_id) = 'text' AND instr(CAST(NEW.item_id AS BLOB), x'00') = 0 AND trim(NEW.item_id) <> '' AND length(CAST(NEW.item_id AS BLOB)) <= 128)
-    AND (NEW.assignment_id IS NULL OR (typeof(NEW.assignment_id) = 'text' AND instr(CAST(NEW.assignment_id AS BLOB), x'00') = 0 AND trim(NEW.assignment_id) <> '' AND length(CAST(NEW.assignment_id AS BLOB)) <= 128))
-    AND (typeof(NEW.update_kind) = 'text' AND instr(CAST(NEW.update_kind AS BLOB), x'00') = 0 AND length(NEW.update_kind) <= 32 AND length(CAST(NEW.update_kind AS BLOB)) <= 262144)
-    AND (typeof(NEW.payload_schema_version) = 'integer' AND NEW.payload_schema_version BETWEEN 1 AND 9223372036854775807)
-    AND (typeof(NEW.payload_data) = 'text' AND instr(CAST(NEW.payload_data AS BLOB), x'00') = 0 AND length(NEW.payload_data) <= 196608 AND length(CAST(NEW.payload_data AS BLOB)) <= 262144)
-    AND (typeof(NEW.created_at) = 'text' AND instr(CAST(NEW.created_at AS BLOB), x'00') = 0 AND trim(NEW.created_at) <> '' AND length(CAST(NEW.created_at AS BLOB)) <= 64)) IS NOT 1
-BEGIN
-    SELECT RAISE(ABORT, 'Replicated row values are invalid');
-END;
-
-CREATE TRIGGER sync_values_chat_work_semantic_updates_update
-BEFORE UPDATE OF assignment_id, update_kind, payload_schema_version, payload_data, created_at ON chat_work_semantic_updates
-WHEN ((NEW.assignment_id IS NULL OR (typeof(NEW.assignment_id) = 'text' AND instr(CAST(NEW.assignment_id AS BLOB), x'00') = 0 AND trim(NEW.assignment_id) <> '' AND length(CAST(NEW.assignment_id AS BLOB)) <= 128))
-    AND (typeof(NEW.update_kind) = 'text' AND instr(CAST(NEW.update_kind AS BLOB), x'00') = 0 AND length(NEW.update_kind) <= 32 AND length(CAST(NEW.update_kind AS BLOB)) <= 262144)
-    AND (typeof(NEW.payload_schema_version) = 'integer' AND NEW.payload_schema_version BETWEEN 1 AND 9223372036854775807)
-    AND (typeof(NEW.payload_data) = 'text' AND instr(CAST(NEW.payload_data AS BLOB), x'00') = 0 AND length(NEW.payload_data) <= 196608 AND length(CAST(NEW.payload_data AS BLOB)) <= 262144)
-    AND (typeof(NEW.created_at) = 'text' AND instr(CAST(NEW.created_at AS BLOB), x'00') = 0 AND trim(NEW.created_at) <> '' AND length(CAST(NEW.created_at AS BLOB)) <= 64)) IS NOT 1
-BEGIN
-    SELECT RAISE(ABORT, 'Replicated row values are invalid');
-END;
-
-CREATE TRIGGER sync_immutable_chat_work_semantic_updates
-BEFORE UPDATE OF item_id, assignment_id, update_kind, payload_schema_version, payload_data, created_at ON chat_work_semantic_updates
-WHEN OLD.item_id IS NOT NEW.item_id COLLATE BINARY
-    OR ((OLD.assignment_id IS NOT NEW.assignment_id COLLATE BINARY OR OLD.update_kind IS NOT NEW.update_kind COLLATE BINARY OR OLD.payload_schema_version IS NOT NEW.payload_schema_version OR OLD.payload_data IS NOT NEW.payload_data COLLATE BINARY OR OLD.created_at IS NOT NEW.created_at COLLATE BINARY) AND (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0)
-BEGIN
-    SELECT RAISE(ABORT, 'Replicated row keys and creation times cannot change');
-END;
-
-CREATE TRIGGER sync_recreate_chat_work_semantic_updates
-BEFORE INSERT ON chat_work_semantic_updates
-WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
-    AND EXISTS (SELECT 1 FROM sync_rows WHERE table_id = 397 AND row_key = NEW.item_id)
-    AND NOT EXISTS (SELECT 1 FROM chat_work_semantic_updates WHERE item_id = NEW.item_id)
-BEGIN
-    SELECT RAISE(ABORT, 'A published row key cannot be created again');
-END;
-
-CREATE TRIGGER sync_capture_chat_work_semantic_updates_insert
-AFTER INSERT ON chat_work_semantic_updates
-WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
-BEGIN
-    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
-    VALUES (397, NEW.item_id, 1, 1, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER))
-    ON CONFLICT (table_id, row_key) DO UPDATE SET
-        mask = mask | excluded.mask, created = 1, deleted = 0;
-END;
-
-CREATE TRIGGER sync_capture_chat_work_semantic_updates_update
-AFTER UPDATE ON chat_work_semantic_updates
-WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
-BEGIN
-    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
-    SELECT 397, NEW.item_id, changed.mask, 0, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER)
-    FROM (
-        SELECT
-            0
-            AS mask
-    ) AS changed
-    WHERE changed.mask <> 0
-    ON CONFLICT (table_id, row_key) DO UPDATE SET mask = mask | excluded.mask;
-END;
-
-CREATE TRIGGER sync_capture_chat_work_semantic_updates_delete
-AFTER DELETE ON chat_work_semantic_updates
-WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
-BEGIN
-    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
-    VALUES (397, OLD.item_id, 0, 0, 1, CAST(unixepoch('subsec') * 1000 AS INTEGER))
-    ON CONFLICT (table_id, row_key) DO UPDATE SET deleted = 1;
-END;
-
 CREATE TRIGGER sync_values_chat_working_folder_reference_targets_insert
 BEFORE INSERT ON chat_working_folder_reference_targets
 WHEN ((typeof(NEW.reference_id) = 'text' AND instr(CAST(NEW.reference_id AS BLOB), x'00') = 0 AND trim(NEW.reference_id) <> '' AND length(CAST(NEW.reference_id AS BLOB)) <= 128)
@@ -18340,6 +18427,975 @@ BEGIN
     ON CONFLICT (table_id, row_key) DO UPDATE SET deleted = 1;
 END;
 
+CREATE TRIGGER chat_messages_timeline_change_insert
+AFTER INSERT ON chat_messages
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+    AND NEW.change_sequence = 0
+BEGIN
+  INSERT INTO chat_timeline_change_clocks (thread_id, last_change)
+  SELECT NEW.thread_id, 0
+  WHERE NOT EXISTS (SELECT 1 FROM chat_timeline_change_clocks WHERE thread_id = NEW.thread_id);
+  UPDATE chat_timeline_change_clocks SET last_change = last_change + 1 WHERE thread_id = NEW.thread_id;
+  UPDATE chat_messages SET change_sequence = (
+      SELECT last_change FROM chat_timeline_change_clocks WHERE thread_id = NEW.thread_id
+  ) WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER chat_messages_timeline_change_update
+AFTER UPDATE ON chat_messages
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+    AND NEW.change_sequence = OLD.change_sequence
+BEGIN
+  INSERT INTO chat_timeline_change_clocks (thread_id, last_change)
+  SELECT NEW.thread_id, 0
+  WHERE NOT EXISTS (SELECT 1 FROM chat_timeline_change_clocks WHERE thread_id = NEW.thread_id);
+  UPDATE chat_timeline_change_clocks SET last_change = last_change + 1 WHERE thread_id = NEW.thread_id;
+  UPDATE chat_messages SET change_sequence = (
+      SELECT last_change FROM chat_timeline_change_clocks WHERE thread_id = NEW.thread_id
+  ) WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER chat_activities_timeline_change_insert
+AFTER INSERT ON chat_activities
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+    AND NEW.change_sequence = 0
+BEGIN
+  INSERT INTO chat_timeline_change_clocks (thread_id, last_change)
+  SELECT NEW.thread_id, 0
+  WHERE NOT EXISTS (SELECT 1 FROM chat_timeline_change_clocks WHERE thread_id = NEW.thread_id);
+  UPDATE chat_timeline_change_clocks SET last_change = last_change + 1 WHERE thread_id = NEW.thread_id;
+  UPDATE chat_activities SET change_sequence = (
+      SELECT last_change FROM chat_timeline_change_clocks WHERE thread_id = NEW.thread_id
+  ) WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER chat_activities_timeline_change_update
+AFTER UPDATE ON chat_activities
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+    AND NEW.change_sequence = OLD.change_sequence
+BEGIN
+  INSERT INTO chat_timeline_change_clocks (thread_id, last_change)
+  SELECT NEW.thread_id, 0
+  WHERE NOT EXISTS (SELECT 1 FROM chat_timeline_change_clocks WHERE thread_id = NEW.thread_id);
+  UPDATE chat_timeline_change_clocks SET last_change = last_change + 1 WHERE thread_id = NEW.thread_id;
+  UPDATE chat_activities SET change_sequence = (
+      SELECT last_change FROM chat_timeline_change_clocks WHERE thread_id = NEW.thread_id
+  ) WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER chat_plans_timeline_change_insert
+AFTER INSERT ON chat_plans
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+    AND NEW.change_sequence = 0
+BEGIN
+  INSERT INTO chat_timeline_change_clocks (thread_id, last_change)
+  SELECT NEW.thread_id, 0
+  WHERE NOT EXISTS (SELECT 1 FROM chat_timeline_change_clocks WHERE thread_id = NEW.thread_id);
+  UPDATE chat_timeline_change_clocks SET last_change = last_change + 1 WHERE thread_id = NEW.thread_id;
+  UPDATE chat_plans SET change_sequence = (
+      SELECT last_change FROM chat_timeline_change_clocks WHERE thread_id = NEW.thread_id
+  ) WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER chat_plans_timeline_change_update
+AFTER UPDATE ON chat_plans
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+    AND NEW.change_sequence = OLD.change_sequence
+BEGIN
+  INSERT INTO chat_timeline_change_clocks (thread_id, last_change)
+  SELECT NEW.thread_id, 0
+  WHERE NOT EXISTS (SELECT 1 FROM chat_timeline_change_clocks WHERE thread_id = NEW.thread_id);
+  UPDATE chat_timeline_change_clocks SET last_change = last_change + 1 WHERE thread_id = NEW.thread_id;
+  UPDATE chat_plans SET change_sequence = (
+      SELECT last_change FROM chat_timeline_change_clocks WHERE thread_id = NEW.thread_id
+  ) WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER chat_turns_timeline_change_insert
+AFTER INSERT ON chat_turns
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+    AND NEW.change_sequence = 0
+BEGIN
+  INSERT INTO chat_timeline_change_clocks (thread_id, last_change)
+  SELECT NEW.thread_id, 0
+  WHERE NOT EXISTS (SELECT 1 FROM chat_timeline_change_clocks WHERE thread_id = NEW.thread_id);
+  UPDATE chat_timeline_change_clocks SET last_change = last_change + 1 WHERE thread_id = NEW.thread_id;
+  UPDATE chat_turns SET change_sequence = (
+      SELECT last_change FROM chat_timeline_change_clocks WHERE thread_id = NEW.thread_id
+  ) WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER chat_turns_timeline_change_update
+AFTER UPDATE ON chat_turns
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+    AND NEW.change_sequence = OLD.change_sequence
+BEGIN
+  INSERT INTO chat_timeline_change_clocks (thread_id, last_change)
+  SELECT NEW.thread_id, 0
+  WHERE NOT EXISTS (SELECT 1 FROM chat_timeline_change_clocks WHERE thread_id = NEW.thread_id);
+  UPDATE chat_timeline_change_clocks SET last_change = last_change + 1 WHERE thread_id = NEW.thread_id;
+  UPDATE chat_turns SET change_sequence = (
+      SELECT last_change FROM chat_timeline_change_clocks WHERE thread_id = NEW.thread_id
+  ) WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER chat_messages_timeline_change_delete
+AFTER DELETE ON chat_messages
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+    AND EXISTS (SELECT 1 FROM chat_threads WHERE id = OLD.thread_id)
+BEGIN
+  INSERT INTO chat_timeline_change_clocks (thread_id, last_change)
+  SELECT OLD.thread_id, 0
+  WHERE NOT EXISTS (SELECT 1 FROM chat_timeline_change_clocks WHERE thread_id = OLD.thread_id);
+  UPDATE chat_timeline_change_clocks SET last_change = last_change + 1 WHERE thread_id = OLD.thread_id;
+  INSERT INTO chat_timeline_removals (thread_id, change_sequence, item_id)
+  SELECT OLD.thread_id, last_change, OLD.id FROM chat_timeline_change_clocks WHERE thread_id = OLD.thread_id;
+END;
+
+CREATE TRIGGER chat_activities_timeline_change_delete
+AFTER DELETE ON chat_activities
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+    AND EXISTS (SELECT 1 FROM chat_threads WHERE id = OLD.thread_id)
+BEGIN
+  INSERT INTO chat_timeline_change_clocks (thread_id, last_change)
+  SELECT OLD.thread_id, 0
+  WHERE NOT EXISTS (SELECT 1 FROM chat_timeline_change_clocks WHERE thread_id = OLD.thread_id);
+  UPDATE chat_timeline_change_clocks SET last_change = last_change + 1 WHERE thread_id = OLD.thread_id;
+  INSERT INTO chat_timeline_removals (thread_id, change_sequence, item_id)
+  SELECT OLD.thread_id, last_change, OLD.id FROM chat_timeline_change_clocks WHERE thread_id = OLD.thread_id;
+END;
+
+CREATE TRIGGER chat_plans_timeline_change_delete
+AFTER DELETE ON chat_plans
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+    AND EXISTS (SELECT 1 FROM chat_threads WHERE id = OLD.thread_id)
+BEGIN
+  INSERT INTO chat_timeline_change_clocks (thread_id, last_change)
+  SELECT OLD.thread_id, 0
+  WHERE NOT EXISTS (SELECT 1 FROM chat_timeline_change_clocks WHERE thread_id = OLD.thread_id);
+  UPDATE chat_timeline_change_clocks SET last_change = last_change + 1 WHERE thread_id = OLD.thread_id;
+  INSERT INTO chat_timeline_removals (thread_id, change_sequence, item_id)
+  SELECT OLD.thread_id, last_change, OLD.id FROM chat_timeline_change_clocks WHERE thread_id = OLD.thread_id;
+END;
+
+CREATE TRIGGER chat_agent_run_attempt_immutable
+BEFORE UPDATE OF
+    attempt_reason, handoff_reason, instructions_sha256,
+    model_selection_sha256, context_delivery, delivered_context_bytes
+ON chat_agent_runs
+WHEN OLD.state <> 'starting'
+BEGIN
+    SELECT RAISE(ABORT, 'Agent run attempt is immutable');
+END;
+
+CREATE TRIGGER sync_recreate_chat_work_assignments
+BEFORE INSERT ON chat_work_assignments
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+    AND EXISTS (SELECT 1 FROM sync_rows WHERE table_id = 395 AND row_key = NEW.id)
+    AND NOT EXISTS (SELECT 1 FROM chat_work_assignments WHERE id = NEW.id)
+BEGIN
+    SELECT RAISE(ABORT, 'A published row key cannot be created again');
+END;
+
+CREATE TRIGGER sync_capture_chat_work_assignments_update
+AFTER UPDATE ON chat_work_assignments
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    SELECT 395, NEW.id, changed.mask, 0, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER)
+    FROM (
+        SELECT
+            (CASE WHEN OLD.previous_assignment_id IS NOT NEW.previous_assignment_id COLLATE BINARY
+                AND NOT (NEW.previous_assignment_id IS NULL AND NOT EXISTS (SELECT 1 FROM chat_work_assignments WHERE id = OLD.previous_assignment_id))
+                THEN 2 ELSE 0 END)
+            | (CASE WHEN OLD.state IS NOT NEW.state COLLATE BINARY OR OLD.state_reason IS NOT NEW.state_reason COLLATE BINARY OR OLD.settled_at IS NOT NEW.settled_at COLLATE BINARY OR OLD.review_outcome IS NOT NEW.review_outcome COLLATE BINARY OR OLD.reviewed_at IS NOT NEW.reviewed_at COLLATE BINARY OR OLD.reviewed_by_participant_id IS NOT NEW.reviewed_by_participant_id COLLATE BINARY
+                THEN 4 ELSE 0 END)
+            | (CASE WHEN OLD.updated_at IS NOT NEW.updated_at COLLATE BINARY
+                THEN 8 ELSE 0 END)
+            AS mask
+    ) AS changed
+    WHERE changed.mask <> 0
+    ON CONFLICT (table_id, row_key) DO UPDATE SET mask = mask | excluded.mask;
+END;
+
+CREATE TRIGGER sync_capture_chat_work_assignments_delete
+AFTER DELETE ON chat_work_assignments
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    VALUES (395, OLD.id, 0, 0, 1, CAST(unixepoch('subsec') * 1000 AS INTEGER))
+    ON CONFLICT (table_id, row_key) DO UPDATE SET deleted = 1;
+END;
+
+CREATE TRIGGER sync_values_chat_work_assignment_inputs_insert
+BEFORE INSERT ON chat_work_assignment_inputs
+WHEN ((typeof(NEW.id) = 'text' AND instr(CAST(NEW.id AS BLOB), x'00') = 0 AND trim(NEW.id) <> '' AND length(CAST(NEW.id AS BLOB)) <= 128)
+    AND (NEW.message_item_id IS NULL OR (typeof(NEW.message_item_id) = 'text' AND instr(CAST(NEW.message_item_id AS BLOB), x'00') = 0 AND trim(NEW.message_item_id) <> '' AND length(CAST(NEW.message_item_id AS BLOB)) <= 128))
+    AND (typeof(NEW.created_at) = 'text' AND instr(CAST(NEW.created_at AS BLOB), x'00') = 0 AND trim(NEW.created_at) <> '' AND length(CAST(NEW.created_at AS BLOB)) <= 64)
+    AND (NEW.assignment_id IS NULL OR (typeof(NEW.assignment_id) = 'text' AND instr(CAST(NEW.assignment_id AS BLOB), x'00') = 0 AND trim(NEW.assignment_id) <> '' AND length(CAST(NEW.assignment_id AS BLOB)) <= 128))
+    AND (typeof(NEW.ordinal) = 'integer' AND NEW.ordinal BETWEEN 1 AND 9223372036854775807)
+    AND (typeof(NEW.routing_kind) = 'text' AND instr(CAST(NEW.routing_kind AS BLOB), x'00') = 0 AND length(NEW.routing_kind) <= 32 AND length(CAST(NEW.routing_kind AS BLOB)) <= 262144)
+    AND (typeof(NEW.delivery_state) = 'text' AND instr(CAST(NEW.delivery_state AS BLOB), x'00') = 0 AND length(NEW.delivery_state) <= 32 AND length(CAST(NEW.delivery_state AS BLOB)) <= 262144)
+    AND (NEW.delivered_at IS NULL OR (typeof(NEW.delivered_at) = 'text' AND instr(CAST(NEW.delivered_at AS BLOB), x'00') = 0 AND trim(NEW.delivered_at) <> '' AND length(CAST(NEW.delivered_at AS BLOB)) <= 64))
+    AND (NEW.delivered_revision_id IS NULL OR (typeof(NEW.delivered_revision_id) = 'text' AND instr(CAST(NEW.delivered_revision_id AS BLOB), x'00') = 0 AND trim(NEW.delivered_revision_id) <> '' AND length(CAST(NEW.delivered_revision_id AS BLOB)) <= 128))) IS NOT 1
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row values are invalid');
+END;
+
+CREATE TRIGGER sync_values_chat_work_assignment_inputs_update
+BEFORE UPDATE OF message_item_id, created_at, assignment_id, ordinal, routing_kind, delivery_state, delivered_at, delivered_revision_id ON chat_work_assignment_inputs
+WHEN ((NEW.message_item_id IS NULL OR (typeof(NEW.message_item_id) = 'text' AND instr(CAST(NEW.message_item_id AS BLOB), x'00') = 0 AND trim(NEW.message_item_id) <> '' AND length(CAST(NEW.message_item_id AS BLOB)) <= 128))
+    AND (typeof(NEW.created_at) = 'text' AND instr(CAST(NEW.created_at AS BLOB), x'00') = 0 AND trim(NEW.created_at) <> '' AND length(CAST(NEW.created_at AS BLOB)) <= 64)
+    AND (NEW.assignment_id IS NULL OR (typeof(NEW.assignment_id) = 'text' AND instr(CAST(NEW.assignment_id AS BLOB), x'00') = 0 AND trim(NEW.assignment_id) <> '' AND length(CAST(NEW.assignment_id AS BLOB)) <= 128))
+    AND (typeof(NEW.ordinal) = 'integer' AND NEW.ordinal BETWEEN 1 AND 9223372036854775807)
+    AND (typeof(NEW.routing_kind) = 'text' AND instr(CAST(NEW.routing_kind AS BLOB), x'00') = 0 AND length(NEW.routing_kind) <= 32 AND length(CAST(NEW.routing_kind AS BLOB)) <= 262144)
+    AND (typeof(NEW.delivery_state) = 'text' AND instr(CAST(NEW.delivery_state AS BLOB), x'00') = 0 AND length(NEW.delivery_state) <= 32 AND length(CAST(NEW.delivery_state AS BLOB)) <= 262144)
+    AND (NEW.delivered_at IS NULL OR (typeof(NEW.delivered_at) = 'text' AND instr(CAST(NEW.delivered_at AS BLOB), x'00') = 0 AND trim(NEW.delivered_at) <> '' AND length(CAST(NEW.delivered_at AS BLOB)) <= 64))
+    AND (NEW.delivered_revision_id IS NULL OR (typeof(NEW.delivered_revision_id) = 'text' AND instr(CAST(NEW.delivered_revision_id AS BLOB), x'00') = 0 AND trim(NEW.delivered_revision_id) <> '' AND length(CAST(NEW.delivered_revision_id AS BLOB)) <= 128))) IS NOT 1
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row values are invalid');
+END;
+
+CREATE TRIGGER sync_immutable_chat_work_assignment_inputs
+BEFORE UPDATE OF id, message_item_id ON chat_work_assignment_inputs
+WHEN OLD.id IS NOT NEW.id COLLATE BINARY
+    OR ((OLD.message_item_id IS NOT NEW.message_item_id COLLATE BINARY) AND (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0)
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row keys and creation times cannot change');
+END;
+
+CREATE TRIGGER sync_capture_chat_work_assignment_inputs_insert
+AFTER INSERT ON chat_work_assignment_inputs
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    VALUES (396, NEW.id, 31, 1, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER))
+    ON CONFLICT (table_id, row_key) DO UPDATE SET
+        mask = mask | excluded.mask, created = 1, deleted = 0;
+END;
+
+CREATE TRIGGER sync_capture_chat_work_assignment_inputs_update
+AFTER UPDATE ON chat_work_assignment_inputs
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    SELECT 396, NEW.id, changed.mask, 0, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER)
+    FROM (
+        SELECT
+            (CASE WHEN OLD.created_at IS NOT NEW.created_at COLLATE BINARY
+                THEN 2 ELSE 0 END)
+            | (CASE WHEN (OLD.assignment_id IS NOT NEW.assignment_id COLLATE BINARY
+                AND NOT (NEW.assignment_id IS NULL AND NOT EXISTS (SELECT 1 FROM chat_work_assignments WHERE id = OLD.assignment_id))) OR OLD.ordinal IS NOT NEW.ordinal OR OLD.routing_kind IS NOT NEW.routing_kind COLLATE BINARY
+                THEN 4 ELSE 0 END)
+            | (CASE WHEN OLD.delivery_state IS NOT NEW.delivery_state COLLATE BINARY OR OLD.delivered_at IS NOT NEW.delivered_at COLLATE BINARY OR OLD.delivered_revision_id IS NOT NEW.delivered_revision_id COLLATE BINARY
+                THEN 8 ELSE 0 END)
+            AS mask
+    ) AS changed
+    WHERE changed.mask <> 0
+    ON CONFLICT (table_id, row_key) DO UPDATE SET mask = mask | excluded.mask;
+END;
+
+CREATE TRIGGER sync_capture_chat_work_assignment_inputs_delete
+AFTER DELETE ON chat_work_assignment_inputs
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    VALUES (396, OLD.id, 0, 0, 1, CAST(unixepoch('subsec') * 1000 AS INTEGER))
+    ON CONFLICT (table_id, row_key) DO UPDATE SET deleted = 1;
+END;
+
+CREATE TRIGGER sync_values_chat_participant_reference_targets_insert
+BEFORE INSERT ON chat_participant_reference_targets
+WHEN ((typeof(NEW.reference_id) = 'text' AND instr(CAST(NEW.reference_id AS BLOB), x'00') = 0 AND trim(NEW.reference_id) <> '' AND length(CAST(NEW.reference_id AS BLOB)) <= 128)
+    AND (NEW.participant_id IS NULL OR (typeof(NEW.participant_id) = 'text' AND instr(CAST(NEW.participant_id AS BLOB), x'00') = 0 AND trim(NEW.participant_id) <> '' AND length(CAST(NEW.participant_id AS BLOB)) <= 128))
+    AND (NEW.override_model_selection_schema_version IS NULL OR (typeof(NEW.override_model_selection_schema_version) = 'integer' AND NEW.override_model_selection_schema_version BETWEEN 1 AND 9223372036854775807))
+    AND (NEW.override_model_selection_data IS NULL OR (typeof(NEW.override_model_selection_data) = 'text' AND instr(CAST(NEW.override_model_selection_data AS BLOB), x'00') = 0 AND length(NEW.override_model_selection_data) <= 16384 AND length(CAST(NEW.override_model_selection_data AS BLOB)) <= 262144))) IS NOT 1
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row values are invalid');
+END;
+
+CREATE TRIGGER sync_values_chat_participant_reference_targets_update
+BEFORE UPDATE OF participant_id, override_model_selection_schema_version, override_model_selection_data ON chat_participant_reference_targets
+WHEN ((NEW.participant_id IS NULL OR (typeof(NEW.participant_id) = 'text' AND instr(CAST(NEW.participant_id AS BLOB), x'00') = 0 AND trim(NEW.participant_id) <> '' AND length(CAST(NEW.participant_id AS BLOB)) <= 128))
+    AND (NEW.override_model_selection_schema_version IS NULL OR (typeof(NEW.override_model_selection_schema_version) = 'integer' AND NEW.override_model_selection_schema_version BETWEEN 1 AND 9223372036854775807))
+    AND (NEW.override_model_selection_data IS NULL OR (typeof(NEW.override_model_selection_data) = 'text' AND instr(CAST(NEW.override_model_selection_data AS BLOB), x'00') = 0 AND length(NEW.override_model_selection_data) <= 16384 AND length(CAST(NEW.override_model_selection_data AS BLOB)) <= 262144))) IS NOT 1
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row values are invalid');
+END;
+
+CREATE TRIGGER sync_immutable_chat_participant_reference_targets
+BEFORE UPDATE OF reference_id, participant_id, override_model_selection_schema_version, override_model_selection_data ON chat_participant_reference_targets
+WHEN OLD.reference_id IS NOT NEW.reference_id COLLATE BINARY
+    OR ((OLD.participant_id IS NOT NEW.participant_id COLLATE BINARY OR OLD.override_model_selection_schema_version IS NOT NEW.override_model_selection_schema_version OR OLD.override_model_selection_data IS NOT NEW.override_model_selection_data COLLATE BINARY) AND (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0)
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row keys and creation times cannot change');
+END;
+
+CREATE TRIGGER sync_recreate_chat_participant_reference_targets
+BEFORE INSERT ON chat_participant_reference_targets
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+    AND EXISTS (SELECT 1 FROM sync_rows WHERE table_id = 377 AND row_key = NEW.reference_id)
+    AND NOT EXISTS (SELECT 1 FROM chat_participant_reference_targets WHERE reference_id = NEW.reference_id)
+BEGIN
+    SELECT RAISE(ABORT, 'A published row key cannot be created again');
+END;
+
+CREATE TRIGGER sync_capture_chat_participant_reference_targets_insert
+AFTER INSERT ON chat_participant_reference_targets
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    VALUES (377, NEW.reference_id, 1, 1, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER))
+    ON CONFLICT (table_id, row_key) DO UPDATE SET
+        mask = mask | excluded.mask, created = 1, deleted = 0;
+END;
+
+CREATE TRIGGER sync_capture_chat_participant_reference_targets_update
+AFTER UPDATE ON chat_participant_reference_targets
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    SELECT 377, NEW.reference_id, changed.mask, 0, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER)
+    FROM (
+        SELECT
+            0
+            AS mask
+    ) AS changed
+    WHERE changed.mask <> 0
+    ON CONFLICT (table_id, row_key) DO UPDATE SET mask = mask | excluded.mask;
+END;
+
+CREATE TRIGGER sync_capture_chat_participant_reference_targets_delete
+AFTER DELETE ON chat_participant_reference_targets
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    VALUES (377, OLD.reference_id, 0, 0, 1, CAST(unixepoch('subsec') * 1000 AS INTEGER))
+    ON CONFLICT (table_id, row_key) DO UPDATE SET deleted = 1;
+END;
+
+CREATE TRIGGER chat_work_assignment_delegation_insert
+BEFORE INSERT ON chat_work_assignments
+WHEN (
+    NEW.delegation_depth = 0
+    AND (
+        NEW.parent_assignment_id IS NOT NULL
+        OR NEW.delegation_objective IS NOT NULL
+        OR NEW.delegation_expected_result IS NOT NULL
+        OR NEW.delegation_folder_ceiling IS NOT NULL
+    )
+) OR (
+    NEW.delegation_depth <> 0
+    AND (
+        NEW.parent_assignment_id IS NULL
+        OR NEW.delegation_objective IS NULL
+        OR NEW.delegation_expected_result IS NULL
+        OR NEW.delegation_folder_ceiling IS NULL
+        OR NEW.parent_assignment_id = NEW.id
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'A delegated assignment needs every delegation field and another parent');
+END;
+
+CREATE TRIGGER chat_work_assignment_delegation_depth_insert
+BEFORE INSERT ON chat_work_assignments
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+    AND NEW.delegation_depth <> 0
+    AND EXISTS (
+        SELECT 1 FROM chat_work_assignments parent
+        WHERE parent.id = NEW.parent_assignment_id
+          AND parent.delegation_depth + 1 <> NEW.delegation_depth
+    )
+BEGIN
+    SELECT RAISE(ABORT, 'A delegated assignment must sit one level below its parent');
+END;
+
+CREATE TRIGGER sync_values_chat_work_assignments_insert
+BEFORE INSERT ON chat_work_assignments
+WHEN ((typeof(NEW.id) = 'text' AND instr(CAST(NEW.id AS BLOB), x'00') = 0 AND trim(NEW.id) <> '' AND length(CAST(NEW.id AS BLOB)) <= 128)
+    AND (NEW.reply_thread_id IS NULL OR (typeof(NEW.reply_thread_id) = 'text' AND instr(CAST(NEW.reply_thread_id AS BLOB), x'00') = 0 AND trim(NEW.reply_thread_id) <> '' AND length(CAST(NEW.reply_thread_id AS BLOB)) <= 128))
+    AND (NEW.teammate_id IS NULL OR (typeof(NEW.teammate_id) = 'text' AND instr(CAST(NEW.teammate_id AS BLOB), x'00') = 0 AND trim(NEW.teammate_id) <> '' AND length(CAST(NEW.teammate_id AS BLOB)) <= 128))
+    AND (NEW.triggering_message_item_id IS NULL OR (typeof(NEW.triggering_message_item_id) = 'text' AND instr(CAST(NEW.triggering_message_item_id AS BLOB), x'00') = 0 AND trim(NEW.triggering_message_item_id) <> '' AND length(CAST(NEW.triggering_message_item_id AS BLOB)) <= 128))
+    AND (NEW.executing_device_id IS NULL OR (typeof(NEW.executing_device_id) = 'text' AND instr(CAST(NEW.executing_device_id AS BLOB), x'00') = 0 AND length(NEW.executing_device_id) <= 160 AND length(CAST(NEW.executing_device_id AS BLOB)) <= 262144))
+    AND (typeof(NEW.created_at) = 'text' AND instr(CAST(NEW.created_at AS BLOB), x'00') = 0 AND trim(NEW.created_at) <> '' AND length(CAST(NEW.created_at AS BLOB)) <= 64)
+    AND (NEW.override_model_selection_schema_version IS NULL OR (typeof(NEW.override_model_selection_schema_version) = 'integer' AND NEW.override_model_selection_schema_version BETWEEN 1 AND 9223372036854775807))
+    AND (NEW.override_model_selection_data IS NULL OR (typeof(NEW.override_model_selection_data) = 'text' AND instr(CAST(NEW.override_model_selection_data AS BLOB), x'00') = 0 AND length(NEW.override_model_selection_data) <= 16384 AND length(CAST(NEW.override_model_selection_data AS BLOB)) <= 262144))
+    AND (NEW.previous_assignment_id IS NULL OR (typeof(NEW.previous_assignment_id) = 'text' AND instr(CAST(NEW.previous_assignment_id AS BLOB), x'00') = 0 AND trim(NEW.previous_assignment_id) <> '' AND length(CAST(NEW.previous_assignment_id AS BLOB)) <= 128))
+    AND (typeof(NEW.state) = 'text' AND instr(CAST(NEW.state AS BLOB), x'00') = 0 AND length(NEW.state) <= 32 AND length(CAST(NEW.state AS BLOB)) <= 262144)
+    AND (NEW.state_reason IS NULL OR (typeof(NEW.state_reason) = 'text' AND instr(CAST(NEW.state_reason AS BLOB), x'00') = 0 AND length(NEW.state_reason) <= 4000 AND length(CAST(NEW.state_reason AS BLOB)) <= 262144))
+    AND (NEW.settled_at IS NULL OR (typeof(NEW.settled_at) = 'text' AND instr(CAST(NEW.settled_at AS BLOB), x'00') = 0 AND trim(NEW.settled_at) <> '' AND length(CAST(NEW.settled_at AS BLOB)) <= 64))
+    AND (NEW.review_outcome IS NULL OR (typeof(NEW.review_outcome) = 'text' AND instr(CAST(NEW.review_outcome AS BLOB), x'00') = 0 AND length(NEW.review_outcome) <= 32 AND length(CAST(NEW.review_outcome AS BLOB)) <= 262144))
+    AND (NEW.reviewed_at IS NULL OR (typeof(NEW.reviewed_at) = 'text' AND instr(CAST(NEW.reviewed_at AS BLOB), x'00') = 0 AND trim(NEW.reviewed_at) <> '' AND length(CAST(NEW.reviewed_at AS BLOB)) <= 64))
+    AND (NEW.reviewed_by_participant_id IS NULL OR (typeof(NEW.reviewed_by_participant_id) = 'text' AND instr(CAST(NEW.reviewed_by_participant_id AS BLOB), x'00') = 0 AND trim(NEW.reviewed_by_participant_id) <> '' AND length(CAST(NEW.reviewed_by_participant_id AS BLOB)) <= 128))
+    AND (typeof(NEW.updated_at) = 'text' AND instr(CAST(NEW.updated_at AS BLOB), x'00') = 0 AND trim(NEW.updated_at) <> '' AND length(CAST(NEW.updated_at AS BLOB)) <= 64)
+    AND (NEW.parent_assignment_id IS NULL OR (typeof(NEW.parent_assignment_id) = 'text' AND instr(CAST(NEW.parent_assignment_id AS BLOB), x'00') = 0 AND trim(NEW.parent_assignment_id) <> '' AND length(CAST(NEW.parent_assignment_id AS BLOB)) <= 128))
+    AND (typeof(NEW.delegation_depth) = 'integer' AND NEW.delegation_depth BETWEEN 0 AND 2)
+    AND (NEW.delegation_objective IS NULL OR (typeof(NEW.delegation_objective) = 'text' AND instr(CAST(NEW.delegation_objective AS BLOB), x'00') = 0 AND length(NEW.delegation_objective) <= 4000 AND length(CAST(NEW.delegation_objective AS BLOB)) <= 262144))
+    AND (NEW.delegation_expected_result IS NULL OR (typeof(NEW.delegation_expected_result) = 'text' AND instr(CAST(NEW.delegation_expected_result AS BLOB), x'00') = 0 AND length(NEW.delegation_expected_result) <= 2000 AND length(CAST(NEW.delegation_expected_result AS BLOB)) <= 262144))
+    AND (NEW.delegation_folder_ceiling IS NULL OR (typeof(NEW.delegation_folder_ceiling) = 'text' AND instr(CAST(NEW.delegation_folder_ceiling AS BLOB), x'00') = 0 AND length(NEW.delegation_folder_ceiling) <= 16384 AND length(CAST(NEW.delegation_folder_ceiling AS BLOB)) <= 262144))) IS NOT 1
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row values are invalid');
+END;
+
+CREATE TRIGGER sync_values_chat_work_assignments_update
+BEFORE UPDATE OF reply_thread_id, teammate_id, triggering_message_item_id, executing_device_id, created_at, override_model_selection_schema_version, override_model_selection_data, previous_assignment_id, state, state_reason, settled_at, review_outcome, reviewed_at, reviewed_by_participant_id, updated_at, parent_assignment_id, delegation_depth, delegation_objective, delegation_expected_result, delegation_folder_ceiling ON chat_work_assignments
+WHEN ((NEW.reply_thread_id IS NULL OR (typeof(NEW.reply_thread_id) = 'text' AND instr(CAST(NEW.reply_thread_id AS BLOB), x'00') = 0 AND trim(NEW.reply_thread_id) <> '' AND length(CAST(NEW.reply_thread_id AS BLOB)) <= 128))
+    AND (NEW.teammate_id IS NULL OR (typeof(NEW.teammate_id) = 'text' AND instr(CAST(NEW.teammate_id AS BLOB), x'00') = 0 AND trim(NEW.teammate_id) <> '' AND length(CAST(NEW.teammate_id AS BLOB)) <= 128))
+    AND (NEW.triggering_message_item_id IS NULL OR (typeof(NEW.triggering_message_item_id) = 'text' AND instr(CAST(NEW.triggering_message_item_id AS BLOB), x'00') = 0 AND trim(NEW.triggering_message_item_id) <> '' AND length(CAST(NEW.triggering_message_item_id AS BLOB)) <= 128))
+    AND (NEW.executing_device_id IS NULL OR (typeof(NEW.executing_device_id) = 'text' AND instr(CAST(NEW.executing_device_id AS BLOB), x'00') = 0 AND length(NEW.executing_device_id) <= 160 AND length(CAST(NEW.executing_device_id AS BLOB)) <= 262144))
+    AND (typeof(NEW.created_at) = 'text' AND instr(CAST(NEW.created_at AS BLOB), x'00') = 0 AND trim(NEW.created_at) <> '' AND length(CAST(NEW.created_at AS BLOB)) <= 64)
+    AND (NEW.override_model_selection_schema_version IS NULL OR (typeof(NEW.override_model_selection_schema_version) = 'integer' AND NEW.override_model_selection_schema_version BETWEEN 1 AND 9223372036854775807))
+    AND (NEW.override_model_selection_data IS NULL OR (typeof(NEW.override_model_selection_data) = 'text' AND instr(CAST(NEW.override_model_selection_data AS BLOB), x'00') = 0 AND length(NEW.override_model_selection_data) <= 16384 AND length(CAST(NEW.override_model_selection_data AS BLOB)) <= 262144))
+    AND (NEW.previous_assignment_id IS NULL OR (typeof(NEW.previous_assignment_id) = 'text' AND instr(CAST(NEW.previous_assignment_id AS BLOB), x'00') = 0 AND trim(NEW.previous_assignment_id) <> '' AND length(CAST(NEW.previous_assignment_id AS BLOB)) <= 128))
+    AND (typeof(NEW.state) = 'text' AND instr(CAST(NEW.state AS BLOB), x'00') = 0 AND length(NEW.state) <= 32 AND length(CAST(NEW.state AS BLOB)) <= 262144)
+    AND (NEW.state_reason IS NULL OR (typeof(NEW.state_reason) = 'text' AND instr(CAST(NEW.state_reason AS BLOB), x'00') = 0 AND length(NEW.state_reason) <= 4000 AND length(CAST(NEW.state_reason AS BLOB)) <= 262144))
+    AND (NEW.settled_at IS NULL OR (typeof(NEW.settled_at) = 'text' AND instr(CAST(NEW.settled_at AS BLOB), x'00') = 0 AND trim(NEW.settled_at) <> '' AND length(CAST(NEW.settled_at AS BLOB)) <= 64))
+    AND (NEW.review_outcome IS NULL OR (typeof(NEW.review_outcome) = 'text' AND instr(CAST(NEW.review_outcome AS BLOB), x'00') = 0 AND length(NEW.review_outcome) <= 32 AND length(CAST(NEW.review_outcome AS BLOB)) <= 262144))
+    AND (NEW.reviewed_at IS NULL OR (typeof(NEW.reviewed_at) = 'text' AND instr(CAST(NEW.reviewed_at AS BLOB), x'00') = 0 AND trim(NEW.reviewed_at) <> '' AND length(CAST(NEW.reviewed_at AS BLOB)) <= 64))
+    AND (NEW.reviewed_by_participant_id IS NULL OR (typeof(NEW.reviewed_by_participant_id) = 'text' AND instr(CAST(NEW.reviewed_by_participant_id AS BLOB), x'00') = 0 AND trim(NEW.reviewed_by_participant_id) <> '' AND length(CAST(NEW.reviewed_by_participant_id AS BLOB)) <= 128))
+    AND (typeof(NEW.updated_at) = 'text' AND instr(CAST(NEW.updated_at AS BLOB), x'00') = 0 AND trim(NEW.updated_at) <> '' AND length(CAST(NEW.updated_at AS BLOB)) <= 64)
+    AND (NEW.parent_assignment_id IS NULL OR (typeof(NEW.parent_assignment_id) = 'text' AND instr(CAST(NEW.parent_assignment_id AS BLOB), x'00') = 0 AND trim(NEW.parent_assignment_id) <> '' AND length(CAST(NEW.parent_assignment_id AS BLOB)) <= 128))
+    AND (typeof(NEW.delegation_depth) = 'integer' AND NEW.delegation_depth BETWEEN 0 AND 2)
+    AND (NEW.delegation_objective IS NULL OR (typeof(NEW.delegation_objective) = 'text' AND instr(CAST(NEW.delegation_objective AS BLOB), x'00') = 0 AND length(NEW.delegation_objective) <= 4000 AND length(CAST(NEW.delegation_objective AS BLOB)) <= 262144))
+    AND (NEW.delegation_expected_result IS NULL OR (typeof(NEW.delegation_expected_result) = 'text' AND instr(CAST(NEW.delegation_expected_result AS BLOB), x'00') = 0 AND length(NEW.delegation_expected_result) <= 2000 AND length(CAST(NEW.delegation_expected_result AS BLOB)) <= 262144))
+    AND (NEW.delegation_folder_ceiling IS NULL OR (typeof(NEW.delegation_folder_ceiling) = 'text' AND instr(CAST(NEW.delegation_folder_ceiling AS BLOB), x'00') = 0 AND length(NEW.delegation_folder_ceiling) <= 16384 AND length(CAST(NEW.delegation_folder_ceiling AS BLOB)) <= 262144))) IS NOT 1
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row values are invalid');
+END;
+
+CREATE TRIGGER sync_immutable_chat_work_assignments
+BEFORE UPDATE OF id, reply_thread_id, teammate_id, triggering_message_item_id, executing_device_id, created_at, override_model_selection_schema_version, override_model_selection_data, parent_assignment_id, delegation_depth, delegation_objective, delegation_expected_result, delegation_folder_ceiling ON chat_work_assignments
+WHEN OLD.id IS NOT NEW.id COLLATE BINARY
+    OR ((OLD.reply_thread_id IS NOT NEW.reply_thread_id COLLATE BINARY OR OLD.teammate_id IS NOT NEW.teammate_id COLLATE BINARY OR OLD.triggering_message_item_id IS NOT NEW.triggering_message_item_id COLLATE BINARY OR OLD.executing_device_id IS NOT NEW.executing_device_id COLLATE BINARY OR OLD.created_at IS NOT NEW.created_at COLLATE BINARY OR OLD.override_model_selection_schema_version IS NOT NEW.override_model_selection_schema_version OR OLD.override_model_selection_data IS NOT NEW.override_model_selection_data COLLATE BINARY OR OLD.parent_assignment_id IS NOT NEW.parent_assignment_id COLLATE BINARY OR OLD.delegation_depth IS NOT NEW.delegation_depth OR OLD.delegation_objective IS NOT NEW.delegation_objective COLLATE BINARY OR OLD.delegation_expected_result IS NOT NEW.delegation_expected_result COLLATE BINARY OR OLD.delegation_folder_ceiling IS NOT NEW.delegation_folder_ceiling COLLATE BINARY) AND (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0)
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row keys and creation times cannot change');
+END;
+
+CREATE TRIGGER sync_capture_chat_work_assignments_insert
+AFTER INSERT ON chat_work_assignments
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    VALUES (395, NEW.id, 31, 1, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER))
+    ON CONFLICT (table_id, row_key) DO UPDATE SET
+        mask = mask | excluded.mask, created = 1, deleted = 0;
+END;
+
+CREATE TRIGGER sync_values_chat_work_semantic_updates_insert
+BEFORE INSERT ON chat_work_semantic_updates
+WHEN ((typeof(NEW.item_id) = 'text' AND instr(CAST(NEW.item_id AS BLOB), x'00') = 0 AND trim(NEW.item_id) <> '' AND length(CAST(NEW.item_id AS BLOB)) <= 128)
+    AND (NEW.assignment_id IS NULL OR (typeof(NEW.assignment_id) = 'text' AND instr(CAST(NEW.assignment_id AS BLOB), x'00') = 0 AND trim(NEW.assignment_id) <> '' AND length(CAST(NEW.assignment_id AS BLOB)) <= 128))
+    AND (typeof(NEW.update_kind) = 'text' AND instr(CAST(NEW.update_kind AS BLOB), x'00') = 0 AND length(NEW.update_kind) <= 32 AND length(CAST(NEW.update_kind AS BLOB)) <= 262144)
+    AND (typeof(NEW.payload_schema_version) = 'integer' AND NEW.payload_schema_version BETWEEN 1 AND 9223372036854775807)
+    AND (typeof(NEW.payload_data) = 'text' AND instr(CAST(NEW.payload_data AS BLOB), x'00') = 0 AND length(NEW.payload_data) <= 196608 AND length(CAST(NEW.payload_data AS BLOB)) <= 262144)
+    AND (typeof(NEW.created_at) = 'text' AND instr(CAST(NEW.created_at AS BLOB), x'00') = 0 AND trim(NEW.created_at) <> '' AND length(CAST(NEW.created_at AS BLOB)) <= 64)) IS NOT 1
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row values are invalid');
+END;
+
+CREATE TRIGGER sync_values_chat_work_semantic_updates_update
+BEFORE UPDATE OF assignment_id, update_kind, payload_schema_version, payload_data, created_at ON chat_work_semantic_updates
+WHEN ((NEW.assignment_id IS NULL OR (typeof(NEW.assignment_id) = 'text' AND instr(CAST(NEW.assignment_id AS BLOB), x'00') = 0 AND trim(NEW.assignment_id) <> '' AND length(CAST(NEW.assignment_id AS BLOB)) <= 128))
+    AND (typeof(NEW.update_kind) = 'text' AND instr(CAST(NEW.update_kind AS BLOB), x'00') = 0 AND length(NEW.update_kind) <= 32 AND length(CAST(NEW.update_kind AS BLOB)) <= 262144)
+    AND (typeof(NEW.payload_schema_version) = 'integer' AND NEW.payload_schema_version BETWEEN 1 AND 9223372036854775807)
+    AND (typeof(NEW.payload_data) = 'text' AND instr(CAST(NEW.payload_data AS BLOB), x'00') = 0 AND length(NEW.payload_data) <= 196608 AND length(CAST(NEW.payload_data AS BLOB)) <= 262144)
+    AND (typeof(NEW.created_at) = 'text' AND instr(CAST(NEW.created_at AS BLOB), x'00') = 0 AND trim(NEW.created_at) <> '' AND length(CAST(NEW.created_at AS BLOB)) <= 64)) IS NOT 1
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row values are invalid');
+END;
+
+CREATE TRIGGER sync_immutable_chat_work_semantic_updates
+BEFORE UPDATE OF item_id, assignment_id, update_kind, payload_schema_version, payload_data, created_at ON chat_work_semantic_updates
+WHEN OLD.item_id IS NOT NEW.item_id COLLATE BINARY
+    OR ((OLD.assignment_id IS NOT NEW.assignment_id COLLATE BINARY OR OLD.update_kind IS NOT NEW.update_kind COLLATE BINARY OR OLD.payload_schema_version IS NOT NEW.payload_schema_version OR OLD.payload_data IS NOT NEW.payload_data COLLATE BINARY OR OLD.created_at IS NOT NEW.created_at COLLATE BINARY) AND (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0)
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row keys and creation times cannot change');
+END;
+
+CREATE TRIGGER sync_recreate_chat_work_semantic_updates
+BEFORE INSERT ON chat_work_semantic_updates
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+    AND EXISTS (SELECT 1 FROM sync_rows WHERE table_id = 397 AND row_key = NEW.item_id)
+    AND NOT EXISTS (SELECT 1 FROM chat_work_semantic_updates WHERE item_id = NEW.item_id)
+BEGIN
+    SELECT RAISE(ABORT, 'A published row key cannot be created again');
+END;
+
+CREATE TRIGGER sync_capture_chat_work_semantic_updates_insert
+AFTER INSERT ON chat_work_semantic_updates
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    VALUES (397, NEW.item_id, 1, 1, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER))
+    ON CONFLICT (table_id, row_key) DO UPDATE SET
+        mask = mask | excluded.mask, created = 1, deleted = 0;
+END;
+
+CREATE TRIGGER sync_capture_chat_work_semantic_updates_update
+AFTER UPDATE ON chat_work_semantic_updates
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    SELECT 397, NEW.item_id, changed.mask, 0, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER)
+    FROM (
+        SELECT
+            0
+            AS mask
+    ) AS changed
+    WHERE changed.mask <> 0
+    ON CONFLICT (table_id, row_key) DO UPDATE SET mask = mask | excluded.mask;
+END;
+
+CREATE TRIGGER sync_capture_chat_work_semantic_updates_delete
+AFTER DELETE ON chat_work_semantic_updates
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    VALUES (397, OLD.item_id, 0, 0, 1, CAST(unixepoch('subsec') * 1000 AS INTEGER))
+    ON CONFLICT (table_id, row_key) DO UPDATE SET deleted = 1;
+END;
+
+CREATE TRIGGER sync_values_chat_scheduled_message_recurrences_insert
+BEFORE INSERT ON chat_scheduled_message_recurrences
+WHEN ((typeof(NEW.id) = 'text' AND instr(CAST(NEW.id AS BLOB), x'00') = 0 AND trim(NEW.id) <> '' AND length(CAST(NEW.id AS BLOB)) <= 128)
+    AND (NEW.scheduled_message_id IS NULL OR (typeof(NEW.scheduled_message_id) = 'text' AND instr(CAST(NEW.scheduled_message_id AS BLOB), x'00') = 0 AND trim(NEW.scheduled_message_id) <> '' AND length(CAST(NEW.scheduled_message_id AS BLOB)) <= 128))
+    AND (typeof(NEW.created_at) = 'text' AND instr(CAST(NEW.created_at AS BLOB), x'00') = 0 AND trim(NEW.created_at) <> '' AND length(CAST(NEW.created_at AS BLOB)) <= 64)
+    AND (typeof(NEW.rule_kind) = 'text' AND instr(CAST(NEW.rule_kind AS BLOB), x'00') = 0 AND length(NEW.rule_kind) <= 32 AND length(CAST(NEW.rule_kind AS BLOB)) <= 262144)
+    AND (NEW.interval_minutes IS NULL OR (typeof(NEW.interval_minutes) = 'integer' AND NEW.interval_minutes BETWEEN 60 AND 43200))
+    AND (NEW.local_minute IS NULL OR (typeof(NEW.local_minute) = 'integer' AND NEW.local_minute BETWEEN 0 AND 1439))
+    AND (NEW.weekdays_mask IS NULL OR (typeof(NEW.weekdays_mask) = 'integer' AND NEW.weekdays_mask BETWEEN 1 AND 127))
+    AND (typeof(NEW.time_zone) = 'text' AND instr(CAST(NEW.time_zone AS BLOB), x'00') = 0 AND length(trim(NEW.time_zone)) BETWEEN 1 AND 255 AND length(CAST(NEW.time_zone AS BLOB)) <= 262144)
+    AND (typeof(NEW.quiet_policy) = 'text' AND instr(CAST(NEW.quiet_policy AS BLOB), x'00') = 0 AND length(NEW.quiet_policy) <= 32 AND length(CAST(NEW.quiet_policy AS BLOB)) <= 262144)
+    AND (typeof(NEW.next_occurrence_at) = 'text' AND instr(CAST(NEW.next_occurrence_at AS BLOB), x'00') = 0 AND trim(NEW.next_occurrence_at) <> '' AND length(CAST(NEW.next_occurrence_at AS BLOB)) <= 64)
+    AND (typeof(NEW.fired_count) = 'integer' AND NEW.fired_count BETWEEN 0 AND 9223372036854775807)
+    AND (typeof(NEW.updated_at) = 'text' AND instr(CAST(NEW.updated_at AS BLOB), x'00') = 0 AND trim(NEW.updated_at) <> '' AND length(CAST(NEW.updated_at AS BLOB)) <= 64)) IS NOT 1
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row values are invalid');
+END;
+
+CREATE TRIGGER sync_values_chat_scheduled_message_recurrences_update
+BEFORE UPDATE OF scheduled_message_id, created_at, rule_kind, interval_minutes, local_minute, weekdays_mask, time_zone, quiet_policy, next_occurrence_at, fired_count, updated_at ON chat_scheduled_message_recurrences
+WHEN ((NEW.scheduled_message_id IS NULL OR (typeof(NEW.scheduled_message_id) = 'text' AND instr(CAST(NEW.scheduled_message_id AS BLOB), x'00') = 0 AND trim(NEW.scheduled_message_id) <> '' AND length(CAST(NEW.scheduled_message_id AS BLOB)) <= 128))
+    AND (typeof(NEW.created_at) = 'text' AND instr(CAST(NEW.created_at AS BLOB), x'00') = 0 AND trim(NEW.created_at) <> '' AND length(CAST(NEW.created_at AS BLOB)) <= 64)
+    AND (typeof(NEW.rule_kind) = 'text' AND instr(CAST(NEW.rule_kind AS BLOB), x'00') = 0 AND length(NEW.rule_kind) <= 32 AND length(CAST(NEW.rule_kind AS BLOB)) <= 262144)
+    AND (NEW.interval_minutes IS NULL OR (typeof(NEW.interval_minutes) = 'integer' AND NEW.interval_minutes BETWEEN 60 AND 43200))
+    AND (NEW.local_minute IS NULL OR (typeof(NEW.local_minute) = 'integer' AND NEW.local_minute BETWEEN 0 AND 1439))
+    AND (NEW.weekdays_mask IS NULL OR (typeof(NEW.weekdays_mask) = 'integer' AND NEW.weekdays_mask BETWEEN 1 AND 127))
+    AND (typeof(NEW.time_zone) = 'text' AND instr(CAST(NEW.time_zone AS BLOB), x'00') = 0 AND length(trim(NEW.time_zone)) BETWEEN 1 AND 255 AND length(CAST(NEW.time_zone AS BLOB)) <= 262144)
+    AND (typeof(NEW.quiet_policy) = 'text' AND instr(CAST(NEW.quiet_policy AS BLOB), x'00') = 0 AND length(NEW.quiet_policy) <= 32 AND length(CAST(NEW.quiet_policy AS BLOB)) <= 262144)
+    AND (typeof(NEW.next_occurrence_at) = 'text' AND instr(CAST(NEW.next_occurrence_at AS BLOB), x'00') = 0 AND trim(NEW.next_occurrence_at) <> '' AND length(CAST(NEW.next_occurrence_at AS BLOB)) <= 64)
+    AND (typeof(NEW.fired_count) = 'integer' AND NEW.fired_count BETWEEN 0 AND 9223372036854775807)
+    AND (typeof(NEW.updated_at) = 'text' AND instr(CAST(NEW.updated_at AS BLOB), x'00') = 0 AND trim(NEW.updated_at) <> '' AND length(CAST(NEW.updated_at AS BLOB)) <= 64)) IS NOT 1
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row values are invalid');
+END;
+
+CREATE TRIGGER sync_immutable_chat_scheduled_message_recurrences
+BEFORE UPDATE OF id, scheduled_message_id ON chat_scheduled_message_recurrences
+WHEN OLD.id IS NOT NEW.id COLLATE BINARY
+    OR ((OLD.scheduled_message_id IS NOT NEW.scheduled_message_id COLLATE BINARY) AND (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0)
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row keys and creation times cannot change');
+END;
+
+CREATE TRIGGER sync_capture_chat_scheduled_message_recurrences_insert
+AFTER INSERT ON chat_scheduled_message_recurrences
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    VALUES (401, NEW.id, 63, 1, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER))
+    ON CONFLICT (table_id, row_key) DO UPDATE SET
+        mask = mask | excluded.mask, created = 1, deleted = 0;
+END;
+
+CREATE TRIGGER sync_capture_chat_scheduled_message_recurrences_update
+AFTER UPDATE ON chat_scheduled_message_recurrences
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    SELECT 401, NEW.id, changed.mask, 0, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER)
+    FROM (
+        SELECT
+            (CASE WHEN OLD.created_at IS NOT NEW.created_at COLLATE BINARY
+                THEN 2 ELSE 0 END)
+            | (CASE WHEN OLD.rule_kind IS NOT NEW.rule_kind COLLATE BINARY OR OLD.interval_minutes IS NOT NEW.interval_minutes OR OLD.local_minute IS NOT NEW.local_minute OR OLD.weekdays_mask IS NOT NEW.weekdays_mask OR OLD.time_zone IS NOT NEW.time_zone COLLATE BINARY OR OLD.quiet_policy IS NOT NEW.quiet_policy COLLATE BINARY
+                THEN 4 ELSE 0 END)
+            | (CASE WHEN OLD.next_occurrence_at IS NOT NEW.next_occurrence_at COLLATE BINARY OR OLD.fired_count IS NOT NEW.fired_count
+                THEN 8 ELSE 0 END)
+            | (CASE WHEN OLD.updated_at IS NOT NEW.updated_at COLLATE BINARY
+                THEN 16 ELSE 0 END)
+            AS mask
+    ) AS changed
+    WHERE changed.mask <> 0
+    ON CONFLICT (table_id, row_key) DO UPDATE SET mask = mask | excluded.mask;
+END;
+
+CREATE TRIGGER sync_capture_chat_scheduled_message_recurrences_delete
+AFTER DELETE ON chat_scheduled_message_recurrences
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    VALUES (401, OLD.id, 0, 0, 1, CAST(unixepoch('subsec') * 1000 AS INTEGER))
+    ON CONFLICT (table_id, row_key) DO UPDATE SET deleted = 1;
+END;
+
+CREATE TRIGGER chat_channel_notes_editor_is_person_insert
+BEFORE INSERT ON chat_channel_notes
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+    AND NOT EXISTS (
+        SELECT 1 FROM chat_participants participant
+        WHERE participant.id = NEW.edited_by_participant_id
+          AND participant.participant_kind IN ('local_user', 'human')
+    )
+BEGIN
+    SELECT RAISE(ABORT, 'Channel notes are edited by people');
+END;
+
+CREATE TRIGGER chat_channel_notes_editor_is_person_update
+BEFORE UPDATE OF body, edited_by_participant_id, deleted_at ON chat_channel_notes
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+    AND NOT (
+        NEW.edited_by_participant_id IS NULL
+        AND OLD.edited_by_participant_id IS NOT NULL
+        AND NEW.body IS OLD.body
+        AND NEW.deleted_at IS OLD.deleted_at
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM chat_participants participant
+        WHERE participant.id = NEW.edited_by_participant_id
+          AND participant.participant_kind IN ('local_user', 'human')
+    )
+BEGIN
+    SELECT RAISE(ABORT, 'Channel notes are edited by people');
+END;
+
+CREATE TRIGGER sync_values_chat_channel_notes_insert
+BEFORE INSERT ON chat_channel_notes
+WHEN ((typeof(NEW.id) = 'text' AND instr(CAST(NEW.id AS BLOB), x'00') = 0 AND trim(NEW.id) <> '' AND length(CAST(NEW.id AS BLOB)) <= 128)
+    AND (NEW.channel_id IS NULL OR (typeof(NEW.channel_id) = 'text' AND instr(CAST(NEW.channel_id AS BLOB), x'00') = 0 AND trim(NEW.channel_id) <> '' AND length(CAST(NEW.channel_id AS BLOB)) <= 128))
+    AND (typeof(NEW.created_at) = 'text' AND instr(CAST(NEW.created_at AS BLOB), x'00') = 0 AND trim(NEW.created_at) <> '' AND length(CAST(NEW.created_at AS BLOB)) <= 64)
+    AND (NEW.source_item_id IS NULL OR (typeof(NEW.source_item_id) = 'text' AND instr(CAST(NEW.source_item_id AS BLOB), x'00') = 0 AND trim(NEW.source_item_id) <> '' AND length(CAST(NEW.source_item_id AS BLOB)) <= 128))
+    AND (NEW.proposed_by_participant_id IS NULL OR (typeof(NEW.proposed_by_participant_id) = 'text' AND instr(CAST(NEW.proposed_by_participant_id AS BLOB), x'00') = 0 AND trim(NEW.proposed_by_participant_id) <> '' AND length(CAST(NEW.proposed_by_participant_id AS BLOB)) <= 128))
+    AND (typeof(NEW.body) = 'text' AND instr(CAST(NEW.body AS BLOB), x'00') = 0 AND length(trim(NEW.body)) BETWEEN 1 AND 1000 AND length(CAST(NEW.body AS BLOB)) <= 262144)
+    AND (NEW.edited_by_participant_id IS NULL OR (typeof(NEW.edited_by_participant_id) = 'text' AND instr(CAST(NEW.edited_by_participant_id AS BLOB), x'00') = 0 AND trim(NEW.edited_by_participant_id) <> '' AND length(CAST(NEW.edited_by_participant_id AS BLOB)) <= 128))
+    AND (NEW.deleted_at IS NULL OR (typeof(NEW.deleted_at) = 'text' AND instr(CAST(NEW.deleted_at AS BLOB), x'00') = 0 AND trim(NEW.deleted_at) <> '' AND length(CAST(NEW.deleted_at AS BLOB)) <= 64))
+    AND (typeof(NEW.updated_at) = 'text' AND instr(CAST(NEW.updated_at AS BLOB), x'00') = 0 AND trim(NEW.updated_at) <> '' AND length(CAST(NEW.updated_at AS BLOB)) <= 64)) IS NOT 1
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row values are invalid');
+END;
+
+CREATE TRIGGER sync_values_chat_channel_notes_update
+BEFORE UPDATE OF channel_id, created_at, source_item_id, proposed_by_participant_id, body, edited_by_participant_id, deleted_at, updated_at ON chat_channel_notes
+WHEN ((NEW.channel_id IS NULL OR (typeof(NEW.channel_id) = 'text' AND instr(CAST(NEW.channel_id AS BLOB), x'00') = 0 AND trim(NEW.channel_id) <> '' AND length(CAST(NEW.channel_id AS BLOB)) <= 128))
+    AND (typeof(NEW.created_at) = 'text' AND instr(CAST(NEW.created_at AS BLOB), x'00') = 0 AND trim(NEW.created_at) <> '' AND length(CAST(NEW.created_at AS BLOB)) <= 64)
+    AND (NEW.source_item_id IS NULL OR (typeof(NEW.source_item_id) = 'text' AND instr(CAST(NEW.source_item_id AS BLOB), x'00') = 0 AND trim(NEW.source_item_id) <> '' AND length(CAST(NEW.source_item_id AS BLOB)) <= 128))
+    AND (NEW.proposed_by_participant_id IS NULL OR (typeof(NEW.proposed_by_participant_id) = 'text' AND instr(CAST(NEW.proposed_by_participant_id AS BLOB), x'00') = 0 AND trim(NEW.proposed_by_participant_id) <> '' AND length(CAST(NEW.proposed_by_participant_id AS BLOB)) <= 128))
+    AND (typeof(NEW.body) = 'text' AND instr(CAST(NEW.body AS BLOB), x'00') = 0 AND length(trim(NEW.body)) BETWEEN 1 AND 1000 AND length(CAST(NEW.body AS BLOB)) <= 262144)
+    AND (NEW.edited_by_participant_id IS NULL OR (typeof(NEW.edited_by_participant_id) = 'text' AND instr(CAST(NEW.edited_by_participant_id AS BLOB), x'00') = 0 AND trim(NEW.edited_by_participant_id) <> '' AND length(CAST(NEW.edited_by_participant_id AS BLOB)) <= 128))
+    AND (NEW.deleted_at IS NULL OR (typeof(NEW.deleted_at) = 'text' AND instr(CAST(NEW.deleted_at AS BLOB), x'00') = 0 AND trim(NEW.deleted_at) <> '' AND length(CAST(NEW.deleted_at AS BLOB)) <= 64))
+    AND (typeof(NEW.updated_at) = 'text' AND instr(CAST(NEW.updated_at AS BLOB), x'00') = 0 AND trim(NEW.updated_at) <> '' AND length(CAST(NEW.updated_at AS BLOB)) <= 64)) IS NOT 1
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row values are invalid');
+END;
+
+CREATE TRIGGER sync_immutable_chat_channel_notes
+BEFORE UPDATE OF id, channel_id, created_at ON chat_channel_notes
+WHEN OLD.id IS NOT NEW.id COLLATE BINARY
+    OR ((OLD.channel_id IS NOT NEW.channel_id COLLATE BINARY OR OLD.created_at IS NOT NEW.created_at COLLATE BINARY) AND (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0)
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row keys and creation times cannot change');
+END;
+
+CREATE TRIGGER sync_recreate_chat_channel_notes
+BEFORE INSERT ON chat_channel_notes
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+    AND EXISTS (SELECT 1 FROM sync_rows WHERE table_id = 400 AND row_key = NEW.id)
+    AND NOT EXISTS (SELECT 1 FROM chat_channel_notes WHERE id = NEW.id)
+BEGIN
+    SELECT RAISE(ABORT, 'A published row key cannot be created again');
+END;
+
+CREATE TRIGGER sync_capture_chat_channel_notes_insert
+AFTER INSERT ON chat_channel_notes
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    VALUES (400, NEW.id, 31, 1, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER))
+    ON CONFLICT (table_id, row_key) DO UPDATE SET
+        mask = mask | excluded.mask, created = 1, deleted = 0;
+END;
+
+CREATE TRIGGER sync_capture_chat_channel_notes_update
+AFTER UPDATE ON chat_channel_notes
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    SELECT 400, NEW.id, changed.mask, 0, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER)
+    FROM (
+        SELECT
+            (CASE WHEN (OLD.source_item_id IS NOT NEW.source_item_id COLLATE BINARY
+                AND NOT (NEW.source_item_id IS NULL AND NOT EXISTS (SELECT 1 FROM chat_conversation_items WHERE id = OLD.source_item_id))) OR (OLD.proposed_by_participant_id IS NOT NEW.proposed_by_participant_id COLLATE BINARY
+                AND NOT (NEW.proposed_by_participant_id IS NULL AND NOT EXISTS (SELECT 1 FROM chat_participants WHERE id = OLD.proposed_by_participant_id)))
+                THEN 2 ELSE 0 END)
+            | (CASE WHEN OLD.body IS NOT NEW.body COLLATE BINARY OR (OLD.edited_by_participant_id IS NOT NEW.edited_by_participant_id COLLATE BINARY
+                AND NOT (NEW.edited_by_participant_id IS NULL AND NOT EXISTS (SELECT 1 FROM chat_participants WHERE id = OLD.edited_by_participant_id)))
+                THEN 4 ELSE 0 END)
+            | (CASE WHEN OLD.deleted_at IS NOT NEW.deleted_at COLLATE BINARY
+                THEN 8 ELSE 0 END)
+            | (CASE WHEN OLD.updated_at IS NOT NEW.updated_at COLLATE BINARY
+                THEN 16 ELSE 0 END)
+            AS mask
+    ) AS changed
+    WHERE changed.mask <> 0
+    ON CONFLICT (table_id, row_key) DO UPDATE SET mask = mask | excluded.mask;
+END;
+
+CREATE TRIGGER sync_capture_chat_channel_notes_delete
+AFTER DELETE ON chat_channel_notes
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    VALUES (400, OLD.id, 0, 0, 1, CAST(unixepoch('subsec') * 1000 AS INTEGER))
+    ON CONFLICT (table_id, row_key) DO UPDATE SET deleted = 1;
+END;
+
+CREATE TRIGGER chat_agent_run_usage_working_insert
+AFTER INSERT ON chat_agent_runs
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO chat_agent_run_usage (run_id, working_since, updated_at)
+    VALUES (
+        NEW.id,
+        CASE WHEN NEW.state = 'working' THEN NEW.updated_at ELSE NULL END,
+        NEW.updated_at
+    )
+    ON CONFLICT(run_id) DO NOTHING;
+END;
+
+CREATE TRIGGER chat_agent_run_usage_working_update
+AFTER UPDATE OF state ON chat_agent_runs
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+ AND OLD.state IS NOT NEW.state
+BEGIN
+    INSERT INTO chat_agent_run_usage (run_id, updated_at)
+    VALUES (NEW.id, NEW.updated_at)
+    ON CONFLICT(run_id) DO NOTHING;
+    UPDATE chat_agent_run_usage
+    SET working_seconds = working_seconds + CASE
+            WHEN working_since IS NOT NULL AND NEW.state <> 'working' THEN coalesce(max(0,
+                CAST(round((julianday(NEW.updated_at) - julianday(working_since)) * 86400)
+                    AS INTEGER)), 0)
+            ELSE 0
+        END,
+        working_since = CASE
+            WHEN NEW.state = 'working' THEN coalesce(working_since, NEW.updated_at)
+            ELSE NULL
+        END,
+        updated_at = NEW.updated_at
+    WHERE run_id = NEW.id;
+END;
+
+CREATE TRIGGER sync_values_chat_teammate_usage_daily_insert
+BEFORE INSERT ON chat_teammate_usage_daily
+WHEN ((typeof(NEW.id) = 'text' AND instr(CAST(NEW.id AS BLOB), x'00') = 0 AND trim(NEW.id) <> '' AND length(CAST(NEW.id AS BLOB)) <= 128)
+    AND (typeof(NEW.device_id) = 'text' AND instr(CAST(NEW.device_id AS BLOB), x'00') = 0 AND length(trim(NEW.device_id)) BETWEEN 1 AND 160 AND length(CAST(NEW.device_id AS BLOB)) <= 262144)
+    AND (NEW.teammate_id IS NULL OR (typeof(NEW.teammate_id) = 'text' AND instr(CAST(NEW.teammate_id AS BLOB), x'00') = 0 AND trim(NEW.teammate_id) <> '' AND length(CAST(NEW.teammate_id AS BLOB)) <= 128))
+    AND (typeof(NEW.local_date) = 'text' AND instr(CAST(NEW.local_date AS BLOB), x'00') = 0 AND length(NEW.local_date) <= 10 AND length(CAST(NEW.local_date AS BLOB)) <= 262144)
+    AND (typeof(NEW.counted_tokens) = 'integer' AND NEW.counted_tokens BETWEEN 0 AND 1000000000000)
+    AND (typeof(NEW.working_seconds) = 'integer' AND NEW.working_seconds BETWEEN 0 AND 8640000)
+    AND (typeof(NEW.run_count) = 'integer' AND NEW.run_count BETWEEN 0 AND 100000)) IS NOT 1
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row values are invalid');
+END;
+
+CREATE TRIGGER sync_values_chat_teammate_usage_daily_update
+BEFORE UPDATE OF device_id, teammate_id, local_date, counted_tokens, working_seconds, run_count ON chat_teammate_usage_daily
+WHEN ((typeof(NEW.device_id) = 'text' AND instr(CAST(NEW.device_id AS BLOB), x'00') = 0 AND length(trim(NEW.device_id)) BETWEEN 1 AND 160 AND length(CAST(NEW.device_id AS BLOB)) <= 262144)
+    AND (NEW.teammate_id IS NULL OR (typeof(NEW.teammate_id) = 'text' AND instr(CAST(NEW.teammate_id AS BLOB), x'00') = 0 AND trim(NEW.teammate_id) <> '' AND length(CAST(NEW.teammate_id AS BLOB)) <= 128))
+    AND (typeof(NEW.local_date) = 'text' AND instr(CAST(NEW.local_date AS BLOB), x'00') = 0 AND length(NEW.local_date) <= 10 AND length(CAST(NEW.local_date AS BLOB)) <= 262144)
+    AND (typeof(NEW.counted_tokens) = 'integer' AND NEW.counted_tokens BETWEEN 0 AND 1000000000000)
+    AND (typeof(NEW.working_seconds) = 'integer' AND NEW.working_seconds BETWEEN 0 AND 8640000)
+    AND (typeof(NEW.run_count) = 'integer' AND NEW.run_count BETWEEN 0 AND 100000)) IS NOT 1
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row values are invalid');
+END;
+
+CREATE TRIGGER sync_immutable_chat_teammate_usage_daily
+BEFORE UPDATE OF id, device_id, teammate_id, local_date ON chat_teammate_usage_daily
+WHEN OLD.id IS NOT NEW.id COLLATE BINARY
+    OR ((OLD.device_id IS NOT NEW.device_id COLLATE BINARY OR OLD.teammate_id IS NOT NEW.teammate_id COLLATE BINARY OR OLD.local_date IS NOT NEW.local_date COLLATE BINARY) AND (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0)
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row keys and creation times cannot change');
+END;
+
+CREATE TRIGGER sync_recreate_chat_teammate_usage_daily
+BEFORE INSERT ON chat_teammate_usage_daily
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+    AND EXISTS (SELECT 1 FROM sync_rows WHERE table_id = 399 AND row_key = NEW.id)
+    AND NOT EXISTS (SELECT 1 FROM chat_teammate_usage_daily WHERE id = NEW.id)
+BEGIN
+    SELECT RAISE(ABORT, 'A published row key cannot be created again');
+END;
+
+CREATE TRIGGER sync_capture_chat_teammate_usage_daily_insert
+AFTER INSERT ON chat_teammate_usage_daily
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    VALUES (399, NEW.id, 15, 1, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER))
+    ON CONFLICT (table_id, row_key) DO UPDATE SET
+        mask = mask | excluded.mask, created = 1, deleted = 0;
+END;
+
+CREATE TRIGGER sync_capture_chat_teammate_usage_daily_update
+AFTER UPDATE ON chat_teammate_usage_daily
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    SELECT 399, NEW.id, changed.mask, 0, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER)
+    FROM (
+        SELECT
+            (CASE WHEN OLD.counted_tokens IS NOT NEW.counted_tokens
+                THEN 2 ELSE 0 END)
+            | (CASE WHEN OLD.working_seconds IS NOT NEW.working_seconds
+                THEN 4 ELSE 0 END)
+            | (CASE WHEN OLD.run_count IS NOT NEW.run_count
+                THEN 8 ELSE 0 END)
+            AS mask
+    ) AS changed
+    WHERE changed.mask <> 0
+    ON CONFLICT (table_id, row_key) DO UPDATE SET mask = mask | excluded.mask;
+END;
+
+CREATE TRIGGER sync_capture_chat_teammate_usage_daily_delete
+AFTER DELETE ON chat_teammate_usage_daily
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    VALUES (399, OLD.id, 0, 0, 1, CAST(unixepoch('subsec') * 1000 AS INTEGER))
+    ON CONFLICT (table_id, row_key) DO UPDATE SET deleted = 1;
+END;
+
+CREATE TRIGGER sync_values_chat_teammate_policy_revisions_insert
+BEFORE INSERT ON chat_teammate_policy_revisions
+WHEN ((typeof(NEW.id) = 'text' AND instr(CAST(NEW.id AS BLOB), x'00') = 0 AND trim(NEW.id) <> '' AND length(CAST(NEW.id AS BLOB)) <= 128)
+    AND (NEW.teammate_id IS NULL OR (typeof(NEW.teammate_id) = 'text' AND instr(CAST(NEW.teammate_id AS BLOB), x'00') = 0 AND trim(NEW.teammate_id) <> '' AND length(CAST(NEW.teammate_id AS BLOB)) <= 128))
+    AND (typeof(NEW.provider_instance_id) = 'text' AND instr(CAST(NEW.provider_instance_id AS BLOB), x'00') = 0 AND length(NEW.provider_instance_id) <= 1024 AND length(CAST(NEW.provider_instance_id AS BLOB)) <= 262144)
+    AND (typeof(NEW.model_selection_schema_version) = 'integer' AND NEW.model_selection_schema_version BETWEEN 1 AND 9223372036854775807)
+    AND (typeof(NEW.model_selection_data) = 'text' AND instr(CAST(NEW.model_selection_data AS BLOB), x'00') = 0 AND length(NEW.model_selection_data) <= 16384 AND length(CAST(NEW.model_selection_data AS BLOB)) <= 262144)
+    AND (NEW.effort IS NULL OR (typeof(NEW.effort) = 'text' AND instr(CAST(NEW.effort AS BLOB), x'00') = 0 AND length(NEW.effort) <= 32 AND length(CAST(NEW.effort AS BLOB)) <= 262144))
+    AND (NEW.speed IS NULL OR (typeof(NEW.speed) = 'text' AND instr(CAST(NEW.speed AS BLOB), x'00') = 0 AND length(NEW.speed) <= 32 AND length(CAST(NEW.speed AS BLOB)) <= 262144))
+    AND (typeof(NEW.provider_options_schema_version) = 'integer' AND NEW.provider_options_schema_version BETWEEN 1 AND 9223372036854775807)
+    AND (typeof(NEW.provider_options_data) = 'text' AND instr(CAST(NEW.provider_options_data AS BLOB), x'00') = 0 AND length(NEW.provider_options_data) <= 16384 AND length(CAST(NEW.provider_options_data AS BLOB)) <= 262144)
+    AND (typeof(NEW.interaction_mode) = 'text' AND instr(CAST(NEW.interaction_mode AS BLOB), x'00') = 0 AND length(NEW.interaction_mode) <= 32 AND length(CAST(NEW.interaction_mode AS BLOB)) <= 262144)
+    AND (typeof(NEW.created_at) = 'text' AND instr(CAST(NEW.created_at AS BLOB), x'00') = 0 AND trim(NEW.created_at) <> '' AND length(CAST(NEW.created_at AS BLOB)) <= 64)
+    AND (typeof(NEW.safety_mode) = 'text' AND instr(CAST(NEW.safety_mode AS BLOB), x'00') = 0 AND length(NEW.safety_mode) <= 32 AND length(CAST(NEW.safety_mode AS BLOB)) <= 262144)
+    AND (NEW.default_assignment_token_limit IS NULL OR (typeof(NEW.default_assignment_token_limit) = 'integer' AND NEW.default_assignment_token_limit BETWEEN 1000 AND 1000000000000))) IS NOT 1
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row values are invalid');
+END;
+
+CREATE TRIGGER sync_values_chat_teammate_policy_revisions_update
+BEFORE UPDATE OF teammate_id, provider_instance_id, model_selection_schema_version, model_selection_data, effort, speed, provider_options_schema_version, provider_options_data, interaction_mode, created_at, safety_mode, default_assignment_token_limit ON chat_teammate_policy_revisions
+WHEN ((NEW.teammate_id IS NULL OR (typeof(NEW.teammate_id) = 'text' AND instr(CAST(NEW.teammate_id AS BLOB), x'00') = 0 AND trim(NEW.teammate_id) <> '' AND length(CAST(NEW.teammate_id AS BLOB)) <= 128))
+    AND (typeof(NEW.provider_instance_id) = 'text' AND instr(CAST(NEW.provider_instance_id AS BLOB), x'00') = 0 AND length(NEW.provider_instance_id) <= 1024 AND length(CAST(NEW.provider_instance_id AS BLOB)) <= 262144)
+    AND (typeof(NEW.model_selection_schema_version) = 'integer' AND NEW.model_selection_schema_version BETWEEN 1 AND 9223372036854775807)
+    AND (typeof(NEW.model_selection_data) = 'text' AND instr(CAST(NEW.model_selection_data AS BLOB), x'00') = 0 AND length(NEW.model_selection_data) <= 16384 AND length(CAST(NEW.model_selection_data AS BLOB)) <= 262144)
+    AND (NEW.effort IS NULL OR (typeof(NEW.effort) = 'text' AND instr(CAST(NEW.effort AS BLOB), x'00') = 0 AND length(NEW.effort) <= 32 AND length(CAST(NEW.effort AS BLOB)) <= 262144))
+    AND (NEW.speed IS NULL OR (typeof(NEW.speed) = 'text' AND instr(CAST(NEW.speed AS BLOB), x'00') = 0 AND length(NEW.speed) <= 32 AND length(CAST(NEW.speed AS BLOB)) <= 262144))
+    AND (typeof(NEW.provider_options_schema_version) = 'integer' AND NEW.provider_options_schema_version BETWEEN 1 AND 9223372036854775807)
+    AND (typeof(NEW.provider_options_data) = 'text' AND instr(CAST(NEW.provider_options_data AS BLOB), x'00') = 0 AND length(NEW.provider_options_data) <= 16384 AND length(CAST(NEW.provider_options_data AS BLOB)) <= 262144)
+    AND (typeof(NEW.interaction_mode) = 'text' AND instr(CAST(NEW.interaction_mode AS BLOB), x'00') = 0 AND length(NEW.interaction_mode) <= 32 AND length(CAST(NEW.interaction_mode AS BLOB)) <= 262144)
+    AND (typeof(NEW.created_at) = 'text' AND instr(CAST(NEW.created_at AS BLOB), x'00') = 0 AND trim(NEW.created_at) <> '' AND length(CAST(NEW.created_at AS BLOB)) <= 64)
+    AND (typeof(NEW.safety_mode) = 'text' AND instr(CAST(NEW.safety_mode AS BLOB), x'00') = 0 AND length(NEW.safety_mode) <= 32 AND length(CAST(NEW.safety_mode AS BLOB)) <= 262144)
+    AND (NEW.default_assignment_token_limit IS NULL OR (typeof(NEW.default_assignment_token_limit) = 'integer' AND NEW.default_assignment_token_limit BETWEEN 1000 AND 1000000000000))) IS NOT 1
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row values are invalid');
+END;
+
+CREATE TRIGGER sync_immutable_chat_teammate_policy_revisions
+BEFORE UPDATE OF id, teammate_id, provider_instance_id, model_selection_schema_version, model_selection_data, effort, speed, provider_options_schema_version, provider_options_data, interaction_mode, created_at, safety_mode, default_assignment_token_limit ON chat_teammate_policy_revisions
+WHEN OLD.id IS NOT NEW.id COLLATE BINARY
+    OR ((OLD.teammate_id IS NOT NEW.teammate_id COLLATE BINARY OR OLD.provider_instance_id IS NOT NEW.provider_instance_id COLLATE BINARY OR OLD.model_selection_schema_version IS NOT NEW.model_selection_schema_version OR OLD.model_selection_data IS NOT NEW.model_selection_data COLLATE BINARY OR OLD.effort IS NOT NEW.effort COLLATE BINARY OR OLD.speed IS NOT NEW.speed COLLATE BINARY OR OLD.provider_options_schema_version IS NOT NEW.provider_options_schema_version OR OLD.provider_options_data IS NOT NEW.provider_options_data COLLATE BINARY OR OLD.interaction_mode IS NOT NEW.interaction_mode COLLATE BINARY OR OLD.created_at IS NOT NEW.created_at COLLATE BINARY OR OLD.safety_mode IS NOT NEW.safety_mode COLLATE BINARY OR OLD.default_assignment_token_limit IS NOT NEW.default_assignment_token_limit) AND (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0)
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row keys and creation times cannot change');
+END;
+
+CREATE TRIGGER sync_values_chat_assignment_budgets_insert
+BEFORE INSERT ON chat_assignment_budgets
+WHEN ((typeof(NEW.id) = 'text' AND instr(CAST(NEW.id AS BLOB), x'00') = 0 AND trim(NEW.id) <> '' AND length(CAST(NEW.id AS BLOB)) <= 128)
+    AND (NEW.assignment_id IS NULL OR (typeof(NEW.assignment_id) = 'text' AND instr(CAST(NEW.assignment_id AS BLOB), x'00') = 0 AND trim(NEW.assignment_id) <> '' AND length(CAST(NEW.assignment_id AS BLOB)) <= 128))
+    AND (NEW.token_limit IS NULL OR (typeof(NEW.token_limit) = 'integer' AND NEW.token_limit BETWEEN 1000 AND 1000000000000))
+    AND (NEW.working_seconds_limit IS NULL OR (typeof(NEW.working_seconds_limit) = 'integer' AND NEW.working_seconds_limit BETWEEN 60 AND 8640000))
+    AND (NEW.set_by_participant_id IS NULL OR (typeof(NEW.set_by_participant_id) = 'text' AND instr(CAST(NEW.set_by_participant_id AS BLOB), x'00') = 0 AND length(NEW.set_by_participant_id) <= 1024 AND length(CAST(NEW.set_by_participant_id AS BLOB)) <= 262144))
+    AND (typeof(NEW.set_at) = 'text' AND instr(CAST(NEW.set_at AS BLOB), x'00') = 0 AND trim(NEW.set_at) <> '' AND length(CAST(NEW.set_at AS BLOB)) <= 64)
+    AND (typeof(NEW.used_counted_tokens) = 'integer' AND NEW.used_counted_tokens BETWEEN 0 AND 1000000000000)
+    AND (typeof(NEW.used_working_seconds) = 'integer' AND NEW.used_working_seconds BETWEEN 0 AND 8640000)) IS NOT 1
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row values are invalid');
+END;
+
+CREATE TRIGGER sync_values_chat_assignment_budgets_update
+BEFORE UPDATE OF assignment_id, token_limit, working_seconds_limit, set_by_participant_id, set_at, used_counted_tokens, used_working_seconds ON chat_assignment_budgets
+WHEN ((NEW.assignment_id IS NULL OR (typeof(NEW.assignment_id) = 'text' AND instr(CAST(NEW.assignment_id AS BLOB), x'00') = 0 AND trim(NEW.assignment_id) <> '' AND length(CAST(NEW.assignment_id AS BLOB)) <= 128))
+    AND (NEW.token_limit IS NULL OR (typeof(NEW.token_limit) = 'integer' AND NEW.token_limit BETWEEN 1000 AND 1000000000000))
+    AND (NEW.working_seconds_limit IS NULL OR (typeof(NEW.working_seconds_limit) = 'integer' AND NEW.working_seconds_limit BETWEEN 60 AND 8640000))
+    AND (NEW.set_by_participant_id IS NULL OR (typeof(NEW.set_by_participant_id) = 'text' AND instr(CAST(NEW.set_by_participant_id AS BLOB), x'00') = 0 AND length(NEW.set_by_participant_id) <= 1024 AND length(CAST(NEW.set_by_participant_id AS BLOB)) <= 262144))
+    AND (typeof(NEW.set_at) = 'text' AND instr(CAST(NEW.set_at AS BLOB), x'00') = 0 AND trim(NEW.set_at) <> '' AND length(CAST(NEW.set_at AS BLOB)) <= 64)
+    AND (typeof(NEW.used_counted_tokens) = 'integer' AND NEW.used_counted_tokens BETWEEN 0 AND 1000000000000)
+    AND (typeof(NEW.used_working_seconds) = 'integer' AND NEW.used_working_seconds BETWEEN 0 AND 8640000)) IS NOT 1
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row values are invalid');
+END;
+
+CREATE TRIGGER sync_immutable_chat_assignment_budgets
+BEFORE UPDATE OF id, assignment_id ON chat_assignment_budgets
+WHEN OLD.id IS NOT NEW.id COLLATE BINARY
+    OR ((OLD.assignment_id IS NOT NEW.assignment_id COLLATE BINARY) AND (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0)
+BEGIN
+    SELECT RAISE(ABORT, 'Replicated row keys and creation times cannot change');
+END;
+
+CREATE TRIGGER sync_capture_chat_assignment_budgets_insert
+AFTER INSERT ON chat_assignment_budgets
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    VALUES (398, NEW.id, 31, 1, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER))
+    ON CONFLICT (table_id, row_key) DO UPDATE SET
+        mask = mask | excluded.mask, created = 1, deleted = 0;
+END;
+
+CREATE TRIGGER sync_capture_chat_assignment_budgets_update
+AFTER UPDATE ON chat_assignment_budgets
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    SELECT 398, NEW.id, changed.mask, 0, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER)
+    FROM (
+        SELECT
+            (CASE WHEN OLD.token_limit IS NOT NEW.token_limit OR OLD.working_seconds_limit IS NOT NEW.working_seconds_limit OR OLD.set_by_participant_id IS NOT NEW.set_by_participant_id COLLATE BINARY OR OLD.set_at IS NOT NEW.set_at COLLATE BINARY
+                THEN 2 ELSE 0 END)
+            | (CASE WHEN OLD.used_counted_tokens IS NOT NEW.used_counted_tokens
+                THEN 4 ELSE 0 END)
+            | (CASE WHEN OLD.used_working_seconds IS NOT NEW.used_working_seconds
+                THEN 8 ELSE 0 END)
+            AS mask
+    ) AS changed
+    WHERE changed.mask <> 0
+    ON CONFLICT (table_id, row_key) DO UPDATE SET mask = mask | excluded.mask;
+END;
+
+CREATE TRIGGER sync_capture_chat_assignment_budgets_delete
+AFTER DELETE ON chat_assignment_budgets
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+    VALUES (398, OLD.id, 0, 0, 1, CAST(unixepoch('subsec') * 1000 AS INTEGER))
+    ON CONFLICT (table_id, row_key) DO UPDATE SET deleted = 1;
+END;
+
 -- 12. Sync: Sync clocks, operations, authorization, conflicts, recovery, and seeded row tracking.
 
 CREATE TABLE sync_spaces (
@@ -18434,6 +19490,13 @@ CREATE TABLE sync_capture (
     -- until then, unless a remote change touches the row first.
     held_until_ms INTEGER CHECK (held_until_ms IS NULL OR held_until_ms >= 0),
     PRIMARY KEY (table_id, row_key)
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE sync_contested_classes (
+  table_id INTEGER NOT NULL CHECK (table_id BETWEEN 1 AND 65535),
+  rule_index INTEGER NOT NULL CHECK (rule_index >= 0),
+  class_key BLOB NOT NULL CHECK (length(class_key) = 32),
+  PRIMARY KEY (table_id, rule_index, class_key)
 ) STRICT, WITHOUT ROWID;
 
 CREATE TABLE sync_devices (
@@ -18567,6 +19630,17 @@ CREATE TABLE sync_rows (
 CREATE INDEX idx_sync_rows_recovery ON sync_rows(table_id, row_key) WHERE recovery = 1;
 CREATE INDEX idx_sync_rows_conflicts ON sync_rows(table_id, row_key) WHERE conflict_mask <> 0;
 
+CREATE TABLE sync_refused_rows (
+  table_id INTEGER NOT NULL,
+  row_key TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('hidden', 'kept')),
+  reason TEXT NOT NULL,
+  attempt INTEGER NOT NULL,
+  PRIMARY KEY (table_id, row_key)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX idx_sync_refused_rows_attempt ON sync_refused_rows(attempt);
+
 CREATE TABLE sync_register_versions (
   table_id INTEGER NOT NULL,
   row_key TEXT NOT NULL,
@@ -18650,6 +19724,21 @@ CREATE INDEX idx_sync_tombstones_redirect ON sync_tombstones(table_id, replaced_
     WHERE replaced_by IS NOT NULL;
 CREATE INDEX idx_sync_tombstones_cause ON sync_tombstones(cause_table, cause_row)
     WHERE cause_table IS NOT NULL;
+
+CREATE TABLE sync_unique_class_rules (
+  singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
+  fingerprint BLOB NOT NULL CHECK (length(fingerprint) = 32)
+) STRICT;
+
+CREATE TABLE sync_unique_classes (
+  table_id INTEGER NOT NULL CHECK (table_id BETWEEN 1 AND 65535),
+  rule_index INTEGER NOT NULL CHECK (rule_index >= 0),
+  class_key BLOB NOT NULL CHECK (length(class_key) = 32),
+  row_key TEXT NOT NULL CHECK (length(CAST(row_key AS BLOB)) BETWEEN 1 AND 128),
+  PRIMARY KEY (table_id, rule_index, class_key, row_key)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX idx_sync_unique_classes_row ON sync_unique_classes(table_id, row_key);
 
 CREATE TABLE sync_version_refs (
   table_id INTEGER NOT NULL,

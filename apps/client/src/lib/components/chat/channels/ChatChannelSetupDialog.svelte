@@ -8,7 +8,7 @@
   import * as chatApi from "$lib/api/chat";
   import type { ChatChannelRead, ChatChannelMembershipRemovalPreview } from "$lib/chat/contracts";
   import type { ChatSidebarSection } from "$lib/chat/channel-sections";
-  import { applyChannelMemberChanges } from "$lib/chat/teammates/channel-member-changes";
+  import { applyChannelMemberChanges, channelMemberChangeContext } from "$lib/chat/teammates/channel-member-changes";
   import { summarizeChannelMembers } from "$lib/chat/teammates/channel-members";
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
   import LocalPersonAvatar from "$lib/components/contacts/LocalPersonAvatar.svelte";
@@ -144,7 +144,7 @@
       let saved = currentChannel
         ? await chat.updateChannelDetails(currentChannel, name, topic)
         : await chat.createChannel({ id: `channel:${crypto.randomUUID()}`, projectId, name, topic });
-      if (await applyChannelMemberChanges(currentTeammateIds, selectedTeammateIds, saved.id)) {
+      if (await applyChannelMemberChanges(currentTeammateIds, selectedTeammateIds, channelMemberChangeContext(chat, saved))) {
         saved = await chatApi.readChatChannel(saved.id);
         chat.activeChannels = chat.activeChannels.map((entry) => entry.id === saved.id ? saved : entry);
         await chat.refreshTeammates();

@@ -64,3 +64,22 @@ export function providerTargetAuthorityBlockers(
   }
   return blockers;
 }
+
+/**
+ * Whether the send gate lets a provider run commands in a folder granted at Execute with
+ * runtime approval Ask.
+ *
+ * @param authority - Authority support from the teammate provider's last probe.
+ * @param teammateSafetyMode - The teammate policy's safety mode, or null when unknown.
+ * @returns True when an Execute and Ask folder target raises no provider blocker.
+ */
+export function providerExecutesWithAsk(
+  authority: ProviderAuthoritySupport,
+  teammateSafetyMode: SafetyMode | null,
+): boolean {
+  return providerTargetAuthorityBlockers(
+    authority,
+    { kind: "currentFolder", folderCapability: "execute", effectiveRuntimeApproval: "ask" },
+    teammateSafetyMode,
+  ).length === 0;
+}

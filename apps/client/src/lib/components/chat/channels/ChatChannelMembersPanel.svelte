@@ -7,7 +7,7 @@
   import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
   import type { ChatChannelRead } from "$lib/chat/contracts";
-  import { applyChannelMemberChanges } from "$lib/chat/teammates/channel-member-changes";
+  import { applyChannelMemberChanges, channelMemberChangeContext } from "$lib/chat/teammates/channel-member-changes";
   import { summarizeChannelMembers } from "$lib/chat/teammates/channel-members";
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
   import { floatPanel } from "$lib/components/contacts/float-panel";
@@ -107,7 +107,7 @@
     error = null;
     try {
       const next = new Set([...summary.teammateIds, ...teammateIds]);
-      if (await applyChannelMemberChanges(summary.teammateIds, next, channel.id)) {
+      if (await applyChannelMemberChanges(summary.teammateIds, next, channelMemberChangeContext(chat, channel))) {
         const saved = await chatApi.readChatChannel(channel.id);
         chat.activeChannels = chat.activeChannels.map((entry) => entry.id === saved.id ? saved : entry);
         await chat.refreshTeammates();

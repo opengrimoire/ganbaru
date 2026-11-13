@@ -17,7 +17,7 @@ Profiles never grant authority by themselves. An agent acts in a channel only th
 - A history boundary: the entire channel or only messages from the grant onward.
 - Working-folder grants, each ordered as none, read, edit, execute, or publish.
 
-Effective authority is the intersection of these ceilings, resolved by [Chat access control](../../data/access-control.md).
+Effective authority is the intersection of these ceilings, resolved by [Chat access control](../../data/access-control.md). An agent added to a project channel works in the project's folder at execute with every command asked of the person, or joins in conversation only when its provider cannot enforce that, as specified in [Channel join defaults](../../data/access-control.md#channel-join-defaults).
 
 ## Invocation
 

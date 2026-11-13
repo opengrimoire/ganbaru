@@ -5,7 +5,7 @@ import type {
   ChatRuntimeApprovalPolicy,
   ProviderAuthoritySupport,
 } from "$lib/chat/contracts";
-import { providerTargetAuthorityBlockers } from "./provider-authority";
+import { providerExecutesWithAsk, providerTargetAuthorityBlockers } from "./provider-authority";
 
 const confining: ProviderAuthoritySupport = {
   isolatedConversation: true,
@@ -96,5 +96,20 @@ describe("providerTargetAuthorityBlockers", () => {
       "chat.organization.providerCannotEnforceNetwork",
     ]);
     expect(providerTargetAuthorityBlockers(bare, folder("none"), "ask_for_approval")).toEqual([]);
+  });
+});
+
+describe("providerExecutesWithAsk", () => {
+  it("accepts a person-approved provider under a ranked policy and a confining provider under any policy", () => {
+    expect(providerExecutesWithAsk(approving, "ask_for_approval")).toBe(true);
+    expect(providerExecutesWithAsk(approving, "approve_for_me")).toBe(true);
+    expect(providerExecutesWithAsk(confining, "custom")).toBe(true);
+  });
+
+  it("refuses providers without a network boundary or person-approved commands under a custom policy", () => {
+    expect(providerExecutesWithAsk({ ...approving, networkBoundary: false }, "ask_for_approval")).toBe(false);
+    expect(providerExecutesWithAsk({ ...approving, personApprovedCommands: false }, "ask_for_approval")).toBe(false);
+    expect(providerExecutesWithAsk(approving, "custom")).toBe(false);
+    expect(providerExecutesWithAsk(approving, null)).toBe(false);
   });
 });

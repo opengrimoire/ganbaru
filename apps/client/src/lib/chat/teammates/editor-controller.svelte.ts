@@ -25,7 +25,9 @@ import {
   teammateAccessNeedsConfirmation,
   type ChatTeammateAccessConfirmationImpact,
 } from "./access";
-import { conversationAccessProfile, defaultChannelAccessInput } from "./channel-membership";
+import { defaultChannelAccessInput } from "./channel-membership";
+import { providerExecutesWithAsk } from "$lib/chat/composer/provider-authority";
+import { preferredProjectWorkingFolder } from "$lib/chat/workspace/working-folder-selection";
 import { teammateExecutionSummary, teammateInstructionsTooLong, teammateProfileDraftSnapshot } from "./draft";
 import { parseTokenLimitInput } from "$lib/chat/budgets/budget-model";
 import {
@@ -40,7 +42,7 @@ import type { getChat } from "$lib/stores/chat.svelte";
 export interface TeammateEditorOptions {
   chat: Pick<
     ReturnType<typeof getChat>,
-    "teammates" | "archivedTeammates" | "settings" | "refreshTeammates"
+    "teammates" | "archivedTeammates" | "settings" | "refreshTeammates" | "workingFolders"
   >;
   t: Translate;
   initialChannelId: () => string | null;
@@ -92,6 +94,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
   let profileAvatar = $state<VersionedJson>({ schemaVersion: 1, value: { kind: "initials" } });
   let accessRevision = $state(0);
   let accessDraft = $state<ChatTeammateChannelAccessInput[]>([]);
+  let untouchedDefaultAccess: string | null = null;
   let profileBaseline = $state<string | null>(null);
   let accessBaseline = $state<string | null>(null);
   let studioDraftBaseline = $state<ChatTeammateStudioDraft | null>(null);
@@ -384,6 +387,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     profileAvatar = { schemaVersion: 1, value: { kind: "initials" } };
     accessRevision = 0;
     accessDraft = channelId ? [defaultChannelAccess(channelId)] : [];
+    untouchedDefaultAccess = currentAccessSnapshot;
     setStudioDraftBaseline(captureStudioDraft());
     clearAccessConfirmation();
     error = null;
@@ -565,10 +569,6 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     options.focusRecoveryNotice();
   }
 
-  function conversationProfile(): ChatAccessProfileRead | null {
-    return conversationAccessProfile(accessProfiles);
-  }
-
   function providerCapabilityIssue(capability: ChatFolderCapability): string | null {
     if (capability === "none") return null;
     const support = providerAuthoritySupport;
@@ -579,11 +579,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     if (capability === "edit" && !support.internalHostTools && !support.writableRoot) {
       return t("settings.chat.teammates.providerCannotEdit");
     }
-    if (capability === "execute" && (
-      !support.writableRoot
-      || !(support.confinedCommands || support.personApprovedCommands)
-      || !support.networkBoundary
-    )) {
+    if (capability === "execute" && !providerExecutesWithAsk(support, safetyMode)) {
       return t("settings.chat.teammates.providerCannotExecute");
     }
     if (capability === "publish" && (
@@ -627,7 +623,20 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
   }
 
   function defaultChannelAccess(channelId: string): ChatTeammateChannelAccessInput {
-    return defaultChannelAccessInput(channelId, conversationProfile());
+    const projectId = navigationChannels.find((channel) => channel.id === channelId)?.projectId ?? null;
+    const folder = projectId ? preferredProjectWorkingFolder(chat.workingFolders, projectId, null) : null;
+    return defaultChannelAccessInput(
+      channelId,
+      { profiles: accessProfiles, projectWorkingFolderId: folder?.workingFolder.id ?? null },
+      { authority: providerAuthoritySupport, safetyMode },
+    );
+  }
+
+  /** Rebuilds a new teammate's untouched default access after its provider or approval changes. */
+  function refreshUntouchedDefaultAccess(): void {
+    if (!creating || untouchedDefaultAccess === null || currentAccessSnapshot !== untouchedDefaultAccess) return;
+    accessDraft = accessDraft.map((channel) => defaultChannelAccess(channel.channelId));
+    untouchedDefaultAccess = currentAccessSnapshot;
   }
 
   function handleProfilesChange(nextProfiles: ChatAccessProfileRead[]): void {
@@ -651,6 +660,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     const summary = teammateExecutionSummary(modelOptions, model);
     effort = summary.effort;
     speed = summary.speed;
+    refreshUntouchedDefaultAccess();
   }
 
   function accessReplacementRequest(
@@ -822,7 +832,10 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     set instructions(value: typeof instructions) { instructions = value; },
     get providerId() { return providerId; },
     get safetyMode() { return safetyMode; },
-    set safetyMode(value: typeof safetyMode) { safetyMode = value; },
+    set safetyMode(value: typeof safetyMode) {
+      safetyMode = value;
+      refreshUntouchedDefaultAccess();
+    },
     get modelId() { return modelId; },
     get providerManagedModel() { return providerManagedModel; },
     get modelOptions() { return modelOptions; },

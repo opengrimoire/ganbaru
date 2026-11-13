@@ -6,7 +6,7 @@ This document is the normative authorization specification for organizational Ch
 
 ## Principles
 
-1. Identity is not authority. Creating an AI agent does not create membership, history access, a folder grant, scratch scope, or ambient context.
+1. Identity is not authority. Creating an AI agent does not create membership, history access, a folder grant, scratch scope, or ambient context. Adding it to a project channel creates only the membership described in [Channel join defaults](#channel-join-defaults).
 2. The local owner is the only required seeded participant. There is no privileged default AI agent.
 3. Provider, model, role, instructions, and runtime defaults are replaceable configuration on an ordinary agent identity.
 4. Channel presence, readable history, and executable resources are separate decisions.
@@ -44,6 +44,10 @@ Archiving a channel stops new ordinary activity but does not erase authorized hi
 ## Access profiles and revisions
 
 An access profile sets default channel capabilities, a default history boundary, and a maximum folder capability. Built-in profiles cover the common ceilings (conversation only, read only, edit files, build and test, publish changes); users may define others.
+
+### Channel join defaults
+
+An agent added to a project channel joins with the built-in Build and test profile, may participate without reading earlier history, and holds one default grant on the project's working folder at execute with runtime approval Ask. This mirrors the per-channel grants of Claude Tag: the channel decides where work happens, so a post needs no per-message folder choice, and every command still reaches the person until Ganbaru can confine commands itself. When the project has no folder, or the agent's provider cannot keep commands person-approved under its approval behavior (no network boundary, no relayed commands, or custom approval without confinement), the agent joins in conversation only instead of with a grant the send gate would refuse. People can narrow or widen any membership afterwards. Existing memberships keep their stored access.
 
 Every assignment records the profile revision used for its authorization decision. Editing a profile creates a new revision and never rewrites the meaning of an earlier run. A stricter revision may revoke or interrupt current work. A more permissive revision does not silently upgrade an already authorized continuation.
 

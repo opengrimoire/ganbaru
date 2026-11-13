@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ChatAccessProfileRead,
+  ChatChannelRead,
+  ChatSettingsRead,
+  ProjectWorkingFolderRead,
+  ProviderAuthoritySupport,
+  ProviderInstanceRead,
   ChatAiTeammateRead,
   ChatTeammateAccessRead,
 } from "$lib/chat/contracts";
@@ -67,12 +72,14 @@ function profile(): ChatAccessProfileRead {
   };
 }
 
-function setup(teammates = [teammate()]) {
+function setup(teammates = [teammate()], overrides: Partial<TeammateEditorOptions["chat"]> = {}) {
   const chat: TeammateEditorOptions["chat"] = {
     teammates,
     archivedTeammates: [],
     settings: null,
+    workingFolders: [],
     refreshTeammates: vi.fn(async () => {}),
+    ...overrides,
   };
   const focusConflict = vi.fn(async () => {});
   const focusRecoveryNotice = vi.fn();
@@ -301,5 +308,51 @@ describe("teammate editor workflow", () => {
     expect(editor.accessProfiles).toEqual([profile()]);
     expect(editor.error).toBe("Channels unavailable");
     expect(editor.loadingDirectory).toBe(false);
+  });
+
+  it("rebuilds an untouched new teammate's channel default when its provider changes", async () => {
+    const authority: ProviderAuthoritySupport = {
+      isolatedConversation: true, internalHostTools: true, denyShell: true, readOnlyRoot: true,
+      writableRoot: true, confinedCommands: false, networkBoundary: true, classifiedPublish: false,
+      personApprovedCommands: true,
+    };
+    const providers = [
+      { configuration: { instanceId: "provider:claude" }, lastProbe: { authoritySupport: authority } },
+      {
+        configuration: { instanceId: "provider:cursor" },
+        lastProbe: { authoritySupport: { ...authority, networkBoundary: false, personApprovedCommands: false } },
+      },
+    ] as unknown as ProviderInstanceRead[];
+    const build: ChatAccessProfileRead = {
+      ...profile(),
+      id: "profile:build",
+      builtinKey: "buildAndTest",
+      latestRevision: { ...profile().latestRevision, id: "profile-revision:build", maximumFolderCapability: "execute" },
+    };
+    api.listChatAccessProfiles.mockResolvedValue([profile(), build]);
+    api.listChatNavigationChannels.mockResolvedValue([
+      { id: "channel:general", projectId: "project:app" } as ChatChannelRead,
+    ]);
+    const workingFolders = [{
+      workingFolder: { id: "folder:app", projectId: "project:app", kind: "managed", archivedAt: null },
+      bindingStatus: "available",
+    }] as unknown as ProjectWorkingFolderRead[];
+    const { editor } = setup([], { settings: { providerInstances: providers } as unknown as ChatSettingsRead, workingFolders });
+    await editor.loadDirectoryData();
+    const choose = (providerInstanceId: string) => editor.selectExecution({
+      providerInstanceId, modelId: null, providerManaged: true, options: [],
+    });
+    editor.beginCreate("channel:general");
+    choose("provider:claude");
+    expect(editor.accessDraft[0].folderGrants).toEqual([
+      { workingFolderId: "folder:app", capability: "execute", isDefault: true, runtimeApprovalOverride: "ask" },
+    ]);
+    choose("provider:cursor");
+    expect(editor.accessDraft[0]).toMatchObject({ accessProfileId: "profile:conversation", folderGrants: [] });
+    choose("provider:claude");
+    editor.accessDraft = editor.accessDraft.map((channel) => ({ ...channel, folderGrants: [] }));
+    choose("provider:cursor");
+    choose("provider:claude");
+    expect(editor.accessDraft[0].folderGrants).toEqual([]);
   });
 });

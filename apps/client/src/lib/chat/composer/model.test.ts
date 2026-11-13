@@ -71,6 +71,7 @@ function provider(
         confinedCommands: true,
         networkBoundary: true,
         classifiedPublish: true,
+        personApprovedCommands: false,
       },
       checkedAt: "2026-08-01T00:00:00Z",
       detail: null,

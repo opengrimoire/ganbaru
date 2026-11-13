@@ -51,6 +51,8 @@ export interface ProviderAuthoritySupport {
   confinedCommands: boolean;
   networkBoundary: boolean;
   classifiedPublish: boolean;
+  /** Every shell command the provider can run reaches Ganbaru for the person to approve. */
+  personApprovedCommands: boolean;
 }
 
 export interface ProviderFamilyMetadataRead {

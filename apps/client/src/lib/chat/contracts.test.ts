@@ -558,6 +558,7 @@ describe("Chat provider contracts", () => {
         confinedCommands: false,
         networkBoundary: false,
         classifiedPublish: false,
+        personApprovedCommands: false,
       },
       checkedAt: timestamp,
       detail: "Newer than the tested version 2.1.322",

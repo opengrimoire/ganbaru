@@ -194,6 +194,9 @@ fn fixture_driver_with(
             bearer_token: "fixture-token".to_string(),
             organizational_authority: true,
             pre_approved_tools: Vec::new(),
+            organizational_scope: Some(
+                ganbaru_chat_contracts::models::ProviderOrganizationalScope::Conversation,
+            ),
         });
     }
     let mut driver = CodexProviderDriver::new(config).unwrap();

@@ -269,6 +269,7 @@ export const chat = {
     providerCannotWriteRoot: "This provider cannot enforce a writable execution root.",
     providerCannotDenyShell: "This provider cannot deny shell commands for this access level.",
     providerCannotConfineCommands: "This provider cannot confine commands to the selected target.",
+    providerCommandsNeedAsk: "This provider runs commands only when you approve each one, so this target needs the Ask me approval policy.",
     providerCannotEnforceNetwork: "This provider cannot enforce the assignment's network boundary.",
     providerCannotPublish: "This provider cannot enforce classified publish operations.",
     removeReference: "Remove reference",

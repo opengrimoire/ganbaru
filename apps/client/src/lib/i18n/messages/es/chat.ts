@@ -272,6 +272,7 @@ export const chat = {
     providerCannotWriteRoot: "Este proveedor no puede aplicar una raíz de ejecución con escritura.",
     providerCannotDenyShell: "Este proveedor no puede denegar comandos de consola para este nivel de acceso.",
     providerCannotConfineCommands: "Este proveedor no puede limitar los comandos al destino seleccionado.",
+    providerCommandsNeedAsk: "Este proveedor solo ejecuta comandos cuando apruebas cada uno, así que este destino necesita la política de aprobación Preguntarme.",
     providerCannotEnforceNetwork: "Este proveedor no puede aplicar el límite de red de la asignación.",
     providerCannotPublish: "Este proveedor no puede aplicar operaciones de publicación clasificadas.",
     removeReference: "Quitar referencia",

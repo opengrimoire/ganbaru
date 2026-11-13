@@ -76,6 +76,7 @@ pub(super) fn organizational_authority_support() -> ProviderAuthoritySupport {
         confined_commands: true,
         network_boundary: true,
         classified_publish: false,
+        person_approved_commands: false,
     }
 }
 

@@ -108,6 +108,7 @@ pub(crate) fn organizational_mcp() -> ProviderInternalMcpConfig {
         bearer_token: "replay-token".to_string(),
         organizational_authority: true,
         pre_approved_tools: Vec::new(),
+        organizational_scope: Some(crate::models::ProviderOrganizationalScope::Conversation),
     }
 }
 

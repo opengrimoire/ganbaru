@@ -75,6 +75,7 @@ function provider(state: ProviderInstanceRead["lastProbe"] extends infer _Probe 
         confinedCommands: true,
         networkBoundary: true,
         classifiedPublish: true,
+        personApprovedCommands: false,
       },
       checkedAt: timestamp,
       detail: null,

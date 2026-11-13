@@ -143,15 +143,18 @@ pub(crate) async fn send_turn(
     .await?;
     require_project_accepts_ai_work(&pool, &target.project_id).await?;
     let authority_support = inspection_driver.authority_support();
-    if let Some(binding) = origin.run() {
-        validate_organizational_authority(
-            &pool,
-            binding,
-            authority_support,
-            request.modes.safety_mode,
-        )
-        .await?;
-    }
+    let organizational_scope = match origin.run() {
+        Some(binding) => Some(
+            validate_organizational_authority(
+                &pool,
+                binding,
+                authority_support,
+                request.modes.safety_mode,
+            )
+            .await?,
+        ),
+        None => None,
+    };
     if let Some(existing) = &existing {
         if existing.working_folder_id != request.working_folder_id
             || existing.scratch_generation_id != request.scratch_generation_id
@@ -192,6 +195,15 @@ pub(crate) async fn send_turn(
                 )
                 .await;
             snapshot = owner.snapshot()?;
+            // Each organizational run launches a new process with its own target scope, so a
+            // process that survives the stop must never be reused for this run.
+            if snapshot.session_state == ProviderSessionState::Ready {
+                return Err(ChatError::new(
+                    ChatErrorCode::Busy,
+                    "The previous organizational session could not be stopped",
+                    true,
+                ));
+            }
         }
     }
     let fresh_native_session = !matches!(snapshot.session_state, ProviderSessionState::Ready)
@@ -216,7 +228,7 @@ pub(crate) async fn send_turn(
             )
             .await?;
         let launch = InternalMcpLaunch {
-            organizational_authority: origin.run().is_some(),
+            organizational_scope,
         };
         configuration.internal_mcp = match resource_endpoint {
             EndpointIssue::Created(endpoint) => Some(launch.config(endpoint)),
@@ -675,12 +687,19 @@ async fn resolve_turn_target(
     }
 }
 
+/// Checks that a teammate run still matches its stored authorization and that the provider
+/// enforces the authorized target, returning the scope the driver must enforce.
+///
+/// # Errors
+///
+/// Returns a permission error when the authorization, target, safety mode, or provider
+/// enforcement no longer admits the run.
 pub(super) async fn validate_organizational_authority(
     pool: &SqlitePool,
     binding: &AgentRunBinding,
     support: ProviderAuthoritySupport,
     requested_safety_mode: SafetyMode,
-) -> ChatResult<()> {
+) -> ChatResult<ProviderOrganizationalScope> {
     let authorization = sqlx::query(
         "SELECT authorization.resolved_runtime_approval_policy, authorization.working_folder_id,
                 authorization.execution_environment_id,
@@ -790,35 +809,79 @@ pub(super) async fn validate_organizational_authority(
     .fetch_optional(pool)
     .await
     .map_err(|_| provider_authority_error("Assignment authority could not be verified"))?;
-    if binding.scratch_generation_id.is_some()
-        && (!support.writable_root || !support.confined_commands || !support.network_boundary)
-    {
-        return Err(provider_authority_error(
-            "This provider cannot confine writable private scratch work",
-        ));
-    }
-    if let Some(capability) = target_capability.as_deref() {
-        let supported = match capability {
-            "read" => support.read_only_root && support.deny_shell && support.network_boundary,
-            "edit" => support.writable_root && support.deny_shell && support.network_boundary,
-            "execute" => {
-                support.writable_root && support.confined_commands && support.network_boundary
+    let commands_person_approved = runtime_approval == ChatRuntimeApprovalPolicy::Ask
+        && permitted_safety_mode == SafetyMode::AskForApproval;
+    let scope = organizational_scope(
+        binding.working_folder_id.is_some(),
+        binding.scratch_generation_id.is_some(),
+        target_capability.as_deref(),
+    )?;
+    if !provider_enforces_scope(support, scope, commands_person_approved) {
+        return Err(provider_authority_error(match scope {
+            ProviderOrganizationalScope::Scratch => {
+                "This provider cannot confine writable private scratch work"
             }
-            "publish" => {
-                support.writable_root
-                    && support.confined_commands
-                    && support.network_boundary
-                    && support.classified_publish
+            ProviderOrganizationalScope::Folder { .. } => {
+                "This provider cannot enforce the selected folder capability"
             }
-            _ => false,
-        };
-        if !supported {
-            return Err(provider_authority_error(
-                "This provider cannot enforce the selected folder capability",
-            ));
-        }
+            ProviderOrganizationalScope::Conversation => {
+                "This provider cannot run an isolated organizational conversation"
+            }
+        }));
     }
-    Ok(())
+    Ok(scope)
+}
+
+/// The scope of an organizational run from its validated target shape. A folder target must
+/// carry an execution target grant above `none`.
+fn organizational_scope(
+    has_folder: bool,
+    has_scratch: bool,
+    target_capability: Option<&str>,
+) -> ChatResult<ProviderOrganizationalScope> {
+    match (has_folder, has_scratch) {
+        (false, false) => Ok(ProviderOrganizationalScope::Conversation),
+        (false, true) => Ok(ProviderOrganizationalScope::Scratch),
+        (true, false) => target_capability
+            .and_then(ProviderFolderCapability::from_storage)
+            .map(|capability| ProviderOrganizationalScope::Folder { capability })
+            .ok_or_else(|| {
+                provider_authority_error("Assignment folder target has no capability grant")
+            }),
+        (true, true) => Err(provider_authority_error(
+            "Assignment execution target does not match its authorization",
+        )),
+    }
+}
+
+/// Whether a provider's declared boundaries enforce a scope.
+///
+/// Commands are confined when the provider confines them itself, or when every command reaches
+/// the person for approval and the run's effective approval policy is Ask, so each approval is
+/// the boundary for that command. Publish stays refused until a host tool classifies
+/// publication.
+pub(super) fn provider_enforces_scope(
+    support: ProviderAuthoritySupport,
+    scope: ProviderOrganizationalScope,
+    commands_person_approved: bool,
+) -> bool {
+    let commands_confined =
+        support.confined_commands || (support.person_approved_commands && commands_person_approved);
+    let runs_commands = support.writable_root && commands_confined && support.network_boundary;
+    match scope {
+        ProviderOrganizationalScope::Conversation => support.isolated_conversation,
+        ProviderOrganizationalScope::Scratch => runs_commands,
+        ProviderOrganizationalScope::Folder { capability } => match capability {
+            ProviderFolderCapability::Read => {
+                support.read_only_root && support.deny_shell && support.network_boundary
+            }
+            ProviderFolderCapability::Edit => {
+                support.writable_root && support.deny_shell && support.network_boundary
+            }
+            ProviderFolderCapability::Execute => runs_commands,
+            ProviderFolderCapability::Publish => runs_commands && support.classified_publish,
+        },
+    }
 }
 
 pub(super) async fn load_internal_mcp_scope(

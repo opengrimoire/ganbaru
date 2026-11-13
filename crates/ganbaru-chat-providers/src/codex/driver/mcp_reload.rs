@@ -63,6 +63,7 @@ mod tests {
             bearer_token: token.to_string(),
             organizational_authority: false,
             pre_approved_tools: Vec::new(),
+            organizational_scope: None,
         }
     }
 

@@ -588,6 +588,7 @@ fn fixture_endpoint(token: &str) -> ProviderInternalMcpConfig {
         bearer_token: token.to_string(),
         organizational_authority: false,
         pre_approved_tools: Vec::new(),
+        organizational_scope: None,
     }
 }
 

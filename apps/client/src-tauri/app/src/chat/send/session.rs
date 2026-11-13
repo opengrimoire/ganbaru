@@ -19,8 +19,8 @@ use ganbaru_chat_contracts::models::{
     ChatAgentRunId, ChatAuthorizationRevisionId, ChatError, ChatErrorCode, ChatResult,
     ChatTeammatePolicyRevisionId, ChatThreadId, ChatTurnId, ChatWorkAssignmentId,
     ContinuationGroupId, ProviderInstanceConfig, ProviderInternalMcpConfig,
-    ProviderSessionSnapshot, ProviderSessionState, ResumeSessionRequest, StartSessionRequest,
-    VerifiedWorkspaceContext,
+    ProviderOrganizationalScope, ProviderSessionSnapshot, ProviderSessionState,
+    ResumeSessionRequest, StartSessionRequest, VerifiedWorkspaceContext,
 };
 use ganbaru_chat_providers::{
     DriverFuture, ProviderDriver, ProviderDriverFactory, ProviderDriverRegistry, ProviderEventSink,
@@ -40,8 +40,9 @@ pub(super) const INTERNAL_MCP_SERVER_NAME: &str = "ganbaru-chat";
 /// A provider process this send starts reaches the thread's internal MCP endpoint.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct InternalMcpLaunch {
-    /// Whether the endpoint serves an organizational run rather than a direct thread.
-    pub(super) organizational_authority: bool,
+    /// The authorized target scope when the endpoint serves an organizational run, or `None`
+    /// for a direct thread.
+    pub(super) organizational_scope: Option<ProviderOrganizationalScope>,
 }
 
 impl InternalMcpLaunch {
@@ -51,12 +52,13 @@ impl InternalMcpLaunch {
             name: INTERNAL_MCP_SERVER_NAME.to_string(),
             url: endpoint.url,
             bearer_token: endpoint.bearer_token,
-            organizational_authority: self.organizational_authority,
-            pre_approved_tools: if self.organizational_authority {
+            organizational_authority: self.organizational_scope.is_some(),
+            pre_approved_tools: if self.organizational_scope.is_some() {
                 pre_approved_tool_names(INTERNAL_MCP_SERVER_NAME)
             } else {
                 Vec::new()
             },
+            organizational_scope: self.organizational_scope,
         }
     }
 

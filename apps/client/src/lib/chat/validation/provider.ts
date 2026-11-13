@@ -64,6 +64,7 @@ export function parseProviderAuthoritySupport(
     confinedCommands: readBoolean(record.confinedCommands, `${label}.confinedCommands`),
     networkBoundary: readBoolean(record.networkBoundary, `${label}.networkBoundary`),
     classifiedPublish: readBoolean(record.classifiedPublish, `${label}.classifiedPublish`),
+    personApprovedCommands: readBoolean(record.personApprovedCommands, `${label}.personApprovedCommands`),
   };
 }
 

@@ -55,6 +55,7 @@ impl ProviderDriver for OpenCodeProviderDriver {
             confined_commands: false,
             network_boundary: false,
             classified_publish: false,
+            person_approved_commands: false,
         }
     }
 

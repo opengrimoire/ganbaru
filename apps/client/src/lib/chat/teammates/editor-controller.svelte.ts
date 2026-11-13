@@ -581,7 +581,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     }
     if (capability === "execute" && (
       !support.writableRoot
-      || !support.confinedCommands
+      || !(support.confinedCommands || support.personApprovedCommands)
       || !support.networkBoundary
     )) {
       return t("settings.chat.teammates.providerCannotExecute");

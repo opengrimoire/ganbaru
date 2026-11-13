@@ -21,6 +21,48 @@ pub struct ProviderInternalMcpConfig {
     /// approval prompt. Empty for a direct thread, and ignored by providers without a
     /// verified per-tool approval setting.
     pub pre_approved_tools: Vec<String>,
+    /// The execution target an organizational run was authorized for, set exactly when
+    /// `organizational_authority` is. A driver that enforces scopes fails closed without it.
+    pub organizational_scope: Option<ProviderOrganizationalScope>,
+}
+
+/// The authorized execution target of one organizational run, as a provider driver enforces it.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum ProviderOrganizationalScope {
+    /// No native workspace: the run works from an application-managed neutral directory.
+    Conversation,
+    /// One project working folder at the granted capability.
+    Folder {
+        capability: ProviderFolderCapability,
+    },
+    /// A writable private scratch directory.
+    Scratch,
+}
+
+/// The folder capability of an organizational folder target. Unlike
+/// `ChatFolderCapability`, it cannot be `None`, because a target folder always carries a grant.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderFolderCapability {
+    Read,
+    Edit,
+    Execute,
+    Publish,
+}
+
+impl ProviderFolderCapability {
+    /// Parses the stored capability of an execution target folder source; `none` and unknown
+    /// values have no provider scope.
+    pub fn from_storage(value: &str) -> Option<Self> {
+        match value {
+            "read" => Some(Self::Read),
+            "edit" => Some(Self::Edit),
+            "execute" => Some(Self::Execute),
+            "publish" => Some(Self::Publish),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Debug for ProviderInternalMcpConfig {
@@ -32,6 +74,7 @@ impl std::fmt::Debug for ProviderInternalMcpConfig {
             .field("bearer_token", &"[REDACTED]")
             .field("organizational_authority", &self.organizational_authority)
             .field("pre_approved_tools", &self.pre_approved_tools)
+            .field("organizational_scope", &self.organizational_scope)
             .finish()
     }
 }
@@ -97,6 +140,10 @@ pub struct ProviderAuthoritySupport {
     pub confined_commands: bool,
     pub network_boundary: bool,
     pub classified_publish: bool,
+    /// Every shell command the provider can run reaches Ganbaru's permission handler and is
+    /// never approved by the provider itself, so a person approves each command.
+    #[serde(default)]
+    pub person_approved_commands: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

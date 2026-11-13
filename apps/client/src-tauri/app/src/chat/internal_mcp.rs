@@ -1548,6 +1548,9 @@ mod tests {
             bearer_token: token.clone(),
             organizational_authority: true,
             pre_approved_tools: Vec::new(),
+            organizational_scope: Some(
+                ganbaru_chat_contracts::models::ProviderOrganizationalScope::Conversation,
+            ),
         };
         for output in [format!("{endpoint:?}"), format!("{config:?}")] {
             assert!(!output.contains(&token), "{output}");

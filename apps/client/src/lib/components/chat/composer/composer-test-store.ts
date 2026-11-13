@@ -295,6 +295,7 @@ export function modelSettings(): ChatSettingsRead {
           confinedCommands: true,
           networkBoundary: true,
           classifiedPublish: true,
+          personApprovedCommands: false,
         },
         checkedAt: "2026-07-22T12:00:00.000Z",
         detail: null,

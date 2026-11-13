@@ -67,6 +67,8 @@ Rust owns provider process creation, transport, event ingestion, cancellation, a
 
 Provider sandbox or trust configuration is defense in depth and cannot widen organizational authority. The provider receives one resolved workspace and a bounded environment. Host tools independently validate the run, channel, membership, profile revision, target, arguments, and revocation state.
 
+The send gate resolves the authorized target to an organizational scope (conversation, scratch, or folder read, edit, execute, or publish), passes that scope to the driver, and admits the run only when the provider reports native enforcement for each boundary the scope needs. Commands count as confined when the provider confines them itself, or when it relays every command to the person and the target's effective approval is Ask; the person is then the confinement, so auto approval cannot stand in for it. Publish also needs classified publication, which no provider reports yet. A change of scope always starts a fresh provider session.
+
 Provider output, changed-file reports, terminal output, model labels, protocol events, URLs, and errors are untrusted. Persisting or displaying them grants nothing.
 
 ## Execution targets

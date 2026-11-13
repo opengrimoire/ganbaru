@@ -194,6 +194,9 @@ fn an_organizational_claude_session_launches_with_the_locked_down_arguments() {
         bearer_token: "replay-token".to_string(),
         organizational_authority: true,
         pre_approved_tools: Vec::new(),
+        organizational_scope: Some(
+            ganbaru_chat_contracts::models::ProviderOrganizationalScope::Conversation,
+        ),
     });
     let mut driver = driver(configuration);
     let snapshot = block_on(async {

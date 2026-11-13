@@ -52,6 +52,7 @@
   import { latestStructuredPlanSteps, summarizePlanProgress } from "$lib/chat/composer/plan-progress";
   import { suggestTeammateMention, type MentionSuggestion } from "$lib/chat/composer/mention-suggestion";
   import { pastedTextLineCount } from "$lib/chat/composer/paste";
+  import { providerTargetAuthorityBlockers } from "$lib/chat/composer/provider-authority";
   import {
     chatComposerDocumentFromText,
     chatComposerDocumentVersioned,
@@ -1993,28 +1994,10 @@
     if (requiresHostTools && authority && !authority.internalHostTools) {
       blockers.push(t("chat.organization.providerCannotUseHostTools"));
     }
-    if (target?.kind === "scratch" && authority) {
-      if (!authority.writableRoot) blockers.push(t("chat.organization.providerCannotWriteRoot"));
-      if (!authority.confinedCommands) blockers.push(t("chat.organization.providerCannotConfineCommands"));
-      if (!authority.networkBoundary) blockers.push(t("chat.organization.providerCannotEnforceNetwork"));
-    }
-    if (target?.folderCapability && authority) {
-      const capability = target.folderCapability;
-      if (capability === "read" && !authority.readOnlyRoot) blockers.push(t("chat.organization.providerCannotReadRoot"));
-      if (["edit", "execute", "publish"].includes(capability) && !authority.writableRoot) {
-        blockers.push(t("chat.organization.providerCannotWriteRoot"));
-      }
-      if (["read", "edit"].includes(capability) && !authority.denyShell) {
-        blockers.push(t("chat.organization.providerCannotDenyShell"));
-      }
-      if (["execute", "publish"].includes(capability) && !authority.confinedCommands) {
-        blockers.push(t("chat.organization.providerCannotConfineCommands"));
-      }
-      if (["execute", "publish"].includes(capability) && !authority.networkBoundary) {
-        blockers.push(t("chat.organization.providerCannotEnforceNetwork"));
-      }
-      if (capability === "publish" && !authority.classifiedPublish) {
-        blockers.push(t("chat.organization.providerCannotPublish"));
+    if (target && authority) {
+      const teammateSafetyMode = teammate?.latestPolicy?.safetyMode ?? null;
+      for (const blocker of providerTargetAuthorityBlockers(authority, target, teammateSafetyMode)) {
+        blockers.push(t(blocker));
       }
     }
     return [...new Set(blockers)];

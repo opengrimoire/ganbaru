@@ -129,6 +129,8 @@ fn internal_mcp(organizational_authority: bool) -> crate::models::ProviderIntern
         bearer_token: "test-token".to_string(),
         organizational_authority,
         pre_approved_tools: Vec::new(),
+        organizational_scope: organizational_authority
+            .then_some(crate::models::ProviderOrganizationalScope::Conversation),
     }
 }
 

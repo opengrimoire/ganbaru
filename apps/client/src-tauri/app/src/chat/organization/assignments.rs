@@ -738,9 +738,7 @@ pub(super) async fn cancel_assignment(
     assignment_id: ChatWorkAssignmentId,
     expected_revision: u64,
 ) -> ChatResult<ChatWorkAssignmentRead> {
-    let stop_app = app.clone();
-    let stop_db_url = db_url.clone();
-    let pool = chat_pool(app, db_url).await?;
+    let pool = chat_pool(app.clone(), db_url.clone()).await?;
     let cancelled = set_assignment_state(
         &pool,
         &assignment_id,
@@ -749,28 +747,45 @@ pub(super) async fn cancel_assignment(
         Some("Cancelled by the user"),
     )
     .await?;
-    let cancelled_descendants = cancel_delegated_work(&pool, &assignment_id).await?;
+    end_settled_work(&app, &db_url, &pool, &assignment_id, "assignment-cancel").await?;
+    Ok(cancelled)
+}
+
+/// Ends the work of `assignment_id`, which this device just settled without its provider:
+/// cancels the work it delegated, delivers the delegation outcomes the settle queued, and stops
+/// the provider session of its latest run. `stop_label` prefixes the stop command id, so
+/// repeated stops for one reason share an id.
+pub(crate) async fn end_settled_work(
+    app: &tauri::AppHandle,
+    db_url: &str,
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+    stop_label: &str,
+) -> ChatResult<()> {
+    let cancelled_descendants = cancel_delegated_work(pool, assignment_id).await?;
     if !cancelled_descendants.is_empty() {
-        crate::chat::revocation::start_job_drain(&stop_app);
+        crate::chat::revocation::start_job_drain(app);
     }
     let mut settled = cancelled_descendants;
     settled.insert(assignment_id.as_str().to_owned());
-    deliver_delegation_outcomes_of_assignments(&stop_app, &pool, settled);
+    deliver_delegation_outcomes_of_assignments(app, pool, settled);
     let provider_thread_id: Option<String> = sqlx::query_scalar(
         "SELECT provider_thread_id FROM chat_agent_runs
          WHERE assignment_id = ? AND provider_thread_id IS NOT NULL
          ORDER BY run_ordinal DESC LIMIT 1",
     )
     .bind(assignment_id.as_str())
-    .fetch_optional(&pool)
+    .fetch_optional(pool)
     .await
     .map_err(persistence_error)?
     .flatten();
     if let Some(provider_thread_id) = provider_thread_id {
         let thread_id = ChatThreadId::new(provider_thread_id).map_err(identifier_error)?;
         let client_command_id =
-            ChatCommandId::new(format!("assignment-cancel:{}", assignment_id.as_str()))
+            ChatCommandId::new(format!("{stop_label}:{}", assignment_id.as_str()))
                 .map_err(identifier_error)?;
+        let stop_app = app.clone();
+        let stop_db_url = db_url.to_owned();
         tauri::async_runtime::spawn(async move {
             let _ = super::super::interaction_commands::chat_stop_session(
                 stop_app,
@@ -782,7 +797,7 @@ pub(super) async fn cancel_assignment(
             .await;
         });
     }
-    Ok(cancelled)
+    Ok(())
 }
 
 /// Refuses active writes to `assignment_id` from a device other than its executing device. An
@@ -891,6 +906,21 @@ pub(super) async fn persist_retry(
     }
     require_executing_device(pool, assignment_id, device.id).await?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    // The same assignment keeps its budget and what it used, so retrying work that reached a
+    // limit would stop again at once; the limit has to rise first.
+    if ganbaru_chat::coordination::budgets::assignment_budget_reached(
+        &mut transaction,
+        assignment_id.as_str(),
+        now.as_str(),
+    )
+    .await?
+    {
+        return Err(ChatError::new(
+            ChatErrorCode::Conflict,
+            "This work reached its budget limit; raise the limit to retry it",
+            true,
+        ));
+    }
     let updated = sqlx::query(
         "UPDATE chat_work_assignments
          SET state = 'queued', state_reason = NULL, settled_at = NULL,

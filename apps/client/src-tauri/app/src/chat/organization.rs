@@ -53,7 +53,7 @@ mod workflow;
 #[cfg(desktop)]
 pub(crate) use assignments::{
     continue_queued_replies_after_turn, deliver_delegation_outcomes_of_assignments,
-    deliver_delegation_outcomes_of_thread, resume_answered_work_of_thread,
+    deliver_delegation_outcomes_of_thread, end_settled_work, resume_answered_work_of_thread,
     start_synced_assignment_work,
 };
 use common::{

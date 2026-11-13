@@ -2,6 +2,7 @@
 
 use ganbaru_chat_contracts::models::{
     ChatChangeNotification, ChatError, ChatErrorCode, ChatProjectionKey, ChatResult,
+    ChatWorkAssignmentId,
 };
 use tauri::{Emitter, Runtime};
 
@@ -32,6 +33,11 @@ impl<R: Runtime> ChatChangeEmitter for TauriChatChangeEmitter<R> {
                 true,
             )
         })
+    }
+
+    fn budget_limit_reached(&self, assignment_id: &ChatWorkAssignmentId) -> ChatResult<()> {
+        super::budget_enforcement::queue_stop(&self.app, assignment_id);
+        Ok(())
     }
 }
 

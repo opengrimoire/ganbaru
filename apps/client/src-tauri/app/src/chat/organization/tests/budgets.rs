@@ -262,6 +262,42 @@ fn a_same_device_retry_keeps_its_budget_row() {
 }
 
 #[test]
+fn a_same_device_retry_at_a_reached_budget_is_refused_until_the_limit_rises() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_work_in("failed").await;
+        seed_budget(&pool, ROUTED_ASSIGNMENT_ID, 20_000, 20_000).await;
+        let assignment_id = ChatWorkAssignmentId::new(ROUTED_ASSIGNMENT_ID).unwrap();
+        let failed = read_assignment(&pool, &assignment_id).await.unwrap();
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = PostingDevice::this_device("device:desk", &writers);
+        let now = UtcTimestamp::new(BUDGET_TIME).unwrap();
+
+        let refused = assignments::persist_retry(&pool, &failed.id, failed.revision, device, &now)
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, ChatErrorCode::Conflict);
+        assert_eq!(
+            read_assignment(&pool, &assignment_id).await.unwrap().state,
+            ChatWorkAssignmentState::Failed,
+            "a refused retry leaves the work as it was"
+        );
+
+        set_assignment_budget(&pool, &assignment_id, &limits(Some(40_000), None), &now)
+            .await
+            .unwrap();
+        let raised = read_assignment(&pool, &assignment_id).await.unwrap();
+        let retried = assignments::persist_retry(&pool, &raised.id, raised.revision, device, &now)
+            .await
+            .unwrap();
+        assert_eq!(retried, assignment_id);
+        assert_eq!(
+            read_assignment(&pool, &assignment_id).await.unwrap().state,
+            ChatWorkAssignmentState::Queued
+        );
+    });
+}
+
+#[test]
 fn a_budget_set_keeps_the_used_amount_and_a_repeat_set_changes_nothing() {
     tauri::async_runtime::block_on(async {
         let pool = review_work_in("failed").await;

@@ -8,13 +8,25 @@ use super::super::models::{
     ChatError, ChatErrorCode, ChatParticipantId, ChatReplyThreadId, ChatResult, ChatTurnId,
     ChatWorkAssignmentId,
 };
+use super::budgets::{BudgetCheck, PROVIDER_USAGE_LIMIT_REASON, check_assignment_budget};
 use super::reports::{
     TeammateUpdate, insert_teammate_update, run_asked_host_question, run_result_report,
 };
+use crate::models::ChatTurnState;
 use crate::usage_counters::record_run_usage;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{Row, Sqlite, SqliteConnection, Transaction};
+
+/// What projecting one provider event changed.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProviderEventProjection {
+    /// Whether organizational rows changed.
+    pub projected: bool,
+    /// The assignment the event stopped at a budget limit; the caller stops its provider
+    /// session after commit.
+    pub budget_stop: Option<ChatWorkAssignmentId>,
+}
 
 fn persistence_error(_error: sqlx::Error) -> ChatError {
     ChatError::new(
@@ -40,7 +52,7 @@ fn identifier_error(_error: String) -> ChatError {
 pub async fn project_provider_event_in_transaction(
     transaction: &mut Transaction<'_, Sqlite>,
     runtime: &CanonicalRuntimeEvent,
-) -> ChatResult<bool> {
+) -> ChatResult<ProviderEventProjection> {
     let run = sqlx::query(
         "SELECT run.id AS run_id, run.state AS run_state, run.assignment_id,
                 assignment.reply_thread_id, assignment.teammate_id
@@ -60,11 +72,11 @@ pub async fn project_provider_event_in_transaction(
     .await
     .map_err(persistence_error)?;
     let Some(run) = run else {
-        return Ok(false);
+        return Ok(ProviderEventProjection::default());
     };
     let run_state: String = run.try_get("run_state").map_err(persistence_error)?;
     if SETTLED_RUN_STATES.contains(&run_state.as_str()) {
-        return Ok(false);
+        return Ok(ProviderEventProjection::default());
     }
     let run_id: String = run.try_get("run_id").map_err(persistence_error)?;
     let assignment_id = ChatWorkAssignmentId::new(
@@ -105,12 +117,70 @@ pub async fn project_provider_event_in_transaction(
         )
         .await?;
     }
+    let projected = project_event_arms(transaction, runtime, &target).await?;
+    let budget_stop = check_budget_after_event(
+        transaction,
+        &assignment_id,
+        &run_id,
+        runtime.created_at.as_str(),
+        usage.is_some(),
+    )
+    .await?;
+    Ok(ProviderEventProjection {
+        projected: projected || budget_stop.is_some(),
+        budget_stop,
+    })
+}
+
+/// Checks the budget of the run's assignment after its event applied. A run that settled
+/// records what it used; a run still going whose usage changed stops at a reached limit. A
+/// turn that completes with the usage that crossed the limit therefore completes normally.
+async fn check_budget_after_event(
+    transaction: &mut Transaction<'_, Sqlite>,
+    assignment_id: &ChatWorkAssignmentId,
+    run_id: &str,
+    occurred_at: &str,
+    usage_changed: bool,
+) -> ChatResult<Option<ChatWorkAssignmentId>> {
+    let run_state: String = sqlx::query_scalar("SELECT state FROM chat_agent_runs WHERE id = ?")
+        .bind(run_id)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(persistence_error)?;
+    let kind = if SETTLED_RUN_STATES.contains(&run_state.as_str()) {
+        BudgetCheck::Settled
+    } else if usage_changed {
+        BudgetCheck::Running
+    } else {
+        return Ok(None);
+    };
+    check_assignment_budget(transaction, assignment_id, run_id, occurred_at, kind).await
+}
+
+/// Applies the organizational effect of the event in `runtime` on the run in `target`,
+/// reporting whether it changed organizational rows.
+async fn project_event_arms(
+    transaction: &mut Transaction<'_, Sqlite>,
+    runtime: &CanonicalRuntimeEvent,
+    target: &ProjectionTarget<'_>,
+) -> ChatResult<bool> {
+    let assignment_id = target.assignment_id;
+    let run_id = target.run_id;
+    // A turn that fails or aborts right after its provider reported its own usage limit fails
+    // for that reason, carrying when the limit resets.
+    let provider_limit = match &runtime.event {
+        CanonicalEvent::TurnCompleted(event) if event.state == ChatTurnState::Failed => {
+            provider_limit_resets_at(transaction, runtime).await?
+        }
+        CanonicalEvent::TurnAborted(_) => provider_limit_resets_at(transaction, runtime).await?,
+        _ => None,
+    };
     let projected = match &runtime.event {
         CanonicalEvent::PlanUpdated(event) => {
             insert_projected_teammate_message(
                 transaction,
                 runtime,
-                &target,
+                target,
                 "plan",
                 &event.markdown,
                 json!({ "steps": event.steps }),
@@ -121,7 +191,7 @@ pub async fn project_provider_event_in_transaction(
             insert_projected_teammate_message(
                 transaction,
                 runtime,
-                &target,
+                target,
                 "plan",
                 &event.markdown,
                 json!({ "planId": event.plan_id }),
@@ -137,8 +207,8 @@ pub async fn project_provider_event_in_transaction(
             };
             if !update_assignment_and_run_state(
                 transaction,
-                &assignment_id,
-                &run_id,
+                assignment_id,
+                run_id,
                 "waiting_for_approval",
                 "waiting",
                 None,
@@ -151,7 +221,7 @@ pub async fn project_provider_event_in_transaction(
             insert_projected_teammate_message(
                 transaction,
                 runtime,
-                &target,
+                target,
                 "approval",
                 &markdown,
                 json!({
@@ -172,8 +242,8 @@ pub async fn project_provider_event_in_transaction(
                 .join("\n\n");
             if !update_assignment_and_run_state(
                 transaction,
-                &assignment_id,
-                &run_id,
+                assignment_id,
+                run_id,
                 "waiting_for_answer",
                 "waiting",
                 None,
@@ -186,7 +256,7 @@ pub async fn project_provider_event_in_transaction(
             insert_projected_teammate_message(
                 transaction,
                 runtime,
-                &target,
+                target,
                 "question",
                 &markdown,
                 json!({
@@ -199,8 +269,8 @@ pub async fn project_provider_event_in_transaction(
         CanonicalEvent::RequestResolved(_) | CanonicalEvent::UserInputResolved(_) => {
             update_assignment_and_run_state(
                 transaction,
-                &assignment_id,
-                &run_id,
+                assignment_id,
+                run_id,
                 "working",
                 "working",
                 None,
@@ -208,29 +278,50 @@ pub async fn project_provider_event_in_transaction(
             )
             .await?
         }
-        CanonicalEvent::TurnCompleted(event) => {
-            let markdown: Option<String> = sqlx::query_scalar(
-                "SELECT normalized_markdown
-                 FROM chat_messages
-                 WHERE thread_id = ? AND turn_id = ? AND role = 'assistant'
-                 ORDER BY sequence_anchor DESC, created_at DESC LIMIT 1",
+        CanonicalEvent::TurnCompleted(event) if provider_limit.is_some() => {
+            if !update_assignment_and_run_state(
+                transaction,
+                assignment_id,
+                run_id,
+                "failed",
+                "failed",
+                Some(PROVIDER_USAGE_LIMIT_REASON),
+                runtime.created_at.as_str(),
             )
-            .bind(runtime.thread_id.as_str())
-            .bind(runtime.turn_id.as_ref().map(ChatTurnId::as_str))
-            .fetch_optional(&mut **transaction)
-            .await
-            .map_err(persistence_error)?;
-            if awaits_host_answer(transaction, &assignment_id, &run_id).await? {
-                settle_run(transaction, &run_id, runtime.created_at.as_str()).await?;
+            .await?
+            {
+                return Ok(true);
+            }
+            let markdown = turn_assistant_markdown(transaction, runtime).await?;
+            let failure = event
+                .stop_reason
+                .as_deref()
+                .or(markdown.as_deref())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("The provider reached its usage limit.");
+            insert_projected_teammate_message(
+                transaction,
+                runtime,
+                target,
+                "failure",
+                failure,
+                provider_limit_payload(provider_limit.clone().flatten()),
+            )
+            .await?
+        }
+        CanonicalEvent::TurnCompleted(event) => {
+            let markdown = turn_assistant_markdown(transaction, runtime).await?;
+            if awaits_host_answer(transaction, assignment_id, run_id).await? {
+                settle_run(transaction, run_id, runtime.created_at.as_str()).await?;
                 return Ok(false);
             }
             let changed_files = turn_changed_files(transaction, runtime).await?;
-            let reported_result = run_result_report(transaction, &run_id).await?;
+            let reported_result = run_result_report(transaction, run_id).await?;
             if let Some(body) = reported_result {
                 if !update_assignment_and_run_state(
                     transaction,
-                    &assignment_id,
-                    &run_id,
+                    assignment_id,
+                    run_id,
                     "ready_for_review",
                     "completed",
                     None,
@@ -246,7 +337,7 @@ pub async fn project_provider_event_in_transaction(
                     insert_projected_teammate_message(
                         transaction,
                         runtime,
-                        &target,
+                        target,
                         "review",
                         &body,
                         turn_completion_payload(event, runtime, &changed_files),
@@ -261,8 +352,8 @@ pub async fn project_provider_event_in_transaction(
                 };
                 if !update_assignment_and_run_state(
                     transaction,
-                    &assignment_id,
-                    &run_id,
+                    assignment_id,
+                    run_id,
                     state,
                     "completed",
                     None,
@@ -275,7 +366,7 @@ pub async fn project_provider_event_in_transaction(
                 insert_projected_teammate_message(
                     transaction,
                     runtime,
-                    &target,
+                    target,
                     if changed_files.is_empty() {
                         "result"
                     } else {
@@ -291,13 +382,23 @@ pub async fn project_provider_event_in_transaction(
             }
         }
         CanonicalEvent::TurnAborted(event) => {
+            let (reason, payload) = match provider_limit.clone() {
+                Some(resets_at) => (
+                    PROVIDER_USAGE_LIMIT_REASON,
+                    provider_limit_payload(resets_at),
+                ),
+                None => (
+                    event.reason.as_str(),
+                    json!({ "recoverable": event.recoverable }),
+                ),
+            };
             if !update_assignment_and_run_state(
                 transaction,
-                &assignment_id,
-                &run_id,
+                assignment_id,
+                run_id,
                 "failed",
                 "failed",
-                Some(&event.reason),
+                Some(reason),
                 runtime.created_at.as_str(),
             )
             .await?
@@ -307,18 +408,18 @@ pub async fn project_provider_event_in_transaction(
             insert_projected_teammate_message(
                 transaction,
                 runtime,
-                &target,
+                target,
                 "failure",
                 &event.reason,
-                json!({ "recoverable": event.recoverable }),
+                payload,
             )
             .await?
         }
         CanonicalEvent::RuntimeError(event) if !event.recoverable => {
             if !update_assignment_and_run_state(
                 transaction,
-                &assignment_id,
-                &run_id,
+                assignment_id,
+                run_id,
                 "failed",
                 "failed",
                 Some(&event.message),
@@ -331,7 +432,7 @@ pub async fn project_provider_event_in_transaction(
             insert_projected_teammate_message(
                 transaction,
                 runtime,
-                &target,
+                target,
                 "failure",
                 &event.message,
                 json!({ "code": event.code, "safeDetails": event.safe_details }),
@@ -351,6 +452,69 @@ pub async fn project_provider_event_in_transaction(
         .await?;
     }
     Ok(projected)
+}
+
+/// When the provider of the thread in `runtime` reported its own usage limit for the ending
+/// turn, returns when that limit resets, if the provider said.
+///
+/// The latest rate limit status of the thread counts only when it is limited and no other
+/// turn ended after it, so a stale limit from an earlier turn never relabels a later failure.
+async fn provider_limit_resets_at(
+    transaction: &mut Transaction<'_, Sqlite>,
+    runtime: &CanonicalRuntimeEvent,
+) -> ChatResult<Option<Option<String>>> {
+    let row = sqlx::query(
+        "SELECT json_extract(status.payload_data, '$.payload.limited') AS limited,
+                json_extract(status.payload_data, '$.payload.resetsAt') AS resets_at,
+                NOT EXISTS (
+                    SELECT 1 FROM chat_events ended
+                    WHERE ended.thread_id = status.thread_id
+                      AND ended.sequence > status.sequence
+                      AND ended.event_type IN ('turn_completed', 'turn_aborted')
+                      AND ended.turn_id IS NOT ?
+                ) AS current
+         FROM chat_events status
+         WHERE status.thread_id = ? AND status.event_type = 'rate_limit_status'
+         ORDER BY status.sequence DESC LIMIT 1",
+    )
+    .bind(runtime.turn_id.as_ref().map(ChatTurnId::as_str))
+    .bind(runtime.thread_id.as_str())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let limited: Option<bool> = row.try_get("limited").map_err(persistence_error)?;
+    let current: bool = row.try_get("current").map_err(persistence_error)?;
+    if limited != Some(true) || !current {
+        return Ok(None);
+    }
+    let resets_at: Option<String> = row.try_get("resets_at").map_err(persistence_error)?;
+    Ok(Some(resets_at))
+}
+
+/// The latest assistant message of the turn in `runtime`.
+async fn turn_assistant_markdown(
+    transaction: &mut Transaction<'_, Sqlite>,
+    runtime: &CanonicalRuntimeEvent,
+) -> ChatResult<Option<String>> {
+    sqlx::query_scalar(
+        "SELECT normalized_markdown
+         FROM chat_messages
+         WHERE thread_id = ? AND turn_id = ? AND role = 'assistant'
+         ORDER BY sequence_anchor DESC, created_at DESC LIMIT 1",
+    )
+    .bind(runtime.thread_id.as_str())
+    .bind(runtime.turn_id.as_ref().map(ChatTurnId::as_str))
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(persistence_error)
+}
+
+/// The payload of the failure update of a run whose provider reached its own usage limit.
+fn provider_limit_payload(resets_at: Option<String>) -> Value {
+    json!({ "code": PROVIDER_USAGE_LIMIT_REASON, "resetsAt": resets_at })
 }
 
 /// Whether `event` settles the assignment its run belongs to when it applies.
@@ -464,8 +628,8 @@ async fn insert_projected_teammate_message(
 /// ended, and never waits or works again. Callers project no message for an assignment that
 /// did not change, so a settled assignment shows no late approval, question, or review.
 /// A run that already settled keeps its state and settle time.
-async fn update_assignment_and_run_state(
-    transaction: &mut Transaction<'_, Sqlite>,
+pub(crate) async fn update_assignment_and_run_state(
+    connection: &mut SqliteConnection,
     assignment_id: &ChatWorkAssignmentId,
     run_id: &str,
     assignment_state: &str,
@@ -488,7 +652,7 @@ async fn update_assignment_and_run_state(
     .bind(occurred_at)
     .bind(occurred_at)
     .bind(assignment_id.as_str())
-    .execute(&mut **transaction)
+    .execute(&mut *connection)
     .await
     .map_err(persistence_error)?;
     let applied = assignment.rows_affected() == 1;
@@ -508,7 +672,7 @@ async fn update_assignment_and_run_state(
         .bind(occurred_at)
         .bind(occurred_at)
         .bind(run_id)
-        .execute(&mut **transaction)
+        .execute(&mut *connection)
         .await
         .map_err(persistence_error)?;
     Ok(applied)

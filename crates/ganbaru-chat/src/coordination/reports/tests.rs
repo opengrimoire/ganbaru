@@ -10,7 +10,7 @@ pub(crate) const TEAMMATE: &str = "participant:reports-helper";
 const OWNER: &str = "participant:local-owner";
 pub(crate) const ASSIGNMENT: &str = "assignment:reports";
 pub(crate) const RUN: &str = "run:reports-1";
-const TURN: &str = "turn:reports-1";
+pub(crate) const TURN: &str = "turn:reports-1";
 pub(crate) const THREAD: &str = "reply:reports";
 
 /// A migrated in-memory pool. Foreign keys stay off, and the run is seeded as a sync apply, so
@@ -149,7 +149,7 @@ async fn report(
     record_host_report(&mut connection, call(request), kind, body, NOW).await
 }
 
-async fn states(pool: &SqlitePool) -> (String, String) {
+pub(crate) async fn states(pool: &SqlitePool) -> (String, String) {
     sqlx::query_as(
         "SELECT assignment.state, run.state FROM chat_work_assignments assignment
          JOIN chat_agent_runs run ON run.assignment_id = assignment.id
@@ -162,7 +162,7 @@ async fn states(pool: &SqlitePool) -> (String, String) {
 }
 
 /// Every teammate update in the reply thread, as `(update kind, markdown)`.
-async fn updates(pool: &SqlitePool) -> Vec<(String, String)> {
+pub(crate) async fn updates(pool: &SqlitePool) -> Vec<(String, String)> {
     sqlx::query_as(
         "SELECT semantic.update_kind, revision.normalized_markdown
          FROM chat_work_semantic_updates semantic
@@ -844,7 +844,10 @@ mod projection {
         let organizational = project_provider_event_in_transaction(&mut transaction, &usage)
             .await
             .unwrap();
-        assert!(!organizational, "usage changes no organizational state");
+        assert!(
+            !organizational.projected,
+            "usage changes no organizational state"
+        );
         transaction.rollback().await.unwrap();
         assert_eq!(counted_tokens(&pool).await, None, "the counters roll back");
 
@@ -901,7 +904,7 @@ mod projection {
         .await
         .unwrap();
         transaction.commit().await.unwrap();
-        assert!(!organizational);
+        assert!(!organizational.projected);
         assert_eq!(counted_tokens(&pool).await, None);
     }
 }

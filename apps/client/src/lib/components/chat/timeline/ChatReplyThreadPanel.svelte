@@ -8,6 +8,7 @@
   import { chatErrorMessage } from "$lib/chat/error-presentation";
   import {
     agentRunRestart,
+    agentRunWorkingFolderName,
     exactExecutionReadKey,
     exactExecutionRuns,
     exactRunPresentationsReady,
@@ -89,6 +90,7 @@
   const hasPrivateScratch = $derived((page?.agentRuns ?? []).some((run) => (
     run.scratchGenerationId !== null
   )));
+  const workingFolderName = $derived(agentRunWorkingFolderName(page?.agentRuns ?? [], chat.workingFolders));
   const loadedExecutionTurnIds = $derived(new Set([
     ...chat.timelineItems.flatMap((item) => item.turnId ? [item.turnId] : []),
     ...chat.timelinePages.flatMap((timelinePage) => timelinePage.turns.map((turn) => turn.turnId)),
@@ -412,6 +414,7 @@
       <div class="date-divider"><span>{formatDateTime(localization.locale, Date.parse(page.rootMessage.createdAt), { dateStyle: "full" })}</span></div>
       <ChatOrganizationalMessage message={page.rootMessage} showReplyStrip={false} currentResponseSettings onActionError={reportMessageActionError} />
       {#if assignment?.delegation}<ChatDelegationOrigin delegation={assignment.delegation} onOpenThread={openThread} />{/if}
+      {#if workingFolderName}<p class="run-location" data-run-location>{t("chat.organization.workingIn", workingFolderName)}</p>{/if}
       {#each renderEntries as entry, index (entry.key)}
         {@const previousEntry = renderEntries[index - 1]}
         {@const previousCreatedAt = previousEntry ? entryCreatedAt(previousEntry) : page.rootMessage.createdAt}
@@ -484,7 +487,7 @@
   .thread-scroll { min-height:0; flex:1; overflow-y:scroll; overscroll-behavior:contain; padding-block:0.4rem; }
   .date-divider { display:flex; align-items:center; gap:0.5rem; margin:0.75rem; color:var(--muted-foreground); font-size: calc(0.65rem * var(--type-scale)); }
   .date-divider::before,.date-divider::after { height:1px; flex:1; background:var(--border); content:""; }
-  .run-restart { margin:0.25rem 0.75rem; color:var(--muted-foreground); font-size: calc(0.65rem * var(--type-scale)); }
+  .run-restart,.run-location { margin:0.25rem 0.75rem; color:var(--muted-foreground); font-size: calc(0.65rem * var(--type-scale)); }
   .thread-request { flex:0 0 auto; border-top:1px solid var(--border); padding:0.5rem; }
   .thread-secrets { flex:0 0 auto; padding:0 0.5rem; }
   .thread-secrets:empty { display:none; }

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ChatAgentRunRead, ChatMessageRead, JsonValue, VersionedJson } from "$lib/chat/contracts";
 import {
   agentRunRestart,
+  agentRunWorkingFolderName,
   exactExecutionReadKey,
   exactExecutionRuns,
   exactRunPresentationsReady,
@@ -293,5 +294,31 @@ describe("reply thread exact execution reads", () => {
 
     expect(plan.toRead).toEqual([]);
     expect(plan.visible).toEqual({});
+  });
+});
+
+describe("agentRunWorkingFolderName", () => {
+  const folders = [
+    { workingFolder: { id: "folder-1", displayName: "Website" } },
+    { workingFolder: { id: "folder-2", displayName: "Mobile app" } },
+  ];
+
+  it("names the folder of the newest run", () => {
+    const runs = [agentRun("run-1", "thread-1"), { ...agentRun("run-2", "thread-1"), workingFolderId: "folder-2" }];
+
+    expect(agentRunWorkingFolderName(runs, folders)).toBe("Mobile app");
+  });
+
+  it("names nothing when the newest run has no folder, even after an earlier folder run", () => {
+    const conversation = { ...agentRun("run-2", "thread-1"), workingFolderId: null };
+    const scratch = { ...conversation, scratchGenerationId: "scratch-1" };
+
+    expect(agentRunWorkingFolderName([agentRun("run-1", "thread-1"), conversation], folders)).toBeNull();
+    expect(agentRunWorkingFolderName([scratch], folders)).toBeNull();
+  });
+
+  it("names nothing without runs or when the folder is not known here", () => {
+    expect(agentRunWorkingFolderName([], folders)).toBeNull();
+    expect(agentRunWorkingFolderName([{ ...agentRun("run-1", null), workingFolderId: "folder-9" }], folders)).toBeNull();
   });
 });

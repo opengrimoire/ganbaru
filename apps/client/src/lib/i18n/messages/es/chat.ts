@@ -229,6 +229,7 @@ export const chat = {
     openProfileSettings: "Configuración del perfil",
     openTeammateSettings: "Configuración del agente",
     openScratchInspector: "Inspeccionar espacio privado",
+    workingIn: (folder: string) => `Trabajando en ${folder}`,
     oneAgentOnly: "Una asignación solo puede mencionar a un agente de IA.",
     referencesPasted: (count: number) => `${count} ${count === 1 ? "referencia pegada" : "referencias pegadas"}`,
     referenceResults: (count: number) => `${count} ${count === 1 ? "resultado de referencia" : "resultados de referencia"}`,

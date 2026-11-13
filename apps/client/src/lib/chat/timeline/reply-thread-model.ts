@@ -1,6 +1,7 @@
 import type {
   ChatAgentRunRead,
   ChatMessageRead,
+  ProjectWorkingFolder,
   VersionedJson,
 } from "$lib/chat/contracts";
 import { compareOrderKeyThenId } from "$lib/utils/order-key";
@@ -185,4 +186,17 @@ function fallbackRunPosition(ordered: readonly ChatMessageRead[], createdAt: str
 /** Returns how a run restarted its provider session, or `null` when it opened or continued one as planned. */
 export function agentRunRestart(run: ChatAgentRunRead): "handoff" | "retry" | null {
   return run.attemptReason === "handoff" || run.attemptReason === "retry" ? run.attemptReason : null;
+}
+
+/**
+ * Returns the name of the working folder the thread's newest run works in, or `null` when that run works without
+ * one (conversation only or private scratch) or the folder is not known here.
+ */
+export function agentRunWorkingFolderName(
+  runs: readonly ChatAgentRunRead[],
+  folders: readonly { workingFolder: Pick<ProjectWorkingFolder, "id" | "displayName"> }[],
+): string | null {
+  const folderId = runs.at(-1)?.workingFolderId ?? null;
+  if (folderId === null) return null;
+  return folders.find((folder) => folder.workingFolder.id === folderId)?.workingFolder.displayName ?? null;
 }

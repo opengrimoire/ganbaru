@@ -1071,11 +1071,6 @@ function parseAssignmentAcceptanceOffer(value: unknown, label: string): ChatAssi
     digest: readIdentifier(record.digest, `${label}.digest`),
     providerInstanceId: readIdentifier(record.providerInstanceId, `${label}.providerInstanceId`),
     folders: readArray(record.folders, `${label}.folders`, parseAssignmentAcceptanceFolder),
-    scratchRuntimeApproval: readEnum(
-      record.scratchRuntimeApproval,
-      CHAT_RUNTIME_APPROVAL_POLICIES,
-      `${label}.scratchRuntimeApproval`,
-    ),
   };
 }
 

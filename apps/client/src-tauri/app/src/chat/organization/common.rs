@@ -281,37 +281,6 @@ pub(super) fn is_valid_teammate_effort(effort: &str) -> bool {
     )
 }
 
-/// Largest stored model override selection, in characters, matching the column CHECK.
-pub(super) const MAX_MODEL_OVERRIDE_CHARS: usize = 16_384;
-
-/// Validates `model_override` with the selection rule of a teammate policy, one explicit model
-/// or the provider-managed model without options, and returns its stored selection JSON.
-pub(super) fn serialize_model_override(
-    model_override: &ChatAssignmentModelOverride,
-) -> ChatResult<String> {
-    if model_override.provider_managed_model == model_override.model_id.is_some()
-        || (model_override.provider_managed_model && !model_override.model_options.is_empty())
-    {
-        return Err(ChatError::validation(
-            "modelOverride",
-            "Choose either the provider-managed model or one explicit model",
-        ));
-    }
-    let data = serde_json::to_string(model_override).map_err(|error| {
-        ChatError::validation(
-            "modelOverride",
-            format!("The model override cannot be stored: {error}"),
-        )
-    })?;
-    if data.chars().count() > MAX_MODEL_OVERRIDE_CHARS {
-        return Err(ChatError::validation(
-            "modelOverride",
-            "The model override is too large",
-        ));
-    }
-    Ok(data)
-}
-
 pub(super) fn validate_message_request(request: &PostChatMessageCommand) -> ChatResult<()> {
     let markdown = request.normalized_markdown.trim();
     if markdown.is_empty() && request.attachment_ids.is_empty() && request.references.is_empty() {
@@ -330,12 +299,6 @@ pub(super) fn validate_message_request(request: &PostChatMessageCommand) -> Chat
         > ganbaru_chat::timeline::MAX_RICH_CONTENT_BYTES
     {
         return Err(ganbaru_chat::timeline::rich_content_too_large());
-    }
-    if let Some(model_override) = &request.model_override {
-        serialize_model_override(model_override)?;
-    }
-    if let Some(budget) = &request.budget {
-        super::budgets::validate_budget(budget)?;
     }
     let mut ranges = Vec::with_capacity(request.references.len());
     let mut reference_ids = BTreeSet::new();

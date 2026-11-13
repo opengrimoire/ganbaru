@@ -450,7 +450,6 @@ describe("ChatMessageComposer", () => {
           digest: "digest-seen",
           providerInstanceId: "codex-phone",
           folders,
-          scratchRuntimeApproval: "autoApprove",
         },
       },
     };

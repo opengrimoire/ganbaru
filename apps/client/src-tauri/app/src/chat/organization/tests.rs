@@ -20,7 +20,6 @@ use serde_json::json;
 use sqlx::{Row, SqlitePool};
 
 mod budgets;
-mod model_override;
 mod review;
 mod routing;
 mod targetless_dispatch;
@@ -207,8 +206,6 @@ pub(super) fn message(markdown: &str) -> PostChatMessageCommand {
         execution_target: None,
         also_send_to_channel: false,
         followup_routing: None,
-        model_override: None,
-        budget: None,
     }
 }
 
@@ -3508,7 +3505,6 @@ async fn route_review_reply(
         teammate_id: ChatParticipantId::new("participant:review-agent").unwrap(),
         active_assignment: None,
         latest_assignment: None,
-        mentioned: true,
     };
     let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
     let mut transaction = pool.begin().await.unwrap();
@@ -5269,7 +5265,6 @@ fn the_acceptance_offer_names_the_provider_folders_and_approvals_behind_its_dige
         let wire = serde_json::to_value(&offer).unwrap();
         assert_eq!(wire["folders"][0]["capability"], "execute");
         assert!(wire["folders"][0]["runtimeApproval"].is_string());
-        assert!(wire["scratchRuntimeApproval"].is_string());
 
         sqlx::query(
             "UPDATE chat_participants SET archived_at = '2026-08-04T17:30:00.000Z'
@@ -5337,7 +5332,6 @@ fn the_acceptance_offer_carries_the_approval_wire_values_of_the_client() {
             let wire = serde_json::to_value(&offer).unwrap();
             assert_eq!(wire["folders"][0]["runtimeApproval"], expected);
             assert_eq!(wire["folders"][0]["capability"], "execute");
-            assert_eq!(wire["scratchRuntimeApproval"], expected);
             assert_eq!(offer.digest, digest_of(&pool, "assignment:old").await);
         }
     });

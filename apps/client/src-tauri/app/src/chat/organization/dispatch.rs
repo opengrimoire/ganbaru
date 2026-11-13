@@ -406,15 +406,7 @@ async fn dispatch_claimed_assignment(
     let policy_revision_id: String = row
         .try_get("teammate_policy_revision_id")
         .map_err(persistence_error)?;
-    let mut policy = read_policy(pool, &teammate_id, &policy_revision_id).await?;
-    let override_data: Option<String> = row
-        .try_get("override_model_selection_data")
-        .map_err(persistence_error)?;
-    if apply_model_override(&mut policy, override_data)? {
-        let provider =
-            crate::chat::settings_commands::read_provider(&app, &policy.provider_instance_id)?;
-        require_override_model_available(provider.model_catalog.as_ref(), &policy)?;
-    }
+    let policy = read_policy(pool, &teammate_id, &policy_revision_id).await?;
     let frozen_runtime_approval: String = row
         .try_get("resolved_runtime_approval_policy")
         .map_err(persistence_error)?;
@@ -737,7 +729,6 @@ pub(super) async fn read_dispatch_row(
             assignment.teammate_id,
             assignment.triggering_message_item_id,
             assignment.state,
-            assignment.override_model_selection_data,
             context.id AS context_package_id,
             context.serialized_text,
             authorization.id AS authorization_revision_id,
@@ -1224,7 +1215,7 @@ async fn fail_assignment_dispatch(
              revision = revision + 1, updated_at = ?
          WHERE id = ? AND state = 'queued'",
     )
-    .bind(dispatch_failure_reason(error))
+    .bind(&error.message)
     .bind(now.as_str())
     .bind(now.as_str())
     .bind(assignment_id.as_str())
@@ -1493,165 +1484,12 @@ fn assignment_turn_modes(
     }
 }
 
-/// Failure reason of work whose model override names a model this device cannot run.
-const MODEL_UNAVAILABLE_REASON: &str = "model_unavailable";
-
-/// Replaces the model selection of `policy` with the assignment's stored override
-/// `override_data`, and reports whether it had one. The provider instance stays the
-/// teammate's.
-fn apply_model_override(
-    policy: &mut ChatTeammatePolicyRead,
-    override_data: Option<String>,
-) -> ChatResult<bool> {
-    let Some(data) = override_data else {
-        return Ok(false);
-    };
-    let selection = super::workflow::parse_model_selection(data)?;
-    policy.provider_managed_model = selection.provider_managed_model;
-    policy.model_id = selection.model_id;
-    policy.model_options = selection.model_options;
-    Ok(true)
-}
-
-/// Refuses an overridden `policy` whose explicit model is missing from, or unavailable in,
-/// this device's provider `catalog`, so the work fails instead of running another model.
-fn require_override_model_available(
-    catalog: Option<&ProviderModelCatalog>,
-    policy: &ChatTeammatePolicyRead,
-) -> ChatResult<()> {
-    let Some(model_id) = policy.model_id.as_ref() else {
-        return Ok(());
-    };
-    let available = catalog
-        .and_then(|catalog| catalog.models.iter().find(|model| &model.id == model_id))
-        .is_some_and(|model| {
-            matches!(
-                model.availability,
-                ModelAvailability::Available | ModelAvailability::Stale
-            )
-        });
-    if available {
-        return Ok(());
-    }
-    let mut error = ChatError::validation(
-        "modelOverride",
-        "The model chosen for this work is unavailable on this device",
-    );
-    error.details = Some(Box::new(
-        serde_json::json!({ "reason": MODEL_UNAVAILABLE_REASON }),
-    ));
-    Err(error)
-}
-
-/// The `state_reason` work failed by `error` records: the typed reason of an unavailable
-/// override model, else the error message.
-fn dispatch_failure_reason(error: &ChatError) -> &str {
-    let typed = error
-        .details
-        .as_deref()
-        .and_then(|details| details.get("reason"))
-        .and_then(serde_json::Value::as_str)
-        .filter(|reason| *reason == MODEL_UNAVAILABLE_REASON);
-    typed.unwrap_or(&error.message)
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         ChatApprovalPolicy, ChatRuntimeApprovalPolicy, InteractionMode, SafetyMode,
-        apply_model_override, assignment_turn_modes, dispatch_failure_reason,
-        require_override_model_available,
+        assignment_turn_modes,
     };
-    use ganbaru_chat_contracts::models::*;
-
-    fn default_policy() -> ChatTeammatePolicyRead {
-        ChatTeammatePolicyRead {
-            id: ChatTeammatePolicyRevisionId::new("teammate-policy:a").unwrap(),
-            teammate_id: ChatParticipantId::new("participant:agent").unwrap(),
-            revision: 1,
-            provider_instance_id: ProviderInstanceId::new("provider:codex").unwrap(),
-            safety_mode: ChatApprovalPolicy::AskForApproval,
-            provider_managed_model: false,
-            model_id: Some(ModelId::new("model:default").unwrap()),
-            model_options: Vec::new(),
-            effort: None,
-            speed: None,
-            provider_options: VersionedJson {
-                schema_version: 1,
-                value: serde_json::json!({}),
-            },
-            default_assignment_token_limit: None,
-            created_at: UtcTimestamp::new("2026-11-12T00:00:00.000Z").unwrap(),
-        }
-    }
-
-    fn catalog_with(model_id: &str, availability: ModelAvailability) -> ProviderModelCatalog {
-        ProviderModelCatalog {
-            instance_id: ProviderInstanceId::new("provider:codex").unwrap(),
-            models: vec![ProviderModel {
-                id: ModelId::new(model_id).unwrap(),
-                display_name: model_id.to_owned(),
-                description: None,
-                context_limit: None,
-                availability,
-                capabilities: Vec::new(),
-                options: Vec::new(),
-                custom: false,
-            }],
-            source: ModelCatalogSource::Provider,
-            discovered_at: UtcTimestamp::new("2026-11-12T00:00:00.000Z").unwrap(),
-            stale: false,
-        }
-    }
-
-    #[test]
-    fn dispatch_uses_model_override_over_policy() {
-        let mut policy = default_policy();
-        assert!(!apply_model_override(&mut policy, None).unwrap());
-        assert_eq!(policy.model_id.as_ref().unwrap().as_str(), "model:default");
-
-        let stored = serde_json::json!({
-            "providerManagedModel": false,
-            "modelId": "model:chosen",
-            "modelOptions": [{ "key": "reasoningEffort", "value": { "kind": "choice", "value": "high" } }],
-        })
-        .to_string();
-        assert!(apply_model_override(&mut policy, Some(stored)).unwrap());
-
-        assert_eq!(policy.model_id.as_ref().unwrap().as_str(), "model:chosen");
-        assert_eq!(policy.model_options.len(), 1);
-        assert_eq!(policy.provider_instance_id.as_str(), "provider:codex");
-        let managed = serde_json::json!({ "providerManagedModel": true, "modelOptions": [] });
-        assert!(apply_model_override(&mut policy, Some(managed.to_string())).unwrap());
-        assert!(policy.provider_managed_model);
-        assert_eq!(policy.model_id, None);
-    }
-
-    #[test]
-    fn a_model_override_the_device_cannot_run_fails_as_model_unavailable() {
-        let mut policy = default_policy();
-        policy.model_id = Some(ModelId::new("model:chosen").unwrap());
-        let available = catalog_with("model:chosen", ModelAvailability::Available);
-        assert!(require_override_model_available(Some(&available), &policy).is_ok());
-        let stale = catalog_with("model:chosen", ModelAvailability::Stale);
-        assert!(require_override_model_available(Some(&stale), &policy).is_ok());
-
-        let missing = catalog_with("model:other", ModelAvailability::Available);
-        let retired = catalog_with("model:chosen", ModelAvailability::Unavailable);
-        for catalog in [None, Some(&missing), Some(&retired)] {
-            let error = require_override_model_available(catalog, &policy).unwrap_err();
-            assert_eq!(dispatch_failure_reason(&error), "model_unavailable");
-        }
-
-        policy.provider_managed_model = true;
-        policy.model_id = None;
-        assert!(require_override_model_available(None, &policy).is_ok());
-        let other = ChatError::validation("prompt", "Assignment context is too large");
-        assert_eq!(
-            dispatch_failure_reason(&other),
-            "Assignment context is too large"
-        );
-    }
 
     #[test]
     fn targetless_assignments_use_a_narrow_conversation_mode() {

@@ -1,10 +1,7 @@
-//! The budget a post chooses for the work it starts, the teammate default, how continuations and
-//! retries keep their limits, and setting and clearing a budget.
+//! The teammate default budget, how continuations and retries keep their limits, and setting
+//! and clearing a budget.
 
-use super::super::budgets::{
-    BUDGET_NEEDS_NEW_WORK, BUDGET_ON_ACTIVE_WORK, BUDGET_WITHOUT_TEAMMATE, clear_assignment_budget,
-    set_assignment_budget,
-};
+use super::super::budgets::{clear_assignment_budget, set_assignment_budget};
 use super::routing::{ROUTED_ASSIGNMENT_ID, post_request, reply_request, review_work_in};
 use super::*;
 
@@ -82,58 +79,6 @@ async fn seed_budget(pool: &SqlitePool, assignment_id: &str, token_limit: i64, u
         ),
     )
     .await;
-}
-
-fn assert_budget_refusal(error: &ChatError, reason: &str) {
-    assert_eq!(error.code, ChatErrorCode::Validation);
-    assert_eq!(error.field.as_deref(), Some("budget"));
-    assert_eq!(error.details.as_deref(), Some(&json!({ "reason": reason })));
-}
-
-#[test]
-fn budget_on_active_work_is_refused() {
-    tauri::async_runtime::block_on(async {
-        for state in ["queued", "working", "waiting_for_answer"] {
-            let pool = review_work_in(state).await;
-            let mut request = reply_request("command:budget", None);
-            request.budget = Some(limits(Some(20_000), None));
-
-            let Err(error) = post_request(&pool, &request).await else {
-                panic!("a budget on {state} work posted");
-            };
-
-            assert_budget_refusal(&error, BUDGET_ON_ACTIVE_WORK);
-            let budgets: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_assignment_budgets")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-            assert_eq!(budgets, 0, "{state} work gets no budget");
-        }
-    });
-}
-
-#[test]
-fn a_new_assignment_stores_its_chosen_budget_with_who_set_it() {
-    tauri::async_runtime::block_on(async {
-        let pool = review_work_in("completed").await;
-        set_review_default(&pool, 50_000).await;
-        let mut request = reply_request("command:budget", None);
-        request.budget = Some(limits(Some(20_000), Some(600)));
-
-        let posted = post_request(&pool, &request).await.unwrap();
-
-        let assignment_id = posted.result.assignment.expect("the post starts work").id;
-        assert_eq!(
-            stored_budget(&pool, assignment_id.as_str()).await,
-            Some((
-                Some(20_000),
-                Some(600),
-                Some(LOCAL_PARTICIPANT_ID.to_owned()),
-                0
-            )),
-            "the chosen budget wins over the default"
-        );
-    });
 }
 
 #[test]
@@ -378,56 +323,6 @@ fn a_budget_for_missing_work_or_without_a_limit_is_refused() {
             .unwrap_err();
         assert_eq!(error.code, ChatErrorCode::Validation);
         assert_eq!(stored_budget(&pool, ROUTED_ASSIGNMENT_ID).await, None);
-    });
-}
-
-#[test]
-fn a_scheduled_message_cannot_choose_a_budget() {
-    let mut request = message("Later");
-    request.budget = Some(limits(Some(20_000), None));
-    let error = super::super::scheduling::refuse_scheduled_post_choices(&request).unwrap_err();
-    assert_eq!(error.code, ChatErrorCode::Validation);
-    assert_eq!(error.field.as_deref(), Some("budget"));
-}
-
-#[test]
-fn a_budget_without_a_teammate_is_refused() {
-    tauri::async_runtime::block_on(async {
-        let pool = review_work_in("completed").await;
-        let mut request = message("Plain channel note");
-        request.client_command_id = ChatCommandId::new("command:no-teammate").unwrap();
-        request.channel_id = ChatChannelId::new("channel:review").unwrap();
-        request.budget = Some(limits(Some(20_000), None));
-
-        let Err(error) = post_request(&pool, &request).await else {
-            panic!("a budget reached no teammate and posted");
-        };
-
-        assert_budget_refusal(&error, BUDGET_WITHOUT_TEAMMATE);
-    });
-}
-
-#[test]
-fn a_budget_on_a_mention_that_records_no_work_is_refused() {
-    tauri::async_runtime::block_on(async {
-        let pool = review_thread_without_assignment().await;
-        set_review_agent_home_device(&pool, None).await;
-        let desk_writers = chat_writers_of(&["device:desk"]);
-        let mut request = reply_request("command:mention-only", None);
-        request.budget = Some(limits(Some(20_000), None));
-
-        let Err(error) = persist_post(
-            &pool,
-            &request,
-            None,
-            PostingDevice::this_device("device:phone", &desk_writers),
-        )
-        .await
-        else {
-            panic!("a budget on a mention that starts no work posted");
-        };
-
-        assert_budget_refusal(&error, BUDGET_NEEDS_NEW_WORK);
     });
 }
 

@@ -1,6 +1,6 @@
 //! Assignment budgets: the token and working time limits one assignment runs under.
 //!
-//! A new assignment takes the budget its post chose, else, when a teammate delegated it, the
+//! A new assignment takes, when a teammate delegated it, the
 //! delegating parent's remaining amounts or the child teammate's default when that is lower,
 //! else the limits of the assignment of the same teammate it follows, else its teammate's
 //! default token limit. The row id derives from the assignment, so devices that set one
@@ -23,16 +23,6 @@ const MIN_TOKEN_LIMIT: u64 = chat_usage::MIN_TOKEN_LIMIT.cast_unsigned();
 const MAX_TOKEN_LIMIT: u64 = chat_usage::MAX_TOKEN_LIMIT.cast_unsigned();
 const MIN_WORKING_SECONDS_LIMIT: u64 = chat_usage::MIN_WORKING_SECONDS_LIMIT.cast_unsigned();
 const MAX_WORKING_SECONDS_LIMIT: u64 = chat_usage::MAX_WORKING_SECONDS_LIMIT.cast_unsigned();
-
-/// Error detail reason of a budget on a post that reaches work already under way.
-pub(super) const BUDGET_ON_ACTIVE_WORK: &str = "budget_on_active_work";
-
-/// Error detail reason of a budget on a post that invokes no teammate.
-pub(super) const BUDGET_WITHOUT_TEAMMATE: &str = "budget_without_teammate";
-
-/// Error detail reason of a budget on a post that records only a mention, since no device here
-/// can run the teammate.
-pub(super) const BUDGET_NEEDS_NEW_WORK: &str = "budget_needs_new_work";
 
 /// Columns of one budget row, shared by every read here.
 const BUDGET_ROW_SELECT: &str = "SELECT assignment_id, token_limit, working_seconds_limit,
@@ -59,42 +49,6 @@ impl From<&ChatAssignmentBudgetInput> for BudgetLimits {
             working_seconds_limit: budget.working_seconds_limit,
         }
     }
-}
-
-/// A validation error on `field` whose details carry `reason`, so the composer can explain it.
-fn budget_refusal(field: &str, message: &str, reason: &str) -> ChatError {
-    let mut error = ChatError::validation(field, message);
-    error.details = Some(Box::new(serde_json::json!({ "reason": reason })));
-    error
-}
-
-/// Refuses a budget on a post that reaches work already under way, whose budget was chosen
-/// when it started, so the choice is never silently dropped.
-pub(super) fn budget_on_active_work() -> ChatError {
-    budget_refusal(
-        "budget",
-        "A budget can be chosen only for new work; set it on the work already under way instead",
-        BUDGET_ON_ACTIVE_WORK,
-    )
-}
-
-/// Refuses a budget on a post that invokes no teammate, since no work would ever run under it.
-pub(super) fn budget_without_teammate() -> ChatError {
-    budget_refusal(
-        "budget",
-        "A budget can be chosen only for a message that asks a teammate for work",
-        BUDGET_WITHOUT_TEAMMATE,
-    )
-}
-
-/// Refuses a budget on a post that records only a mention, since the device that later starts
-/// the work applies the teammate's default.
-pub(super) fn budget_needs_new_work() -> ChatError {
-    budget_refusal(
-        "budget",
-        "No device here can run this teammate, so its budget cannot be chosen yet",
-        BUDGET_NEEDS_NEW_WORK,
-    )
 }
 
 /// Validates a token limit against the bounds the budget table checks.
@@ -286,41 +240,27 @@ async fn followed_limits(
 pub(super) struct NewAssignmentBudget<'a> {
     pub(super) assignment_id: &'a ChatWorkAssignmentId,
     pub(super) teammate_id: &'a ChatParticipantId,
-    /// The budget the creating post chose.
-    pub(super) chosen: Option<&'a ChatAssignmentBudgetInput>,
-    /// Participant who posted the trigger, recorded as setting a chosen budget.
-    pub(super) chosen_by: &'a str,
     /// The assignment that delegated this one, when a teammate delegated it.
     pub(super) delegating_parent_id: Option<&'a ChatWorkAssignmentId>,
     /// The assignment this one follows, whose limits a continuation or retry keeps.
     pub(super) previous_id: Option<&'a ChatWorkAssignmentId>,
 }
 
-/// Writes the budget row of a new assignment from the first source that applies: the chosen
-/// budget, a delegating parent clamped by the child default, the followed work of the same
+/// Writes the budget row of a new assignment from the first source that applies: a delegating
+/// parent clamped by the child default, the followed work of the same
 /// teammate, then the teammate default. Nothing is written when no source sets a limit.
 pub(super) async fn write_new_assignment_budget(
     transaction: &mut Transaction<'_, Sqlite>,
     budget: NewAssignmentBudget<'_>,
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
-    let followed = match (
-        budget.chosen,
-        budget.delegating_parent_id,
-        budget.previous_id,
-    ) {
-        (None, None, Some(previous_id)) => {
+    let followed = match (budget.delegating_parent_id, budget.previous_id) {
+        (None, Some(previous_id)) => {
             followed_limits(transaction, previous_id, budget.teammate_id).await?
         }
         _ => None,
     };
-    let (limits, set_by) = if let Some(chosen) = budget.chosen {
-        validate_budget(chosen)?;
-        (
-            BudgetLimits::from(chosen),
-            Some(budget.chosen_by.to_owned()),
-        )
-    } else if let Some(parent_id) = budget.delegating_parent_id {
+    let (limits, set_by) = if let Some(parent_id) = budget.delegating_parent_id {
         let parent = read_assignment_budget(transaction, parent_id).await?;
         let parent_remaining = parent.map(|parent| BudgetLimits {
             token_limit: remaining(

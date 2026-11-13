@@ -1102,7 +1102,6 @@ pub struct ChatAssignmentAcceptanceOfferRead {
     pub digest: String,
     pub provider_instance_id: String,
     pub folders: Vec<ChatAssignmentAcceptanceFolderRead>,
-    pub scratch_runtime_approval: ChatRuntimeApprovalPolicy,
 }
 
 /// Where delegated work came from and what it was asked to return.

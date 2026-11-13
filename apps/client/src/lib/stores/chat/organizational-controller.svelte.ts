@@ -100,7 +100,6 @@ export class ChatOrganizationalController {
       richContent: draft.richContent,
       attachmentIds: [...draft.attachmentIds],
       references: cloneData(draft.references),
-      executionTarget: null,
       alsoSendToChannel: options.alsoSendToChannel ?? false,
       ...(options.followupRouting ? { followupRouting: options.followupRouting } : {}),
     });
@@ -131,7 +130,6 @@ export class ChatOrganizationalController {
         richContent: draft.richContent,
         attachmentIds: [...draft.attachmentIds],
         references: cloneData(draft.references),
-        executionTarget: null,
         alsoSendToChannel: options.alsoSendToChannel ?? false,
       },
       recurrence: draft.recurrence ? cloneData(draft.recurrence) : null,

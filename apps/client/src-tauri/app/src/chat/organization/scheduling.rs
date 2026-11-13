@@ -51,26 +51,13 @@ const MAX_SCHEDULE_DAYS: i64 = 366;
 const MAX_SCHEDULE_DISPATCH_ATTEMPTS: i64 = 3;
 const SCHEDULE_RETRY_SECONDS: i64 = 60;
 
-/// Refuses a scheduled `request` that chooses how its reply reaches active work, which model,
-/// or which budget new work runs with: the send happens later, when the work it would steer or
-/// queue behind may have settled, or when work started meanwhile would refuse the choice.
+/// Refuses a scheduled `request` that chooses how its reply reaches active work: the send
+/// happens later, when the work it would steer or queue behind may have settled.
 pub(super) fn refuse_scheduled_post_choices(request: &PostChatMessageCommand) -> ChatResult<()> {
     if request.followup_routing.is_some() {
         return Err(ChatError::validation(
             "followupRouting",
             "A scheduled message cannot choose Steer now or Queue",
-        ));
-    }
-    if request.model_override.is_some() {
-        return Err(ChatError::validation(
-            "modelOverride",
-            "A scheduled message cannot choose a model",
-        ));
-    }
-    if request.budget.is_some() {
-        return Err(ChatError::validation(
-            "budget",
-            "A scheduled message cannot choose a budget",
         ));
     }
     Ok(())

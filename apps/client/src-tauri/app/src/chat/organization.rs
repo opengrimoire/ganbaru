@@ -92,10 +92,10 @@ use workflow::insert_policy_revision;
 use workflow::{
     AssignmentWrite, ChannelCopy, CommunicationMessageWrite, MessageAuthor, PostRoutingChoices,
     PostingDevice, REVIEW_REFUSED_NO_EXECUTING_DEVICE, insert_channel_copy,
-    insert_communication_message, model_override_without_teammate, next_item_order_key,
-    persist_assignment_routing, read_post_receipt, require_continuation_scope_is_unchanged,
-    require_reply_thread, require_reviewable_assignment, require_reviewed_work_is_latest,
-    resolve_invoked_teammate, review_refusal,
+    insert_communication_message, next_item_order_key, persist_assignment_routing,
+    read_post_receipt, require_continuation_scope_is_unchanged, require_reply_thread,
+    require_reviewable_assignment, require_reviewed_work_is_latest, resolve_invoked_teammate,
+    review_refusal,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -635,12 +635,6 @@ async fn persist_post_with(
     if let Some(review) = review {
         require_reviewed_work_is_latest(resolved_invocation.as_ref(), review)?;
     }
-    if request.model_override.is_some() && resolved_invocation.is_none() {
-        return Err(model_override_without_teammate());
-    }
-    if request.budget.is_some() && resolved_invocation.is_none() {
-        return Err(budgets::budget_without_teammate());
-    }
     let now = now_timestamp()?;
     let (item_id, revision_id) = match scheduled {
         Some(scheduled) => {
@@ -766,8 +760,6 @@ async fn persist_post_with(
                 PostRoutingChoices {
                     execution_target: request.execution_target.as_ref(),
                     followup_routing: request.followup_routing,
-                    model_override: request.model_override.as_ref(),
-                    budget: request.budget.as_ref(),
                 },
                 device,
                 &now,

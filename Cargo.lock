@@ -2130,6 +2130,7 @@ dependencies = [
  "landlock",
  "libc",
  "seccompiler",
+ "socket2",
 ]
 
 [[package]]

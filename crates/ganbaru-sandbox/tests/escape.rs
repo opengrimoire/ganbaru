@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use ganbaru_sandbox::{NetworkAccess, SandboxHelper, SandboxPolicy, probe};
+use socket2::{Domain, SockAddr, Socket, Type};
 
 const ROLE: &str = "GANBARU_SANDBOX_TEST_ROLE";
 const TARGET: &str = "GANBARU_SANDBOX_TEST_TARGET";
@@ -75,8 +76,63 @@ fn perform(role: &str, target: Option<&Path>) -> std::io::Result<()> {
             left.connect(target()?)?;
             left.send(b"escape").map(drop)
         }
+        "seqpacket_pair" => {
+            let (left, right) = seqpacket_pair()?;
+            left.send(b"x")?;
+            receive_from_peer(&right)
+        }
+        "pair_seqpacket_send" => {
+            // The kernel ignores the address on a connected sequenced packet socket, so the
+            // send succeeds only by reaching the peer of the pair.
+            let (left, right) = seqpacket_pair()?;
+            left.send_to(b"x", &SockAddr::unix(target()?)?)?;
+            receive_from_peer(&right)
+        }
+        "pair_seqpacket_connect" => {
+            let (left, _right) = seqpacket_pair()?;
+            left.connect(&SockAddr::unix(target()?)?)?;
+            left.send(b"escape").map(drop)
+        }
         other => Err(std::io::Error::other(format!("unknown role {other}"))),
     }
+}
+
+fn seqpacket_pair() -> std::io::Result<(Socket, Socket)> {
+    Socket::pair(Domain::UNIX, Type::SEQPACKET, None)
+}
+
+/// Reads one byte from `socket` and checks it is the one its peer sent.
+fn receive_from_peer(socket: &Socket) -> std::io::Result<()> {
+    let mut byte = [0];
+    let received = (&*socket).read(&mut byte)?;
+    if received == 1 && byte == *b"x" {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("the peer did not receive the packet"))
+    }
+}
+
+/// Checks that nothing reached `socket` without waiting for it.
+fn assert_nothing_received(socket: &UnixDatagram) {
+    socket.set_nonblocking(true).unwrap();
+    let mut buffer = [0; 16];
+    let error = socket.recv(&mut buffer).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+}
+
+/// Checks that no connection is waiting on `listener` without waiting for one.
+fn assert_no_connection(listener: &Socket) {
+    listener.set_nonblocking(true).unwrap();
+    let error = listener.accept().unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+}
+
+/// A sequenced packet listener at `path` outside the sandbox.
+fn seqpacket_listener(path: &Path) -> Socket {
+    let listener = Socket::new(Domain::UNIX, Type::SEQPACKET, None).unwrap();
+    listener.bind(&SockAddr::unix(path).unwrap()).unwrap();
+    listener.listen(1).unwrap();
+    listener
 }
 
 fn target_address(target: &Path) -> std::io::Result<String> {
@@ -86,8 +142,13 @@ fn target_address(target: &Path) -> std::io::Result<String> {
         .ok_or_else(|| std::io::Error::other("address is not text"))
 }
 
+/// Whether the kernel refused the operation. `EISCONN` counts: a connected pair cannot be
+/// pointed at another socket.
 fn is_refusal(error: &std::io::Error) -> bool {
-    matches!(error.raw_os_error(), Some(libc::EACCES | libc::EPERM))
+    matches!(
+        error.raw_os_error(),
+        Some(libc::EACCES | libc::EPERM | libc::EISCONN)
+    )
 }
 
 /// A directory of this test under Cargo's temporary directory, empty at the start.
@@ -296,6 +357,33 @@ fn tcp_access_reaches_only_the_allowed_ports_and_no_local_socket() {
         &run(&policy, "pair_datagram_connect", &datagram_path),
         DENIED,
     );
+}
+
+#[test]
+fn sequenced_packet_pairs_reach_only_their_peer_in_both_modes() {
+    let root = SocketDirectory::new("seqpacket");
+    let datagram_path = root.path("datagram");
+    let datagram = UnixDatagram::bind(&datagram_path).unwrap();
+    let listener_path = root.path("seqpacket");
+    let listener = seqpacket_listener(&listener_path);
+    let outside = TcpListener::bind("127.0.0.1:0").unwrap();
+    for network in [
+        NetworkAccess::Denied,
+        NetworkAccess::TcpConnect(vec![outside.local_addr().unwrap().port()]),
+    ] {
+        let policy = base_policy(network);
+        assert_outcome(&run(&policy, "seqpacket_pair", ""), ALLOWED);
+        assert_outcome(
+            &run(&policy, "pair_seqpacket_send", &datagram_path),
+            ALLOWED,
+        );
+        assert_nothing_received(&datagram);
+        assert_outcome(
+            &run(&policy, "pair_seqpacket_connect", &listener_path),
+            DENIED,
+        );
+        assert_no_connection(&listener);
+    }
 }
 
 #[test]

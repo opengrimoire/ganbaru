@@ -30,8 +30,13 @@ const SCOPE_ABI: ABI = ABI::V6;
 const X32_SYSCALL_BIT: i64 = 0x4000_0000;
 /// Mask of the socket type bits, without `SOCK_NONBLOCK` and `SOCK_CLOEXEC`.
 const SOCKET_TYPE_MASK: u64 = 0xf;
-/// The only local socket type a process without network access may create.
-const STREAM_TYPE: u64 = libc::SOCK_STREAM as u64;
+/// The only local socket type a process without network access may create unconnected.
+const STREAM_TYPES: &[u64] = &[libc::SOCK_STREAM as u64];
+/// The local socket types a process may create as connected pairs. Both are connection
+/// oriented, so a pair cannot be redirected: `connect` on it fails and the kernel ignores the
+/// address a send names. Process spawning in common runtimes reports exec errors through a
+/// sequenced packet pair.
+const PAIR_TYPES: &[u64] = &[libc::SOCK_STREAM as u64, libc::SOCK_SEQPACKET as u64];
 
 pub(crate) fn enforce(policy: &SandboxPolicy) -> Result<(), SandboxError> {
     // Build the seccomp program first so that a filter error leaves the process unrestricted
@@ -117,9 +122,10 @@ fn socket_filter(network: &NetworkAccess) -> Result<BpfProgram, SandboxError> {
     ] {
         rules.insert(syscall, Vec::new());
     }
-    // Pairs from socketpair are the local sockets every mode keeps, and only stream pairs:
-    // a datagram pair can still send to, or connect to, a named socket outside the sandbox.
-    rules.insert(libc::SYS_socketpair, local_stream_only()?);
+    // Pairs from socketpair are the local sockets every mode keeps, and only connection
+    // oriented pairs: a datagram pair can still send to, or connect to, a named socket outside
+    // the sandbox.
+    rules.insert(libc::SYS_socketpair, local_types_only(PAIR_TYPES)?);
     match network {
         NetworkAccess::Denied => {
             // Without connect, bind, and accept, a local stream socket can reach nothing, so
@@ -133,7 +139,7 @@ fn socket_filter(network: &NetworkAccess) -> Result<BpfProgram, SandboxError> {
             ] {
                 rules.insert(syscall, Vec::new());
             }
-            rules.insert(libc::SYS_socket, local_stream_only()?);
+            rules.insert(libc::SYS_socket, local_types_only(STREAM_TYPES)?);
         }
         NetworkAccess::TcpConnect(_) => {
             // Landlock limits TCP to the allowed ports; only Internet sockets may be created,
@@ -160,17 +166,17 @@ fn socket_filter(network: &NetworkAccess) -> Result<BpfProgram, SandboxError> {
         .map_err(|error| SandboxError::Enforcement(format!("seccomp program: {error}")))
 }
 
-/// Rules that match every `socket` or `socketpair` call except one for a local stream socket.
+/// Rules that match every `socket` or `socketpair` call except one for a local socket of one of
+/// the `allowed` types.
 ///
-/// Every value of the type field other than stream is matched, so no type the kernel adds
-/// later slips by.
-fn local_stream_only() -> Result<Vec<SeccompRule>, SandboxError> {
+/// Every other value of the type field is matched, so no type the kernel adds later slips by.
+fn local_types_only(allowed: &[u64]) -> Result<Vec<SeccompRule>, SandboxError> {
     let mut rules = vec![rule(vec![condition(
         0,
         SeccompCmpOp::Ne,
         libc::AF_UNIX as u64,
     )?])?];
-    for socket_type in (0..=SOCKET_TYPE_MASK).filter(|value| *value != STREAM_TYPE) {
+    for socket_type in (0..=SOCKET_TYPE_MASK).filter(|value| !allowed.contains(value)) {
         rules.push(rule(vec![condition(
             1,
             SeccompCmpOp::MaskedEq(SOCKET_TYPE_MASK),

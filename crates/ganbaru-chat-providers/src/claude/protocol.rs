@@ -860,13 +860,15 @@ fn claude_model_display_name(model: &ClaudeModel) -> String {
     if display_name.is_empty() {
         return String::new();
     }
+    // The default route can resolve to the same model as a pinned alias such as
+    // `opus`, so its label keeps the word Default to stay distinguishable.
     if model.value == "default" {
         if let Some(resolved) = model
             .resolved_model
             .as_deref()
             .and_then(resolved_claude_model_label)
         {
-            return resolved;
+            return format!("Default ({resolved})");
         }
     }
     if display_name

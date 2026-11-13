@@ -467,6 +467,7 @@ describe("ChatReplyThreadPanel", () => {
       review: null,
       localAcceptance: null,
       latestRunProviderThreadId: null,
+      budget: null,
       delegation: {
         parentAssignmentId: "assignment:parent",
         parentReplyThreadId: "reply-thread:parent",

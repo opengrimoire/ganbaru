@@ -121,13 +121,13 @@ async fn end_stopped_work(
 }
 
 /// Tells views about a stop the timer made, which no provider event announced, and wakes the
-/// usage summaries for the run that stopped working.
+/// usage summaries for the run that stopped working. Work without a provider thread, or whose
+/// run cannot be read, is announced as an organizational change instead.
 async fn announce_stop(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
     assignment_id: &ChatWorkAssignmentId,
 ) {
-    super::usage_summaries::wake(app);
     let thread_id: Option<String> = match sqlx::query_scalar(
         "SELECT provider_thread_id FROM chat_agent_runs
          WHERE assignment_id = ? AND provider_thread_id IS NOT NULL
@@ -140,10 +140,11 @@ async fn announce_stop(
         Ok(thread_id) => thread_id.flatten(),
         Err(_) => {
             eprintln!("Chat budget stop could not read the stopped run");
-            return;
+            None
         }
     };
     let Some(thread_id) = thread_id.and_then(|thread_id| ChatThreadId::new(thread_id).ok()) else {
+        super::ingestion::notify_organization_changed(app);
         return;
     };
     super::ingestion::notify_rows_changed(

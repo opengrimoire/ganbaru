@@ -33,6 +33,8 @@ import {
   type ChatAssignmentAcceptanceFolderRead,
   type ChatAssignmentDelegationRead,
   type ChatAssignmentAcceptanceOfferRead,
+  type ChatAssignmentBudgetRead,
+  type ChatTeammateUsageDayRead,
   type ChatAssignmentReview,
   type ChatAssignmentTargetRead,
   type ChatChannelPageRead,
@@ -152,6 +154,11 @@ export function parseChatTeammatePolicy(value: unknown, label = "Chat teammate p
     effort: readNullable(record.effort, `${label}.effort`, readString),
     speed: readNullable(record.speed, `${label}.speed`, readString),
     providerOptions: readVersionedJson(record.providerOptions, `${label}.providerOptions`),
+    defaultAssignmentTokenLimit: readNullable(
+      record.defaultAssignmentTokenLimit,
+      `${label}.defaultAssignmentTokenLimit`,
+      readNonNegativeSafeInteger,
+    ),
     createdAt: readUtcTimestamp(record.createdAt, `${label}.createdAt`),
   };
 }
@@ -1002,6 +1009,41 @@ export function parseChatWorkAssignment(
       `${label}.latestRunProviderThreadId`,
       readIdentifier,
     ),
+    budget: readNullable(record.budget, `${label}.budget`, parseChatAssignmentBudget),
+  };
+}
+
+/** Validates the budget of one assignment as the native layer reports it. */
+export function parseChatAssignmentBudget(value: unknown, label = "Chat assignment budget"): ChatAssignmentBudgetRead {
+  const record = readRecord(value, label);
+  return {
+    assignmentId: readIdentifier(record.assignmentId, `${label}.assignmentId`),
+    tokenLimit: readNullable(record.tokenLimit, `${label}.tokenLimit`, readNonNegativeSafeInteger),
+    workingSecondsLimit: readNullable(
+      record.workingSecondsLimit,
+      `${label}.workingSecondsLimit`,
+      readNonNegativeSafeInteger,
+    ),
+    setByParticipantId: readNullable(record.setByParticipantId, `${label}.setByParticipantId`, readIdentifier),
+    setAt: readUtcTimestamp(record.setAt, `${label}.setAt`),
+    usedCountedTokens: readNonNegativeSafeInteger(record.usedCountedTokens, `${label}.usedCountedTokens`),
+    usedWorkingSeconds: readNonNegativeSafeInteger(record.usedWorkingSeconds, `${label}.usedWorkingSeconds`),
+  };
+}
+
+const LOCAL_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Validates one local day of a teammate's usage. */
+export function parseChatTeammateUsageDay(value: unknown, label = "Chat teammate usage day"): ChatTeammateUsageDayRead {
+  const record = readRecord(value, label);
+  const localDate = readString(record.localDate, `${label}.localDate`);
+  if (!LOCAL_DATE_PATTERN.test(localDate)) throw new Error(`${label}.localDate must be a YYYY-MM-DD date`);
+  return {
+    localDate,
+    countedTokens: readNonNegativeSafeInteger(record.countedTokens, `${label}.countedTokens`),
+    workingSeconds: readNonNegativeSafeInteger(record.workingSeconds, `${label}.workingSeconds`),
+    runCount: readNonNegativeSafeInteger(record.runCount, `${label}.runCount`),
+    deviceIds: readArray(record.deviceIds, `${label}.deviceIds`, readIdentifier),
   };
 }
 

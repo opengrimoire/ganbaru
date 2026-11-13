@@ -1569,6 +1569,7 @@ mod tests {
                 schema_version: 1,
                 value: serde_json::json!({}),
             },
+            default_assignment_token_limit: None,
             created_at: UtcTimestamp::new("2026-11-12T00:00:00.000Z").unwrap(),
         }
     }

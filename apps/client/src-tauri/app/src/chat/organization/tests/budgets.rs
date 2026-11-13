@@ -430,3 +430,25 @@ fn a_budget_on_a_mention_that_records_no_work_is_refused() {
         assert_budget_refusal(&error, BUDGET_NEEDS_NEW_WORK);
     });
 }
+
+#[test]
+fn teammate_policy_read_returns_the_default_token_limit() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        let teammate_id = ChatParticipantId::new("participant:review-agent").unwrap();
+        set_review_default(&pool, 30_000).await;
+
+        let teammate = super::super::reads::read_teammate(&pool, &teammate_id)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            teammate
+                .latest_policy
+                .expect("the teammate has a policy")
+                .default_assignment_token_limit,
+            Some(30_000),
+            "a policy save sends back what the read returns, so the read carries the default"
+        );
+    });
+}

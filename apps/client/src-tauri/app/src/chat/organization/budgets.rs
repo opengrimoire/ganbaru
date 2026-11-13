@@ -12,7 +12,7 @@ use super::{
     LOCAL_PARTICIPANT_ID, chat_pool, i64_value, identifier_error, persistence_error, timestamp,
     u64_value,
 };
-use ganbaru_chat::coordination::contracts::{ChatAssignmentBudgetInput, ChatAssignmentBudgetRead};
+use ganbaru_chat::coordination::contracts::ChatAssignmentBudgetInput;
 use ganbaru_chat::ids::derived_id;
 use ganbaru_chat_contracts::models::*;
 use ganbaru_sync_contracts::chat_usage::{self, ASSIGNMENT_BUDGET_KEY_PREFIX};

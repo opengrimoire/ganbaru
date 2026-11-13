@@ -21,6 +21,7 @@ const PROFILE: TeammateProfileDraftSnapshotInput = {
   ],
   effort: "medium",
   speed: "standard",
+  defaultAssignmentTokenLimit: null,
 };
 
 describe("teammate draft snapshots", () => {

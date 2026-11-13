@@ -17,6 +17,7 @@ export interface ChatTeammateStudioProfileDraft {
   modelOptions: ModelOptionSelection[];
   effort: string | null;
   speed: string | null;
+  defaultAssignmentTokenLimit: number | null;
   providerOptions: VersionedJson;
 }
 
@@ -118,6 +119,11 @@ export function rebaseChatTeammateStudioDraft(
       )),
       effort: chooseField(baseline.profile.effort, local.profile.effort, durable.profile.effort),
       speed: chooseField(baseline.profile.speed, local.profile.speed, durable.profile.speed),
+      defaultAssignmentTokenLimit: chooseField(
+        baseline.profile.defaultAssignmentTokenLimit,
+        local.profile.defaultAssignmentTokenLimit,
+        durable.profile.defaultAssignmentTokenLimit,
+      ),
       providerOptions: cloneJsonValue(chooseField(
         baseline.profile.providerOptions,
         local.profile.providerOptions,
@@ -162,6 +168,7 @@ function policyEqual(
     && modelOptionsEqual(left.modelOptions, right.modelOptions)
     && left.effort === right.effort
     && left.speed === right.speed
+    && left.defaultAssignmentTokenLimit === right.defaultAssignmentTokenLimit
     && versionedJsonEqual(left.providerOptions, right.providerOptions);
 }
 

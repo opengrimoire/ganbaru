@@ -58,3 +58,16 @@ pub(crate) async fn notify_rows_changed<R: Runtime>(
         eprintln!("Chat change notification failed with code {:?}", error.code);
     }
 }
+
+/// Event that tells views organizational Chat rows changed for work without a thread.
+pub(crate) const CHAT_ORGANIZATION_CHANGE_EVENT: &str = "chat://organization-change";
+
+/// Tells views that a committed write changed organizational rows of work that has no thread to
+/// name, such as work a limit stopped before its provider thread started. Delivery is best
+/// effort: the write already committed, and the next change or reload shows it.
+pub(crate) fn notify_organization_changed<R: Runtime>(app: &tauri::AppHandle<R>) {
+    super::usage_summaries::wake(app);
+    if app.emit(CHAT_ORGANIZATION_CHANGE_EVENT, ()).is_err() {
+        eprintln!("Chat organization change notification failed");
+    }
+}

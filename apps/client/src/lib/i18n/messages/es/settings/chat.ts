@@ -47,6 +47,12 @@ export const chatSettings = {
     model: "Modelo",
     effort: "Razonamiento",
     approval: "Comportamiento de aprobación",
+    defaultTokenLimit: "Límite de tokens predeterminado para trabajo nuevo",
+    defaultTokenLimitInvalid: (minimum: string, maximum: string) => `Escribe un límite de tokens entre ${minimum} y ${maximum}, o déjalo vacío para no tener límite`,
+    usageSection: "Uso en los últimos 7 días",
+    usageDay: (tokens: string, time: string, runs: number) => `${tokens} tokens, ${time} de trabajo, ${runs} ${runs === 1 ? "ejecución" : "ejecuciones"}`,
+    usageEmpty: "Sin trabajo en los últimos 7 días",
+    usageLoadFailed: "No se pudo cargar el uso",
     approvalDoesNotGrantAccess: "Las aprobaciones pueden limitar la ejecución, pero nunca otorgan acceso a canales o carpetas.",
     runtime: {
       inherit: "Heredar del agente",

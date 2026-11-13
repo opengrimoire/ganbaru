@@ -262,23 +262,6 @@ pub struct ChatAssignmentBudgetInput {
     pub working_seconds_limit: Option<u64>,
 }
 
-/// The budget of one assignment: its limits and what its executing device recorded as used.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatAssignmentBudgetRead {
-    pub assignment_id: ChatWorkAssignmentId,
-    pub token_limit: Option<u64>,
-    pub working_seconds_limit: Option<u64>,
-    /// The person who set the limits; `None` when a teammate default or a delegating parent
-    /// gave them.
-    pub set_by_participant_id: Option<ChatParticipantId>,
-    pub set_at: UtcTimestamp,
-    /// Input, cache write, and output tokens, leaving out cache reads.
-    pub used_counted_tokens: u64,
-    /// Seconds runs spent working, leaving out time waiting for a person.
-    pub used_working_seconds: u64,
-}
-
 /// Model selection one assignment runs with instead of its teammate's default. Effort is one
 /// of the model options; the provider instance stays the teammate's.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

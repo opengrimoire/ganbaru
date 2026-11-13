@@ -6,6 +6,7 @@
   import {
     CHAT_LOCAL_EXECUTION_COMPONENTS,
     listenForChatChanges,
+    listenForChatOrganizationChanges,
     preloadChatLocalExecutionUi,
   } from "$lib/chat/workspace/local-execution-ui";
   import { inspectorFocusAction } from "$lib/chat/workspace/inspector-model";
@@ -238,6 +239,9 @@
         console.error("Invalid Chat change notification", error);
       }
     });
+    const unlistenOrganization = listenForChatOrganizationChanges(() => {
+      void chat.handleOrganizationChange().catch(() => undefined);
+    });
     const observer = new ResizeObserver(([entry]) => {
       if (!entry) return;
       shellWidth = entry.contentRect.width;
@@ -312,6 +316,7 @@
       paneEvents.removeEventListener("ganbaru:chat-configure-teammate", openTeammates);
       paneEvents.removeEventListener("ganbaru:chat-manage-members", manageMembers);
       void unlisten.then((dispose) => dispose());
+      void unlistenOrganization.then((dispose) => dispose());
     };
   });
 

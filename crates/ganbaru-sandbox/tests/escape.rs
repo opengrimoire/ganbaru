@@ -245,6 +245,14 @@ fn base_policy(network: NetworkAccess) -> SandboxPolicy {
 }
 
 fn run(policy: &SandboxPolicy, role: &str, target: impl Into<OsString>) -> Output {
+    through_shell(&helper_command(policy), &close_inherited_descriptors())
+        .env(ROLE, role)
+        .env(TARGET, target.into())
+        .output()
+        .unwrap()
+}
+
+fn helper_command(policy: &SandboxPolicy) -> Command {
     helper()
         .command(
             policy,
@@ -252,10 +260,50 @@ fn run(policy: &SandboxPolicy, role: &str, target: impl Into<OsString>) -> Outpu
             ["--exact", "child_role", "--nocapture", "--test-threads=1"],
         )
         .unwrap()
-        .env(ROLE, role)
-        .env(TARGET, target.into())
-        .output()
+}
+
+/// A shell that runs `redirections` and then becomes `command`, so the redirections decide
+/// which descriptors the helper starts with.
+fn through_shell(command: &Command, redirections: &str) -> Command {
+    let mut shell = Command::new("/bin/sh");
+    shell
+        .arg("-c")
+        .arg(format!("exec {redirections} \"$@\""))
+        .arg("sh")
+        .arg(command.get_program())
+        .args(command.get_args());
+    shell
+}
+
+/// Shell redirections that close every descriptor above the standard streams that this test
+/// would pass on, since the test may itself inherit one, such as a build lock, that the helper
+/// would refuse.
+fn close_inherited_descriptors() -> String {
+    std::fs::read_dir("/proc/self/fd")
         .unwrap()
+        .filter_map(|entry| entry.unwrap().file_name().to_str()?.parse::<u32>().ok())
+        .filter(|descriptor| *descriptor > 2 && !closes_on_exec(*descriptor))
+        .map(|descriptor| {
+            // The POSIX shell redirects only single digit descriptors.
+            assert!(
+                descriptor < 10,
+                "descriptor {descriptor} would reach the helper"
+            );
+            format!("{descriptor}>&- ")
+        })
+        .collect()
+}
+
+/// Whether `descriptor` has close-on-exec set, read from its `fdinfo` flags in octal.
+fn closes_on_exec(descriptor: u32) -> bool {
+    let Ok(info) = std::fs::read_to_string(format!("/proc/self/fdinfo/{descriptor}")) else {
+        // The listing's own descriptor is gone by the time its information is read.
+        return true;
+    };
+    info.lines()
+        .find_map(|line| line.strip_prefix("flags:"))
+        .and_then(|flags| u32::from_str_radix(flags.trim(), 8).ok())
+        .is_some_and(|flags| flags & libc::O_CLOEXEC as u32 != 0)
 }
 
 #[track_caller]
@@ -384,6 +432,30 @@ fn sequenced_packet_pairs_reach_only_their_peer_in_both_modes() {
         );
         assert_no_connection(&listener);
     }
+}
+
+#[test]
+fn an_inherited_descriptor_is_refused_before_the_program_runs() {
+    let root = scratch("descriptor");
+    let secret = root.join("secret");
+    std::fs::write(&secret, b"secret").unwrap();
+    let mut policy = base_policy(NetworkAccess::Denied);
+    policy.write.push(root.clone());
+    // The shell opens the file on a descriptor without close-on-exec and then becomes the
+    // helper, which therefore starts with that descriptor open.
+    let redirections = format!(
+        "{}5<\"$GANBARU_SANDBOX_TEST_SECRET\"",
+        close_inherited_descriptors()
+    );
+    let output = through_shell(&helper_command(&policy), &redirections)
+        .env("GANBARU_SANDBOX_TEST_SECRET", &secret)
+        .env(ROLE, "write")
+        .env(TARGET, root.join("escaped"))
+        .output()
+        .unwrap();
+    assert_outcome(&output, HELPER_REFUSED);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("inherited descriptors [5]"));
+    assert!(!root.join("escaped").exists());
 }
 
 #[test]

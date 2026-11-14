@@ -129,6 +129,7 @@ describe("Chat provider contracts", () => {
         startedAt: timestamp,
         completedAt: timestamp,
         stopReason: null,
+        errorCode: null,
         modelId: null,
         modelOptions: [],
         modes: { safetyMode: "ask_for_approval", interactionMode: "build" },

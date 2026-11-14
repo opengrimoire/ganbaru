@@ -1,9 +1,9 @@
 use super::{
-    ChatActivityId, ChatExecutionEnvironmentId, ChatScratchGenerationId, ChatThreadId,
-    ChatThreadState, ChatTurnId, ChatTurnState, ContinuationGroupId, ModelId, ModelOptionSelection,
-    ProjectConfigurationAccess, ProjectWorkingFolderId, ProviderCapabilities, ProviderFamilyId,
-    ProviderInstanceId, ProviderSessionId, ProviderSessionState, ProviderThreadId,
-    TurnModeSnapshot, UtcTimestamp, VersionedJson,
+    ChatActivityId, ChatErrorCode, ChatExecutionEnvironmentId, ChatScratchGenerationId,
+    ChatThreadId, ChatThreadState, ChatTurnId, ChatTurnState, ContinuationGroupId, ModelId,
+    ModelOptionSelection, ProjectConfigurationAccess, ProjectWorkingFolderId, ProviderCapabilities,
+    ProviderFamilyId, ProviderInstanceId, ProviderSessionId, ProviderSessionState,
+    ProviderThreadId, TurnModeSnapshot, UtcTimestamp, VersionedJson,
 };
 use crate::events::{ChangedFileSummary, ThreadUsageUpdatedEvent};
 use serde::{Deserialize, Serialize};
@@ -179,6 +179,8 @@ pub struct ChatTimelineTurnRead {
     pub started_at: Option<UtcTimestamp>,
     pub completed_at: Option<UtcTimestamp>,
     pub stop_reason: Option<String>,
+    /// Code of the error that failed the turn, when it failed with a stored structured error.
+    pub error_code: Option<ChatErrorCode>,
     pub model_id: Option<ModelId>,
     pub model_options: Vec<ModelOptionSelection>,
     pub modes: TurnModeSnapshot,

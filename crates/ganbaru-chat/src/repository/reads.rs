@@ -793,7 +793,7 @@ async fn read_timeline_turns_in(
     }
     let encoded_turn_ids = serde_json::to_string(turn_ids).map_err(serialization_error)?;
     sqlx::query(
-        "SELECT id, state, started_at, completed_at, stop_reason,
+        "SELECT id, state, started_at, completed_at, stop_reason, error_data,
                 model_selection_data, safety_mode, interaction_mode,
                 usage_data, changed_file_summary_data
          FROM chat_turns
@@ -843,6 +843,7 @@ fn row_to_timeline_turn(row: sqlx::sqlite::SqliteRow) -> ChatResult<ChatTimeline
         started_at: timestamp(row.try_get("started_at").map_err(persistence_error)?)?,
         completed_at: timestamp(row.try_get("completed_at").map_err(persistence_error)?)?,
         stop_reason: row.try_get("stop_reason").map_err(persistence_error)?,
+        error_code: stored_error_code(row.try_get("error_data").map_err(persistence_error)?),
         model_id: model.model_id,
         model_options: model.model_options,
         modes: TurnModeSnapshot {
@@ -858,6 +859,20 @@ fn row_to_timeline_turn(row: sqlx::sqlite::SqliteRow) -> ChatResult<ChatTimeline
         usage,
         changed_files,
     })
+}
+
+/// Reads the code of a turn's stored structured error.
+///
+/// The code only chooses the localized explanation a reader shows, so a stored error without a
+/// recognized code reads as `None` instead of failing the timeline read.
+fn stored_error_code(error_data: Option<String>) -> Option<ChatErrorCode> {
+    #[derive(Deserialize)]
+    struct StoredErrorCode {
+        code: ChatErrorCode,
+    }
+    serde_json::from_str::<StoredErrorCode>(&error_data?)
+        .ok()
+        .map(|stored| stored.code)
 }
 
 fn row_to_thread_shell(row: sqlx::sqlite::SqliteRow) -> ChatResult<ChatThreadShellRead> {

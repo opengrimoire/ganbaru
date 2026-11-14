@@ -1,5 +1,6 @@
 import type {
   ChatActivityId,
+  ChatErrorCode,
   ChatExecutionEnvironmentId,
   ChatScratchGenerationId,
   ChatThreadId,
@@ -135,6 +136,8 @@ export interface ChatTimelineTurnRead {
   startedAt: UtcTimestamp | null;
   completedAt: UtcTimestamp | null;
   stopReason: string | null;
+  /** Code of the error that failed the turn, when it failed with a stored structured error; `stopReason` keeps the diagnostic text. */
+  errorCode: ChatErrorCode | null;
   modelId: ModelId | null;
   modelOptions: ModelOptionSelection[];
   modes: TurnModeSnapshot;

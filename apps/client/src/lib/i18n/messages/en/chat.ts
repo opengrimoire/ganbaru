@@ -1318,5 +1318,11 @@ export const chat = {
       handoff: "Started a new session",
       retry: "Retried in a new session",
     },
+    outcome: {
+      failedBeforeOutput: (teammate: string) => `${teammate} could not start:`,
+      failedAfterOutput: (teammate: string) => `${teammate} stopped because of an error:`,
+      stoppedBeforeOutput: (teammate: string) => `${teammate} stopped before replying`,
+      teammateFallback: "The teammate",
+    },
   },
 } as const;

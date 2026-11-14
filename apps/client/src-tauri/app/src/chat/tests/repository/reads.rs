@@ -293,6 +293,73 @@ fn exact_turn_timeline_read_does_not_depend_on_the_latest_thread_page() {
     });
 }
 
+#[test]
+fn turn_reads_carry_the_code_of_a_stored_failure_and_skip_unreadable_errors() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        for (suffix, error_data) in [
+            (
+                "timeout",
+                Some(r#"{"code":"timeout","message":"Host tools timed out","recoverable":true}"#),
+            ),
+            (
+                "unknown",
+                Some(r#"{"code":"not_a_code","message":"Unknown"}"#),
+            ),
+            ("none", None),
+        ] {
+            let turn_id = format!("turn-{suffix}");
+            append_canonical_event(
+                &pool,
+                canonical_request(
+                    &format!("event-{suffix}-start"),
+                    Some(&turn_id),
+                    CanonicalEvent::TurnStarted(TurnStartedEvent {
+                        provider_turn_id: None,
+                        state: ChatTurnState::Active,
+                        modes: TurnModeSnapshot {
+                            safety_mode: SafetyMode::AskForApproval,
+                            interaction_mode: InteractionMode::Build,
+                        },
+                        model_id: None,
+                        model_options: Vec::new(),
+                    }),
+                ),
+            )
+            .await
+            .unwrap();
+            sqlx::query(
+                "UPDATE chat_turns SET state = 'failed', stop_reason = 'Diagnostic text',
+                        error_schema_version = CASE WHEN ? IS NULL THEN NULL ELSE 1 END,
+                        error_data = ?
+                 WHERE id = ?",
+            )
+            .bind(error_data)
+            .bind(error_data)
+            .bind(&turn_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let thread_id = ChatThreadId::new("thread-1").unwrap();
+        let mut codes = Vec::new();
+        for suffix in ["timeout", "unknown", "none"] {
+            let turn_id = ChatTurnId::new(format!("turn-{suffix}")).unwrap();
+            let page = read_timeline_turn(&pool, &thread_id, &turn_id)
+                .await
+                .unwrap();
+            assert_eq!(page.turns[0].state, ChatTurnState::Failed);
+            assert_eq!(
+                page.turns[0].stop_reason.as_deref(),
+                Some("Diagnostic text")
+            );
+            codes.push(page.turns[0].error_code);
+        }
+        assert_eq!(codes, [Some(ChatErrorCode::Timeout), None, None]);
+    });
+}
+
 async fn insert_activity(pool: &sqlx::SqlitePool, id: &str, sequence: i64, detail: Option<&str>) {
     sqlx::query(
         "INSERT INTO chat_activities

@@ -1321,5 +1321,11 @@ export const chat = {
       handoff: "Se inició una sesión nueva",
       retry: "Se reintentó en una sesión nueva",
     },
+    outcome: {
+      failedBeforeOutput: (teammate: string) => `${teammate} no pudo empezar:`,
+      failedAfterOutput: (teammate: string) => `${teammate} se detuvo por un error:`,
+      stoppedBeforeOutput: (teammate: string) => `${teammate} se detuvo antes de responder`,
+      teammateFallback: "El compañero",
+    },
   },
 } as const satisfies MessageShape<typeof enChat>;

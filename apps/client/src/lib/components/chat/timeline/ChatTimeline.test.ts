@@ -308,6 +308,7 @@ function timelinePage(state: "active" | "completed" = "completed"): ChatTimeline
       startedAt: timestamp,
       completedAt: state === "completed" ? "2026-07-29T12:00:02.000Z" : null,
       stopReason: state === "completed" ? "end_turn" : null,
+      errorCode: null,
       modelId: "gpt-5.6-sol",
       modelOptions: [],
       modes: { safetyMode: "ask_for_approval", interactionMode: "build" },

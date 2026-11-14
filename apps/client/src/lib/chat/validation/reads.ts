@@ -150,6 +150,7 @@ export function parseChatTimelineTurn(value: unknown, label: string): ChatTimeli
     startedAt: readNullable(record.startedAt, `${label}.startedAt`, readUtcTimestamp),
     completedAt: readNullable(record.completedAt, `${label}.completedAt`, readUtcTimestamp),
     stopReason: readNullable(record.stopReason, `${label}.stopReason`, readString),
+    errorCode: readNullable(record.errorCode, `${label}.errorCode`, (code, codeLabel) => readEnum(code, CHAT_ERROR_CODES, codeLabel)),
     modelId: readNullable(record.modelId, `${label}.modelId`, readIdentifier),
     modelOptions: readArray(record.modelOptions, `${label}.modelOptions`, parseModelOptionSelection),
     modes: readTurnModeSnapshot(record.modes, `${label}.modes`),

@@ -28,6 +28,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { useChat } from "$lib/stores/chat.svelte";
+  import ChatAgentRunStatus from "./ChatAgentRunStatus.svelte";
   import ChatExecutionTimeline from "./ChatExecutionTimeline.svelte";
   import ChatMessageComposer from "$lib/components/chat/composer/ChatMessageComposer.svelte";
   import ChatOrganizationalMessage from "./ChatOrganizationalMessage.svelte";
@@ -118,7 +119,7 @@
   );
   const renderEntries = $derived(replyThreadRenderEntries(
     page?.replies ?? [],
-    loadedExecutionRuns,
+    page?.agentRuns ?? [],
     loadedExecutionRunIds,
   ));
   const destination = $derived(chat.openReplyThreadId
@@ -463,13 +464,22 @@
           {@const exactExecution = exactExecutions[entry.run.id]}
           {@const restartLabel = runRestartLabel(entry.run)}
           {#if restartLabel}<p class="run-restart" data-run-restart>{restartLabel}</p>{/if}
-          <ChatExecutionTimeline
-            embedded
-            hideUserMessages
-            teammate={executionTeammate}
-            turnId={entry.run.providerExecutionTurnId}
+          {#if entry.loaded}
+            <ChatExecutionTimeline
+              embedded
+              hideUserMessages
+              teammate={executionTeammate}
+              turnId={entry.run.providerExecutionTurnId}
+              timelinePage={exactExecution?.timelinePage ?? null}
+              executionThread={exactExecution?.thread ?? null}
+            />
+          {/if}
+          <ChatAgentRunStatus
+            run={entry.run}
+            teammateName={executionTeammateName}
             timelinePage={exactExecution?.timelinePage ?? null}
-            executionThread={exactExecution?.thread ?? null}
+            replies={page.replies}
+            fallbackDetail={entry.run.id === page.agentRuns.at(-1)?.id ? assignment?.stateReason ?? null : null}
           />
         {/if}
       {/each}

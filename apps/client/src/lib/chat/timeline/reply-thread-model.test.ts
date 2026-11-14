@@ -1,7 +1,19 @@
 import { describe, expect, it } from "vitest";
-import type { ChatAgentRunRead, ChatFolderGrant, ChatMessageRead, JsonValue, VersionedJson } from "$lib/chat/contracts";
+import type {
+  ChatAgentRunRead,
+  ChatErrorCode,
+  ChatFolderGrant,
+  ChatMessageRead,
+  ChatTimelineItemRead,
+  ChatTimelineTurnRead,
+  JsonValue,
+  VersionedJson,
+} from "$lib/chat/contracts";
 import {
+  agentRunIsActive,
+  agentRunOutcome,
   agentRunRestart,
+  agentRunShowedOutput,
   agentRunLocation,
   channelHasFolderGrants,
   exactExecutionReadKey,
@@ -170,7 +182,7 @@ describe("reply thread execution placement", () => {
       .toEqual(["execution:run-1", "b-retry", "c-note"]);
   });
 
-  it("retains projections owned by a run whose exact turn is not loaded", () => {
+  it("retains projections owned by a settled run whose exact turn is not loaded", () => {
     const projection = message("other-run", "teammate-1", "2026-08-02T08:00:00Z", {
       type: "agent_update",
       agentRunId: "run-1",
@@ -178,9 +190,134 @@ describe("reply thread execution placement", () => {
 
     expect(replyThreadRenderEntries(
       [projection],
-      [agentRun("run-1", "thread-1")],
+      [{ ...agentRun("run-1", "thread-1"), state: "completed" }],
       new Set(),
     ).map((entry) => entry.key)).toEqual(["other-run"]);
+  });
+});
+
+describe("reply thread run status lines", () => {
+  function settled(run: ChatAgentRunRead, state: ChatAgentRunRead["state"]): ChatAgentRunRead {
+    return { ...run, state };
+  }
+
+  it("places a run that failed before it had a provider turn after the replies created before it", () => {
+    const replies = [
+      message("request", "local-user", "2026-08-02T07:59:00Z", { type: "doc" }, 1),
+      message("later", "local-user", "2026-08-02T08:05:00Z", { type: "doc" }, 2),
+    ];
+    const failed = settled(agentRun("run-1", null), "failed");
+
+    expect(replyThreadRenderEntries(replies, [failed], new Set()).map((entry) => (
+      entry.kind === "execution" ? `${entry.key}:${entry.loaded}` : entry.key
+    ))).toEqual(["request", "execution:run-1:false", "later"]);
+  });
+
+  it("keeps the projected replies of an unloaded active run and follows them with its status line", () => {
+    const projection = message("progress", "teammate-1", "2026-08-02T08:00:30Z", {
+      type: "agent_update",
+      agentRunId: "run-1",
+    }, 1);
+    const note = message("note", "local-user", "2026-08-02T08:02:00Z", { type: "doc" }, 2);
+
+    expect(replyThreadRenderEntries([projection, note], [agentRun("run-1", "thread-1")], new Set())
+      .map((entry) => entry.key)).toEqual(["progress", "execution:run-1", "note"]);
+  });
+
+  it("gives no line to settled runs that are not loaded or ended without trouble", () => {
+    const replies = [message("request", "local-user", "2026-08-02T07:59:00Z")];
+    const runs = [
+      settled(agentRun("unloaded", "thread-1"), "failed"),
+      settled(agentRun("completed", null), "completed"),
+    ];
+
+    expect(replyThreadRenderEntries(replies, runs, new Set()).map((entry) => entry.key)).toEqual(["request"]);
+  });
+
+  it("marks loaded runs so their exact turn renders", () => {
+    const run = settled(agentRun("run-1", "thread-1"), "failed");
+    const [entry] = replyThreadRenderEntries([], [run], new Set([run.id]));
+
+    expect(entry).toEqual({ kind: "execution", key: "execution:run-1", run, loaded: true });
+  });
+});
+
+describe("reply thread run outcomes", () => {
+  const run = agentRun("run-1", "thread-1");
+
+  function turn(errorCode: ChatErrorCode | null, stopReason: string | null): Pick<ChatTimelineTurnRead, "errorCode" | "stopReason"> {
+    return { errorCode, stopReason };
+  }
+
+  function timelineItem(activityId: string, role: "user" | "assistant", turnId: string): ChatTimelineItemRead {
+    return {
+      activityId,
+      turnId,
+      sequenceAnchor: 1,
+      changeSequence: 1,
+      kind: "message",
+      data: richContent({ role, markdown: activityId, streamingState: "complete", createdAt: "2026-08-02T08:00:00Z" }),
+    };
+  }
+
+  it("counts only output beyond the hidden user message of the run's own turn", () => {
+    const userOnly = { items: [timelineItem("prompt", "user", run.providerExecutionTurnId)], turns: [] };
+    const otherTurn = { items: [timelineItem("other", "assistant", "turn-other")], turns: [] };
+    const answered = { items: [...userOnly.items, timelineItem("answer", "assistant", run.providerExecutionTurnId)], turns: [] };
+
+    expect(agentRunShowedOutput(run, null, [])).toBe(false);
+    expect(agentRunShowedOutput(run, userOnly, [])).toBe(false);
+    expect(agentRunShowedOutput(run, otherTurn, [])).toBe(false);
+    expect(agentRunShowedOutput(run, answered, [])).toBe(true);
+  });
+
+  it("counts projected replies of the run as output but not host tool updates or other runs", () => {
+    const projected = { richContent: richContent({ type: "agent_update", agentRunId: "run-1" }) };
+    const otherRun = { richContent: richContent({ type: "agent_update", agentRunId: "run-2" }) };
+    const hostUpdate = {
+      richContent: richContent({
+        type: "agent_update",
+        updateKind: "plan",
+        agentRunId: "run-1",
+        payload: { kind: "plan", source: "host_tool" },
+      }),
+    };
+
+    expect(agentRunShowedOutput(run, null, [otherRun, hostUpdate])).toBe(false);
+    expect(agentRunShowedOutput(run, null, [projected])).toBe(true);
+  });
+
+  it("describes a failure with its stored code and keeps the diagnostic text as detail", () => {
+    const failed = { state: "failed" } as const;
+    const stored = turn("timeout", "The provider did not authenticate its internal host tools in time");
+
+    expect(agentRunOutcome(failed, stored, false)).toEqual({
+      kind: "failed",
+      beforeOutput: true,
+      errorCode: "timeout",
+      detail: "The provider did not authenticate its internal host tools in time",
+    });
+    expect(agentRunOutcome(failed, stored, true)).toMatchObject({ kind: "failed", beforeOutput: false });
+    expect(agentRunOutcome(failed, null, false, "provider_usage_limit")).toEqual({
+      kind: "failed",
+      beforeOutput: true,
+      errorCode: null,
+      detail: "provider_usage_limit",
+    });
+    expect(agentRunOutcome(failed, turn(null, null), false, "fallback")).toMatchObject({ errorCode: null, detail: "fallback" });
+  });
+
+  it("reports a stop only before output and nothing for completed or active runs", () => {
+    expect(agentRunOutcome({ state: "cancelled" }, null, false)).toEqual({ kind: "stopped_before_output" });
+    expect(agentRunOutcome({ state: "cancelled" }, null, true)).toBeNull();
+    expect(agentRunOutcome({ state: "completed" }, turn(null, "end_turn"), false)).toBeNull();
+    expect(agentRunOutcome({ state: "working" }, null, false)).toBeNull();
+  });
+
+  it("treats queued, starting, working, and waiting runs as stoppable", () => {
+    const states: ChatAgentRunRead["state"][] = ["queued", "starting", "working", "waiting", "completed", "failed", "cancelled"];
+
+    expect(states.filter((state) => agentRunIsActive({ state }))).toEqual(["queued", "starting", "working", "waiting"]);
   });
 });
 

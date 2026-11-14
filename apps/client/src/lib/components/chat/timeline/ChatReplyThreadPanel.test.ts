@@ -151,6 +151,7 @@ function exactTimelinePage(threadId: string, turnId: string, markdown: string): 
       startedAt: "2026-08-04T17:00:30.000Z",
       completedAt: "2026-08-04T17:01:00.000Z",
       stopReason: null,
+      errorCode: null,
       modelId: null,
       modelOptions: [],
       modes: { safetyMode: "ask_for_approval", interactionMode: "build" },
@@ -406,6 +407,70 @@ describe("ChatReplyThreadPanel", () => {
     expect(identityTriggers).toHaveLength(2);
     expect(identityTriggers.map((trigger) => trigger.textContent)).toEqual(["Atlas", "Atlas"]);
     expect(target.querySelector(".agent-badge")).toBeNull();
+  });
+
+  it("names the teammate and a localized reason when its run fails before any output", async () => {
+    const diagnostic = "The provider did not authenticate its internal host tools in time";
+    const failedRun: ChatAgentRunRead = { ...run, state: "failed" };
+    const unstartedRun: ChatAgentRunRead = {
+      ...run,
+      id: "run:unstarted",
+      providerExecutionThreadId: null,
+      providerExecutionTurnId: "turn:unstarted",
+      state: "cancelled",
+      createdAt: "2026-08-04T17:03:30.000Z",
+    };
+    const failedPage: ChatReplyThreadPageRead = { ...page, replies: [], agentRuns: [failedRun, unstartedRun] };
+    const userOnly = exactTimelinePage(failedRun.providerExecutionThreadId ?? "", failedRun.providerExecutionTurnId, "Hidden request");
+    const failedTimeline: ChatTimelinePageRead = {
+      ...userOnly,
+      items: [{
+        activityId: "request:failed",
+        turnId: failedRun.providerExecutionTurnId,
+        sequenceAnchor: 1,
+        changeSequence: 1,
+        kind: "message",
+        data: {
+          schemaVersion: 1,
+          value: {
+            role: "user",
+            markdown: "Hidden request",
+            streamingState: "complete",
+            providerItemId: null,
+            metadata: null,
+            createdAt: "2026-08-04T17:00:30.000Z",
+            updatedAt: "2026-08-04T17:00:30.000Z",
+          },
+        },
+      }],
+      turns: userOnly.turns.map((turn) => ({ ...turn, state: "failed", stopReason: diagnostic, errorCode: "timeout" })),
+    };
+    chat.openReplyThreadId = failedPage.thread.id;
+    chat.replyThread = failedPage;
+    chat.replyThreadPages = [failedPage];
+    chat.selectedExecutionRunId = null;
+    chat.selectedThreadId = null;
+    vi.spyOn(chat, "selectAssignmentExecution").mockResolvedValue();
+    vi.spyOn(chatApi, "readChatTimelineTurn").mockResolvedValue(failedTimeline);
+    vi.spyOn(chatApi, "readChatThreadShell").mockImplementation(async (threadId) => threadShell(threadId));
+    vi.spyOn(chat, "listScheduledOrganizationalMessages").mockResolvedValue([]);
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatReplyThreadPanel, {
+      target,
+      props: { onClose: vi.fn() },
+    });
+
+    await vi.waitFor(() => {
+      expect(target?.querySelector('[data-run-outcome="failed"]')).not.toBeNull();
+    });
+    const failure = target.querySelector('[data-run-outcome="failed"] .notice-message');
+    expect(failure?.textContent).toBe(`${en.chat.runs.outcome.failedBeforeOutput("Atlas")} ${en.chatErrors.codes.timeout}`);
+    expect(target.textContent).not.toContain(diagnostic);
+    expect(target.textContent).not.toContain("Hidden request");
+    expect(target.querySelector('[data-run-outcome="stopped"]')?.textContent)
+      .toBe(en.chat.runs.outcome.stoppedBeforeOutput("Atlas"));
+    expect(target.querySelectorAll(".chat-execution-timeline")).toHaveLength(1);
   });
 
   it("exposes private scratch only when the reply thread has a scratch run", async () => {

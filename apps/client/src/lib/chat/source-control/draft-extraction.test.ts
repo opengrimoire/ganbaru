@@ -113,6 +113,7 @@ function turn(turnId: string, state: ChatTurnState): ChatTimelineTurnRead {
     startedAt: null,
     completedAt: null,
     stopReason: null,
+    errorCode: null,
     modelId: null,
     modelOptions: [],
     modes: { safetyMode: "ask_for_approval", interactionMode: "build" },

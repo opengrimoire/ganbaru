@@ -1,12 +1,16 @@
 import type {
   ChatAgentRunRead,
+  ChatErrorCode,
   ChatMessageRead,
   ChatTeammateChannelAccess,
+  ChatTimelinePageRead,
+  ChatTimelineTurnRead,
   ProjectWorkingFolder,
   VersionedJson,
 } from "$lib/chat/contracts";
 import { compareOrderKeyThenId } from "$lib/utils/order-key";
 import { isHostToolUpdate } from "./agent-update";
+import { projectTimelineReadModel } from "./projection";
 
 interface RichReply {
   richContent: VersionedJson;
@@ -14,7 +18,13 @@ interface RichReply {
 
 export type ReplyThreadRenderEntry =
   | { kind: "message"; key: string; message: ChatMessageRead }
-  | { kind: "execution"; key: string; run: ChatAgentRunRead };
+  | {
+    kind: "execution";
+    key: string;
+    run: ChatAgentRunRead;
+    /** Whether the run's exact provider turn is loaded; otherwise only the run's status line renders. */
+    loaded: boolean;
+  };
 
 /** Returns the newest agent run whose provider execution can be rendered. */
 export function latestRenderableAgentRun(
@@ -129,7 +139,28 @@ export function shouldGroupReplyMessages(
   return elapsedMs >= 0 && elapsedMs <= 5 * 60 * 1_000;
 }
 
-/** Replaces projected run copies with exact execution turns at the same thread position. */
+/** Run states in which a run still works or waits to work. */
+const ACTIVE_RUN_STATES: ReadonlySet<ChatAgentRunRead["state"]> = new Set(["queued", "starting", "working", "waiting"]);
+
+/** Returns whether a run is still working or waiting to work, so it can be stopped. */
+export function agentRunIsActive(run: Pick<ChatAgentRunRead, "state">): boolean {
+  return ACTIVE_RUN_STATES.has(run.state);
+}
+
+/**
+ * Returns whether a run needs its own place in the thread although its exact turn is not loaded: a run that failed or
+ * was stopped before it had a provider turn, or a run that still works and can be stopped.
+ */
+function runShowsWithoutExecution(run: ChatAgentRunRead, loadedRunIds: ReadonlySet<string>): boolean {
+  if (run.providerExecutionThreadId !== null && loadedRunIds.has(run.id)) return false;
+  if (agentRunIsActive(run)) return true;
+  return run.providerExecutionThreadId === null && (run.state === "failed" || run.state === "cancelled");
+}
+
+/**
+ * Replaces projected run copies with exact execution turns at the same thread position. Runs that need a status line
+ * without a loaded turn get an entry with `loaded: false` and keep their projected replies.
+ */
 export function replyThreadRenderEntries(
   replies: readonly ChatMessageRead[],
   agentRuns: readonly ChatAgentRunRead[],
@@ -138,7 +169,8 @@ export function replyThreadRenderEntries(
   const renderedRuns = agentRuns.filter((run) => (
     run.providerExecutionThreadId !== null && loadedRunIds.has(run.id)
   ));
-  if (renderedRuns.length === 0) {
+  const statusOnlyRuns = agentRuns.filter((run) => runShowsWithoutExecution(run, loadedRunIds));
+  if (renderedRuns.length === 0 && statusOnlyRuns.length === 0) {
     return replies.map((message) => ({ kind: "message", key: message.itemId, message }));
   }
   const renderedRunIds = new Set(renderedRuns.map((run) => run.id));
@@ -152,15 +184,17 @@ export function replyThreadRenderEntries(
     if (runId !== null && renderedRunIds.has(runId)) return;
     positioned.push({ position, entry: { kind: "message", key: message.itemId, message } });
   });
-  for (const run of renderedRuns) {
+  for (const run of [...renderedRuns, ...statusOnlyRuns]) {
     const projectedPositions = ordered.flatMap((reply, position) => (
       projectedAgentRunId(reply) === run.id ? [position] : []
     ));
+    const loaded = renderedRunIds.has(run.id);
+    // A status line follows the projected replies it leaves visible.
     positioned.push({
       position: projectedPositions.length > 0
-        ? Math.max(...projectedPositions)
+        ? Math.max(...projectedPositions) + (loaded ? 0 : 0.25)
         : fallbackRunPosition(ordered, run.createdAt),
-      entry: { kind: "execution", key: `execution:${run.id}`, run },
+      entry: { kind: "execution", key: `execution:${run.id}`, run, loaded },
     });
   }
   return positioned
@@ -187,6 +221,62 @@ function fallbackRunPosition(ordered: readonly ChatMessageRead[], createdAt: str
 /** Returns how a run restarted its provider session, or `null` when it opened or continued one as planned. */
 export function agentRunRestart(run: ChatAgentRunRead): "handoff" | "retry" | null {
   return run.attemptReason === "handoff" || run.attemptReason === "retry" ? run.attemptReason : null;
+}
+
+/** How a settled run ended when its end needs its own line in the reply thread. */
+export type AgentRunOutcome =
+  | {
+    kind: "failed";
+    /** Whether the run failed before it showed any output. */
+    beforeOutput: boolean;
+    /** Code of the stored error, which chooses the localized explanation. */
+    errorCode: ChatErrorCode | null;
+    /** Diagnostic text for the technical detail slot only. */
+    detail: string | null;
+  }
+  | { kind: "stopped_before_output" };
+
+/**
+ * Returns whether a run showed anything in the thread: a projected reply or a row of its exact turn other than the
+ * hidden user message.
+ */
+export function agentRunShowedOutput(
+  run: Pick<ChatAgentRunRead, "id" | "providerExecutionTurnId">,
+  timelinePage: Pick<ChatTimelinePageRead, "items" | "turns"> | null,
+  replies: readonly RichReply[],
+): boolean {
+  if (replies.some((reply) => projectedAgentRunId(reply) === run.id)) return true;
+  if (!timelinePage) return false;
+  return projectTimelineReadModel(timelinePage.items, timelinePage.turns).rows.some((row) => (
+    row.turnId === run.providerExecutionTurnId && !(row.kind === "message" && row.role === "user")
+  ));
+}
+
+/**
+ * Returns how a settled run ended when the thread would otherwise not show it: every failure, and a stop that came
+ * before any output. A completed run, a run still working, and a stop after output return `null`.
+ *
+ * @param run Run to describe.
+ * @param turn The run's exact provider turn, when it had one and it is loaded.
+ * @param showedOutput Whether the run showed output, see {@link agentRunShowedOutput}.
+ * @param fallbackDetail Diagnostic text to use when the turn has none, such as the assignment's state reason.
+ */
+export function agentRunOutcome(
+  run: Pick<ChatAgentRunRead, "state">,
+  turn: Pick<ChatTimelineTurnRead, "stopReason" | "errorCode"> | null,
+  showedOutput: boolean,
+  fallbackDetail: string | null = null,
+): AgentRunOutcome | null {
+  if (run.state === "failed") {
+    return {
+      kind: "failed",
+      beforeOutput: !showedOutput,
+      errorCode: turn?.errorCode ?? null,
+      detail: turn?.stopReason ?? fallbackDetail,
+    };
+  }
+  if (run.state === "cancelled" && !showedOutput) return { kind: "stopped_before_output" };
+  return null;
 }
 
 /** Where the newest run of a reply thread works. */

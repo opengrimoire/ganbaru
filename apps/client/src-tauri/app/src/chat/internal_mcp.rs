@@ -12,9 +12,9 @@ use ganbaru_chat_contracts::models::{
 };
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListResourcesResult,
-    ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse,
-    ReadResourceResult, Resource, ResourceContents, ServerCapabilities, ServerConfig, Tool,
-    ToolAnnotations,
+    ListToolsResult, PaginatedRequestParams, ProtocolVersion, ReadResourceRequestParams,
+    ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, ServerCapabilities,
+    ServerConfig, Tool, ToolAnnotations,
 };
 use rmcp::service::{NotificationContext, RequestContext, RoleServer};
 use rmcp::transport::streamable_http_server::{
@@ -545,6 +545,10 @@ impl ServerHandler for ThreadMcpHandler {
                 .build(),
         )
         .with_instructions("Thread-scoped Ganbaru Chat resources and workspace preview tools")
+    }
+
+    fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
+        std::borrow::Cow::Borrowed(session_protocol_versions())
     }
 
     fn on_initialized(
@@ -1081,6 +1085,14 @@ fn preview_tool_error(operation: &str) -> ChatError {
     )
 }
 
+/// The protocol revisions the endpoint offers, all of which open with `initialize`. A
+/// provider proves it reached the endpoint by completing that handshake, and session
+/// admission counts open sessions. Offering a stateless revision would let a client that
+/// discovers it skip `initialize`, so the readiness wait before a run would never end.
+fn session_protocol_versions() -> &'static [ProtocolVersion] {
+    ProtocolVersion::known_up_to(&ProtocolVersion::LATEST_WITH_INITIALIZE)
+}
+
 /// Builds the authenticated `/mcp` route for one endpoint. rmcp reads request bodies itself,
 /// so the body cap is set on its service rather than as an axum layer.
 fn endpoint_router<H>(handler: H, token_digest: TokenDigest) -> Router
@@ -1468,6 +1480,13 @@ mod tests {
         let mut queued = tokio::net::TcpStream::connect(address).await.unwrap();
         assert!(request_root(&mut queued).await.contains("200 OK"));
         assert!(started.elapsed() >= TEST_HEADER_READ_TIMEOUT / 2);
+    }
+
+    #[test]
+    fn endpoint_offers_only_revisions_that_open_with_initialize() {
+        let versions = session_protocol_versions();
+        assert!(versions.contains(&ProtocolVersion::LATEST_WITH_INITIALIZE));
+        assert!(versions.iter().all(ProtocolVersion::has_initialize));
     }
 
     #[test]

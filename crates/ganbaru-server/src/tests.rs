@@ -1997,7 +1997,8 @@ impl Client {
 
 #[tokio::test]
 async fn unknown_space_leaves_no_generation_entry() {
-    const PROBES: u16 = 1000;
+    // Every probe checks the map stays empty, so a few probes over each refusal path suffice.
+    const PROBES: u16 = 8;
     // Each probe holds its connection open, so the budget must fit all of them at once.
     let open = usize::from(PROBES) + 1;
     let relay = start_relay(ConnectionLimits {

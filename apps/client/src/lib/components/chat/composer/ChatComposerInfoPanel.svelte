@@ -58,7 +58,7 @@
     const used = formatNumber(localization.locale, meter.usedTokens);
     return meter.maximumTokens === null
       ? t("chat.composer.contextUnknown", used)
-      : t("chat.composer.contextUsed", used, formatNumber(localization.locale, meter.maximumTokens));
+      : t("chat.composer.contextUsed", used, formatNumber(localization.locale, meter.maximumTokens, { notation: "compact" }));
   }
 
   function contextPercentage(value: number): string {

@@ -271,12 +271,15 @@
     return optionDefinition.options.find((option) => option.value === value)?.label ?? value;
   }
 
+  /** One line of context usage: the share used with the token counts, or the bare count when the window is unknown. */
   function contextUsageLabel(): string {
     if (!usageMeter) return t("chat.composer.contextUnavailable");
     const used = formatNumber(localization.locale, usageMeter.usedTokens);
-    return usageMeter.maximumTokens === null
-      ? t("chat.composer.contextUnknown", used)
-      : t("chat.composer.contextUsed", used, formatNumber(localization.locale, usageMeter.maximumTokens));
+    if (usageMeter.maximumTokens === null) return t("chat.composer.contextUnknown", used);
+    const maximum = formatNumber(localization.locale, usageMeter.maximumTokens, { notation: "compact" });
+    return usageMeter.ratio === null
+      ? t("chat.composer.contextUsed", used, maximum)
+      : t("chat.composer.contextSummary", contextPercentage(usageMeter.ratio), used, maximum);
   }
 
   function contextPercentage(value: number): string {
@@ -371,11 +374,7 @@
       {#if usageState}
         <div class="identity-context" data-identity-context>
           <span class="identity-settings-label">{t("chat.composer.contextWindow")}</span>
-          {#if usageMeter && usageMeter.ratio !== null}
-            <span>{t("chat.composer.contextPercentage", contextPercentage(usageMeter.ratio), contextPercentage(1 - usageMeter.ratio))}</span>
-            <span class="identity-context-meter" style={`--identity-context-used:${Math.min(1, Math.max(0, usageMeter.ratio))}`}><span></span></span>
-          {/if}
-          <small>{contextUsageLabel()}</small>
+          {#if usageMeter}<span>{contextUsageLabel()}</span>{:else}<small>{contextUsageLabel()}</small>{/if}
           {#if usageState.automaticCompactionReported || usageMeter?.warning}<small>{t("chat.composer.contextCompaction")}</small>{/if}
         </div>
       {/if}
@@ -417,8 +416,6 @@
   .identity-approval { overflow:hidden; min-width:0; color:var(--foreground); text-overflow:ellipsis; white-space:nowrap; }
   .identity-context { display:grid; min-width:0; gap:0.22rem; font-size:var(--panel-font-size); }
   .identity-context small { color:var(--muted-foreground); font-size:var(--panel-detail-font-size); }
-  .identity-context-meter { display:block; width:100%; height:0.38rem; overflow:hidden; border-radius:999px; background:color-mix(in srgb,var(--muted-foreground) 18%,transparent); }
-  .identity-context-meter > span { display:block; width:calc(var(--identity-context-used) * 100%); height:100%; border-radius:inherit; background:color-mix(in srgb,var(--foreground) 72%,var(--muted-foreground)); }
   .privacy-note { display:grid; grid-template-columns:1rem minmax(0,1fr); gap:0.55rem; align-items:start; color:var(--muted-foreground); }
   .privacy-note :global(svg) { margin-top:0.1rem; color:color-mix(in srgb,var(--primary) 70%,var(--foreground)); }
   .privacy-note span { font-size:var(--panel-detail-font-size); line-height:1rem; }

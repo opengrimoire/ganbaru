@@ -206,9 +206,8 @@ describe("ChatIdentityButton", () => {
     expect(read).toHaveBeenCalledWith("thread:atlas");
     const context = document.body.querySelector<HTMLElement>("[data-identity-context]");
     expect(context?.textContent).toContain("Context window");
-    expect(context?.textContent).toContain("39% used (61% left)");
-    expect(context?.textContent).toContain("100,000 of 258,000 context tokens used");
-    expect(context?.querySelector<HTMLElement>(".identity-context-meter")?.style.getPropertyValue("--identity-context-used")).not.toBe("");
+    expect(context?.textContent).toContain("39% used (100,000 of 258K tokens)");
+    expect(context?.textContent).not.toContain("left");
   });
 
   it("keeps the card without context usage when the usage read fails", async () => {
@@ -247,7 +246,7 @@ describe("ChatIdentityButton", () => {
     await tick();
 
     expect(document.body.querySelector(".identity-fast-indicator")).toBeNull();
-    expect(document.body.querySelector(".identity-settings-label")?.textContent).toBe("Current response settings");
+    expect(document.body.querySelector(".identity-settings-label")?.textContent).toBe("Model");
   });
 
   it.each(["name", "mention"] as const)("left-aligns the %s card with its trigger", async (presentation) => {

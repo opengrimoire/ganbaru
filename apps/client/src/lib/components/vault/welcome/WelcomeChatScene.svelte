@@ -329,7 +329,7 @@
     <div class="thread-composer">
       <div class="organizational-composer">
         <div class="editor-frame">
-          <div class="organizational-editor empty" data-placeholder={t("chat.organization.replyInThread")}></div>
+          <div class="organizational-editor empty" data-placeholder={t("chat.organization.messageChannel")}></div>
         </div>
         {@render footer("thread", true, false, 0)}
       </div>

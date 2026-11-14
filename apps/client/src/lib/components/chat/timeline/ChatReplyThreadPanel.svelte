@@ -519,7 +519,7 @@
     {/if}
     <div class="thread-composer">
       {#key `${destination}:${composerRevision}`}
-        <ChatMessageComposer {destination} threadComposer placeholder={t("chat.organization.replyInThread")} onRequestScrollToBottom={scrollToBottomForUserAction} />
+        <ChatMessageComposer {destination} threadComposer placeholder={t("chat.organization.messageChannel")} onRequestScrollToBottom={scrollToBottomForUserAction} />
       {/key}
     </div>
   {/if}

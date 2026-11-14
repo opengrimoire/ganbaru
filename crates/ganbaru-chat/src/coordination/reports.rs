@@ -181,6 +181,21 @@ pub async fn record_host_question(
         "source": HOST_TOOL_SOURCE,
     });
     let ids = HostUpdateIds::derive(ASK_ID_PART, call)?;
+    let markdown = question_markdown(question, choices);
+    record_question_update(connection, call, &ids, payload, &markdown, now).await
+}
+
+/// Posts the `question` update `ids` names with `payload` and `markdown`, and moves the working
+/// assignment of `call` to `waiting_for_answer`. A call whose update exists replays or
+/// conflicts as [`record_host_question`] describes.
+pub(super) async fn record_question_update(
+    connection: &mut SqliteConnection,
+    call: HostCall<'_>,
+    ids: &HostUpdateIds,
+    payload: Value,
+    markdown: &str,
+    now: &str,
+) -> ChatResult<HostCallOutcome> {
     if let Some(outcome) = replayed(connection, &ids.item_id, "question", &payload).await? {
         return outcome;
     }
@@ -196,7 +211,6 @@ pub async fn record_host_question(
     .execute(&mut *connection)
     .await
     .map_err(persistence_error)?;
-    let markdown = question_markdown(question, choices);
     insert_teammate_update(
         connection,
         &TeammateUpdate {
@@ -207,7 +221,7 @@ pub async fn record_host_question(
             assignment_id: call.assignment_id,
             run_id: Some(call.run_id),
             update_kind: "question",
-            markdown: &markdown,
+            markdown,
             payload,
             created_at: now,
         },

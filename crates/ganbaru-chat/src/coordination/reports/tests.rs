@@ -7,7 +7,7 @@ pub(crate) const NOW: &str = "2026-11-12T09:00:00.000Z";
 const LATER: &str = "2026-11-12T09:05:00.000Z";
 pub(crate) const PROJECT_ID: &str = "project-host-reports";
 pub(crate) const TEAMMATE: &str = "participant:reports-helper";
-const OWNER: &str = "participant:local-owner";
+pub(crate) const OWNER: &str = "participant:local-owner";
 pub(crate) const ASSIGNMENT: &str = "assignment:reports";
 pub(crate) const RUN: &str = "run:reports-1";
 pub(crate) const TURN: &str = "turn:reports-1";
@@ -90,7 +90,7 @@ pub(crate) async fn seed(pool: &SqlitePool, assignment_state: &str, run_state: &
 
 /// Posts a message by `author` in the reply thread and records it as a pending input of
 /// `routing_kind`.
-async fn post_input(pool: &SqlitePool, item_id: &str, author: &str, routing_kind: &str) {
+pub(crate) async fn post_input(pool: &SqlitePool, item_id: &str, author: &str, routing_kind: &str) {
     let conversation = default_channel_ids(PROJECT_ID).unwrap().0;
     let mut connection = pool.acquire().await.unwrap();
     let order_key = next_order_key(&mut connection, &conversation, Some(THREAD))

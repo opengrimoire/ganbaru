@@ -2,10 +2,15 @@
 
 mod draft_context;
 pub mod hardened;
+mod push;
 
 pub use draft_context::{
     COMMIT_DRAFT_MAX_FILES, COMMIT_DRAFT_MAX_PATCH_BYTES, COMMIT_DRAFT_RECENT_SUBJECTS,
     ChatCommitDraftContextRead, change_request_draft_context, commit_draft_context,
+};
+pub use push::{
+    GitPushTarget, GitPushTargetError, is_object_id, is_supported_push_url, push_object,
+    push_target,
 };
 
 use super::models::{ChatError, ChatErrorCode, ChatResult};

@@ -54,6 +54,7 @@
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import ChatChannelAccessPicker from "./ChatChannelAccessPicker.svelte";
+  import ChatPushApprovalsList from "./ChatPushApprovalsList.svelte";
   import ChatTeammateUsageList from "./ChatTeammateUsageList.svelte";
   import { UNGROUPED_PROJECT_LIST_KEY } from "$lib/projects/lists";
   import ChatChannelScopeControls from "./ChatChannelScopeControls.svelte";
@@ -887,6 +888,10 @@
                     <p class="access-summary-empty">{t("settings.chat.teammates.noAccessTitle")}</p>
                   {/if}
                 </section>
+
+                {#if editor.selected && !editor.creating}
+                  <section class="editor-section"><div class="section-heading"><h4>{t("settings.chat.teammates.pushApprovalsSection")}</h4></div><ChatPushApprovalsList teammateId={editor.selected.participant.id} refreshKey={[editor.selected, accessSummaryGroups]} /></section>
+                {/if}
               </div>
             </div>
             <CalendarScrollbar scrollContainer={detailScrollElement} wheelPassthrough />

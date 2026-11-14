@@ -53,6 +53,13 @@ export const chatSettings = {
     usageDay: (tokens: string, time: string, runs: number) => `${tokens} tokens, ${time} de trabajo, ${runs} ${runs === 1 ? "ejecución" : "ejecuciones"}`,
     usageEmpty: "Sin trabajo en los últimos 7 días",
     usageLoadFailed: "No se pudo cargar el uso",
+    pushApprovalsSection: "Push sin preguntar",
+    pushApprovalsEmpty: "Cada push pide confirmación",
+    pushApprovalsLoadFailed: "No se pudieron cargar las aprobaciones de push",
+    pushApprovalTarget: (pushUrl: string, branch: string) => `${branch} en ${pushUrl}`,
+    revokePushApprovalAction: "Revocar",
+    revokePushApproval: (folder: string, branch: string) => `Volver a preguntar antes de hacer push de ${folder} a ${branch}`,
+    revokePushApprovalFailed: "No se pudo revocar la aprobación de push",
     approvalDoesNotGrantAccess: "Las aprobaciones pueden limitar la ejecución, pero nunca otorgan acceso a canales o carpetas.",
     runtime: {
       inherit: "Heredar del agente",

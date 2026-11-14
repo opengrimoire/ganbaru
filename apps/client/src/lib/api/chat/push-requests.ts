@@ -2,11 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { ensureDbUrl } from "$lib/api/db";
 import type {
   ChatConversationItemId,
+  ChatPushApproval,
   ChatPushRequestStateRead,
   ConfirmPushRequestRequest,
   PostChatMessageResult,
 } from "$lib/chat/contracts";
-import { parseChatPushRequestStates, parsePostChatMessageResult } from "$lib/chat/validation";
+import { parseChatPushApprovals, parseChatPushRequestStates, parsePostChatMessageResult } from "$lib/chat/validation";
 import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
 
 /** Push requests are confirmed only where Chat runs teammates, since the push runs in the folder. */
@@ -31,4 +32,16 @@ export async function readChatPushRequestStates(
   return parseChatPushRequestStates(await invoke<unknown>("chat_read_push_request_states", {
     dbUrl: await ensureDbUrl(), requestItemIds,
   }));
+}
+
+/** Lists a teammate's active standing push approvals, by folder name, push URL, and branch. */
+export async function listChatPushApprovals(teammateId: string): Promise<ChatPushApproval[]> {
+  return parseChatPushApprovals(await invoke<unknown>("chat_list_push_approvals", {
+    dbUrl: await ensureDbUrl(), teammateId,
+  }));
+}
+
+/** Revokes a standing push approval, so later matching push requests ask again on every linked device. */
+export async function revokeChatPushApproval(approvalId: string): Promise<void> {
+  await invoke<unknown>("chat_revoke_push_approval", { dbUrl: await ensureDbUrl(), request: { approvalId } });
 }

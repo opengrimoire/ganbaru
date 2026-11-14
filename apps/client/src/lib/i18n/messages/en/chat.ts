@@ -347,6 +347,8 @@ export const chat = {
       moreFiles: (count: number) => `And ${count} more`,
       confirm: "Push",
       confirmCommit: "Commit and push",
+      confirmRemember: "Push and don't ask again",
+      confirmCommitRemember: "Commit, push, and don't ask again",
       waiting: "Ready to push once the teammate's turn ends",
       pushed: "Pushed",
       closed: "This request is closed",

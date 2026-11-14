@@ -8,6 +8,7 @@ import {
   parseChatChannelNote,
   parseChatChannelNotes,
   parseChatNoteProposalStates,
+  parseChatPushApprovals,
   parseChatPushRequest,
   parseChatPushRequestStates,
   parsePostChatMessageResult,
@@ -1248,6 +1249,23 @@ describe("chat push request contracts", () => {
     const states = [{ requestItemId: "item:a", state: "waiting" }, { requestItemId: "item:b", state: "pushed" }];
     expect(parseChatPushRequestStates(states)).toEqual(states);
     expect(() => parseChatPushRequestStates([{ requestItemId: "item:a", state: "pending" }])).toThrow("state");
+  });
+
+  it("parses standing push approvals and refuses a push URL with a password", () => {
+    const approval = {
+      approvalId: "push-approval-1",
+      teammateId: "participant:atlas",
+      workingFolderId: "folder:1",
+      workingFolderName: "App",
+      pushUrl: "git@example.invalid:org/repo.git",
+      destinationBranch: "main",
+      approvedAt: "2026-11-14T12:00:00.000Z",
+    };
+    expect(parseChatPushApprovals([approval])).toEqual([approval]);
+    expect(() => parseChatPushApprovals([{ ...approval, pushUrl: "https://me:secret@example.invalid/r" }])).toThrow("pushUrl");
+    expect(() => parseChatPushApprovals([{ ...approval, approvalId: "" }])).toThrow("approvalId");
+    expect(() => parseChatPushApprovals([{ ...approval, destinationBranch: "main\u0007" }])).toThrow("destinationBranch");
+    expect(() => parseChatPushApprovals([{ ...approval, approvedAt: "yesterday" }])).toThrow("approvedAt");
   });
 });
 

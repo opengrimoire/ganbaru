@@ -50,6 +50,13 @@ export const chatSettings = {
     usageDay: (tokens: string, time: string, runs: number) => `${tokens} tokens, ${time} working, ${runs} ${runs === 1 ? "run" : "runs"}`,
     usageEmpty: "No work in the last 7 days",
     usageLoadFailed: "Usage could not be loaded",
+    pushApprovalsSection: "Pushes without asking",
+    pushApprovalsEmpty: "Every push asks for confirmation",
+    pushApprovalsLoadFailed: "Push approvals could not be loaded",
+    pushApprovalTarget: (pushUrl: string, branch: string) => `${branch} on ${pushUrl}`,
+    revokePushApprovalAction: "Revoke",
+    revokePushApproval: (folder: string, branch: string) => `Ask again before pushing ${folder} to ${branch}`,
+    revokePushApprovalFailed: "The push approval could not be revoked",
     approvalDoesNotGrantAccess: "Approvals can narrow runtime behavior but never grant channel or folder access.",
     runtime: {
       inherit: "Inherit agent default",

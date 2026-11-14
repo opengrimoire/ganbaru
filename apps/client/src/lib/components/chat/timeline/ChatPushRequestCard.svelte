@@ -13,8 +13,9 @@
   import { useChat } from "$lib/stores/chat.svelte";
 
   /**
-   * A teammate's request to push a commit. The push runs only when a person confirms it here, on a
-   * desktop device, and Rust rechecks the teammate's publish grant and the folder before pushing.
+   * A teammate's request to push a commit. The push runs when a person confirms it here on a desktop device,
+   * or after the turn ends when the person's standing approval or a full access turn lets it; either way Rust
+   * rechecks the teammate's publish grant and the folder before pushing.
    */
   let {
     requestItemId,
@@ -58,7 +59,7 @@
     return refusal ? t(`chat.organization.push.refusals.${refusal}`) : chatErrorMessage(cause);
   }
 
-  async function confirm(): Promise<void> {
+  async function confirm(rememberApproval: boolean): Promise<void> {
     if (pending) return;
     pending = true;
     error = null;
@@ -68,6 +69,7 @@
         normalizedMarkdown: push.commit
           ? t("chat.organization.push.replyCommitted", push.remote, push.destinationBranch)
           : t("chat.organization.push.reply", shortCommit, push.remote, push.destinationBranch),
+        rememberApproval,
       }, push.workingFolderId);
       requestState = "pushed";
     } catch (cause: unknown) {
@@ -117,8 +119,11 @@
   {:else if confirmable}
     {#if requestState === "waiting"}<p class="push-status">{t("chat.organization.push.waiting")}</p>{/if}
     <div class="push-actions">
-      <button type="button" class="push-confirm" disabled={pending} onclick={() => void confirm()}>
+      <button type="button" class="push-confirm" disabled={pending} onclick={() => void confirm(false)}>
         {t(push.commit ? "chat.organization.push.confirmCommit" : "chat.organization.push.confirm")}
+      </button>
+      <button type="button" class="push-remember" disabled={pending} onclick={() => void confirm(true)}>
+        {t(push.commit ? "chat.organization.push.confirmCommitRemember" : "chat.organization.push.confirmRemember")}
       </button>
     </div>
   {/if}
@@ -137,6 +142,9 @@
   .push-files { display:grid; gap:0.1rem; max-height:8rem; margin:0; overflow:auto; padding:0; list-style:none; overflow-wrap:anywhere; }
   .push-actions { display:flex; flex-wrap:wrap; gap:0.35rem; }
   .push-confirm { min-height:1.9rem; border-radius:var(--floating-item-radius); padding:0.2rem 0.7rem; font-weight:600; background:var(--primary); color:var(--primary-foreground); }
+  .push-remember { min-height:1.9rem; border-radius:var(--floating-item-radius); padding:0.2rem 0.7rem; color:var(--foreground); }
+  .push-remember:hover:not(:disabled) { background:var(--accent); }
+  .push-remember:disabled { cursor:not-allowed; opacity:0.5; }
   .push-confirm:disabled { cursor:not-allowed; opacity:0.5; }
-  @media (pointer:coarse) { .push-confirm { min-height:2.75rem; } }
+  @media (pointer:coarse) { .push-confirm, .push-remember { min-height:2.75rem; } }
 </style>

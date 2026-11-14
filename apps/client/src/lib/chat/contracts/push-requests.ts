@@ -1,4 +1,4 @@
-import type { ChatConversationItemId } from "./common";
+import type { ChatConversationItemId, UtcTimestamp } from "./common";
 
 /** What a teammate asks to push, as Ganbaru read it from the working folder when the teammate asked. */
 export interface ChatPushRequest {
@@ -47,10 +47,26 @@ export interface ChatPushRequestStateRead {
   state: ChatPushRequestState;
 }
 
-/** A person's confirmation of a push request, with the reply text posted after the teammate mention. */
+/**
+ * A person's confirmation of a push request, with the reply text posted after the teammate mention. With
+ * `rememberApproval`, a successful push also lets later pushes of the teammate from the folder to the same push URL
+ * and branch go ahead without asking.
+ */
 export interface ConfirmPushRequestRequest {
   requestItemId: ChatConversationItemId;
   normalizedMarkdown: string;
+  rememberApproval?: boolean;
+}
+
+/** A person's standing approval of a teammate's pushes from one folder to one push URL and branch. */
+export interface ChatPushApproval {
+  approvalId: string;
+  teammateId: string;
+  workingFolderId: string;
+  workingFolderName: string;
+  pushUrl: string;
+  destinationBranch: string;
+  approvedAt: UtcTimestamp;
 }
 
 /** Reasons Rust gives when a push request cannot be confirmed. */

@@ -1,6 +1,7 @@
 import {
   CHAT_PUSH_COMMIT_MAX_LISTED_PATHS,
   CHAT_PUSH_REQUEST_STATES,
+  type ChatPushApproval,
   type ChatPushRequest,
   type ChatPushRequestCommit,
   type ChatPushRequestStateRead,
@@ -14,6 +15,7 @@ import {
   readNullable,
   readRecord,
   readString,
+  readUtcTimestamp,
 } from "./readers";
 
 /** Longest push URL Ganbaru records, in UTF-8 bytes. */
@@ -57,6 +59,25 @@ export function parseChatPushRequestStates(
     return {
       requestItemId: readIdentifier(record.requestItemId, `${path}.requestItemId`),
       state: readEnum(record.state, CHAT_PUSH_REQUEST_STATES, `${path}.state`),
+    };
+  });
+}
+
+/**
+ * Reads a teammate's standing push approvals. Approvals replicate from other devices, so each push URL is
+ * checked like a push request's.
+ */
+export function parseChatPushApprovals(value: unknown, label = "Chat push approvals"): ChatPushApproval[] {
+  return readArray(value, label, (entry, path) => {
+    const record = readRecord(entry, path);
+    return {
+      approvalId: readIdentifier(record.approvalId, `${path}.approvalId`),
+      teammateId: readIdentifier(record.teammateId, `${path}.teammateId`),
+      workingFolderId: readIdentifier(record.workingFolderId, `${path}.workingFolderId`),
+      workingFolderName: readString(record.workingFolderName, `${path}.workingFolderName`),
+      pushUrl: readPushUrl(record.pushUrl, `${path}.pushUrl`),
+      destinationBranch: readIdentifier(record.destinationBranch, `${path}.destinationBranch`),
+      approvedAt: readUtcTimestamp(record.approvedAt, `${path}.approvedAt`),
     };
   });
 }

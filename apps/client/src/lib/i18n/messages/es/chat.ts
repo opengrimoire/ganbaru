@@ -350,6 +350,8 @@ export const chat = {
       moreFiles: (count: number) => `Y ${count} más`,
       confirm: "Hacer push",
       confirmCommit: "Hacer commit y push",
+      confirmRemember: "Hacer push y no volver a preguntar",
+      confirmCommitRemember: "Hacer commit y push, y no volver a preguntar",
       waiting: "Listo para hacer push cuando termine el turno del compañero",
       pushed: "Push hecho",
       closed: "Esta solicitud está cerrada",

@@ -14,12 +14,16 @@ mod invocation;
 #[cfg(target_os = "linux")]
 mod linux;
 mod locate;
+mod shell;
 
 use std::fmt;
 use std::path::PathBuf;
 
 pub use invocation::{SandboxInvocation, decode_invocation, encode_invocation};
 pub use locate::{SandboxHelper, probe};
+#[cfg(unix)]
+pub use shell::shell_invocation;
+pub use shell::{POLICY_FILE_VARIABLE, decode_policy_file, encode_policy_file};
 
 /// Network access a confined process keeps.
 #[derive(Clone, Debug, PartialEq, Eq)]

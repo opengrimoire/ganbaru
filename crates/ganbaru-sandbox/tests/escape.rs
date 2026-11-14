@@ -504,3 +504,60 @@ fn a_dynamic_program_needs_execute_access_to_its_loader() {
     let output = run(&policy, "write", "");
     assert_outcome(&output, HELPER_NOT_EXECUTED);
 }
+
+#[test]
+fn shell_mode_runs_the_command_under_the_policy_file_and_hides_the_file() {
+    let root = scratch("shell-mode").canonicalize().unwrap();
+    let inside = root.join("inside");
+    let outside = root.join("outside");
+    let policy_folder = root.join("policy");
+    for folder in [&inside, &outside, &policy_folder] {
+        std::fs::create_dir(folder).unwrap();
+    }
+    std::fs::write(outside.join("secret"), b"secret").unwrap();
+    let execute = ["/usr", "/bin", "/lib", "/lib64"]
+        .map(PathBuf::from)
+        .into_iter()
+        .filter(|path| path.exists())
+        .collect::<Vec<_>>();
+    let policy = SandboxPolicy {
+        read: vec![PathBuf::from("/etc")],
+        execute,
+        write: vec![inside.clone(), PathBuf::from("/dev/null")],
+        network: NetworkAccess::Denied,
+    };
+    let policy_file = policy_folder.join("shell-policy");
+    std::fs::write(
+        &policy_file,
+        helper().policy_file(&policy, "/bin/sh", ["-c"]).unwrap(),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        &policy_file,
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    )
+    .unwrap();
+    let script = "echo made > \"$IN/made\" && ! cat \"$OUT/secret\" 2>/dev/null \
+                  && ! (echo x > \"$OUT/escaped\") 2>/dev/null \
+                  && test \"${GANBARU_SANDBOX_POLICY_FILE-unset}\" = unset";
+    for arguments in [vec!["-c", script], vec![script]] {
+        let mut shell = Command::new(helper().path());
+        shell.args(&arguments);
+        let output = through_shell(&shell, &close_inherited_descriptors())
+            .env(ganbaru_sandbox::POLICY_FILE_VARIABLE, &policy_file)
+            .env("IN", &inside)
+            .env("OUT", &outside)
+            .output()
+            .unwrap();
+        assert_outcome(&output, 0);
+        assert_eq!(std::fs::read(inside.join("made")).unwrap(), b"made\n");
+        assert!(!outside.join("escaped").exists());
+    }
+    let mut extra = Command::new(helper().path());
+    extra.args(["-c", "true", "extra"]);
+    let output = through_shell(&extra, &close_inherited_descriptors())
+        .env(ganbaru_sandbox::POLICY_FILE_VARIABLE, &policy_file)
+        .output()
+        .unwrap();
+    assert_outcome(&output, HELPER_REFUSED);
+}

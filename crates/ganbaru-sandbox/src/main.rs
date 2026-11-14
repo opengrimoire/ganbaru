@@ -3,7 +3,9 @@
 //! Ganbaru starts commands and provider processes of Chat teammates through this binary so that
 //! no restriction is ever applied to the app itself. The binary refuses to run the program when
 //! any part of the policy cannot be enforced or a descriptor beyond the standard streams is open.
-//! See [`ganbaru_sandbox::decode_invocation`] for the argument form; `--probe` confines the
+//! See [`ganbaru_sandbox::decode_invocation`] for the argument form. When
+//! [`ganbaru_sandbox::POLICY_FILE_VARIABLE`] is set, the helper runs in shell mode instead and
+//! reads the policy from that file; see [`ganbaru_sandbox::shell_invocation`]. `--probe` confines the
 //! helper under a policy that denies everything, checks that the kernel refuses what the policy
 //! leaves out, and exits.
 
@@ -32,7 +34,12 @@ fn main() -> ExitCode {
             }
         };
     }
-    let invocation = match ganbaru_sandbox::decode_invocation(arguments) {
+    let shell_policy = std::env::var_os(ganbaru_sandbox::POLICY_FILE_VARIABLE);
+    let decoded = match &shell_policy {
+        Some(path) => ganbaru_sandbox::shell_invocation(std::path::Path::new(path), arguments),
+        None => ganbaru_sandbox::decode_invocation(arguments),
+    };
+    let invocation = match decoded {
         Ok(invocation) => invocation,
         Err(error) => {
             eprintln!("ganbaru-sandbox: {error}");
@@ -49,6 +56,7 @@ fn main() -> ExitCode {
     }
     let error = std::process::Command::new(&invocation.program)
         .args(&invocation.arguments)
+        .env_remove(ganbaru_sandbox::POLICY_FILE_VARIABLE)
         .exec();
     eprintln!(
         "ganbaru-sandbox: {} could not be executed: {error}",

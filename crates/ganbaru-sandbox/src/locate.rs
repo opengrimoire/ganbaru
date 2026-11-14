@@ -97,6 +97,25 @@ impl SandboxHelper {
         }
         encode_invocation(policy, program, arguments)
     }
+
+    /// The policy file content that runs `program` with `arguments` and then each shell
+    /// command under `policy`, for a provider that starts the helper as its shell; see
+    /// [`crate::POLICY_FILE_VARIABLE`].
+    ///
+    /// The helper is refused when a writable policy path contains it, as in [`Self::command`].
+    pub fn policy_file(
+        &self,
+        policy: &SandboxPolicy,
+        program: impl Into<OsString>,
+        arguments: impl IntoIterator<Item = impl Into<OsString>>,
+    ) -> Result<Vec<u8>, SandboxError> {
+        if policy.write.iter().any(|path| self.is_inside(path)) {
+            return Err(SandboxError::HelperUnavailable(
+                "the helper lies inside a writable sandbox path".to_string(),
+            ));
+        }
+        crate::encode_policy_file(policy, program, arguments)
+    }
 }
 
 /// Checks that `helper` can confine processes on this device.

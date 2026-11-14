@@ -124,6 +124,63 @@ pub async fn push_target(
 /// chooses how Git connects or the push URL is no longer the recorded one, and a conflict
 /// carrying Git's output when the push fails, as when the remote branch moved past the commit.
 pub async fn push_object(folder: GitFolder<'_>, target: &GitPushTarget) -> ChatResult<()> {
+    let push_url = checked_push_url(folder, target).await?;
+    let refspec = format!(
+        "{}:{BRANCH_REF_PREFIX}{}",
+        target.object_id, target.destination_branch
+    );
+    let receive_pack = is_local_push_url(&push_url).then(local_receive_pack);
+    let mut arguments = vec!["push", "--no-follow-tags", "--recurse-submodules=no"];
+    if let Some(receive_pack) = &receive_pack {
+        arguments.push(receive_pack);
+    }
+    arguments.extend(["--", &target.remote, &refspec]);
+    run(folder, &arguments, GitCall::Requested)
+        .await
+        .map(|_| ())
+}
+
+/// Whether the destination branch of `target` on the remote points at `target.object_id`, read
+/// with `ls-remote` under the same checks and hardening as [`push_object`]. A push that was
+/// interrupted before Ganbaru recorded its result asks this before pushing again.
+///
+/// # Errors
+///
+/// Returns the errors [`push_object`] returns before pushing, and a conflict carrying Git's
+/// output when the remote cannot be read.
+pub async fn remote_branch_names_object(
+    folder: GitFolder<'_>,
+    target: &GitPushTarget,
+) -> ChatResult<bool> {
+    let push_url = checked_push_url(folder, target).await?;
+    let destination = format!("{BRANCH_REF_PREFIX}{}", target.destination_branch);
+    let upload_pack = is_local_push_url(&push_url).then(local_upload_pack);
+    let mut arguments = vec!["ls-remote"];
+    if let Some(upload_pack) = &upload_pack {
+        arguments.push(upload_pack);
+    }
+    arguments.extend(["--", &target.remote, &destination]);
+    let output = run(folder, &arguments, GitCall::Requested).await?;
+    let listing = std::str::from_utf8(&output.stdout).map_err(|_| unexpected_output())?;
+    Ok(listing_names_object(
+        listing,
+        &destination,
+        &target.object_id,
+    ))
+}
+
+/// Whether an `ls-remote` `listing` maps the ref `destination` to `object_id`.
+fn listing_names_object(listing: &str, destination: &str, object_id: &str) -> bool {
+    listing.lines().any(|line| {
+        line.split_once('\t')
+            .is_some_and(|(object, reference)| reference == destination && object == object_id)
+    })
+}
+
+/// The push URL of `target` after checking that the target is well formed, the remote still
+/// has exactly the recorded push URL, and repository configuration chooses nothing about how
+/// Git connects.
+async fn checked_push_url(folder: GitFolder<'_>, target: &GitPushTarget) -> ChatResult<String> {
     validate_branch_name(&target.destination_branch)?;
     if !is_object_id(&target.object_id) {
         return Err(ChatError::validation(
@@ -149,19 +206,7 @@ pub async fn push_object(folder: GitFolder<'_>, target: &GitPushTarget) -> ChatR
             ));
         }
     }
-    let refspec = format!(
-        "{}:{BRANCH_REF_PREFIX}{}",
-        target.object_id, target.destination_branch
-    );
-    let receive_pack = is_local_push_url(&push_url).then(local_receive_pack);
-    let mut arguments = vec!["push", "--no-follow-tags", "--recurse-submodules=no"];
-    if let Some(receive_pack) = &receive_pack {
-        arguments.push(receive_pack);
-    }
-    arguments.extend(["--", &target.remote, &refspec]);
-    run(folder, &arguments, GitCall::Requested)
-        .await
-        .map(|_| ())
+    Ok(push_url)
 }
 
 /// The `--receive-pack` option for a remote on this device: its repository's hooks, fsmonitor,
@@ -172,6 +217,17 @@ fn local_receive_pack() -> String {
     let hooks = shell_quote(empty_hooks_directory().as_os_str());
     format!(
         "--receive-pack=git -c core.hooksPath={} -c core.fsmonitor= -c core.alternateRefsCommand= -c receive.autogc=false -c receive.denyCurrentBranch=refuse receive-pack",
+        hooks.to_string_lossy()
+    )
+}
+
+/// The `--upload-pack` option for a remote on this device, which reads its refs without the
+/// remote repository's hooks, fsmonitor, or alternate refs command, as [`local_receive_pack`]
+/// does for a push.
+fn local_upload_pack() -> String {
+    let hooks = shell_quote(empty_hooks_directory().as_os_str());
+    format!(
+        "--upload-pack=git -c core.hooksPath={} -c core.fsmonitor= -c core.alternateRefsCommand= upload-pack",
         hooks.to_string_lossy()
     )
 }
@@ -398,4 +454,4 @@ fn unexpected_output() -> ChatError {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

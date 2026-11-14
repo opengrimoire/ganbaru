@@ -129,10 +129,14 @@ pub enum PushRequestRefusal {
     CommitIdentityMissing,
     /// The folder no longer names the recorded target, working tree, or Git configuration.
     TargetChanged,
+    /// Another confirmation or a standing push of the request is pushing it now.
+    InProgress,
+    /// The request was pushed; only its confirmation reply may still be on its way.
+    AlreadyPushed,
 }
 
 impl PushRequestRefusal {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 13] = [
         Self::SummaryInvalid,
         Self::Detached,
         Self::RemoteUnavailable,
@@ -144,6 +148,8 @@ impl PushRequestRefusal {
         Self::Pending,
         Self::Closed,
         Self::TargetChanged,
+        Self::InProgress,
+        Self::AlreadyPushed,
     ];
 
     /// The stable error code.
@@ -160,6 +166,8 @@ impl PushRequestRefusal {
             Self::Pending => "push_request_pending",
             Self::Closed => "push_request_closed",
             Self::TargetChanged => "push_target_changed",
+            Self::InProgress => "push_request_in_progress",
+            Self::AlreadyPushed => "push_request_already_pushed",
         }
     }
 
@@ -458,6 +466,8 @@ fn persistence_error(_error: sqlx::Error) -> ChatError {
         true,
     )
 }
+
+pub mod claims;
 
 #[cfg(test)]
 mod tests;

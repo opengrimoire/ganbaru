@@ -21,7 +21,10 @@ fn request() -> PushRequest {
     }
 }
 
-async fn ask_push(pool: &SqlitePool, client_request_id: &str) -> ChatResult<HostCallOutcome> {
+pub(super) async fn ask_push(
+    pool: &SqlitePool,
+    client_request_id: &str,
+) -> ChatResult<HostCallOutcome> {
     let mut connection = pool.acquire().await.unwrap();
     record_host_push_request(
         &mut connection,
@@ -33,7 +36,7 @@ async fn ask_push(pool: &SqlitePool, client_request_id: &str) -> ChatResult<Host
     .await
 }
 
-fn item_id(client_request_id: &str) -> String {
+pub(super) fn item_id(client_request_id: &str) -> String {
     HostUpdateIds::derive(PUSH_REQUEST_ID_PART, call(client_request_id))
         .unwrap()
         .item_id

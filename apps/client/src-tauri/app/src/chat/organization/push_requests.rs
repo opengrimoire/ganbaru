@@ -14,6 +14,10 @@ use crate::chat::internal_mcp_tools::verify_authorized_folder_source;
 use crate::chat::workspace::WorkingFolderAuthorizationOperation;
 use crate::chat::workspace::mutation::ChatWorkspaceMutationRegistry;
 use ganbaru_chat::coordination::contracts::*;
+use ganbaru_chat::coordination::push_requests::claims::{
+    PushClaim, claim_push_request, mark_push_request_pushed, record_push_object,
+    recover_interrupted_push, release_push_claim,
+};
 use ganbaru_chat::coordination::push_requests::{
     PUSH_CONFIRMATION_REFERENCE_PREFIX, PushRequest, PushRequestRefusal, StoredPushRequest,
     push_confirmation_id, read_push_request, read_push_request_state,
@@ -24,15 +28,19 @@ use ganbaru_chat::git::{
     GitFolder, GitPushTarget, advance_branch, commit_tree, push_object, push_target,
     worktree_commit,
 };
-use ganbaru_chat::ids::derived_id;
+use ganbaru_chat::ids::{derived_id, new_id};
 use ganbaru_chat_contracts::models::*;
 use ganbaru_sync_contracts::chat_push_approvals::PUSH_APPROVAL_KEY_PREFIX;
 use serde_json::json;
 use sqlx::{Row, SqlitePool};
+use std::sync::OnceLock;
 use tauri::Manager;
 
 /// Most push requests one state read may name.
 const MAX_PUSH_REQUEST_STATE_READS: usize = 200;
+
+/// Prefix of the token that names this process on the push request claims it holds.
+const PUSH_CLAIM_TOKEN_PREFIX: &str = "push-claim";
 
 /// Reply a push made under a person's standing approval posts.
 const STANDING_APPROVAL_REPLY: &str = "Pushed automatically under your standing approval.";
@@ -193,15 +201,69 @@ async fn answer_push_request(
             .reply(),
     };
     let reply = confirmation_post(&stored, item_id, text)?;
-    push_confirmed(&app, &pool, &stored.request).await?;
-    if authority == (PushAuthority::Person { remember: true })
-        && let Err(error) = remember_push_approval(&pool, &stored, &source).await
-    {
-        eprintln!("The standing push approval was not saved: {error}");
+    let claim = ClaimedPush {
+        item_id,
+        token: claim_token()?,
+    };
+    let interrupted =
+        match claim_push_request(&pool, item_id, claim.token, now_timestamp()?.as_str()).await? {
+            PushClaim::Fresh | PushClaim::Interrupted { object_id: None } => Some(None),
+            PushClaim::Interrupted {
+                object_id: Some(object_id),
+            } => Some(Some(object_id)),
+            PushClaim::Pushed { .. } => None,
+        };
+    let answered = async {
+        if let Some(interrupted) = interrupted {
+            push_confirmed(&app, &pool, &stored.request, &claim, interrupted).await?;
+            if authority == (PushAuthority::Person { remember: true })
+                && let Err(error) = remember_push_approval(&pool, &stored, &source).await
+            {
+                eprintln!("The standing push approval was not saved: {error}");
+            }
+        }
+        match post_message(app, db_url, &reply, None, None).await? {
+            PostOutcome::Posted(result) => Ok(result),
+            PostOutcome::Refused(refusal) => Err(refusal),
+        }
     }
-    match post_message(app, db_url, &reply, None, None).await? {
-        PostOutcome::Posted(result) => Ok(result),
-        PostOutcome::Refused(refusal) => Err(refusal),
+    .await;
+    if answered.is_err() {
+        release_claim(&pool, &claim).await;
+    }
+    answered
+}
+
+/// The claim this process holds on one push request.
+struct ClaimedPush<'a> {
+    item_id: &'a str,
+    token: &'static str,
+}
+
+/// The claim token of this Ganbaru process, so a claim another process left is known to be
+/// stale.
+///
+/// # Errors
+///
+/// Returns a persistence error when the secure random generator is unavailable.
+fn claim_token() -> ChatResult<&'static str> {
+    static TOKEN: OnceLock<String> = OnceLock::new();
+    if let Some(token) = TOKEN.get() {
+        return Ok(token);
+    }
+    let token = new_id(PUSH_CLAIM_TOKEN_PREFIX)?;
+    Ok(TOKEN.get_or_init(|| token))
+}
+
+/// Releases `claim` after the attempt failed, so a retry takes it over. A failed release only
+/// delays the retry until the next start of Ganbaru, so it is logged.
+async fn release_claim(pool: &SqlitePool, claim: &ClaimedPush<'_>) {
+    let released = match now_timestamp() {
+        Ok(now) => release_push_claim(pool, claim.item_id, claim.token, now.as_str()).await,
+        Err(error) => Err(error),
+    };
+    if let Err(error) = released {
+        eprintln!("A push request claim was not released: {error}");
     }
 }
 
@@ -340,10 +402,16 @@ pub(in crate::chat::organization) async fn read_push_request_states(
 /// commit is made on the recorded commit and pushed, and the local branch then moves to it. Every
 /// run is a confirmed teammate request, so it never runs the folder's repository programs or
 /// hooks and needs no trust decision for the folder's Git configuration.
+///
+/// `claim` records the commit before it is pushed and marks it pushed after. When `interrupted`
+/// names the commit an earlier attempt was pushing, the remote is asked first, and a commit it
+/// already holds is marked pushed without pushing again.
 async fn push_confirmed(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
     request: &PushRequest,
+    claim: &ClaimedPush<'_>,
+    interrupted: Option<String>,
 ) -> ChatResult<()> {
     let working_folder_id =
         ProjectWorkingFolderId::new(request.working_folder_id.clone()).map_err(identifier_error)?;
@@ -375,10 +443,33 @@ async fn push_confirmed(
     let digest = configuration.map(|configuration| configuration.digest.to_hex());
     require_unchanged(request, fresh.as_ref(), digest.as_deref())
         .map_err(PushRequestRefusal::into_error)?;
-    let Some(commit) = &request.commit else {
-        return push_object(folder, &request.target).await;
-    };
     let parent = request.target.object_id.as_str();
+    if let Some(object_id) = interrupted {
+        let earlier = GitPushTarget {
+            object_id,
+            ..request.target.clone()
+        };
+        let committed_on = request.commit.as_ref().map(|_| parent);
+        let now = now_timestamp()?;
+        let arrived = recover_interrupted_push(
+            pool,
+            folder,
+            claim.item_id,
+            claim.token,
+            &earlier,
+            committed_on,
+            now.as_str(),
+        )
+        .await?;
+        if arrived {
+            return Ok(());
+        }
+    }
+    let Some(commit) = &request.commit else {
+        record_object(pool, claim, &request.target.object_id).await?;
+        push_object(folder, &request.target).await?;
+        return mark_pushed(pool, claim, &request.target.object_id).await;
+    };
     let worktree = worktree_commit(folder, parent).await.ok();
     if worktree.as_ref() != Some(&commit.worktree) {
         return Err(PushRequestRefusal::TargetChanged.into_error());
@@ -394,12 +485,45 @@ async fn push_confirmed(
         .await?,
         ..request.target.clone()
     };
+    record_object(pool, claim, &target.object_id).await?;
     push_object(folder, &target).await?;
+    mark_pushed(pool, claim, &target.object_id).await?;
     // The remote holds the commit now, so the confirmation stands even when the local branch
     // cannot follow; the folder then shows the change as uncommitted until a fetch.
-    advance_branch(folder, &target.local_branch, &target.object_id, parent)
-        .await
-        .or(Ok(()))
+    let _ = advance_branch(folder, &target.local_branch, &target.object_id, parent).await;
+    Ok(())
+}
+
+/// Records on `claim` the commit about to be pushed.
+async fn record_object(
+    pool: &SqlitePool,
+    claim: &ClaimedPush<'_>,
+    object_id: &str,
+) -> ChatResult<()> {
+    record_push_object(
+        pool,
+        claim.item_id,
+        claim.token,
+        object_id,
+        now_timestamp()?.as_str(),
+    )
+    .await
+}
+
+/// Records on `claim` that the remote holds `object_id`.
+async fn mark_pushed(
+    pool: &SqlitePool,
+    claim: &ClaimedPush<'_>,
+    object_id: &str,
+) -> ChatResult<()> {
+    mark_push_request_pushed(
+        pool,
+        claim.item_id,
+        claim.token,
+        object_id,
+        now_timestamp()?.as_str(),
+    )
+    .await
 }
 
 /// `Ok` when a fresh read names exactly the recorded target and Git configuration digest.

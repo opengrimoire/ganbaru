@@ -361,6 +361,8 @@ export const chat = {
         push_request_pending: "El compañero sigue trabajando, así que haz push cuando termine su turno.",
         push_request_closed: "Esta solicitud ya se respondió o su turno no terminó, así que ya no puede hacer push.",
         push_target_changed: "La rama, el commit, los archivos cambiados, el remoto o la configuración de Git cambiaron desde la solicitud, así que pide al compañero que la solicite de nuevo.",
+        push_request_in_progress: "Ya se está haciendo push de esta solicitud, así que espera a que termine.",
+        push_request_already_pushed: "Ya se hizo push de esta solicitud.",
         push_repository_connection: "La configuración de Git del propio repositorio define cómo Git inicia sesión o se conecta, y un compañero pudo escribirla, así que quítala y pide el push de nuevo.",
       },
     },

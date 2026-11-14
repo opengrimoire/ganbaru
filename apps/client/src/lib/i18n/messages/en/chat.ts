@@ -358,6 +358,8 @@ export const chat = {
         push_request_pending: "The teammate is still working, so push once its turn ends.",
         push_request_closed: "This request was answered or its turn did not finish, so it can no longer push.",
         push_target_changed: "The branch, commit, changed files, remote, or Git configuration changed since the teammate asked, so ask it to request the push again.",
+        push_request_in_progress: "This request is already being pushed, so wait for that push to finish.",
+        push_request_already_pushed: "This request was already pushed.",
         push_repository_connection: "This repository's own Git configuration sets how Git signs in or connects, which a teammate could have written, so remove it and ask for the push again.",
       },
     },

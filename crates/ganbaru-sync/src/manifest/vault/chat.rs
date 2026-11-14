@@ -2349,6 +2349,7 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         device("chat_preview_tabs", &[]),
         device("chat_preview_tool_invocations", &[]),
         device("chat_provider_cleanup_jobs", &[]),
+        device("chat_push_request_claims", &[]),
         device("chat_queued_attachment_references", &[]),
         device("chat_queued_followups", &[]),
         device("chat_resource_thread_references", &[]),

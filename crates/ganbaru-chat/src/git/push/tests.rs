@@ -1,7 +1,8 @@
 use super::super::{GitCall, GitFolder, commit, initialize, run, stage};
 use super::{
     BranchTracking, GitPushTarget, GitPushTargetError, is_local_push_url, is_object_id,
-    is_supported_push_url, push_object, push_target,
+    is_supported_push_url, listing_names_object, push_object, push_target,
+    remote_branch_names_object,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -39,13 +40,13 @@ impl Drop for TestDirectory {
 }
 
 /// A repository on `main` with one commit and a bare remote named `origin`.
-struct PushFixture {
+pub(crate) struct PushFixture {
     work: TestDirectory,
     remote: TestDirectory,
 }
 
 impl PushFixture {
-    async fn new() -> Self {
+    pub(crate) async fn new() -> Self {
         let fixture = Self {
             work: TestDirectory::new("work"),
             remote: TestDirectory::new("remote"),
@@ -75,18 +76,18 @@ impl PushFixture {
         fixture
     }
 
-    fn folder(&self) -> GitFolder<'_> {
+    pub(crate) fn folder(&self) -> GitFolder<'_> {
         GitFolder::untrusted(self.work.path())
     }
 
-    async fn git(&self, arguments: &[&str]) -> String {
+    pub(crate) async fn git(&self, arguments: &[&str]) -> String {
         let output = run(self.folder(), arguments, GitCall::User)
             .await
             .unwrap_or_else(|error| panic!("git {arguments:?} should succeed: {error:?}"));
         String::from_utf8(output.stdout).expect("output should be UTF-8")
     }
 
-    async fn commit_file(&self, name: &str, message: &str) {
+    pub(crate) async fn commit_file(&self, name: &str, message: &str) {
         fs::write(self.work.path().join(name), message).expect("file should write");
         stage(self.folder(), &[name.to_string()])
             .await
@@ -100,7 +101,7 @@ impl PushFixture {
         self.git(&["rev-parse", "HEAD"]).await.trim().to_string()
     }
 
-    async fn remote_branch(&self, branch: &str) -> Option<String> {
+    pub(crate) async fn remote_branch(&self, branch: &str) -> Option<String> {
         let reference = format!("refs/heads/{branch}");
         run(
             GitFolder::untrusted(self.remote.path()),
@@ -267,6 +268,72 @@ async fn push_sends_the_recorded_commit_even_after_the_branch_moves() {
         fixture.remote_branch("main").await.as_deref(),
         Some(target.object_id.as_str())
     );
+}
+
+#[tokio::test]
+async fn the_remote_check_tells_whether_an_interrupted_push_arrived() {
+    let fixture = PushFixture::new().await;
+    let target = push_target(fixture.folder(), Some("origin"))
+        .await
+        .expect("target should read");
+    assert!(
+        !remote_branch_names_object(fixture.folder(), &target)
+            .await
+            .expect("a missing remote branch should read"),
+        "a branch the remote lacks does not name the commit"
+    );
+    push_object(fixture.folder(), &target)
+        .await
+        .expect("the commit should push");
+    assert!(
+        remote_branch_names_object(fixture.folder(), &target)
+            .await
+            .expect("the remote should read")
+    );
+    fixture.commit_file("two.txt", "test: second").await;
+    let newer = push_target(fixture.folder(), Some("origin"))
+        .await
+        .expect("target should read");
+    assert!(
+        !remote_branch_names_object(fixture.folder(), &newer)
+            .await
+            .expect("the remote should read"),
+        "an unpushed commit is not on the remote"
+    );
+    let elsewhere = GitPushTarget {
+        destination_branch: "other".to_string(),
+        ..target.clone()
+    };
+    assert!(
+        !remote_branch_names_object(fixture.folder(), &elsewhere)
+            .await
+            .expect("the remote should read")
+    );
+    let moved = GitPushTarget {
+        push_url: "/srv/git/elsewhere.git".to_string(),
+        ..target
+    };
+    assert!(
+        remote_branch_names_object(fixture.folder(), &moved)
+            .await
+            .is_err()
+    );
+}
+
+#[test]
+fn a_listing_names_an_object_only_on_the_exact_ref() {
+    let object = "a".repeat(40);
+    let listing = format!(
+        "{object}\trefs/heads/main-old\n{}\trefs/heads/main\n",
+        "b".repeat(40)
+    );
+    assert!(!listing_names_object(&listing, "refs/heads/main", &object));
+    assert!(listing_names_object(
+        &listing,
+        "refs/heads/main-old",
+        &object
+    ));
+    assert!(!listing_names_object("", "refs/heads/main", &object));
 }
 
 #[tokio::test]

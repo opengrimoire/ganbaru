@@ -2,7 +2,7 @@
 
 mod draft_context;
 pub mod hardened;
-mod push;
+pub(crate) mod push;
 
 pub use draft_context::{
     COMMIT_DRAFT_MAX_FILES, COMMIT_DRAFT_MAX_PATCH_BYTES, COMMIT_DRAFT_RECENT_SUBJECTS,
@@ -11,7 +11,8 @@ pub use draft_context::{
 pub use push::{
     GitPushTarget, GitPushTargetError, GitWorktreeCommit, GitWorktreeCommitError,
     MAX_COMMIT_MESSAGE_CHARS, advance_branch, commit_tree, is_object_id, is_supported_push_url,
-    normalize_commit_message, push_object, push_target, worktree_commit,
+    normalize_commit_message, push_object, push_target, remote_branch_names_object,
+    worktree_commit,
 };
 
 use super::models::{ChatError, ChatErrorCode, ChatResult};

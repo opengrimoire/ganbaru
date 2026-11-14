@@ -269,6 +269,7 @@ const appPromise = (async () => {
     }
   } catch (err) {
     console.warn("Could not load the active vault:", err);
+    // VaultSetupView matches this native text to a localized message and never shows it.
     const vaultError = err instanceof Error ? err.message : String(err);
     return await mountVaultSetupView(vaultError);
   }

@@ -30,7 +30,7 @@ export const sync = {
   syncNowFailed: "Sync could not start",
   pause: "Pause sync",
   pauseFailed: "The sync setting could not be changed",
-  errorDetail: (message: string) => `Last error: ${message}`,
+  errorDetail: "Sync stopped because of an error.",
   writerLimit: "This device created more sync identities than a device may have, so the coordinator refuses its new changes. They stay on this device.",
   forkClaimUnproven: "The computer this device is linked to says this device's changes conflict with another copy, but it shows no proof. This device keeps its changes and still syncs with your other devices. If this keeps happening, check that computer.",
   clockAhead: (device: string) =>
@@ -120,7 +120,7 @@ export const sync = {
       serverRunsAnotherVault: "This server already runs another vault, so nothing was changed. Delete the server's data directory and print a new setup code to use it for this vault.",
       noServer: "This vault uses no server.",
       noKeys: "This device does not hold the vault's encryption keys yet. Sync with the anchor and try again.",
-      failed: "The server could not be changed. Try again.",
+      failed: "The server could not be changed.",
     },
     problems: {
       unreachable: "The relay could not be reached, or its certificate did not match. If it has a firewall, allow its port (43823 by default).",

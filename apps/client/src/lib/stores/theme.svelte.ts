@@ -47,6 +47,8 @@ import {
   type ThemeSaveOutcome,
 } from "$lib/themes/editor-save";
 import { rgbToHex } from "$lib/color/math";
+import { translate } from "$lib/i18n/translator.svelte";
+import { userErrorMessage } from "$lib/i18n/user-errors";
 import { readNativeBackground } from "$lib/themes/native-background";
 import { resolveActiveThemeId, resolveQuickToggleThemeId } from "$lib/themes/active-theme";
 import { getConfigKey, setConfigKey } from "../vault/config";
@@ -1461,11 +1463,8 @@ async function importTheme(json: string): Promise<ImportThemeResult> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(json);
-  } catch (err) {
-    return {
-      ok: false,
-      errors: [`could not parse JSON: ${err instanceof Error ? err.message : String(err)}`],
-    };
+  } catch {
+    return { ok: false, errors: [translate("settings.theme.invalidJson")] };
   }
   const result = validateThemeJson(parsed);
   if (!result.ok) return result;
@@ -1474,10 +1473,8 @@ async function importTheme(json: string): Promise<ImportThemeResult> {
   try {
     await dbInsertTheme(write);
   } catch (err) {
-    return {
-      ok: false,
-      errors: [err instanceof Error ? err.message : String(err)],
-    };
+    console.error("Theme import failed:", err);
+    return { ok: false, errors: [userErrorMessage(err, translate("settings.theme.importFailed"))] };
   }
   customThemes[theme.id] = theme;
   storedThemeWrites.set(theme.id, write);
@@ -1504,22 +1501,17 @@ function replaceThemeDraft(
   json: string,
 ): ReplaceThemeDraftResult {
   if (isBuiltinThemeId(id)) {
-    return { ok: false, errors: ["built-in themes cannot be edited"] };
+    return { ok: false, errors: [translate("settings.theme.editor.builtInNotEditable")] };
   }
   const current = customThemes[id];
   if (!current) {
-    return { ok: false, errors: ["theme not found"] };
+    return { ok: false, errors: [translate("settings.theme.editor.themeMissing")] };
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(json);
-  } catch (err) {
-    return {
-      ok: false,
-      errors: [
-        `could not parse JSON: ${err instanceof Error ? err.message : String(err)}`,
-      ],
-    };
+  } catch {
+    return { ok: false, errors: [translate("settings.theme.invalidJson")] };
   }
   // Force the validator to evaluate against the locked id so callers cannot
   // sneak through a rename by editing the id field in the textarea.

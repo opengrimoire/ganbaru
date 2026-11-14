@@ -4,6 +4,7 @@
   import Plus from "@lucide/svelte/icons/plus";
   import type { EventColor } from "$lib/calendar/types";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { userErrorMessage } from "$lib/i18n/user-errors";
   import { getQuickNoteColor } from "$lib/quick-notes/colors";
   import { pickQuickNoteTagColor } from "$lib/quick-notes/tags";
   import { QUICK_NOTE_TAG_LIMIT, type QuickNoteTag } from "$lib/quick-notes/types";
@@ -63,7 +64,7 @@
       name = "";
       creating = false;
     } catch (cause: unknown) {
-      error = cause instanceof Error && cause.message ? cause.message : t("quickNotes.tag.saveFailed");
+      error = userErrorMessage(cause, t("quickNotes.tag.saveFailed"));
     } finally {
       busy = false;
     }

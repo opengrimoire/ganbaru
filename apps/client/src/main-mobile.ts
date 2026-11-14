@@ -3,7 +3,7 @@ import { mount, unmount } from "svelte";
 import { ensureConfigLoaded, flushConfig, startConfigWindowSync } from "$lib/vault/config";
 import { listenSyncApplied } from "$lib/api/sync";
 import { startProfileImageFileSync } from "$lib/stores/profile-image-files.svelte";
-import { getActiveVaultInfo } from "$lib/vault/state";
+import { formatVaultError, getActiveVaultInfo } from "$lib/vault/state";
 import {
   getLocalization,
   initializeLocalizationFromConfig,
@@ -145,8 +145,8 @@ const appPromise = (async () => {
       return mountMobileSetupOnboarding(activeVault.vaultId, { accessPending, linkingPending });
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return mountMobileVaultError(message);
+    console.error("Could not load the active vault:", error);
+    return mountMobileVaultError(formatVaultError(error, "startup"));
   }
 
   const { default: MobileApp } = await import("./MobileApp.svelte");

@@ -74,6 +74,6 @@ describe("server error labels", () => {
     expect(syncServerErrorLabel(t, new SyncServerError("relay", "setupCodeRefused"))).toBe(
       "The relay refused the setup code. It may have expired or been used already; ask the relay for a new one.",
     );
-    expect(syncServerErrorLabel(t, new SyncServerError("relay", null))).toBe("The server could not be changed. Try again.");
+    expect(syncServerErrorLabel(t, new SyncServerError("relay", null))).toBe("The server could not be changed.");
   });
 });

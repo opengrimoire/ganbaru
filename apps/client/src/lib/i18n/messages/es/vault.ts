@@ -382,7 +382,7 @@ export const vaultHandoff = {
   recovered: "Esta copia ahora es una bóveda propia en este dispositivo.",
   localBackup:
     "Cuando la bóveda vinculada reemplaza la bóveda de este teléfono, Ganbaru guarda una copia de la reemplazada en Ajustes > Datos.",
-  failed: (details: string) => `Falló la acción del dispositivo vinculado: ${details}`,
+  failed: "Falló la acción del dispositivo vinculado.",
   blockerChat: "Termina o detén el trabajo activo de Chat antes de mover la bóveda.",
   blockerTerminal: "Cierra las terminales de Chat en ejecución antes de mover la bóveda.",
   blockerFocus: "Termina o detén la sesión activa de Pomodoro antes de mover la bóveda.",
@@ -412,5 +412,5 @@ export const vaultHandoff = {
     "La computadora coordinadora está atendiendo demasiadas conexiones en este momento. Espera un momento y reintenta.",
   unreachable:
     "Este dispositivo no pudo comunicarse con la computadora coordinadora. Mantén ambas aplicaciones abiertas en la misma red local y reintenta.",
-  unknownError: "Error desconocido",
+  unknownError: "No se pudo abrir la vinculación de dispositivos.",
 } as const satisfies MessageShape<typeof enVaultHandoff>;

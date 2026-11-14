@@ -2,29 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   inspectManagedImageFile,
   MANAGED_ICON_IMAGE_MAX_BYTES,
-  MANAGED_ICON_IMAGE_MAX_MEGABYTES,
   MANAGED_IMAGE_FILE_ACCEPT,
   normalizeManagedImageDataUrl,
-  type ManagedImageFileIssue,
 } from "$lib/browser-file-policy";
 import type { ProfileImageAsset } from "$lib/api/profile-image";
-
-function imageIssueMessage(issue: ManagedImageFileIssue): string {
-  switch (issue) {
-    case "empty":
-      return "The selected image is empty.";
-    case "unsupported-type":
-      return "Use a PNG, JPG, or WebP image.";
-    case "too-large":
-      return `The selected image exceeds the ${MANAGED_ICON_IMAGE_MAX_MEGABYTES} MB limit.`;
-    case "dimensions-too-large":
-      return "The selected image dimensions are too large.";
-    case "too-many-pixels":
-      return "The selected image contains too many pixels.";
-    case "invalid-image":
-      return "The selected file is not a valid PNG, JPG, or WebP image.";
-  }
-}
+import { translate } from "$lib/i18n/translator.svelte";
+import { LocalizedError } from "$lib/i18n/user-errors";
+import { profileImageIssueMessage } from "$lib/profile/image-issue";
 
 function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -34,10 +18,10 @@ function readFileAsDataUrl(file: File): Promise<string> {
         resolve(reader.result);
         return;
       }
-      reject(new Error("The selected image could not be read."));
+      reject(new LocalizedError(translate("settings.profileIdentity.pictureIssue.readFailed")));
     }, { once: true });
     reader.addEventListener("error", () => {
-      reject(new Error("The selected image could not be read."));
+      reject(new LocalizedError(translate("settings.profileIdentity.pictureIssue.readFailed")));
     }, { once: true });
     reader.readAsDataURL(file);
   });
@@ -78,10 +62,10 @@ export async function pickProfileImageFile(title: string): Promise<ProfileImageA
   if (!file) return null;
 
   const inspection = await inspectManagedImageFile(file, MANAGED_ICON_IMAGE_MAX_BYTES);
-  if (!inspection.ok) throw new Error(imageIssueMessage(inspection.issue));
+  if (!inspection.ok) throw new LocalizedError(profileImageIssueMessage(translate, inspection.issue));
 
   const rawDataUrl = await readFileAsDataUrl(file);
   const dataUrl = normalizeManagedImageDataUrl(rawDataUrl, inspection.metadata.mimeType);
-  if (!dataUrl) throw new Error("The selected image could not be encoded safely.");
+  if (!dataUrl) throw new LocalizedError(translate("settings.profileIdentity.pictureIssue.encodeFailed"));
   return invoke<ProfileImageAsset>("profile_image_save_data_url", { dataUrl });
 }

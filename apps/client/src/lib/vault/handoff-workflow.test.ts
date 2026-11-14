@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Translate } from "$lib/i18n/translator.svelte";
+import { LocalizedError } from "$lib/i18n/user-errors";
 import {
   formatHandoffError,
   formatPairingCodeError,
@@ -112,6 +113,15 @@ describe("formatHandoffError", () => {
       .toBe("vaultHandoff.enrollmentBusy");
     expect(formatHandoffError("this device is no longer waiting for approval", t))
       .toBe("vaultHandoff.enrollmentGone");
+  });
+
+  it("never shows unmatched native text", () => {
+    expect(formatHandoffError(new Error("write /home/user/secret: disk quota exceeded"), t))
+      .toBe("vaultHandoff.failed");
+  });
+
+  it("keeps localized text the frontend already produced", () => {
+    expect(formatHandoffError(new LocalizedError("Localized refusal"), t)).toBe("Localized refusal");
   });
 });
 

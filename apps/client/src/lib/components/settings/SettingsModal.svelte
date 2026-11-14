@@ -154,7 +154,7 @@
       }
     } catch (error) {
       if (generation !== mobileThemeEditorLoadGeneration) return;
-      mobileThemeEditorLoadError = error instanceof Error ? error.message : String(error);
+      mobileThemeEditorLoadError = t("common.viewLoadFailed", t("settings.theme.editor.dialogLabel"));
       console.error("Failed to load the mobile theme editor", error);
     } finally {
       if (generation === mobileThemeEditorLoadGeneration) {
@@ -808,7 +808,6 @@
         {#if mobileThemeEditorLoadError}
           <Notice
             class="text-sm"
-            title={t("common.viewLoadFailed", t("settings.theme.editor.dialogLabel"))}
             message={mobileThemeEditorLoadError}
             onRetry={retryMobileThemeEditorLoad}
             onDismiss={() => void cancelUnloadedThemeEditor()}

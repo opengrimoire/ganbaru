@@ -965,8 +965,8 @@
       <Notice
         layout="fill"
         class="text-sm"
-        title={t("common.viewLoadFailed", title)}
-        message={failure.message}
+        message={t("common.viewLoadFailed", title)}
+        copy={failure.message}
         onRetry={() => retryDeferredSurface(surface)}
         onDismiss={onClose ?? undefined}
       />
@@ -1044,8 +1044,8 @@
             <Notice
               layout="fill"
               class="text-sm"
-              title={t("common.viewLoadFailed", currentTitle)}
-              message={loadError.message}
+              message={t("common.viewLoadFailed", currentTitle)}
+              copy={loadError.message}
               onRetry={retryWorkspaceLoad}
             />
           </div>

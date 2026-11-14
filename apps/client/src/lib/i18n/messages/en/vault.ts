@@ -374,7 +374,7 @@ export const vaultHandoff = {
   recovered: "This copy is now a vault of its own on this device.",
   localBackup:
     "When the linked vault replaces this phone's vault, Ganbaru keeps a backup of the replaced one in Settings > Data.",
-  failed: (details: string) => `The linked-device action failed: ${details}`,
+  failed: "The linked-device action failed.",
   blockerChat: "Finish or stop active Chat work before moving the vault.",
   blockerTerminal: "Close running Chat terminals before moving the vault.",
   blockerFocus: "Finish or stop the active Pomodoro session before moving the vault.",
@@ -404,5 +404,5 @@ export const vaultHandoff = {
     "The coordinating computer is handling too many connections right now. Wait a moment, then retry.",
   unreachable:
     "This device could not reach the coordinating computer. Keep both apps open on the same local network, then retry.",
-  unknownError: "Unknown error",
+  unknownError: "Device linking could not open.",
 } as const;

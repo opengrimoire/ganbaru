@@ -6,6 +6,7 @@
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { userErrorMessage } from "$lib/i18n/user-errors";
   import { activateModalFocus } from "$lib/modal-focus";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
@@ -57,7 +58,8 @@
       await themeEditor.cancel();
     } catch (error) {
       sessionSettlementStarted = false;
-      operationError = error instanceof Error ? error.message : String(error);
+      console.error("Theme editor operation failed:", error);
+      operationError = userErrorMessage(error, t("settings.theme.editor.operationFailed"));
       pending = false;
     }
   }
@@ -76,7 +78,8 @@
       }
     } catch (error) {
       sessionSettlementStarted = false;
-      operationError = error instanceof Error ? error.message : String(error);
+      console.error("Theme editor operation failed:", error);
+      operationError = userErrorMessage(error, t("settings.theme.editor.operationFailed"));
       pending = false;
     }
   }
@@ -146,7 +149,7 @@
     </div>
 
     {#if operationError}
-      <Notice class="shrink-0 border-t border-border px-4 py-2 text-sm" title={t("settings.theme.editor.operationFailed")} message={operationError} />
+      <Notice class="shrink-0 border-t border-border px-4 py-2 text-sm" message={operationError} />
     {/if}
 
     <footer class="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-border bg-sidebar px-2 py-2">

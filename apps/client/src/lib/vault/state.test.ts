@@ -69,6 +69,15 @@ describe("vault state api", () => {
     );
   });
 
+  it("shows localized text the frontend already produced", async () => {
+    const { formatVaultError } = await loadModule();
+    const { LocalizedError } = await import("$lib/i18n/user-errors");
+
+    expect(formatVaultError(new Error("wrapped", { cause: new LocalizedError("Localized") }))).toBe(
+      "Localized",
+    );
+  });
+
   it("gives a short recovery action for a missing folder", async () => {
     const { formatVaultError } = await loadModule();
 

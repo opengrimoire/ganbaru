@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { translate, type Translate } from "$lib/i18n/translator.svelte";
+import { localizedErrorText } from "$lib/i18n/user-errors";
 import { setActiveVaultIdentity } from "$lib/vault/active-vault";
 
 export interface VaultInfo {
@@ -156,13 +157,22 @@ function fallbackForAction(
   }
 }
 
+/**
+ * The localized message for a failed vault action. Native text is only matched, never shown.
+ *
+ * @param error - Thrown or rejected value from a vault command.
+ * @param action - The vault action that failed, which picks the generic fallback.
+ * @param t - Translator.
+ * @returns Localized guidance for the failure.
+ */
 export function formatVaultError(
   error: unknown,
   action: VaultErrorAction = "general",
   t: Translate = translate,
 ): string {
-  const raw = errorMessage(error, t);
-  const lower = raw.toLowerCase();
+  const localized = localizedErrorText(error);
+  if (localized) return localized;
+  const lower = errorMessage(error, t).toLowerCase();
 
   if (lower.includes(VAULT_OPEN_ELSEWHERE_MESSAGE)) {
     return t("dataFolderError.openElsewhere");

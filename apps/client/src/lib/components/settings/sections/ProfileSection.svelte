@@ -10,6 +10,7 @@
   import ProfileImageCropDialog from "$lib/components/profile/ProfileImageCropDialog.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { LocalizedError, userErrorMessage } from "$lib/i18n/user-errors";
   import type { EventColor } from "$lib/calendar/types";
   import {
     PROFILE_IMAGE_DEFAULT_CROP,
@@ -164,7 +165,8 @@
       if (pictureChanged) await savePicture();
       saved = true;
     } catch (error) {
-      saveError = error instanceof Error ? error.message : String(error);
+      console.warn("Profile could not be saved:", error);
+      saveError = userErrorMessage(error, t("settings.profileIdentity.saveFailed"));
     } finally {
       saving = false;
     }
@@ -177,7 +179,7 @@
       ? preferences.setProfileImageCrop(draftImageCrop)
       : preferences.setProfileImage(draftImage, draftImageCrop);
     if (!imageSaved || !preferences.setProfileColor(draftColor)) {
-      throw new Error(t("settings.profileIdentity.invalidPicture"));
+      throw new LocalizedError(t("settings.profileIdentity.invalidPicture"));
     }
     preferences.setProfileUseImage(draftUseImage);
     draftImageCrop = { ...preferences.profileImageCrop };
@@ -190,8 +192,8 @@
   }
 
   function reportImageError(error: unknown): void {
-    const message = error instanceof Error ? error.message : String(error);
-    saveError = t("settings.profileIdentity.pictureUpdateFailed", message);
+    console.warn("Profile picture could not be updated:", error);
+    saveError = userErrorMessage(error, t("settings.profileIdentity.pictureUpdateFailed"));
   }
 
   /** Delete a picked copy that the draft no longer references. */
@@ -221,7 +223,7 @@
       const ownsFile = path !== preferences.profileImagePath && path !== pendingImagePath;
       if (!isProfileImage(image)) {
         if (ownsFile) await deleteProfileImageFile(path);
-        throw new Error(t("settings.profileIdentity.invalidPicture"));
+        throw new LocalizedError(t("settings.profileIdentity.invalidPicture"));
       }
       avatarPanelOpen = false;
       cropEditor = {
@@ -431,7 +433,7 @@
     <div class="flex flex-wrap items-center justify-between gap-2 border-t border-border/70 pt-3">
       <div class="min-w-0 flex-1 px-1 text-[0.8rem] leading-5">
         {#if saveError}
-          <Notice message={t("settings.profileIdentity.saveFailed", saveError)} />
+          <Notice message={saveError} />
         {:else if validationMessage}
           <span role="alert" class="text-destructive">
             {validationMessage}

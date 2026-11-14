@@ -2,13 +2,13 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { getConfigKey, setConfigKey } from "$lib/vault/config";
 import { formatNumber } from "$lib/i18n/formatters";
 import { getLocalization } from "$lib/i18n/translator.svelte";
+import { userErrorMessage } from "$lib/i18n/user-errors";
 import {
   DEFAULT_AUTO_UPDATE_NOTIFICATIONS,
   type AutomaticUpdateCheckKind,
   type AvailableUpdate,
   type UpdateDownloadEvent,
   type UpdateInstallContext,
-  errorText,
   parseAvailableUpdate,
   parseStoredUpdateCheckAt,
   parseUpdateDownloadEvent,
@@ -251,7 +251,8 @@ class UpdateManagerStore {
       void invoke("restart_app");
     } catch (error: unknown) {
       this.status = "error";
-      this.errorMessage = errorText(error);
+      console.warn("Update install failed:", error);
+      this.errorMessage = userErrorMessage(error, this.localization.t("updates.installFailed"));
     }
   }
 

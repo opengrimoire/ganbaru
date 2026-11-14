@@ -35,7 +35,7 @@ export const sync = {
   syncNowFailed: "No se pudo iniciar la sincronización",
   pause: "Pausar sincronización",
   pauseFailed: "No se pudo cambiar el ajuste de sincronización",
-  errorDetail: (message: string) => `Último error: ${message}`,
+  errorDetail: "La sincronización se detuvo por un error.",
   writerLimit: "Este dispositivo creó más identidades de sincronización de las permitidas, así que el coordinador rechaza sus cambios nuevos. Se quedan en este dispositivo.",
   forkClaimUnproven: "La computadora a la que está vinculado este dispositivo dice que sus cambios chocan con otra copia, pero no muestra pruebas. Este dispositivo conserva sus cambios y sigue sincronizándose con tus otros dispositivos. Si sigue pasando, revisa esa computadora.",
   clockAhead: (device: string) =>
@@ -125,7 +125,7 @@ export const sync = {
       serverRunsAnotherVault: "Este servidor ya ejecuta otra bóveda, así que no se cambió nada. Borra el directorio de datos del servidor e imprime un nuevo código de configuración para usarlo con esta bóveda.",
       noServer: "Esta bóveda no usa servidor.",
       noKeys: "Este dispositivo aún no tiene las claves de cifrado de la bóveda. Sincroniza con el ancla e inténtalo de nuevo.",
-      failed: "No se pudo cambiar el servidor. Inténtalo de nuevo.",
+      failed: "No se pudo cambiar el servidor.",
     },
     problems: {
       unreachable: "No se pudo llegar al relé, o su certificado no coincidió. Si tiene un cortafuegos, permite su puerto (43823 por defecto).",

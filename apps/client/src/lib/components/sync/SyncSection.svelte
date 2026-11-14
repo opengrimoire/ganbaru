@@ -18,6 +18,7 @@
     syncDeliveryLines,
     syncDeviceAcknowledgementLines,
     syncRecoveryTotal,
+    syncErrorMessage,
     syncRelayLines,
     syncRoleLabel,
     syncStateLabel,
@@ -277,7 +278,7 @@
       {:else if status.lastErrorCode === "coordinatorRemoved"}
         <Notice tone="warning" role="status" copy={false} message={t("sync.coordinatorRemoved")} />
       {:else if status.state === "error" && status.lastError}
-        <Notice message={t("sync.errorDetail", status.lastError)} />
+        <Notice message={syncErrorMessage(t, status.lastErrorCode)} copy={status.lastError} />
       {/if}
       {#each degradedRows as row (row.reason)}
         {#if row.action && canRunDegradedAction(row.action)}

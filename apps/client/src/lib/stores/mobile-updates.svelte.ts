@@ -1,6 +1,7 @@
 import { BUILD_REF, GITHUB_REPOSITORY } from "$lib/build-info";
 import { getLocalization } from "$lib/i18n/translator.svelte";
-import { errorText, latestReleasePageUrl } from "./update-policy";
+import { LocalizedError, userErrorMessage } from "$lib/i18n/user-errors";
+import { latestReleasePageUrl } from "./update-policy";
 
 const GITHUB_REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 const SEMVER_PATTERN =
@@ -257,20 +258,11 @@ class MobileUpdateStore {
       });
 
       if (!response.ok) {
-        let message = this.localization.t("updates.checkFailed");
-        try {
-          const body = (await response.json()) as { message?: unknown };
-          if (isRecord(body) && isNonBlankString(body.message) && body.message.length > 0) {
-            message = body.message;
-          }
-        } catch {
-          message = `${message}: ${response.statusText || response.status}`;
-        }
-        throw new Error(message);
+        throw new Error(`release feed responded ${response.status} ${response.statusText}`.trim());
       }
 
       const release = parseReleasePayload(await response.json(), this.repository);
-      if (!release) throw new Error(this.localization.t("updates.feedNotConfigured"));
+      if (!release) throw new LocalizedError(this.localization.t("updates.feedNotConfigured"));
 
       this.latestVersion = release.version;
       this.latestReleaseUrl = release.releasePageUrl;
@@ -285,7 +277,8 @@ class MobileUpdateStore {
       this.errorMessage = null;
     } catch (error: unknown) {
       this.status = "error";
-      this.errorMessage = errorText(error);
+      console.warn("Update check failed:", error);
+      this.errorMessage = userErrorMessage(error, this.localization.t("updates.checkFailed"));
     }
   }
 }

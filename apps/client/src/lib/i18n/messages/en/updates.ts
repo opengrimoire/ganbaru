@@ -7,6 +7,8 @@ export const updates = {
   downloadingPercent: (percent: number) => `Downloading ${percent}%`,
   installedRestarting: "Update installed. Restarting Ganbaru",
   checkFailed: "Update check failed",
+  installFailed: "The update could not be installed.",
+  openLinkFailed: "The release page could not be opened.",
   notChecked: "No update check has run in this window",
   promptAvailable: (version: string) => `There's an update available: ${version}`,
   downloaded: (bytes: string) => `${bytes} downloaded`,

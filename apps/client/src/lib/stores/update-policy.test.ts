@@ -7,6 +7,7 @@ import {
   releasePageUrl,
   shouldRunAutomaticUpdateCheck,
   UPDATE_AUTO_CHECK_INTERVAL_MS,
+  updateCheckErrorMessage,
   updatePrimaryAction,
 } from "./update-policy";
 
@@ -156,5 +157,19 @@ describe("Rust updater payloads", () => {
     expect(parseUpdateDownloadEvent({ event: "Progress", data: { chunkLength: 1.5 } })).toBeNull();
     expect(parseUpdateDownloadEvent({ event: "Other", data: {} })).toBeNull();
     expect(parseUpdateDownloadEvent("Finished")).toBeNull();
+  });
+});
+
+describe("update check errors", () => {
+  it("explains a missing release feed configuration", () => {
+    expect(updateCheckErrorMessage(new Error("updater pubkey is not configured"))).toBe(
+      "This build does not have a release update feed configured",
+    );
+  });
+
+  it("never shows unmatched updater text", () => {
+    expect(updateCheckErrorMessage("error sending request for url (https://example.test/latest.json)")).toBe(
+      "Update check failed",
+    );
   });
 });

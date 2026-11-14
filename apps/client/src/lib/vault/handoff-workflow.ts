@@ -1,4 +1,5 @@
 import type { Translate } from "$lib/i18n/translator.svelte";
+import { localizedErrorText } from "$lib/i18n/user-errors";
 
 interface LinkedDeviceIdentity {
   deviceId: string;
@@ -91,8 +92,9 @@ function bootstrapRefusalMessage(
 
 /** Converts native handoff failures into concise localized recovery guidance. */
 export function formatHandoffError(cause: unknown, t: Translate): string {
-  const raw = errorText(cause);
-  const lower = raw.toLowerCase();
+  const localized = localizedErrorText(cause);
+  if (localized) return localized;
+  const lower = errorText(cause).toLowerCase();
   if (isLinkingDisabled(lower)) {
     return t("vaultHandoff.linkingDisabled");
   }
@@ -138,7 +140,7 @@ export function formatHandoffError(cause: unknown, t: Translate): string {
   if (isConnectivityFailure(lower)) {
     return t("vaultHandoff.unreachable");
   }
-  return t("vaultHandoff.failed", raw || t("vaultHandoff.unknownError"));
+  return t("vaultHandoff.failed");
 }
 
 /** Explain invalid or expired pairing codes without exposing parser errors. */

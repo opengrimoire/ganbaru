@@ -160,6 +160,45 @@ fn materialized_environment_reads_secrets_without_persisting_values() {
     assert!(!configuration.environment.contains_key("API_TOKEN"));
 }
 
+/// A Grok instance whose xAI key is a stored secret authenticates with that key once its
+/// configuration is resolved for launch, and with the account login before then.
+#[test]
+fn a_stored_xai_key_makes_grok_authenticate_with_the_api_key() {
+    use ganbaru_chat_contracts::models::{ProviderAuthSource, ProviderFamilyId};
+    use ganbaru_chat_providers::ProviderDriverRegistry;
+
+    let store = MemoryCredentialStore::default();
+    let mut configuration = provider_configuration();
+    configuration.family_id = ProviderFamilyId::new("grok").unwrap();
+    configuration.executable = "grok".to_string();
+    let reference =
+        provider_credential_reference(&configuration.instance_id, "XAI_API_KEY").unwrap();
+    store
+        .replace(&reference, &SecretValue::new(SENTINEL_SECRET).unwrap())
+        .unwrap();
+    configuration
+        .credential_references
+        .insert("XAI_API_KEY".to_string(), reference);
+
+    assert_eq!(
+        ProviderDriverRegistry.auth_source(&configuration),
+        Some(ProviderAuthSource::AccountLogin)
+    );
+    let resolved = materialize_provider_environment(&configuration, &store).unwrap();
+    assert_eq!(
+        resolved.environment.get("XAI_API_KEY").map(String::as_str),
+        Some(SENTINEL_SECRET)
+    );
+    assert_eq!(
+        ProviderDriverRegistry.auth_source(&resolved),
+        Some(ProviderAuthSource::ApiKey)
+    );
+    assert_eq!(
+        ProviderDriverRegistry.auth_source(&provider_configuration()),
+        None
+    );
+}
+
 #[derive(Clone, Debug, Default)]
 struct RecordingCredentialStore {
     reads: Arc<Mutex<Vec<String>>>,

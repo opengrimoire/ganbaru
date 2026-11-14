@@ -1,5 +1,5 @@
 use crate::models::{
-    ChatError, ChatErrorCode, ChatResult, ProviderCapability, ProviderFamilyId,
+    ChatError, ChatErrorCode, ChatResult, ProviderAuthSource, ProviderCapability, ProviderFamilyId,
     ProviderFamilyMetadataRead, ProviderImplementationStatus, ProviderInstanceConfig,
     ProviderMaturity, ProviderVersionAdmission,
 };
@@ -247,6 +247,13 @@ impl ProviderDriverRegistry {
                 _ => metadata.to_read(),
             })
             .unwrap_or_else(|| unsupported_metadata(family_id))
+    }
+
+    /// How sessions of a configuration resolved for launch authenticate, for the families
+    /// whose source the driver can tell; `None` for the others.
+    pub fn auth_source(self, configuration: &ProviderInstanceConfig) -> Option<ProviderAuthSource> {
+        (configuration.family_id.as_str() == "grok")
+            .then(|| CursorProviderDriver::grok_auth_source(configuration))
     }
 }
 

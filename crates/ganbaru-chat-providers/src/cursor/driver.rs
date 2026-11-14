@@ -674,9 +674,17 @@ impl CursorProviderDriver {
     /// How this instance's sessions authenticate, for the flavors whose source is known.
     pub(super) fn auth_source(&self) -> Option<ProviderAuthSource> {
         match self.flavor {
-            AcpProviderFlavor::Grok if self.grok_uses_api_key() => Some(ProviderAuthSource::ApiKey),
-            AcpProviderFlavor::Grok => Some(ProviderAuthSource::AccountLogin),
+            AcpProviderFlavor::Grok => Some(Self::grok_auth_source(&self.configuration)),
             AcpProviderFlavor::Cursor | AcpProviderFlavor::Generic => None,
+        }
+    }
+
+    /// How a Grok instance authenticates once its configuration is resolved for launch.
+    pub fn grok_auth_source(configuration: &ProviderInstanceConfig) -> ProviderAuthSource {
+        if grok_api_key_configured(&configuration.environment) {
+            ProviderAuthSource::ApiKey
+        } else {
+            ProviderAuthSource::AccountLogin
         }
     }
 

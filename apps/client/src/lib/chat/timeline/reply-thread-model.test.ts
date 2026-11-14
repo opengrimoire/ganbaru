@@ -438,9 +438,19 @@ describe("reply thread exact execution reads", () => {
 
 describe("agentRunLocation", () => {
   const folders = [
-    { workingFolder: { id: "folder-1", displayName: "Website" } },
-    { workingFolder: { id: "folder-2", displayName: "Mobile app" } },
+    { workingFolder: { id: "folder-1", projectId: "project-1", displayName: "Website", archivedAt: null } },
+    { workingFolder: { id: "folder-2", projectId: "project-1", displayName: "Mobile app", archivedAt: null } },
   ];
+
+  it("names nothing when the folder is its project's only active one", () => {
+    const solo = [
+      { workingFolder: { id: "folder-1", projectId: "project-1", displayName: "Website", archivedAt: null } },
+      { workingFolder: { id: "folder-2", projectId: "project-1", displayName: "Old", archivedAt: "2026-11-01T00:00:00Z" } },
+      { workingFolder: { id: "folder-3", projectId: "project-2", displayName: "Other", archivedAt: null } },
+    ];
+
+    expect(agentRunLocation([agentRun("run-1", "thread-1")], solo)).toBeNull();
+  });
 
   it("names the folder of the newest run", () => {
     const runs = [agentRun("run-1", "thread-1"), { ...agentRun("run-2", "thread-1"), workingFolderId: "folder-2" }];

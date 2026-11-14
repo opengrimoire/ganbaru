@@ -286,19 +286,25 @@ export type AgentRunLocation =
 
 /**
  * Returns where the thread's newest run works: the named working folder, or conversation only when it has neither a
- * folder nor a private scratch. Returns `null` without runs, for private scratch, or when the folder is not known here.
+ * folder nor a private scratch. A folder is named only when its project has other active folders, since the only
+ * folder of a project is where every run there works and naming it adds nothing. Returns `null` without runs, for
+ * private scratch, for a project's only folder, or when the folder is not known here.
  */
 export function agentRunLocation(
   runs: readonly ChatAgentRunRead[],
-  folders: readonly { workingFolder: Pick<ProjectWorkingFolder, "id" | "displayName"> }[],
+  folders: readonly { workingFolder: Pick<ProjectWorkingFolder, "id" | "projectId" | "displayName" | "archivedAt"> }[],
 ): AgentRunLocation | null {
   const run = runs.at(-1);
   if (!run) return null;
   if (run.workingFolderId === null) {
     return run.scratchGenerationId === null ? { kind: "conversation" } : null;
   }
-  const name = folders.find((folder) => folder.workingFolder.id === run.workingFolderId)?.workingFolder.displayName;
-  return name === undefined ? null : { kind: "folder", name };
+  const folder = folders.find((entry) => entry.workingFolder.id === run.workingFolderId)?.workingFolder;
+  if (folder === undefined) return null;
+  const projectFolderCount = folders.filter((entry) => (
+    entry.workingFolder.projectId === folder.projectId && entry.workingFolder.archivedAt === null
+  )).length;
+  return projectFolderCount > 1 ? { kind: "folder", name: folder.displayName } : null;
 }
 
 /**

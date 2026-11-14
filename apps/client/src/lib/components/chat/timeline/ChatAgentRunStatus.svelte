@@ -97,6 +97,8 @@
   .run-outcome[data-run-outcome="failed"] { font-size:var(--chat-organizational-font-size,calc(0.875rem * var(--type-scale))); }
   .run-outcome[data-run-outcome="failed"] :global(.notice) { line-height:var(--chat-organizational-line-height,calc(1.3125rem * var(--type-scale))); }
   .run-outcome-stopped { color:var(--muted-foreground); font-size: calc(0.65rem * var(--type-scale)); }
+  /* Lines up with the message text column: the row inset, the 34px avatar, and the avatar gap. */
+  .run-stop { margin-left:calc(var(--chat-message-row-padding-inline,1rem) + 34px + 0.65rem); }
   .run-stop button { display:inline-flex; min-height:1.75rem; align-items:center; gap:0.35rem; border-radius:var(--floating-item-radius); background:var(--accent); padding:0.25rem 0.55rem; color:var(--foreground); font-size:var(--panel-detail-font-size); }
   .run-stop button:hover:not(:disabled) { background:color-mix(in srgb,var(--destructive) 14%,var(--accent)); color:var(--destructive); }
   .run-stop button:disabled { opacity:0.45; }

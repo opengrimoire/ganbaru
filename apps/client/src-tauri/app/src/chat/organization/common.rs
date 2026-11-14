@@ -200,6 +200,7 @@ pub(super) const ACTIVE_FOLDER_GRANTS_SQL: &str = "SELECT grant_row.working_fold
  ORDER BY is_default DESC, folder.sort_order, folder.display_name, folder.id";
 
 /// One active folder grant, as the implied execution target sees it.
+#[cfg(desktop)]
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ImpliedFolderCandidate<'a> {
     pub(super) working_folder_id: &'a str,
@@ -212,6 +213,7 @@ pub(super) struct ImpliedFolderCandidate<'a> {
 ///
 /// `candidates` must hold only grants that carry folder authority, so a grant with no capability
 /// never becomes the target.
+#[cfg(desktop)]
 pub(super) fn implied_working_folder<'a>(
     candidates: &[ImpliedFolderCandidate<'a>],
     project_working_folder_id: Option<&str>,
@@ -1017,7 +1019,7 @@ pub(super) fn map_command_receipt_error(error: sqlx::Error) -> ChatError {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, desktop))]
 mod implied_folder_tests {
     use super::{ImpliedFolderCandidate, implied_working_folder};
 

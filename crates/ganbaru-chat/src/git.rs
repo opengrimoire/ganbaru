@@ -614,6 +614,8 @@ enum GitCall {
     User,
     /// Requested by the user and reaching a remote.
     UserNetwork,
+    /// Requested by a teammate, confirmed by a person, and possibly reaching a remote.
+    Requested,
 }
 
 impl GitCall {
@@ -621,13 +623,14 @@ impl GitCall {
         match self {
             Self::Internal => GitPolicy::internal(trust),
             Self::User | Self::UserNetwork => GitPolicy::user(trust),
+            Self::Requested => GitPolicy::requested(),
         }
     }
 
     fn deadline(self) -> Duration {
         match self {
             Self::Internal | Self::User => GIT_READ_DEADLINE,
-            Self::UserNetwork => GIT_NETWORK_DEADLINE,
+            Self::UserNetwork | Self::Requested => GIT_NETWORK_DEADLINE,
         }
     }
 }

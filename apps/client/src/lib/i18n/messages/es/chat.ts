@@ -351,6 +351,7 @@ export const chat = {
         push_request_pending: "El compañero sigue trabajando, así que haz push cuando termine su turno.",
         push_request_closed: "Esta solicitud ya se respondió o su turno no terminó, así que ya no puede hacer push.",
         push_target_changed: "La rama, el commit, el remoto o la configuración de Git cambiaron desde la solicitud, así que pide al compañero que la solicite de nuevo.",
+        push_repository_connection: "La configuración de Git del propio repositorio define cómo Git inicia sesión o se conecta, y un compañero pudo escribirla, así que quítala y pide el push de nuevo.",
       },
     },
     shareReplyToChannel: (name: string) => name ? `Compartir respuesta en #${name}` : "Compartir respuesta en el canal",

@@ -40,5 +40,6 @@ export const CHAT_PUSH_REQUEST_REFUSALS = [
   "push_request_pending",
   "push_request_closed",
   "push_target_changed",
+  "push_repository_connection",
 ] as const;
 export type ChatPushRequestRefusal = (typeof CHAT_PUSH_REQUEST_REFUSALS)[number];

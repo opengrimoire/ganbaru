@@ -15,7 +15,7 @@ use ganbaru_chat::coordination::push_requests::{
     MAX_PUSH_SUMMARY_CHARS, PushRequest, PushRequestRefusal, normalize_push_summary,
     record_host_push_request,
 };
-use ganbaru_chat::git::hardened::folder_configuration;
+use ganbaru_chat::git::hardened::requested_configuration;
 use ganbaru_chat::git::{GitFolder, GitPushTargetError, push_target};
 use ganbaru_chat_contracts::models::{ChatError, ChatErrorCode, ChatFolderCapability, ChatResult};
 use serde_json::{Map, Value, json};
@@ -68,9 +68,12 @@ pub(super) async fn request_push(
             GitPushTargetError::Detached => PushRequestRefusal::Detached.into_error(),
             GitPushTargetError::NoRemote => PushRequestRefusal::RemoteUnavailable.into_error(),
             GitPushTargetError::Unsupported => PushRequestRefusal::TargetUnsupported.into_error(),
+            GitPushTargetError::RepositoryConnection => {
+                PushRequestRefusal::RepositoryConnection.into_error()
+            }
             GitPushTargetError::Failed(error) => error,
         })?;
-    let configuration = folder_configuration(authorized.canonical_path.clone())
+    let configuration = requested_configuration(authorized.canonical_path.clone())
         .await
         .map_err(|_| configuration_error())?;
     let request = PushRequest {
@@ -80,7 +83,7 @@ pub(super) async fn request_push(
             .then(|| context.scope.execution_environment_id.clone())
             .flatten(),
         target,
-        git_config_digest: configuration.git.to_hex(),
+        git_config_digest: configuration.digest.to_hex(),
     };
     let now = now_timestamp()?;
     let mut transaction = context

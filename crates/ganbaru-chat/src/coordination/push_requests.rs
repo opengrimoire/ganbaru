@@ -2,7 +2,7 @@
 //!
 //! A teammate never pushes. It asks: a push request is a host question in its reply thread whose
 //! payload records the commit, the remote, the destination branch, and the push URL a push would
-//! reach, read by Ganbaru from the folder, with the digest of the folder's command-bearing Git
+//! reach, read by Ganbaru from the folder, with the digest of the folder's whole effective Git
 //! configuration. The assignment waits for an answer like any question. Only a person who
 //! confirms the request pushes, and only while a fresh read still names the same target, so a
 //! teammate cannot change what reaches the remote after the person looked.
@@ -41,7 +41,7 @@ pub struct PushRequest {
     /// The commit, branches, remote, and push URL.
     #[serde(flatten)]
     pub target: GitPushTarget,
-    /// Hexadecimal digest of the folder's command-bearing Git configuration when the target was
+    /// Hexadecimal digest of the folder's whole effective Git configuration when the target was
     /// read.
     pub git_config_digest: String,
 }
@@ -85,8 +85,12 @@ pub enum PushRequestRefusal {
     /// The branch has no push or upstream remote and none was named, or the named remote is
     /// not configured.
     RemoteUnavailable,
-    /// The push URL carries a password, or the destination is not a plain branch.
+    /// The remote has several push URLs, the push URL carries a password or names an
+    /// unsupported transport, or the destination is not a plain branch.
     TargetUnsupported,
+    /// Repository configuration chooses how Git connects or authenticates (a credential
+    /// helper, an SSH or proxy command, a proxy, or TLS trust).
+    RepositoryConnection,
     /// The asking run is still working, so the request cannot be confirmed yet.
     Pending,
     /// The request was answered, superseded, or its run did not complete.
@@ -96,11 +100,12 @@ pub enum PushRequestRefusal {
 }
 
 impl PushRequestRefusal {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::SummaryInvalid,
         Self::Detached,
         Self::RemoteUnavailable,
         Self::TargetUnsupported,
+        Self::RepositoryConnection,
         Self::Pending,
         Self::Closed,
         Self::TargetChanged,
@@ -113,6 +118,7 @@ impl PushRequestRefusal {
             Self::Detached => "push_branch_detached",
             Self::RemoteUnavailable => "push_remote_unavailable",
             Self::TargetUnsupported => "push_target_unsupported",
+            Self::RepositoryConnection => "push_repository_connection",
             Self::Pending => "push_request_pending",
             Self::Closed => "push_request_closed",
             Self::TargetChanged => "push_target_changed",

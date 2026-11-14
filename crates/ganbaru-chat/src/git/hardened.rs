@@ -27,8 +27,9 @@ mod submodules;
 pub use digest::{
     FolderConfigDigest, FolderConfiguration, MAX_TRUST_DIGEST_FILE_BYTES,
     MAX_TRUST_DIGEST_HOOK_FILES, MAX_TRUST_DIGEST_PROVIDER_FILES, ProviderConfigurationEntries,
-    folder_configuration, folder_configuration_blocking, provider_configuration_entries,
-    provider_configuration_entries_blocking,
+    RequestedConfiguration, folder_configuration, folder_configuration_blocking,
+    provider_configuration_entries, provider_configuration_entries_blocking,
+    requested_configuration, requested_configuration_blocking,
 };
 
 /// Deadline for interactive Git reads such as status, listings, and review.
@@ -98,6 +99,14 @@ pub enum GitOrigin {
     Internal,
     /// An operation the user requested, such as commit, push, or discard.
     User,
+    /// An operation a teammate requested and a person confirmed, such as a
+    /// push request. Teammates can write the folder, so repository
+    /// configuration never applies whatever the trust record says, no hook or
+    /// fsmonitor runs (the person's global ones included, since they run in
+    /// the folder), variables that redirect Git to another repository are
+    /// removed, and only standard transports are allowed. The person's own
+    /// credential helpers, SSH setup, and signing stay in effect.
+    Requested,
 }
 
 /// Whether the user trusts the folder's repository configuration on this
@@ -135,12 +144,30 @@ impl GitPolicy {
         }
     }
 
+    /// The policy of a teammate request a person confirmed. It is always
+    /// untrusted.
+    pub const fn requested() -> Self {
+        Self {
+            origin: GitOrigin::Requested,
+            trust: GitFolderTrust::Untrusted,
+        }
+    }
+
     fn is_internal(self) -> bool {
         self.origin == GitOrigin::Internal
     }
 
+    fn is_requested(self) -> bool {
+        self.origin == GitOrigin::Requested
+    }
+
+    /// Whether hooks and fsmonitor never run, the user's global ones included.
+    fn silences_hooks(self) -> bool {
+        self.origin != GitOrigin::User
+    }
+
     fn neutralizes_repository(self) -> bool {
-        self.trust == GitFolderTrust::Untrusted
+        self.trust == GitFolderTrust::Untrusted || self.is_requested()
     }
 
     fn untrusted(self) -> Self {
@@ -163,6 +190,11 @@ fn resolve_policy(
     cancel: Option<&Arc<AtomicBool>>,
 ) -> Result<(GitPolicy, Vec<GitConfigEntry>), GitRunError> {
     let started = Instant::now();
+    let policy = if policy.is_requested() {
+        policy.untrusted()
+    } else {
+        policy
+    };
     let mut entries = read_effective_config(root, policy, environment, deadline, cancel)?;
     let submodules = submodules::populated_submodules(
         root,
@@ -237,6 +269,26 @@ pub struct GitConfigEntry {
     /// `None` for a key written without `=`, which Git reads as boolean true.
     pub value: Option<String>,
 }
+
+/// Environment variables that point Git at another repository, configuration
+/// file, or program directory. Requested runs remove them and keep the user's
+/// SSH, askpass, and proxy variables.
+const REQUESTED_CLEARED_ENVIRONMENT: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+    "GIT_CONFIG",
+    "GIT_EXEC_PATH",
+    "GIT_TEMPLATE_DIR",
+];
+
+/// Transports a requested run may use. Every other transport, remote helpers
+/// such as `ext::` included, is refused.
+pub const REQUESTED_PROTOCOLS: &[&str] = &["https", "http", "ssh", "git", "file"];
 
 /// Environment values that decide how SSH, askpass, and proxy overrides apply.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -484,14 +536,43 @@ pub fn hardening_for(
             .cleared_environment
             .extend(entries_environment_names());
     }
+    if policy.is_requested() {
+        hardening.cleared_environment = REQUESTED_CLEARED_ENVIRONMENT
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect();
+    }
     let hooks_path = hooks_directory.to_string_lossy().into_owned();
-    if policy.is_internal() {
+    if policy.silences_hooks() {
         hardening.config.extend([
             ("core.fsmonitor".to_string(), String::new()),
             ("core.hooksPath".to_string(), hooks_path.clone()),
+        ]);
+    }
+    if policy.is_internal() {
+        hardening.config.extend([
             ("commit.gpgSign".to_string(), "false".to_string()),
             ("tag.gpgSign".to_string(), "false".to_string()),
         ]);
+    }
+    if policy.is_requested() {
+        // A per-protocol key outranks `protocol.allow`, so repository keys
+        // that allow another transport are overridden first.
+        for entry in entries {
+            if entry.scope.is_repository() && is_protocol_allow_key(&entry.key) {
+                hardening
+                    .config
+                    .push((entry.key.clone(), "never".to_string()));
+            }
+        }
+        hardening
+            .config
+            .push(("protocol.allow".to_string(), "never".to_string()));
+        for protocol in REQUESTED_PROTOCOLS {
+            hardening
+                .config
+                .push((format!("protocol.{protocol}.allow"), "always".to_string()));
+        }
     }
     if !policy.neutralizes_repository() {
         return hardening;
@@ -530,7 +611,7 @@ pub fn hardening_for(
     // Hooks in `.git/hooks` are repository content even without a hooksPath
     // key. A relative user hooks path resolves inside the repository, so only
     // an absolute one is kept.
-    if !policy.is_internal() {
+    if !policy.silences_hooks() {
         let path = user_values
             .get("core.hookspath")
             .and_then(|values| values.last().copied().flatten())
@@ -550,7 +631,7 @@ pub fn hardening_for(
             .and_then(|values| values.last().copied());
         match kind {
             CommandKey::Single(neutral) => {
-                if policy.is_internal() && canonical == "core.fsmonitor" {
+                if policy.silences_hooks() && canonical == "core.fsmonitor" {
                     continue;
                 }
                 // A key written without `=` is boolean true.
@@ -627,6 +708,15 @@ pub fn hardening_for(
     hardening
 }
 
+/// Whether `key` is `protocol.<name>.allow` for any transport name.
+fn is_protocol_allow_key(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    lower
+        .strip_prefix("protocol.")
+        .and_then(|rest| rest.strip_suffix(".allow"))
+        .is_some_and(|name| !name.is_empty())
+}
+
 /// Lowercases the section and variable name and keeps the subsection, which
 /// is how Git compares keys.
 fn canonical_key(key: &str) -> String {
@@ -660,7 +750,7 @@ fn entries_environment_names() -> Vec<String> {
         .collect()
 }
 
-fn shell_quote(value: &OsStr) -> OsString {
+pub(crate) fn shell_quote(value: &OsStr) -> OsString {
     let text = value.to_string_lossy();
     format!("'{}'", text.replace('\'', "'\\''")).into()
 }

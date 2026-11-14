@@ -415,6 +415,11 @@ export class ChatStore {
     return this.organizationalController.channelNotesVersion;
   }
 
+  /** Changes when push request states may have changed, including a push that ran after a turn without a person. */
+  get pushRequestsVersion(): number {
+    return this.organizationalController.pushRequestsVersion;
+  }
+
   get selectedChannel(): ChatChannelRead | null {
     return this.selectedChannelId
       ? this.channelNavigationController.find(this.selectedChannelId)
@@ -1337,8 +1342,9 @@ export class ChatStore {
     if (plan.interaction) await this.refreshInteraction(threadId);
   }
 
-  /** Rereads the review queue, the open channel, and the open reply thread after organizational rows changed natively. */
+  /** Rereads the review queue, push request states, the open channel, and the open reply thread after organizational rows changed natively. */
   async handleOrganizationChange(): Promise<void> {
+    this.organizationalController.pushRequestsVersion += 1;
     this.refreshReviewQueue();
     const channelId = this.selectedChannelId;
     if (channelId) await this.loadChannelMessages(channelId, true);
@@ -1418,6 +1424,7 @@ export class ChatStore {
     if (!isCurrentVault() || !channelId || !this.channelNavigationController.find(channelId)) return;
     this.organizationalController.scheduledMessagesVersion += 1;
     this.organizationalController.channelNotesVersion += 1;
+    this.organizationalController.pushRequestsVersion += 1;
     await this.loadChannelMessages(channelId, true);
     if (this.openReplyThreadId && isCurrentVault()) await this.loadReplyThread(this.openReplyThreadId, true);
   }
@@ -1437,6 +1444,7 @@ export class ChatStore {
     if (!isCurrentVault() || !channelId || !changes.channelIds.has(channelId)) return;
     this.organizationalController.scheduledMessagesVersion += 1;
     this.organizationalController.channelNotesVersion += 1;
+    this.organizationalController.pushRequestsVersion += 1;
     await this.loadChannelMessages(channelId, true);
     if (this.openReplyThreadId && isCurrentVault()) await this.loadReplyThread(this.openReplyThreadId, true);
   }

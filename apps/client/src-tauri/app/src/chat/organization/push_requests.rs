@@ -128,7 +128,8 @@ async fn push_standing_requests(app: tauri::AppHandle, turn_id: &ChatTurnId) -> 
         )
         .await
         {
-            Ok(_) => {}
+            // Nobody in a view caused this push, so open cards and the reply thread reread.
+            Ok(_) => crate::chat::ingestion::notify_organization_changed(&app),
             // A refused request waits for a person, who sees the same refusal on the card.
             Err(error) if error.code == ChatErrorCode::Permission => {}
             Err(error) => eprintln!("A standing Chat push did not complete: {error}"),

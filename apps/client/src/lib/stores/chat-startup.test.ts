@@ -335,6 +335,15 @@ describe("Chat stores of split panes", () => {
     expect(secondary.scheduledMessagesVersion).toBe(scheduledVersion);
   });
 
+  it("tells open push request cards to reread after a native organization change", async () => {
+    await chat.ensureLoaded();
+    const pushVersion = chat.pushRequestsVersion;
+    const pageReads = vi.mocked(chatApi.readChatChannelPage).mock.calls.length;
+    await chat.handleOrganizationChange();
+    expect(chat.pushRequestsVersion).toBe(pushVersion + 1);
+    expect(chatApi.readChatChannelPage).toHaveBeenCalledTimes(pageReads + 1);
+  });
+
   it("applies changed shared settings to every pane's composer defaults", async () => {
     await secondary.ensureLoaded();
     const primaryDefaults = vi.spyOn(chat, "scheduleComposerDefaults");

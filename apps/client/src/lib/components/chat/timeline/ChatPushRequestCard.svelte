@@ -39,7 +39,7 @@
   const confirmable = $derived(chatPushRequestsAvailable && (requestState === "open" || requestState === "waiting"));
 
   $effect(() => {
-    const _version = chat.scheduledMessagesVersion;
+    const _version = chat.pushRequestsVersion;
     void loadState(requestItemId);
   });
 

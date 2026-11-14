@@ -88,7 +88,7 @@
       notes = read;
       loaded = true;
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.notesAction"));
     }
   }
 
@@ -114,7 +114,7 @@
       await load(channelId);
       return true;
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.notesAction"));
       return false;
     } finally {
       pending = false;

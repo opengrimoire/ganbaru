@@ -9,6 +9,7 @@
   import type IconPicker from "$lib/components/icon-picker/IconPicker.svelte";
   import type { ChatMessageActionTarget } from "$lib/chat/timeline/message-action-target";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { LocalizedError } from "$lib/i18n/user-errors";
   import { useChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { syncDeviceName } from "$lib/sync/status";
@@ -99,7 +100,7 @@
       if (request === provenanceRequest && known) provenance = loaded;
     } catch (error: unknown) {
       if (request === provenanceRequest) {
-        reportError(new Error(t("chat.organization.sentFromFailed"), { cause: error }));
+        reportError(new LocalizedError(t("chat.organization.sentFromFailed"), { cause: error }));
       }
     }
   }

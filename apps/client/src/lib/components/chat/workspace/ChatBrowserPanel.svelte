@@ -20,6 +20,8 @@
   import { urlReach } from "$lib/chat/workspace/loopback";
   import { requestConfirmation, type ConfirmationRequest } from "$lib/components/ui/confirmation.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
+  import { LocalizedError } from "$lib/i18n/user-errors";
   import { useChat } from "$lib/stores/chat.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
 
@@ -191,12 +193,7 @@
   });
 
   function message(reason: unknown): string {
-    if (reason instanceof Error) return reason.message;
-    if (typeof reason === "object" && reason !== null && "message" in reason) {
-      const value = (reason as { message?: unknown }).message;
-      if (typeof value === "string") return value;
-    }
-    return t("chat.browser.unavailable");
+    return chatErrorMessage(reason, t("chat.browser.unavailable"));
   }
 
   async function loadStoredBrowserTab(selectedThreadId: string | null): Promise<void> {
@@ -360,7 +357,7 @@
   }
 
   function currentBounds(): BrowserTabBounds {
-    if (!viewport) throw new Error(t("chat.browser.unavailable"));
+    if (!viewport) throw new LocalizedError(t("chat.browser.unavailable"));
     const container = viewport.getBoundingClientRect();
     const target = presetSize(container.width, container.height, preset);
     return {

@@ -4,6 +4,7 @@
   import Settings2 from "@lucide/svelte/icons/settings-2";
   import SquareArrowOutUpRight from "@lucide/svelte/icons/square-arrow-out-up-right";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { useChat } from "$lib/stores/chat.svelte";
   import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
@@ -45,7 +46,7 @@
   function detachThread(): void {
     actionError = null;
     void tabs.detach(tabs.activeTabId).catch((error: unknown) => {
-      actionError = error instanceof Error ? error.message : String(error);
+      actionError = chatErrorMessage(error);
     });
   }
 </script>

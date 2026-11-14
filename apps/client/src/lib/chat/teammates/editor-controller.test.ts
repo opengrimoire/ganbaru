@@ -288,7 +288,7 @@ describe("teammate editor workflow", () => {
 
     expect(editor.creating).toBe(false);
     expect(editor.selectedId).toBe(created.participant.id);
-    expect(editor.error).toBe("Replacement failed");
+    expect(editor.error).toBe("settings.chat.teammates.saveFailed");
     expect(editor.accessDraft.map((entry) => entry.channelId)).toEqual(["channel:general"]);
     expect(editor.dirty).toBe(true);
     await editor.save();
@@ -307,7 +307,7 @@ describe("teammate editor workflow", () => {
     await editor.loadDirectoryData();
     expect(chat.archivedTeammates).toEqual([archived]);
     expect(editor.accessProfiles).toEqual([profile()]);
-    expect(editor.error).toBe("Channels unavailable");
+    expect(editor.error).toBe("settings.chat.teammates.loadFailed");
     expect(editor.loadingDirectory).toBe(false);
   });
 

@@ -9,7 +9,7 @@
   import Trash2 from "@lucide/svelte/icons/trash";
   import * as chatApi from "$lib/api/chat";
   import type { JsonValue, ProviderInstanceConfig, ProviderSetupTestRead } from "$lib/chat/contracts";
-  import { chatErrorMessage } from "$lib/chat/error-presentation";
+  import { chatErrorMessage, providerProbeMessage } from "$lib/chat/error-presentation";
   import {
     createProviderSetupDraft,
     providerConfigurationFromDraft,
@@ -808,8 +808,9 @@
               <span>
                 {testSucceeded
                   ? t("settings.chat.setup.testPassed", formatNumber(localization.locale, testResult.modelCatalog?.models.length ?? 0))
-                  : t("settings.chat.setup.testFailed", testResult.probe.detail ?? testResult.probe.state)}
+                  : t("settings.chat.setup.testFailed", providerProbeMessage(testResult.probe.state))}
               </span>
+              {#if !testSucceeded && testResult.probe.detail}<small>{testResult.probe.detail}</small>{/if}
               {#if testResult.probe.version}<small>{testResult.probe.version}</small>{/if}
               {#if testResult.probe.accountLabel}<small>{testResult.probe.accountLabel}</small>{/if}
             </div>

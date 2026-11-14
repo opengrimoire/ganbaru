@@ -7,6 +7,7 @@ import type {
   ChatTimelineTurnRead,
 } from "$lib/chat/contracts";
 import { chatErrorMessage } from "$lib/chat/error-presentation";
+import { translate } from "$lib/i18n/translator.svelte";
 import { evictTimelinePages, mergeTimelineItems } from "$lib/chat/timeline/virtualization";
 
 const MAX_TIMELINE_PAGES = 8;
@@ -90,7 +91,7 @@ export class ChatTimelineController {
       }
     } catch (error: unknown) {
       if (request !== this.request) return;
-      this.error = chatErrorMessage(error, "Chat could not be loaded");
+      this.error = chatErrorMessage(error, translate("chatErrors.actions.loadChat"));
       throw error;
     } finally {
       if (request === this.request) this.loading = false;
@@ -137,7 +138,7 @@ export class ChatTimelineController {
       this.changeCursor = page.changeCursor;
     } catch (error: unknown) {
       if (!this.isCurrentRefresh(generation, refresh, threadId)) return;
-      this.error = chatErrorMessage(error, "Chat could not be loaded");
+      this.error = chatErrorMessage(error, translate("chatErrors.actions.loadChat"));
       throw error;
     }
   }

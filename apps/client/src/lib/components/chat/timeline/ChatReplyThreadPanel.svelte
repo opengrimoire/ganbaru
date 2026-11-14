@@ -224,7 +224,7 @@
       await loadScratchManager();
       scratchManagerOpen = true;
     } catch (cause: unknown) {
-      actionError = cause instanceof Error ? cause.message : String(cause);
+      actionError = chatErrorMessage(cause, t("chatErrors.actions.scratchReclaim"));
     } finally {
       scratchManagerLoading = false;
     }
@@ -274,7 +274,7 @@
           exactExecutionCache.set(run.id, { updatedAt: run.updatedAt, read });
         }
       } else {
-        failures.push(result.reason instanceof Error ? result.reason.message : String(result.reason));
+        failures.push(chatErrorMessage(result.reason, t("chatErrors.actions.workAction")));
       }
     }
     const plan = planExactExecutionReads(exactExecutionRuns(page?.agentRuns ?? []), exactExecutionCache, exactExecutionReadsInFlight);
@@ -340,7 +340,7 @@
     void chat.selectAssignmentExecution(agentRun.id)
       .catch((cause: unknown) => {
         if (request === executionSelectionRequest) {
-          actionError = cause instanceof Error ? cause.message : String(cause);
+          actionError = chatErrorMessage(cause, t("chatErrors.actions.workAction"));
         }
       });
   });

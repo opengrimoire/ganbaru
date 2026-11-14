@@ -79,7 +79,7 @@
     try {
       await chat.resolveApproval({ kind: choice.decisionKind, providerOptionId: choice.id, updatedToolInput: null });
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.requestAction"));
       resolving = false;
     }
   }
@@ -127,7 +127,7 @@
       }
       answerDraftReady = true;
     } catch (cause: unknown) {
-      if (request === answerDraftRequest) error = chatErrorMessage(cause);
+      if (request === answerDraftRequest) error = chatErrorMessage(cause, t("chatErrors.actions.requestAction"));
     }
   }
 
@@ -168,7 +168,7 @@
       attached = { ...attached, [questionId]: [...(attached[questionId] ?? []), ...imported].slice(0, CHAT_IMAGE_LIMIT) };
       scheduleAnswerDraftSave();
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.requestAction"));
     } finally {
       attaching = false;
     }
@@ -237,7 +237,7 @@
         })),
       });
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.requestAction"));
     }
   }
 
@@ -280,7 +280,7 @@
     try {
       await chat.resolveUserInput(response);
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.requestAction"));
       resolving = false;
     }
   }

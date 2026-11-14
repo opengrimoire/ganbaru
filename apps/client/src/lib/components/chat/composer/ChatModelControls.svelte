@@ -38,6 +38,7 @@
   import * as chatApi from "$lib/api/chat";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage, providerProbeMessage } from "$lib/chat/error-presentation";
   import { trapTabFocus } from "$lib/chat/focus-navigation";
   import { isPointerAimingAtSubmenu, SUBMENU_AIM_TOLERANCES } from "$lib/utils/menu-aim";
   import { portal } from "$lib/utils/portal";
@@ -397,7 +398,7 @@
     if (!entry.configuration.enabled) return t("chat.composer.providerDisabled");
     if (!entry.lastProbe) return t("chat.composer.providerNotChecked");
     if (entry.lastProbe.state === "healthy") return t("chat.status.idle");
-    return entry.lastProbe.detail ?? t("chat.status.providerUnavailable");
+    return providerProbeMessage(entry.lastProbe.state);
   }
 
   async function toggleModelFavorite(entry: ProviderInstanceRead, modelId: string): Promise<void> {
@@ -408,7 +409,7 @@
     try {
       await chat.updateModels(entry.configuration.instanceId, entry.configuration.visibleModelIds, favorites);
     } catch (error: unknown) {
-      modelPickerError = error instanceof Error ? error.message : String(error);
+      modelPickerError = chatErrorMessage(error, t("chatErrors.actions.settingsAction"));
     }
   }
 

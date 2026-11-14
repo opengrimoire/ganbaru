@@ -6,6 +6,8 @@
   import { readTimelineDensity, timelineDensityOptions } from "$lib/chat/timeline/density";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
+  import { LocalizedError } from "$lib/i18n/user-errors";
   import { getChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import {
@@ -66,7 +68,7 @@
     try {
       await chat.updateBehavior({ ...behavior, ...patch });
     } catch (cause: unknown) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.settingsAction"));
     } finally {
       saving = false;
     }
@@ -82,14 +84,14 @@
     try {
       await loadDiagnostics();
     } catch (cause: unknown) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.settingsAction"));
       throw cause;
     }
   }
 
   async function updateDiagnosticPreferences(patch: Partial<ChatDiagnosticsRead["preferences"]>): Promise<string> {
     const current = diagnostics;
-    if (!current) throw new Error(t("settings.chat.behavior.diagnosticsUnavailable"));
+    if (!current) throw new LocalizedError(t("settings.chat.behavior.diagnosticsUnavailable"));
     await chatApi.updateChatDiagnosticPreferences({ ...current.preferences, ...patch });
     return t("settings.chat.behavior.preferencesSaved");
   }
@@ -103,7 +105,7 @@
       status = await action();
       await loadDiagnostics();
     } catch (cause: unknown) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.settingsAction"));
     } finally {
       saving = false;
     }
@@ -149,7 +151,7 @@
 
   onMount(() => {
     void loadDiagnostics().catch((cause: unknown) => {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.settingsAction"));
     });
   });
 </script>

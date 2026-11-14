@@ -303,7 +303,7 @@
   function terminalMessage(reason: unknown): string {
     return terminalErrorMessage(
       reason,
-      t("common.viewLoadFailed", t("chat.inspector.terminal")),
+      t("chatErrors.actions.terminalAction"),
     );
   }
 

@@ -21,6 +21,8 @@
   import ChatTeammateDraftAction from "./ChatTeammateDraftAction.svelte";
   import type { DraftExtraction } from "$lib/chat/source-control/draft-extraction";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
+  import { LocalizedError } from "$lib/i18n/user-errors";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
   import { useChat } from "$lib/stores/chat.svelte";
 
@@ -132,13 +134,13 @@
 
   async function readCommitDraftContext(): Promise<ChatCommitDraftContextRead> {
     const workingFolderId = workspace;
-    if (!workingFolderId) throw new Error(t("chat.sourceControl.teammateDraftUnavailable"));
+    if (!workingFolderId) throw new LocalizedError(t("chat.sourceControl.teammateDraftUnavailable"));
     return chatApi.readCommitDraftContext(workingFolderId, chat.selectedExecutionEnvironmentId);
   }
 
   async function readChangeRequestDraftContext(): Promise<ChatCommitDraftContextRead> {
     const workingFolderId = workspace;
-    if (!workingFolderId) throw new Error(t("chat.sourceControl.teammateDraftUnavailable"));
+    if (!workingFolderId) throw new LocalizedError(t("chat.sourceControl.teammateDraftUnavailable"));
     return chatApi.readChangeRequestDraftContext(
       workingFolderId,
       changeRequestBase.trim(),
@@ -166,12 +168,7 @@
   }
 
   function message(reason: unknown): string {
-    if (reason instanceof Error) return reason.message;
-    if (typeof reason === "object" && reason !== null && "message" in reason) {
-      const value = (reason as { message?: unknown }).message;
-      if (typeof value === "string") return value;
-    }
-    return t("chat.sourceControl.operationFailed");
+    return chatErrorMessage(reason, t("chat.sourceControl.operationFailed"));
   }
 
   async function refresh(): Promise<void> {

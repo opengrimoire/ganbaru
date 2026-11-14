@@ -9,6 +9,8 @@
   import type { ProviderInstanceId, ProviderProbeResult } from "$lib/chat/contracts";
   import { resolveChatFirstUseState } from "$lib/chat/shell-model";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage, providerProbeMessage } from "$lib/chat/error-presentation";
+  import { LocalizedError } from "$lib/i18n/user-errors";
   import { useChat } from "$lib/stores/chat.svelte";
   import { getNavigation } from "$lib/stores/navigation.svelte";
   import { useProjects } from "$lib/stores/projects.svelte";
@@ -29,7 +31,7 @@
   function run(action: () => Promise<unknown>): void {
     operationError = null;
     void action().catch((error: unknown) => {
-      operationError = error instanceof Error ? error.message : String(error);
+      operationError = chatErrorMessage(error);
     });
   }
 
@@ -40,10 +42,10 @@
     try {
       result = await chat.probeProvider(instanceId);
     } catch (error: unknown) {
-      operationError = error instanceof Error ? error.message : String(error);
+      operationError = chatErrorMessage(error);
       throw error;
     }
-    if (result.state !== "healthy") throw new Error(`Chat provider probe reported ${result.state}`);
+    if (result.state !== "healthy") throw new LocalizedError(providerProbeMessage(result.state));
   }
 
 </script>
@@ -62,7 +64,7 @@
       <h2 class="text-lg font-semibold">{t("chat.firstUse.missingBindingTitle")}</h2><p class="mt-2 max-w-lg text-sm text-muted-foreground">{t("chat.firstUse.missingBindingDescription", firstUse.workingFolder.workingFolder.displayName)}</p>{#if firstUse.workingFolder.workingFolder.repositoryIdentity}<code class="mt-3 max-w-full truncate text-xs text-muted-foreground">{firstUse.workingFolder.workingFolder.repositoryIdentity}</code>{/if}<button type="button" class="chat-primary-button mt-5" onclick={() => run(() => firstUse.workingFolder.workingFolder.kind === "managed" ? chat.recreateManagedWorkingFolder(firstUse.workingFolder.workingFolder.id) : chat.rebindWorkingFolder(firstUse.workingFolder.workingFolder.id, t("chat.firstUse.chooseWorkingFolder")))}><FolderSearch size={15} />{firstUse.workingFolder.workingFolder.kind === "managed" ? t("chat.firstUse.recreateFolder") : t("chat.firstUse.locateFolder")}</button>
     {:else if firstUse.kind === "provider_unavailable"}
       {@const unavailableProvider = firstUse.provider}
-      <div class="w-full text-sm"><Notice layout="fill" role="status" tone="warning" icon={Unplug} title={t("chat.firstUse.unavailableTitle")} message={unavailableProvider?.lastProbe?.detail ?? t("chat.status.providerUnavailable")} retryLabel={t("chat.firstUse.retryProvider")} onRetry={unavailableProvider ? () => retryProvider(unavailableProvider.configuration.instanceId) : undefined} copy={unavailableProvider?.lastProbe?.detail ?? false}>{#snippet actions()}<button type="button" class="notice-action-text" onclick={() => settings.open("chat", { chatSubsection: "providers" })}>{t("chat.firstUse.openSettings")}</button>{/snippet}</Notice></div>
+      <div class="w-full text-sm"><Notice layout="fill" role="status" tone="warning" icon={Unplug} title={t("chat.firstUse.unavailableTitle")} message={providerProbeMessage(unavailableProvider?.lastProbe?.state)} retryLabel={t("chat.firstUse.retryProvider")} onRetry={unavailableProvider ? () => retryProvider(unavailableProvider.configuration.instanceId) : undefined} copy={unavailableProvider?.lastProbe?.detail ?? false}>{#snippet actions()}<button type="button" class="notice-action-text" onclick={() => settings.open("chat", { chatSubsection: "providers" })}>{t("chat.firstUse.openSettings")}</button>{/snippet}</Notice></div>
     {:else if firstUse.kind === "archived_thread"}
       <h2 class="text-lg font-semibold">{t("chat.firstUse.archivedTitle")}</h2><p class="mt-2 max-w-lg text-sm text-muted-foreground">{t("chat.firstUse.archivedDescription")}</p><button type="button" class="chat-primary-button mt-5" onclick={() => run(() => chat.restoreThread(firstUse.thread))}>{t("chat.restore")}</button>
     {:else if firstUse.kind === "no_thread"}

@@ -4,6 +4,7 @@
   import * as chatApi from "$lib/api/chat";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { useChat } from "$lib/stores/chat.svelte";
   import { portal } from "$lib/utils/portal";
   import ChatControlMenu, { type ChatControlOption } from "./ChatControlMenu.svelte";
@@ -109,7 +110,7 @@
       setSafetyMode(pendingTrustedMode ?? "full_access");
       closeDialog();
     } catch (cause: unknown) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.accessAction"));
     }
   }
 

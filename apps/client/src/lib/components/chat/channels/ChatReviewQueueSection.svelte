@@ -65,7 +65,7 @@
       await chat.openReviewItem(item);
       onOpened?.();
     } catch (error: unknown) {
-      actionError = chatErrorMessage(error);
+      actionError = chatErrorMessage(error, t("chatErrors.actions.reviewQueueAction"));
     }
   }
 
@@ -79,7 +79,7 @@
       paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-open-review", { detail }));
       onOpened?.();
     } catch (error: unknown) {
-      actionError = chatErrorMessage(error);
+      actionError = chatErrorMessage(error, t("chatErrors.actions.reviewQueueAction"));
     }
   }
 
@@ -108,7 +108,7 @@
       batchResult = await chat.acceptReviewItems(candidates.map((item) => item.assignmentId));
       selectedIds = [];
     } catch (error: unknown) {
-      actionError = chatErrorMessage(error);
+      actionError = chatErrorMessage(error, t("chatErrors.actions.reviewQueueAction"));
     } finally {
       accepting = false;
     }

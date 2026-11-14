@@ -2,6 +2,7 @@
   import Notice from "$lib/components/ui/Notice.svelte";
   import { requestConfirmation } from "$lib/components/ui/confirmation.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { useChat } from "$lib/stores/chat.svelte";
   import ChatControlMenu from "./ChatControlMenu.svelte";
 
@@ -46,7 +47,7 @@
     try {
       chat.newDraft(workingFolderId);
     } catch (cause: unknown) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.loadDraft"));
     } finally {
       saving = false;
     }

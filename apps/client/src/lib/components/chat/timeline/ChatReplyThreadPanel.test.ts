@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { en } from "$lib/i18n/messages/en";
 
 import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -326,7 +327,7 @@ describe("ChatReplyThreadPanel", () => {
     });
 
     await vi.waitFor(() => {
-      expect(target?.querySelector('[role="alert"]')?.textContent).toContain("The execution could not open");
+      expect(target?.querySelector('[role="alert"]')?.textContent).toContain(en.chatErrors.actions.workAction);
     });
     expect(target.querySelector("[data-notice-dismiss]")).toBeNull();
 
@@ -342,7 +343,7 @@ describe("ChatReplyThreadPanel", () => {
     await tick();
 
     const remaining = [...target.querySelectorAll('[role="alert"]')];
-    expect(remaining.map((alert) => alert.textContent)).toEqual([expect.stringContaining("The execution could not open")]);
+    expect(remaining.map((alert) => alert.textContent)).toEqual([expect.stringContaining(en.chatErrors.actions.workAction)]);
     expect(target.querySelector('[data-message-item-id="root:test"]')).not.toBeNull();
   });
 

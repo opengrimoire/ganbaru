@@ -1,6 +1,7 @@
 import * as chatApi from "$lib/api/chat";
 import type { ChatChannelId, ChatReviewQueueRead, ChatWorkAssignmentId } from "$lib/chat/contracts";
 import { chatErrorCode, chatErrorMessage } from "$lib/chat/error-presentation";
+import { translate } from "$lib/i18n/translator.svelte";
 import {
   batchAcceptCandidates,
   summarizeBatchAccept,
@@ -103,7 +104,7 @@ export class ChatReviewQueueController {
     } catch (error: unknown) {
       if (generation !== this.generation) return;
       console.error("Chat review queue could not be read", error);
-      this.error = chatErrorMessage(error);
+      this.error = chatErrorMessage(error, translate("chatErrors.actions.reviewQueueAction"));
     }
   }
 }

@@ -9,6 +9,7 @@ import type {
   ChatReplyThreadSummaryRead,
 } from "$lib/chat/contracts";
 import { chatErrorMessage } from "$lib/chat/error-presentation";
+import { translate } from "$lib/i18n/translator.svelte";
 import { applyReplyThreadSummary } from "$lib/chat/timeline/organizational-message-model";
 import { compareOrderKeyThenId } from "$lib/utils/order-key";
 
@@ -105,7 +106,7 @@ export class ChatCommunicationController {
       this.channelCache.set(channelId, this.channelPages);
     } catch (error: unknown) {
       if (request !== this.channelRequest) return;
-      this.channelError = chatErrorMessage(error, "Chat channel could not be loaded");
+      this.channelError = chatErrorMessage(error, translate("chatErrors.actions.loadChannel"));
       throw error;
     } finally {
       if (request === this.channelRequest) this.channelLoading = false;
@@ -127,7 +128,7 @@ export class ChatCommunicationController {
       this.channelCache.set(channelId, this.channelPages);
     } catch (error: unknown) {
       if (request !== this.channelRequest) return;
-      this.channelError = chatErrorMessage(error, "Older channel history could not be loaded");
+      this.channelError = chatErrorMessage(error, translate("chatErrors.actions.loadOlderHistory"));
       throw error;
     } finally {
       if (request === this.channelRequest) this.channelLoading = false;
@@ -145,7 +146,7 @@ export class ChatCommunicationController {
       this.channelMessages = page.messages;
     } catch (error: unknown) {
       if (request !== this.channelRequest) return;
-      this.channelError = chatErrorMessage(error, "Search result could not be loaded");
+      this.channelError = chatErrorMessage(error, translate("chatErrors.actions.loadSearchResult"));
       throw error;
     } finally {
       if (request === this.channelRequest) this.channelLoading = false;
@@ -175,7 +176,7 @@ export class ChatCommunicationController {
       this.replyThreadCache.set(replyThreadId, [page]);
     } catch (error: unknown) {
       if (request !== this.replyThreadRequest) return;
-      this.replyThreadError = chatErrorMessage(error, "Reply thread could not be loaded");
+      this.replyThreadError = chatErrorMessage(error, translate("chatErrors.actions.loadReplyThread"));
       throw error;
     } finally {
       if (request === this.replyThreadRequest) this.replyThreadLoading = false;
@@ -198,7 +199,7 @@ export class ChatCommunicationController {
       this.replyThreadCache.set(replyThreadId, this.replyThreadPages);
     } catch (error: unknown) {
       if (request !== this.replyThreadRequest) return;
-      this.replyThreadError = chatErrorMessage(error, "Older reply thread history could not be loaded");
+      this.replyThreadError = chatErrorMessage(error, translate("chatErrors.actions.loadOlderReplies"));
       throw error;
     } finally {
       if (request === this.replyThreadRequest) this.replyThreadLoading = false;
@@ -217,7 +218,7 @@ export class ChatCommunicationController {
       this.replyThread = page;
     } catch (error: unknown) {
       if (request !== this.replyThreadRequest) return;
-      this.replyThreadError = chatErrorMessage(error, "Search result thread could not be loaded");
+      this.replyThreadError = chatErrorMessage(error, translate("chatErrors.actions.loadSearchThread"));
       throw error;
     } finally {
       if (request === this.replyThreadRequest) this.replyThreadLoading = false;

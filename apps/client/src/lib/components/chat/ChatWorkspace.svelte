@@ -37,6 +37,7 @@
     restoreChatCheckpoint,
   } from "$lib/chat/review/checkpoint-restoration";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
   import { useChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
@@ -224,7 +225,7 @@
         requestAnimationFrame(preloadChatLocalExecutionUi);
       })
       .catch((error) => {
-        loadError = error instanceof Error ? error.message : String(error);
+        loadError = chatErrorMessage(error, t("chatErrors.actions.loadChat"));
       });
     refreshWorkspacePixelGeometry();
     inspectorWidth = alignInspectorWidthToDisplay(
@@ -326,7 +327,7 @@
     untrack(() => {
       void chat.syncProjectSelection(projectId).catch((error: unknown) => {
         if (projects.selectedProjectId === projectId) {
-          loadError = error instanceof Error ? error.message : String(error);
+          loadError = chatErrorMessage(error, t("chatErrors.actions.loadChat"));
         }
       });
     });
@@ -1031,7 +1032,7 @@
       }
     } catch (error: unknown) {
       pendingPanelWidths = null;
-      layoutError = error instanceof Error ? error.message : String(error);
+      layoutError = chatErrorMessage(error, t("chatErrors.actions.loadLayout"));
     } finally {
       panelWidthSave = null;
     }
@@ -1042,7 +1043,7 @@
       await chat.reload();
       loadError = null;
     } catch (error: unknown) {
-      loadError = error instanceof Error ? error.message : String(error);
+      loadError = chatErrorMessage(error, t("chatErrors.actions.loadChat"));
       throw error;
     }
   }
@@ -1088,7 +1089,7 @@
         onRestored: (restoredThreadId) => chat.handleNativeChange(restoredThreadId),
       });
     } catch (error: unknown) {
-      layoutError = error instanceof Error ? error.message : String(error);
+      layoutError = chatErrorMessage(error);
     }
   }
 </script>

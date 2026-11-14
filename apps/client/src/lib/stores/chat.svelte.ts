@@ -49,6 +49,7 @@ import type {
 import type { ChatComposerSnapshot } from "$lib/chat/composer/controller";
 import type { ChatOpenReviewDetail } from "$lib/chat/workspace/events";
 import { chatErrorCode, chatErrorMessage } from "$lib/chat/error-presentation";
+import { translate } from "$lib/i18n/translator.svelte";
 import { listenForChatChanges, publishChatChanges, type ChatWindowChanges } from "$lib/chat/window-sync";
 import { listenForChatSyncChanges, onChatSyncChanged } from "$lib/chat/sync-events";
 import { CHAT_SYNC_TABLES } from "$lib/chat/sync-presentation";
@@ -542,7 +543,7 @@ export class ChatStore {
       });
     } catch (error: unknown) {
       if (request !== this.loadRequest) return;
-      this.error = chatErrorMessage(error, "Chat could not be loaded");
+      this.error = chatErrorMessage(error, translate("chatErrors.actions.loadChat"));
       throw error;
     } finally {
       if (request === this.loadRequest) this.loading = false;

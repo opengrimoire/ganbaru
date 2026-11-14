@@ -29,6 +29,7 @@
   import { computeTimelineVirtualWindow, nextTimelineUnreadCount, scrollTopForPreservedAnchor, timelineMinimapRows, timelineScrollbarThumbGeometry, timelineScrollIntent, type TimelineScrollbarThumbGeometry, type TimelineScrollIntent } from "$lib/chat/timeline/virtualization";
   import { formatDateTime, formatList, formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage, providerProbeMessage } from "$lib/chat/error-presentation";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
   import { useChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
@@ -477,7 +478,7 @@
   }
 
   function reportError(error: unknown): void {
-    operationError = error instanceof Error ? error.message : String(error);
+    operationError = chatErrorMessage(error);
   }
 
   function durationLabel(milliseconds: number | null): string {
@@ -936,7 +937,7 @@
           role="status"
           tone="warning"
           icon={Unplug}
-          message={selectedProvider.lastProbe?.detail ?? t("chat.status.providerUnavailable")}
+          message={providerProbeMessage(selectedProvider.lastProbe?.state)}
           retryLabel={t("chat.timeline.retry")}
           onRetry={() => retryProvider(selectedProvider.configuration.instanceId)}
           copy={selectedProvider.lastProbe?.detail ?? false}

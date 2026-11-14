@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { en } from "$lib/i18n/messages/en";
 
 import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -87,7 +88,7 @@ describe("ChatRequestPanel", () => {
     await Promise.resolve();
     await tick();
 
-    expect(body.querySelector('[role="alert"]')?.textContent?.trim()).toBe("Chat thread revision is stale");
+    expect(body.querySelector('[role="alert"]')?.textContent?.trim()).toBe(en.chatErrors.codes.stale_revision);
     expect(body.textContent).not.toContain("[object Object]");
     expect(body.querySelector<HTMLButtonElement>(".request-actions button")?.disabled).toBe(false);
   });

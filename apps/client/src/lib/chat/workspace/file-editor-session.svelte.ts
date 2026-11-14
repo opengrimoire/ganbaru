@@ -5,6 +5,7 @@ import type {
   ProjectWorkingFolderFilePreview,
 } from "$lib/chat/contracts";
 import { chatErrorMessage } from "$lib/chat/error-presentation";
+import { translate } from "$lib/i18n/translator.svelte";
 import { boundTerminalContext } from "./terminal-model";
 import { workspacePreviewImpact } from "./change-model";
 import { useChat } from "$lib/stores/chat.svelte";
@@ -142,7 +143,7 @@ export class ChatFileEditorSession {
     } catch (reason: unknown) {
       if (requestId === this.previewRequestId
         && this.scopeIsCurrent(workingFolderId, executionEnvironmentId, scopeRevision)) {
-        this.error = chatErrorMessage(reason);
+        this.error = chatErrorMessage(reason, translate("chatErrors.actions.fileAction"));
         if (previousPath) this.options.setSelectedPath(previousPath);
       }
     } finally {
@@ -200,7 +201,7 @@ export class ChatFileEditorSession {
         if (this.dirty && !this.saveCopyPath) this.saveCopyPath = fileConflictCopyPath(path);
         return;
       }
-      this.error = chatErrorMessage(reason);
+      this.error = chatErrorMessage(reason, translate("chatErrors.actions.fileAction"));
     }
   }
 
@@ -229,7 +230,7 @@ export class ChatFileEditorSession {
       await this.options.refreshParentDirectory(saved.relativePath);
     } catch (reason: unknown) {
       if (!this.mutationIsCurrent(mutation)) return;
-      this.error = chatErrorMessage(reason);
+      this.error = chatErrorMessage(reason, translate("chatErrors.actions.fileAction"));
       this.saveConflict = errorCode(reason) === "conflict";
       if (this.saveConflict && !this.saveCopyPath) {
         this.saveCopyPath = fileConflictCopyPath(current.relativePath);
@@ -257,7 +258,7 @@ export class ChatFileEditorSession {
     } catch (reason: unknown) {
       if (this.scopeIsCurrent(workingFolderId, environmentId, scopeRevision)
         && this.preview?.relativePath === current.relativePath) {
-        this.error = chatErrorMessage(reason);
+        this.error = chatErrorMessage(reason, translate("chatErrors.actions.fileAction"));
       }
     }
   }
@@ -291,7 +292,7 @@ export class ChatFileEditorSession {
       this.options.setSelectedPath(saved.relativePath);
       await this.options.refreshParentDirectory(saved.relativePath);
     } catch (reason: unknown) {
-      if (this.mutationIsCurrent(mutation)) this.error = chatErrorMessage(reason);
+      if (this.mutationIsCurrent(mutation)) this.error = chatErrorMessage(reason, translate("chatErrors.actions.fileAction"));
     } finally {
       if (this.mutationScopeIsCurrent(mutation)) this.saving = false;
     }
@@ -337,7 +338,7 @@ export class ChatFileEditorSession {
       await this.options.refreshParentDirectory(saved.relativePath);
     } catch (reason: unknown) {
       if (!this.mutationIsCurrent(mutation)) return;
-      this.error = chatErrorMessage(reason);
+      this.error = chatErrorMessage(reason, translate("chatErrors.actions.fileAction"));
       this.saveConflict = errorCode(reason) === "conflict";
     } finally {
       if (this.mutationScopeIsCurrent(mutation)) this.saving = false;
@@ -366,7 +367,7 @@ export class ChatFileEditorSession {
       await this.options.refreshParentDirectory(saved.relativePath);
     } catch (reason: unknown) {
       if (!this.mutationIsCurrent(mutation)) return;
-      this.error = chatErrorMessage(reason);
+      this.error = chatErrorMessage(reason, translate("chatErrors.actions.fileAction"));
       if (errorCode(reason) === "conflict") this.saveConflict = true;
     } finally {
       if (this.mutationScopeIsCurrent(mutation)) this.saving = false;
@@ -393,7 +394,7 @@ export class ChatFileEditorSession {
       this.chat.setComposerAttachments([...this.chat.composer.attachmentIds, attachment.id]);
     } catch (reason: unknown) {
       if (this.scopeIsCurrent(workingFolderId, environmentId, scopeRevision)) {
-        this.error = chatErrorMessage(reason);
+        this.error = chatErrorMessage(reason, translate("chatErrors.actions.fileAction"));
       }
     }
   }
@@ -432,7 +433,7 @@ export class ChatFileEditorSession {
       if (this.scopeIsCurrent(workingFolderId, environmentId, scopeRevision)
         && this.chat.selectedThreadId === threadId
         && this.preview?.relativePath === current.relativePath) {
-        this.error = chatErrorMessage(reason);
+        this.error = chatErrorMessage(reason, translate("chatErrors.actions.fileAction"));
       }
     } finally {
       if (this.scopeIsCurrent(workingFolderId, environmentId, scopeRevision)

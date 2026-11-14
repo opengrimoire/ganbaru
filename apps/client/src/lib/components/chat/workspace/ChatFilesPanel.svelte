@@ -584,7 +584,7 @@
   }
 
   function message(reason: unknown): string {
-    return chatErrorMessage(reason);
+    return chatErrorMessage(reason, t("chatErrors.actions.fileAction"));
   }
 
   function errorCode(reason: unknown): string | null {

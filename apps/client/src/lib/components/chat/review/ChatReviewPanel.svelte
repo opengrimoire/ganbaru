@@ -65,6 +65,7 @@
   import type { ReviewDiffRenderItem, ReviewLineSelection } from "$lib/chat/review/diff-runtime";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
   import { useChat } from "$lib/stores/chat.svelte";
   import { subscribeChatWorkspaceChanges } from "$lib/chat/workspace/observer-client";
@@ -733,12 +734,7 @@
   }
 
   function message(reason: unknown): string {
-    if (reason instanceof Error) return reason.message;
-    if (typeof reason === "object" && reason !== null && !Array.isArray(reason)) {
-      const value = (reason as Record<string, unknown>).message;
-      if (typeof value === "string") return value;
-    }
-    return t("chat.review.reviewUnavailable");
+    return chatErrorMessage(reason, t("chatErrors.actions.loadReview"));
   }
 </script>
 

@@ -15,6 +15,7 @@
   } from "$lib/icon-sizing";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { projectNavigatorPanelGeometry, type ProjectNavigatorPanelMode } from "$lib/projects/toolbar";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
   import { useChat } from "$lib/stores/chat.svelte";
@@ -272,7 +273,7 @@
 
   function run(action: () => Promise<unknown>): void {
     actionError = null;
-    void action().catch((error: unknown) => { actionError = error instanceof Error ? error.message : String(error); });
+    void action().catch((error: unknown) => { actionError = chatErrorMessage(error, t("chatErrors.actions.channelAction")); });
   }
 
   $effect(() => {

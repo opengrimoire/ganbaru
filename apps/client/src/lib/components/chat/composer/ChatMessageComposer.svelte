@@ -749,7 +749,7 @@
       pickerIndex = firstPickerIndex(entries);
       announcement = t("chat.organization.referenceResults", entries.length);
     } catch (cause: unknown) {
-      if (request === pickerRequest) error = cause instanceof Error ? cause.message : String(cause);
+      if (request === pickerRequest) error = chatErrorMessage(cause);
     } finally {
       if (request === pickerRequest) pickerLoading = false;
     }
@@ -1202,7 +1202,7 @@
         restoreDraftAfterEdit();
         await refreshAfterInputChange().catch(() => undefined);
       } else {
-        error = chatErrorMessage(cause);
+        error = chatErrorMessage(cause, t("chatErrors.actions.updateMessage"));
       }
     } finally {
       inputBusyId = null;
@@ -1223,7 +1223,7 @@
       await refreshAfterInputChange();
     } catch (cause: unknown) {
       const settled = settledInputMessage(cause);
-      error = settled ?? chatErrorMessage(cause);
+      error = settled ?? chatErrorMessage(cause, t("chatErrors.actions.updateMessage"));
       if (settled) await refreshAfterInputChange().catch(() => undefined);
     } finally {
       inputBusyId = null;
@@ -1262,7 +1262,7 @@
       attachmentIds = [...attachmentIds, ...imported.map((attachment) => attachment.id)];
       persist();
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.fileAction"));
     }
   }
 
@@ -1293,7 +1293,7 @@
       attachmentIds = [...attachmentIds, attachment.id];
       persist();
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.fileAction"));
     }
   }
 
@@ -1308,7 +1308,7 @@
     try {
       rememberAttachments(await chatApi.readChatAttachments(workingFolderId, [...ids]));
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.fileAction"));
     }
   }
 
@@ -1364,7 +1364,7 @@
         && destinationReplyThreadId(destination) === replyThreadId
       ) {
         assignmentTargets = [];
-        error = cause instanceof Error ? cause.message : String(cause);
+        error = chatErrorMessage(cause);
       }
     } finally {
       if (requestId === assignmentPreviewRequest) assignmentPreviewLoading = false;
@@ -1533,7 +1533,7 @@
       }
       clearComposerAfterDelivery();
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.sendMessage"));
     } finally {
       sending = false;
     }
@@ -1578,7 +1578,7 @@
     try {
       await chat.cancelAssignment(assignment.id);
     } catch (cause: unknown) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.workAction"));
     } finally {
       stopping = false;
     }
@@ -1593,7 +1593,7 @@
       await chat.retryAssignment(assignment.id);
       onRequestScrollToBottom();
     } catch (cause: unknown) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.workAction"));
       throw cause;
     } finally {
       retryingAssignment = false;
@@ -1610,7 +1610,7 @@
       if (started) onRequestScrollToBottom();
       else error = t("chat.organization.workAccessChanged");
     } catch (cause: unknown) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.workAction"));
       throw cause;
     } finally {
       retryingAssignment = false;
@@ -1644,7 +1644,7 @@
     switch (chatErrorReason(cause)) {
       case "pending_replies": return t("chat.organization.reviewPendingReplies");
       case "no_executing_device": return t("chat.organization.reviewNoDevice");
-      default: return chatErrorMessage(cause);
+      default: return chatErrorMessage(cause, t("chatErrors.actions.workAction"));
     }
   }
 
@@ -1698,7 +1698,7 @@
     if (ScheduleMenu) return Promise.resolve();
     scheduleMenuLoad ??= import("./ChatMessageScheduleMenu.svelte")
       .then((module) => { ScheduleMenu = module.default; })
-      .catch((cause: unknown) => { error = cause instanceof Error ? cause.message : String(cause); })
+      .catch((cause: unknown) => { error = chatErrorMessage(cause); })
       .finally(() => { scheduleMenuLoad = null; });
     return scheduleMenuLoad;
   }

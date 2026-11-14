@@ -50,7 +50,7 @@
       const [read] = await readChatNoteProposalStates([itemId]);
       if (itemId === proposalItemId) proposalState = read?.state ?? "pending";
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.proposalAction"));
     }
   }
 
@@ -66,7 +66,7 @@
       editing = false;
       if (channelId) chat.channelNotesChanged(channelId);
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.proposalAction"));
       if (channelId) chat.channelNotesChanged(channelId);
     } finally {
       pending = false;

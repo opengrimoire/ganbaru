@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { en } from "$lib/i18n/messages/en";
 
 import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -730,7 +731,7 @@ describe("ChatDirectStartComposer", () => {
     await Promise.resolve();
     await tick();
     expect(importImages).toHaveBeenCalledWith([file]);
-    expect(target.querySelector('[role="alert"]')?.textContent).toContain("Image signature is invalid");
+    expect(target.querySelector('[role="alert"]')?.textContent).toContain(en.chatErrors.actions.fileAction);
   });
 
 

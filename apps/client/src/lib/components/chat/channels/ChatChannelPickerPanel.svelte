@@ -16,6 +16,7 @@
   import { useChat } from "$lib/stores/chat.svelte";
   import { getChatSidebarOrder } from "$lib/stores/chat/sidebar-order.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { cn, type MaybePromise } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
@@ -95,7 +96,7 @@
     if (!showArchived || !projectId) return;
     let cancelled = false;
     chat.loadArchivedChannelsForPicker(projectId).catch((error: unknown) => {
-      if (!cancelled) archivedError = error instanceof Error ? error.message : String(error);
+      if (!cancelled) archivedError = chatErrorMessage(error, t("chatErrors.actions.loadArchivedChannels"));
     });
     return () => { cancelled = true; };
   });

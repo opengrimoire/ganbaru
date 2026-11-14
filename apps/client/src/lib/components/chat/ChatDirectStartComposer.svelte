@@ -791,7 +791,7 @@
     importing = true;
     operationError = null;
     try { await chat.importComposerImages(files); }
-    catch (cause: unknown) { operationError = chatErrorMessage(cause); }
+    catch (cause: unknown) { operationError = chatErrorMessage(cause, t("chatErrors.actions.fileAction")); }
     finally { importing = false; }
   }
 
@@ -802,7 +802,7 @@
     importing = true;
     operationError = null;
     try { await chat.importComposerTextSnippet(text, t("chat.composer.paste.snippetName", pastedTextLineCount(text))); }
-    catch (cause: unknown) { operationError = chatErrorMessage(cause); }
+    catch (cause: unknown) { operationError = chatErrorMessage(cause, t("chatErrors.actions.fileAction")); }
     finally { importing = false; }
   }
 

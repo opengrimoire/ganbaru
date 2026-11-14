@@ -30,6 +30,7 @@ import type {
   VersionedJson,
 } from "$lib/chat/contracts";
 import { chatErrorMessage } from "$lib/chat/error-presentation";
+import { translate } from "$lib/i18n/translator.svelte";
 import type { TimelineMessageRow } from "$lib/chat/timeline/model";
 
 export interface ChatComposerSendOptions {
@@ -179,7 +180,7 @@ export class ChatComposerRuntimeController {
       if (queuedFollowupDispatchReady(interaction.sessionState, latestTurnState)
         && interaction.queuedFollowup) {
         void this.dispatchQueuedFollowup(interaction.queuedFollowup).catch((error: unknown) => {
-          this.sendError = chatErrorMessage(error);
+          this.sendError = chatErrorMessage(error, translate("chatErrors.actions.sendMessage"));
         });
       }
     } finally {
@@ -292,7 +293,9 @@ export class ChatComposerRuntimeController {
     this.options.upsertThread(result.thread);
     if (!current) this.discardDraft();
     this.options.setSelectedThreadId(result.thread.id);
-    this.sendError = result.launchError?.message ?? null;
+    this.sendError = result.launchError
+      ? chatErrorMessage(result.launchError, translate("chatErrors.actions.sendMessage"))
+      : null;
     this.failedSendOptions = result.launchError ? { ...options } : null;
     try {
       await this.options.refreshTimeline(result.thread.id);
@@ -347,7 +350,7 @@ export class ChatComposerRuntimeController {
       mentions: [],
     });
     this.options.upsertThread(result.thread);
-    if (result.launchError) throw new Error(result.launchError.message);
+    if (result.launchError) throw new Error(result.launchError.message, { cause: result.launchError });
     await this.options.refreshTimeline(thread.id);
     await this.refreshInteraction(thread.id);
     return { threadId: thread.id, turnId };
@@ -546,7 +549,7 @@ export class ChatComposerRuntimeController {
     } catch (error: unknown) {
       if (request === this.attachmentRequest) {
         this.attachments = [];
-        this.sendError = chatErrorMessage(error);
+        this.sendError = chatErrorMessage(error, translate("chatErrors.actions.sendMessage"));
       }
     }
   }
@@ -583,7 +586,9 @@ export class ChatComposerRuntimeController {
       });
       await chatApi.markChatQueuedFollowupDispatched(thread.id, queued.id);
       this.options.upsertThread(result.thread);
-      this.sendError = result.launchError?.message ?? null;
+      this.sendError = result.launchError
+        ? chatErrorMessage(result.launchError, translate("chatErrors.actions.sendMessage"))
+        : null;
       await this.options.refreshTimeline(thread.id);
       await this.refreshInteraction(thread.id);
     } finally {

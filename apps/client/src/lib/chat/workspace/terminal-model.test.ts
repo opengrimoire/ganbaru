@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { en } from "$lib/i18n/messages/en";
 import {
   applyTerminalOutput,
   replayStartState,
@@ -76,20 +77,18 @@ describe("Chat terminal model", () => {
     expect(boundTerminalContext("abécd", 3).text).toBe("ab");
   });
 
-  it("reads structured terminal errors without exposing object coercion", () => {
+  it("localizes structured terminal errors without showing backend text", () => {
     expect(terminalErrorMessage({
       code: "invalid_state_transition",
       message: "Chat terminal is not running",
       field: null,
       recoverable: true,
       details: null,
-    }, "Terminal operation failed")).toBe("Chat terminal is not running");
+    }, "Terminal operation failed")).toBe(en.chatErrors.codes.invalid_state_transition);
     expect(terminalErrorMessage({
       message: "Terminal dimensions are outside the supported range",
       field: "dimensions",
-    }, "Terminal operation failed")).toBe(
-      "dimensions: Terminal dimensions are outside the supported range",
-    );
+    }, "Terminal operation failed")).toBe("Terminal operation failed");
     expect(terminalErrorMessage({ code: "internal" }, "Terminal operation failed")).toBe(
       "Terminal operation failed",
     );

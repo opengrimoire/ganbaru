@@ -1,4 +1,5 @@
 import type { ChatTerminalOutputChunk } from "$lib/chat/contracts";
+import { chatErrorMessage } from "$lib/chat/error-presentation";
 import { safeExternalUrl } from "$lib/chat/timeline/markdown";
 
 export interface TerminalOutputState {
@@ -192,21 +193,14 @@ export class TerminalPanelRegistry {
 }
 
 /**
- * Converts an unknown terminal API rejection into a useful user-facing message.
+ * Converts an unknown terminal API rejection into a localized message.
  *
  * @param reason - The rejected value from the terminal API boundary.
- * @param fallback - Localized text used when the rejection has no readable message.
- * @returns The validated error message.
+ * @param fallback - Localized text naming the terminal action that failed.
+ * @returns The localized error message.
  */
 export function terminalErrorMessage(reason: unknown, fallback: string): string {
-  if (reason instanceof Error) return reason.message;
-  if (typeof reason === "string") return reason;
-  if (typeof reason !== "object" || reason === null || Array.isArray(reason)) return fallback;
-  const record = reason as Record<string, unknown>;
-  if (typeof record.message !== "string" || record.message.length === 0) return fallback;
-  return typeof record.field === "string" && record.field.length > 0
-    ? `${record.field}: ${record.message}`
-    : record.message;
+  return chatErrorMessage(reason, fallback);
 }
 
 function decodeBase64(value: string): Uint8Array {

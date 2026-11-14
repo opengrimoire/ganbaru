@@ -2,7 +2,7 @@
   import KeyRound from "@lucide/svelte/icons/key-round";
   import { declineChatSecret, listChatSecretRequests, provideChatSecret } from "$lib/api/chat";
   import type { ChatReplyThreadId, ChatSecretRequestRead } from "$lib/chat/contracts";
-  import { chatErrorMessage } from "$lib/chat/error-presentation";
+  import { chatErrorDetail, chatErrorMessage } from "$lib/chat/error-presentation";
   import { formatDateTime } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
@@ -44,13 +44,13 @@
   let listRequest = 0;
 
   function refusalCode(cause: unknown): SecretRefusalCode | null {
-    const message = chatErrorMessage(cause);
+    const message = chatErrorDetail(cause);
     return SECRET_REFUSAL_CODES.find((code) => code === message) ?? null;
   }
 
   function errorText(cause: unknown): string {
     const code = refusalCode(cause);
-    return code ? t(`chat.secrets.refusals.${code}`) : chatErrorMessage(cause);
+    return code ? t(`chat.secrets.refusals.${code}`) : chatErrorMessage(cause, t("chatErrors.actions.secretAction"));
   }
 
   function stillOpen(request: ChatSecretRequestRead, now: number): boolean {

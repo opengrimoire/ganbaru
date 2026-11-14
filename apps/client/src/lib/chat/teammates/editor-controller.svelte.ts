@@ -780,7 +780,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
             const preview = await chatApi.previewChatTeammateAccess(request);
             const issue = preview.issues[0];
             if (issue) {
-              error = issue.message;
+              error = t(`chatErrors.accessIssues.${issue.code}`);
               errorField = issue.fieldPath;
               return;
             }

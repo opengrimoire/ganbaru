@@ -67,7 +67,7 @@
       const [read] = await readChatScheduleProposalStates([itemId]);
       if (itemId === proposalItemId) proposalState = read?.state ?? "pending";
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.proposalAction"));
     }
   }
 
@@ -78,7 +78,7 @@
       ScheduleMenu ??= (await import("$lib/components/chat/composer/ChatMessageScheduleMenu.svelte")).default;
       menuOpen = true;
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.proposalAction"));
     }
   }
 
@@ -89,7 +89,7 @@
       await chat.confirmScheduleProposal({ proposalItemId, scheduledFor, recurrence, normalizedMarkdown: null });
       proposalState = "confirmed";
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.proposalAction"));
     } finally {
       pending = false;
     }
@@ -108,7 +108,7 @@
       await dismissChatScheduleProposal(proposalItemId);
       proposalState = "dismissed";
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.proposalAction"));
     } finally {
       pending = false;
     }

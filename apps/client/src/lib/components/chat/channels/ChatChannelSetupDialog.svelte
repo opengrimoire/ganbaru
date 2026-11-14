@@ -19,6 +19,7 @@
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { activateModalFocus, activateModalKeyboardLayer, trapModalTabKey } from "$lib/modal-focus";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
   import { useChat } from "$lib/stores/chat.svelte";
@@ -123,7 +124,7 @@
       if (preview.activeAssignmentCount === 0 && preview.activeAuthorizationCount === 0) dropMember(teammateId);
       else removal = { teammateId, preview };
     } catch (cause: unknown) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.membersAction"));
     } finally {
       removalBusy = false;
     }
@@ -151,7 +152,7 @@
       }
       onSaved(saved, sectionId || null);
     } catch (cause: unknown) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.channelAction"));
     } finally {
       saving = false;
     }

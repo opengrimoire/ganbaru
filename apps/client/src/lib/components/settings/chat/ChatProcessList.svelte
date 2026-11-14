@@ -7,6 +7,7 @@
   import Notice from "$lib/components/ui/Notice.svelte";
   import { formatDateTime, formatNumber } from "$lib/i18n/formatters";
   import { getLocalization, type TranslationKey } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
 
   /** Lists the running Chat processes on this device and stops one process group after confirmation. */
   let { refreshKey = 0 }: { refreshKey?: number } = $props();
@@ -26,7 +27,7 @@
   };
 
   function errorMessage(cause: unknown): string {
-    return cause instanceof Error ? cause.message : String(cause);
+    return chatErrorMessage(cause, t("chatErrors.actions.settingsAction"));
   }
 
   function pidLabel(pid: number): string {

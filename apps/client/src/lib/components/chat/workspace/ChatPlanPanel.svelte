@@ -55,7 +55,7 @@
   }
 
   function reportError(reason: unknown): void {
-    error = chatErrorMessage(reason);
+    error = chatErrorMessage(reason, t("chatErrors.actions.planAction"));
   }
 </script>
 

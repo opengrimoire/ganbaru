@@ -13,6 +13,7 @@ import type {
   VersionedJson,
 } from "$lib/chat/contracts";
 import { chatErrorCode, chatErrorMessage } from "$lib/chat/error-presentation";
+import { translate } from "$lib/i18n/translator.svelte";
 import { chatDraftWindowSync, type ChatDraftWindowSync } from "./window-sync";
 
 export interface ChatDraftApi {
@@ -149,7 +150,7 @@ export class ChatComposerController {
       this.notify();
     } catch (error: unknown) {
       if (generation !== this.generation) return;
-      this.state = { ...this.state, loading: false, error: chatErrorMessage(error, "Chat draft could not be loaded") };
+      this.state = { ...this.state, loading: false, error: chatErrorMessage(error, translate("chatErrors.actions.loadDraft")) };
       this.notify();
       throw error;
     }
@@ -281,7 +282,7 @@ export class ChatComposerController {
           return;
         }
         if (this.state.draftId === payload.id) {
-          this.state = { ...this.state, saving: false, error: chatErrorMessage(error, "Chat draft could not be saved") };
+          this.state = { ...this.state, saving: false, error: chatErrorMessage(error, translate("chatErrors.actions.saveDraft")) };
           this.notify();
         }
         throw error;
@@ -342,7 +343,7 @@ export class ChatComposerController {
       stored = await this.api.read(draftId);
     } catch (error: unknown) {
       if (generation !== this.generation || this.state.draftId !== draftId) return;
-      this.state = { ...this.state, saving: false, error: chatErrorMessage(error, "Chat draft could not be loaded") };
+      this.state = { ...this.state, saving: false, error: chatErrorMessage(error, translate("chatErrors.actions.loadDraft")) };
       this.notify();
       return;
     }

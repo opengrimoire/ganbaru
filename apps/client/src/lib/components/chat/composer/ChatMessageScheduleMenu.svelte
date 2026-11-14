@@ -25,6 +25,7 @@
   import { TOUCH_PICKERS } from "$lib/components/ui/picker-presentation";
   import { formatTimeLabel } from "$lib/calendar/utils";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { localTimezone } from "$lib/stores/calendar/event-payloads";
   import { useChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
@@ -213,7 +214,7 @@
       onMessagesChange(remaining);
       if (remaining.length === 0) onClose();
     } catch (cause: unknown) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.scheduleAction"));
     } finally {
       pendingMessageIds = new Set([...pendingMessageIds].filter((messageId) => messageId !== id));
     }
@@ -227,7 +228,7 @@
       const retried = await chat.retryScheduledOrganizationalMessage(id);
       onMessagesChange(scheduledMessages.map((message) => message.id === id ? retried : message));
     } catch (cause: unknown) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.scheduleAction"));
       throw cause;
     } finally {
       pendingMessageIds = new Set([...pendingMessageIds].filter((messageId) => messageId !== id));
@@ -244,7 +245,7 @@
       onMessagesChange(remaining);
       if (remaining.length === 0) onClose();
     } catch (cause: unknown) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.scheduleAction"));
     } finally {
       pendingMessageIds = new Set([...pendingMessageIds].filter((messageId) => messageId !== id));
     }

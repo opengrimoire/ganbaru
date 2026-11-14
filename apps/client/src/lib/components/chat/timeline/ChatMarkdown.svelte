@@ -11,6 +11,7 @@
   import { openChatExternalUrl } from "$lib/api/chat";
   import { renderChatMarkdownBlocks } from "$lib/chat/timeline/markdown";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
   import "./chat-markdown.css";
 
   let { markdown, renderKey, onError = () => {} }: {
@@ -80,7 +81,7 @@
   }
 
   function reportError(error: unknown): void {
-    onError(error instanceof Error ? error.message : String(error));
+    onError(chatErrorMessage(error));
   }
 </script>
 

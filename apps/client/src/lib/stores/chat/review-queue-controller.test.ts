@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { en } from "$lib/i18n/messages/en";
 import type {
   ChatAssignmentReviewRequest,
   ChatReviewQueueItemRead,
@@ -121,7 +122,7 @@ describe("ChatReviewQueueController", () => {
     await controller.refresh();
 
     expect(controller.queue?.items.map((entry) => entry.assignmentId)).toEqual(["assignment:kept"]);
-    expect(controller.error).toBe("Database is locked");
+    expect(controller.error).toBe(en.chatErrors.actions.reviewQueueAction);
 
     api.listReviewQueue.mockResolvedValueOnce(queueOf([]));
     await controller.refresh();

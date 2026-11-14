@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { en } from "$lib/i18n/messages/en";
 
 import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -89,7 +90,7 @@ describe("ChatReviewPanel", () => {
 
     expect(api.openReview).toHaveBeenCalledTimes(1);
     expect(api.readPatches).toHaveBeenCalledTimes(1);
-    expect(target.querySelector('[role="alert"]')?.textContent).toContain("Patch transport failed");
+    expect(target.querySelector('[role="alert"]')?.textContent).toContain(en.chatErrors.actions.loadReview);
     expect(target.querySelector(".review-content [data-loading]")).toBeNull();
   });
 

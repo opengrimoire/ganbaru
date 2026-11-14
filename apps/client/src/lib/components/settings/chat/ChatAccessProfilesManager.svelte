@@ -318,7 +318,7 @@
             <aside class="profile-impact" role={impact.issues.length ? "alert" : "status"}>
               <strong>{impact.isExpansion ? t("settings.chat.teammates.expansionTitle") : impact.isReduction ? t("settings.chat.teammates.reductionTitle") : t("settings.chat.teammates.profileManager.impactTitle")}</strong>
               <p>{t("settings.chat.teammates.profileManager.impact", impact.affectedTeammateIds.length, impact.affectedChannelIds.length, impact.activeAuthorizationCount)}</p>
-              {#each impact.issues as issue}<small>{issue.message}</small>{/each}
+              {#each impact.issues as issue}<small>{t(`chatErrors.accessIssues.${issue.code}`)}</small>{/each}
             </aside>
           {/if}
           {#if error}<Notice class="profile-error" message={error} />{/if}

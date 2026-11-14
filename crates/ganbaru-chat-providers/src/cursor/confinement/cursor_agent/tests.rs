@@ -279,6 +279,7 @@ fn the_configuration_folder_is_reseeded_without_following_links() {
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "untouched");
     let seeded = folder.join("cli-config.json");
     assert!(!std::fs::symlink_metadata(&seeded).unwrap().is_symlink());
+    assert!(std::fs::symlink_metadata(&seeded).unwrap().is_file());
     let configuration: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(seeded).unwrap()).unwrap();
     assert_eq!(
@@ -302,7 +303,12 @@ fn a_running_marker_that_is_not_a_folder_is_refused() {
 
     let linked = crate::probe_directory::ProbeDirectory::create().unwrap();
     #[cfg(unix)]
-    std::os::unix::fs::symlink(&*installation, linked.join(".running")).unwrap();
+    {
+        std::os::unix::fs::symlink(&*installation, linked.join(".running")).unwrap();
+        assert!(prepare_running_marker(&linked).is_err());
+    }
+    std::fs::remove_file(linked.join(".running")).ok();
+    std::fs::write(linked.join(".running"), "").unwrap();
     assert!(prepare_running_marker(&linked).is_err());
 }
 

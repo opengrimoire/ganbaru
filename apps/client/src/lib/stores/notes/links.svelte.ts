@@ -1,3 +1,4 @@
+import { notesErrorDetail } from "$lib/notes/failure";
 import {
   addNotesPageAlias,
   deleteNotesPageAlias,
@@ -21,10 +22,6 @@ interface NotesLinksControllerContext {
   readAllPages: () => NotesPage[];
   reloadSelectedPage: (pageId: string) => Promise<void>;
   scheduleVisibleMetadataRefresh: () => void;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** Own backlink, alias, unresolved-link, and destination request identities. */
@@ -117,7 +114,7 @@ export function createNotesLinksController(context: NotesLinksControllerContext)
     } catch (error) {
       if (requestId !== backlinksRequestId || pageId !== context.readSelectedPageId()) return;
       backlinks = [];
-      backlinksError = errorMessage(error);
+      backlinksError = notesErrorDetail(error);
     } finally {
       if (requestId === backlinksRequestId) backlinksLoading = false;
     }
@@ -140,7 +137,7 @@ export function createNotesLinksController(context: NotesLinksControllerContext)
     } catch (error) {
       if (requestId !== aliasesRequestId || pageId !== context.readSelectedPageId()) return;
       aliases = [];
-      aliasesError = errorMessage(error);
+      aliasesError = notesErrorDetail(error);
     } finally {
       if (requestId === aliasesRequestId) aliasesLoading = false;
     }
@@ -163,7 +160,7 @@ export function createNotesLinksController(context: NotesLinksControllerContext)
     } catch (error) {
       if (requestId !== unresolvedRequestId || pageId !== context.readSelectedPageId()) return;
       unresolved = [];
-      unresolvedError = errorMessage(error);
+      unresolvedError = notesErrorDetail(error);
     } finally {
       if (requestId === unresolvedRequestId) unresolvedLoading = false;
     }

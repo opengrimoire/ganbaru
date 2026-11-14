@@ -14,6 +14,7 @@
   import Download from "@lucide/svelte/icons/download";
   import NotesRoundTripDiagnostics from "$lib/components/notes/NotesRoundTripDiagnostics.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
 
   let {
     dataSourceId,
@@ -30,7 +31,7 @@
   const { t } = getLocalization();
   let scope = $state<NotesDataSourceCsvExportScope>("view");
   let exporting = $state(false);
-  let error = $state<string | null>(null);
+  let error = $state<NotesFailure | null>(null);
   let result = $state<NotesDataSourceCsvExportSaveResult | null>(null);
 
   const roundTripDiagnostics = $derived(
@@ -86,7 +87,7 @@
         scope,
       });
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseCsvExportFailed"));
     } finally {
       exporting = false;
     }
@@ -130,7 +131,7 @@
     </div>
 
     {#if error}
-      <Notice message={t("notes.databaseCsvExportFailed", error)} copy={error} />
+      <Notice message={error.message} copy={error.detail} />
     {/if}
 
     {#if result}

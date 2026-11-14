@@ -19,6 +19,7 @@
   import Upload from "@lucide/svelte/icons/upload";
   import NotesRoundTripDiagnostics from "$lib/components/notes/NotesRoundTripDiagnostics.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
 
@@ -36,7 +37,7 @@
   let csvText = $state("");
   let hasHeader = $state(true);
   let runningAction = $state<"preview" | "import" | null>(null);
-  let error = $state<string | null>(null);
+  let error = $state<NotesFailure | null>(null);
   let result = $state<NotesDataSourceCsvImportResult | null>(null);
 
   const canRun = $derived(!disabled && !runningAction && csvText.trim().length > 0);
@@ -100,13 +101,13 @@
     result = null;
     csvText = "";
     if (browserFileExceedsLimit(file, NOTES_DATABASE_CSV_MAX_BYTES)) {
-      error = t("notes.databaseCsvImportTooLarge", NOTES_DATABASE_CSV_MAX_KIBIBYTES);
+      error = { message: t("notes.databaseCsvImportTooLarge", NOTES_DATABASE_CSV_MAX_KIBIBYTES), detail: undefined };
       return;
     }
     try {
       csvText = await file.text();
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseCsvImportFailed"));
     }
   }
 
@@ -125,7 +126,7 @@
         await onImported();
       }
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseCsvImportFailed"));
     } finally {
       runningAction = null;
     }
@@ -204,7 +205,7 @@
     </div>
 
     {#if error}
-      <Notice message={t("notes.databaseCsvImportFailed", error)} copy={error} />
+      <Notice message={error.message} copy={error.detail} />
     {/if}
 
     {#if result}

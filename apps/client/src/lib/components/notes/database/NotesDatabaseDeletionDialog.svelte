@@ -14,7 +14,7 @@
   <ConfirmDialog
     title={t(current.loading || current.dataSourceCount > 0 ? "notes.databaseTrashTitle" : "notes.databaseLinkedTrashTitle")}
     message={current.loading ? t("notes.databaseTrashInspecting")
-      : current.error ? t("notes.databaseTrashInspectFailed", current.error)
+      : current.error ? t("notes.databaseTrashInspectFailed")
       : current.dataSourceCount > 0 ? t("notes.databaseTrashMessage", current.dataSourceCount, formatNumber(localization.locale, current.dataSourceCount))
       : t("notes.databaseLinkedTrashMessage")}
     confirmLabel={current.error ? t("common.retry") : t("notes.databaseMoveToTrash")}

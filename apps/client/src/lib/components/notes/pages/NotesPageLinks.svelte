@@ -121,7 +121,7 @@
       </div>
     {/if}
     {#if notes.pageAliasesError}
-      <Notice class="text-[0.8rem]" message={t("notes.loadPageAliasesFailed", notes.pageAliasesError)} copy={notes.pageAliasesError} onRetry={retryAliases} />
+      <Notice class="text-[0.8rem]" message={t("notes.loadPageAliasesFailed")} copy={notes.pageAliasesError} onRetry={retryAliases} />
     {/if}
     <div class="flex min-w-0 flex-wrap items-center gap-2">
       <input
@@ -187,7 +187,7 @@
       </div>
     {/if}
     {#if notes.unresolvedLinksError}
-      <Notice class="text-[0.8rem]" message={t("notes.loadUnresolvedLinksFailed", notes.unresolvedLinksError)} copy={notes.unresolvedLinksError} onRetry={retryUnresolvedLinks} />
+      <Notice class="text-[0.8rem]" message={t("notes.loadUnresolvedLinksFailed")} copy={notes.unresolvedLinksError} onRetry={retryUnresolvedLinks} />
     {:else if notes.unresolvedLinks.length === 0}
       <div class="text-[0.8rem] text-muted-foreground">{t("notes.noUnresolvedLinks")}</div>
     {:else}

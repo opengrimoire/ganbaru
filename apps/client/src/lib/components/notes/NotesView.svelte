@@ -812,7 +812,7 @@
         <div class="flex min-h-0 min-w-0 flex-1 overflow-hidden">
           {#if !notes.loaded && notes.loadError}
             <div class="flex min-w-0 flex-1 text-sm" data-notes-first-use-state>
-              <Notice layout="fill" message={t("notes.loadFailed", notes.loadError)} onRetry={() => notes.load()} />
+              <Notice layout="fill" message={t("notes.loadFailed")} copy={notes.loadError} onRetry={() => notes.load()} />
             </div>
           {:else if !mobileLayout && selectedWorkingMarkdownFile}
             <NotesWorkingMarkdownEditor
@@ -908,7 +908,7 @@
                             />
                           {:else if store.loadError}
                             <div class="flex min-w-0 flex-1 text-sm">
-                              <Notice layout="fill" message={t("notes.loadFailed", store.loadError)} onRetry={() => store.selectPageLocally(store.selectedPageId)}>
+                              <Notice layout="fill" message={t("notes.loadFailed")} copy={store.loadError} onRetry={() => store.selectPageLocally(store.selectedPageId)}>
                                 {#snippet actions()}
                                   {#if isContextual && showPagePeek}
                                     <button type="button" class="notice-action-text" onclick={() => { void notes.closePane(pane.id).catch((error: unknown) => console.warn("Close Notes pane failed", error)); }}>{t("notes.closePeek")}</button>

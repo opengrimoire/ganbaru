@@ -76,6 +76,7 @@
   import NotesPageRow from "$lib/components/notes/navigation/NotesPageRow.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import { TouchHoldArbiter } from "$lib/utils/touch-hold";
   import type { OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
   import {
@@ -421,7 +422,7 @@
     try {
       await moveNavigationItem(source, target);
     } catch (error: unknown) {
-      navigationDragError = error instanceof Error ? error.message : String(error);
+      navigationDragError = notesFailure(error, t("notes.navigationMoveFailed"));
       returnNavigationDragCard();
       return;
     }
@@ -685,8 +686,8 @@
   let pendingDeleteFolder = $state<NotesFolder | null>(null);
   let folderRenameTargetId = $state<string | null>(null);
   let folderRenameRequestId = $state(0);
-  let folderActionError = $state<string | null>(null);
-  let navigationDragError = $state<string | null>(null);
+  let folderActionError = $state<NotesFailure | null>(null);
+  let navigationDragError = $state<NotesFailure | null>(null);
   let draggingNavigationItem = $state<NotesNavigationDragItem | null>(null);
   let navigationDropTarget = $state.raw<NotesNavigationDropTarget | null>(null);
   let navigationDropResolution = $state<NotesNavigationDropResolution | null>(null);
@@ -711,7 +712,7 @@
     unavailableWorkingFolderIds: [],
   });
   let workingMarkdownLoading = $state(false);
-  let workingMarkdownError = $state<string | null>(null);
+  let workingMarkdownError = $state<NotesFailure | null>(null);
   let workingMarkdownGeneration = 0;
   let workingMarkdownTreeProjectId: string | null = null;
 
@@ -967,7 +968,7 @@
     } catch (error) {
       if (generation !== workingMarkdownGeneration || projectId !== requestedProjectId) return;
       workingMarkdownTree = { roots: [], unavailableWorkingFolderIds: [] };
-      workingMarkdownError = error instanceof Error ? error.message : String(error);
+      workingMarkdownError = notesFailure(error, t("notes.workingMarkdown.treeLoadFailed"));
     } finally {
       if (generation === workingMarkdownGeneration) workingMarkdownLoading = false;
     }
@@ -1074,7 +1075,7 @@
       folderRenameTargetId = folder.id;
       folderRenameRequestId += 1;
     } catch (error) {
-      folderActionError = error instanceof Error ? error.message : String(error);
+      folderActionError = notesFailure(error, t("notes.folderActionFailed"));
     }
   }
 
@@ -1084,7 +1085,7 @@
       await notes.renameFolder(folderId, name);
       return true;
     } catch (error) {
-      folderActionError = error instanceof Error ? error.message : String(error);
+      folderActionError = notesFailure(error, t("notes.folderActionFailed"));
       return false;
     }
   }
@@ -1095,7 +1096,7 @@
       await notes.moveFolder(folderId, parentFolderId);
       if (parentFolderId) notes.setFolderCollapsed(parentFolderId, false);
     } catch (error) {
-      folderActionError = error instanceof Error ? error.message : String(error);
+      folderActionError = notesFailure(error, t("notes.folderActionFailed"));
     }
   }
 
@@ -1151,7 +1152,7 @@
     try {
       await notes.deleteFolder(folder.id);
     } catch (error) {
-      folderActionError = error instanceof Error ? error.message : String(error);
+      folderActionError = notesFailure(error, t("notes.folderActionFailed"));
     }
   }
 </script>
@@ -1308,13 +1309,13 @@
   {/if}
 
   {#if folderActionError}
-    <Notice class="shrink-0 px-3 py-2 text-[0.8rem]" message={t("notes.folderActionFailed", folderActionError)} />
+    <Notice class="shrink-0 px-3 py-2 text-[0.8rem]" message={folderActionError.message} copy={folderActionError.detail} />
   {/if}
   {#if notes.trashActionError}
-    <Notice class="shrink-0 px-3 py-2 text-[0.8rem]" message={t("notes.trashFailed", notes.trashActionError)} />
+    <Notice class="shrink-0 px-3 py-2 text-[0.8rem]" message={t("notes.trashFailed")} copy={notes.trashActionError} />
   {/if}
   {#if navigationDragError}
-    <Notice class="shrink-0 px-3 py-2 text-[0.8rem]" message={t("notes.navigationMoveFailed", navigationDragError)} />
+    <Notice class="shrink-0 px-3 py-2 text-[0.8rem]" message={navigationDragError.message} copy={navigationDragError.detail} />
   {/if}
 
   <div
@@ -1335,7 +1336,7 @@
     use:resetCreationLocationOnBlankPointer
   >
     {#if notes.loadError}
-      <Notice class="px-1 py-2 text-[0.8rem]" message={t("notes.loadFailed", notes.loadError)} />
+      <Notice class="px-1 py-2 text-[0.8rem]" message={t("notes.loadFailed")} copy={notes.loadError} />
     {/if}
     {#if notes.loaded && treeItems.length === 0 && (mobileLayout || !workingMarkdownHasMatches) && search.trim()}
       <div class="px-1 py-2 text-[0.8rem] text-muted-foreground">
@@ -1470,7 +1471,7 @@
         query={search}
         selectedFile={selectedWorkingMarkdownFile}
         loading={workingMarkdownLoading}
-        error={workingMarkdownError}
+        error={workingMarkdownError?.message ?? null}
         onSelect={onSelectWorkingMarkdownFile}
         onRefresh={() => { void refreshWorkingMarkdown(); }}
       />

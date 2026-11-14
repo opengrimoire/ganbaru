@@ -10,6 +10,7 @@
   import type { NotesHtmlImportResult } from "$lib/notes/types";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import NotesImportDestinationRow from "./NotesImportDestinationRow.svelte";
   import NotesRoundTripDiagnostics from "$lib/components/notes/NotesRoundTripDiagnostics.svelte";
   import NotesTransferFieldRow from "./NotesTransferFieldRow.svelte";
@@ -39,7 +40,7 @@
   let projectId = $state<string | null>(null);
   let keepExternalFileReferences = $state(false);
   let importing = $state(false);
-  let error = $state<string | null>(null);
+  let error = $state<NotesFailure | null>(null);
   let result = $state<NotesHtmlImportResult | null>(null);
   let dialogEl = $state<HTMLDivElement | null>(null);
   let textareaEl = $state<HTMLTextAreaElement | null>(null);
@@ -94,7 +95,7 @@
         projectId,
       });
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.htmlImportFailed"));
     } finally {
       importing = false;
     }
@@ -111,10 +112,7 @@
       await tick();
       textareaEl?.focus();
     } catch (caught) {
-      error = t(
-        "notes.htmlImportFileFailed",
-        caught instanceof Error ? caught.message : String(caught),
-      );
+      error = notesFailure(caught, t("notes.htmlImportFileFailed"));
     }
   }
 
@@ -238,7 +236,7 @@
       </NotesTransferFieldRow>
 
       {#if error}
-        <Notice class="text-[0.8rem]" message={t("notes.htmlImportFailed", error)} copy={error} />
+        <Notice class="text-[0.8rem]" message={error.message} copy={error.detail} />
       {/if}
 
       {#if result}

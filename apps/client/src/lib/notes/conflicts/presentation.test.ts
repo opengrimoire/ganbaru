@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { NOTES_CONFLICT_TARGETS, type NotesConflictTarget, type NotesFieldConflict } from "$lib/api/notes/conflicts";
+import { en } from "$lib/i18n/messages/en";
+import { es } from "$lib/i18n/messages/es";
+import { translateFromPartialCatalog, type Translate } from "$lib/i18n/translator.svelte";
 import type { NotesBlock, NotesBlockUpdate } from "$lib/notes/types";
 import {
+  NOTES_CONFLICT_ERROR_MESSAGE_KEYS,
   notesBlockEditConflictView,
   notesBlockUpdateText,
   notesFieldConflictTitleKey,
@@ -146,5 +150,28 @@ describe("surfaced Notes conflicts", () => {
     expect(notesThreadStatusIsResolved("resolved")).toBe(true);
     expect(notesThreadStatusIsResolved("open")).toBe(false);
     expect(notesThreadStatusIsResolved("")).toBe(false);
+  });
+});
+
+describe("notes conflict error messages", () => {
+  const tEn: Translate = ((key, ...args) => translateFromPartialCatalog(en, key, ...args)) as Translate;
+  const tEs: Translate = ((key, ...args) => translateFromPartialCatalog(es, key, ...args)) as Translate;
+  const codes = ["resolved", "unfit", "failed"] as const;
+
+  it("maps every resolution failure code to its own message", () => {
+    expect(Object.keys(NOTES_CONFLICT_ERROR_MESSAGE_KEYS).sort()).toEqual([...codes].sort());
+    expect(new Set(Object.values(NOTES_CONFLICT_ERROR_MESSAGE_KEYS)).size).toBe(codes.length);
+  });
+
+  it("has English and Spanish text for every code", () => {
+    for (const code of codes) {
+      const key = NOTES_CONFLICT_ERROR_MESSAGE_KEYS[code];
+      const english = tEn(key);
+      const spanish = tEs(key);
+      expect(english).not.toBe(key);
+      expect(spanish).not.toBe(key);
+      expect(english.trim()).not.toBe("");
+      expect(spanish).not.toBe(english);
+    }
   });
 });

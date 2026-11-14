@@ -9,6 +9,7 @@
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { notesErrorDetail } from "$lib/notes/failure";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import {
     mediaCaptionPlainText,
@@ -170,7 +171,7 @@
       })
       .catch((error) => {
         if (cancelled) return;
-        localPreviewError = error instanceof Error ? error.message : String(error);
+        localPreviewError = notesErrorDetail(error);
       });
     return () => {
       cancelled = true;
@@ -269,7 +270,7 @@
         : (asset.originalName ?? undefined);
       onMediaChange(block.id, "", captionDraft, assetName, { type: "attach", asset });
     } catch (error) {
-      localFileError = error instanceof Error ? error.message : String(error);
+      localFileError = notesErrorDetail(error);
     } finally {
       isPickingLocalFile = false;
     }
@@ -328,7 +329,7 @@
       openError = null;
       await openNotesExternalUrl(urlDraft.trim());
     } catch (error) {
-      openError = error instanceof Error ? error.message : String(error);
+      openError = notesErrorDetail(error);
     }
   }
 </script>
@@ -405,7 +406,7 @@
         </p>
       {:else if localPreviewError}
         <p class="text-[0.733333rem] text-muted-foreground">
-          {t("notes.mediaLocalPreviewUnavailable", localPreviewError)}
+          {t("notes.mediaLocalPreviewUnavailable")}
         </p>
       {/if}
       {#if sourceStatusMessage}
@@ -414,10 +415,10 @@
         </p>
       {/if}
       {#if localFileError}
-        <Notice class="text-[0.733333rem]" message={t("notes.mediaLocalAttachFailed", localFileError)} copy={localFileError} />
+        <Notice class="text-[0.733333rem]" message={t("notes.mediaLocalAttachFailed")} copy={localFileError} />
       {/if}
       {#if openError}
-        <Notice class="text-[0.733333rem]" message={t("notes.openMediaFailed", openError)} copy={openError} />
+        <Notice class="text-[0.733333rem]" message={t("notes.openMediaFailed")} copy={openError} />
       {/if}
     </div>
     {#if nativeFilePickerAvailable}

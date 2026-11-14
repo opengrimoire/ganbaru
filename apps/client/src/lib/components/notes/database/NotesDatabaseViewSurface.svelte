@@ -31,6 +31,8 @@
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { LocalizedError } from "$lib/i18n/user-errors";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import {
     deleteNotesDatabaseView,
     duplicateNotesDatabaseView,
@@ -133,7 +135,7 @@
   let views = $state<NotesDatabaseView[]>(untrack(() => notesDatabaseSession.read(databaseResource("views", dataSourceId, { databaseId })) ?? []));
   let selectedViewId = $state<string | null>(untrack(() => notesDatabaseSession.recall(databaseId ?? dataSourceId)?.viewId ?? initialViewId));
   let selectionKey = untrack(() => databaseId ?? dataSourceId);
-  let viewError = $state<string | null>(null);
+  let viewError = $state<NotesFailure | null>(null);
   let busy = $state(false);
   let layoutSavingState = $state<{ reporter: (saving: boolean) => void; saving: boolean } | null>(null);
 
@@ -165,14 +167,14 @@
   let newRowRequestState = $state<{ reporter: (saving: boolean) => void; count: number } | null>(null);
   let templates = $state<NotesDataSourceTemplate[]>(untrack(() => notesDatabaseSession.read(databaseResource("templates", dataSourceId)) ?? []));
   let templateSourceId = $state(untrack(() => dataSourceId));
-  let templateError = $state<string | null>(null);
+  let templateError = $state<NotesFailure | null>(null);
   let pendingDeleteView = $state<NotesDatabaseView | null>(null);
   let lastViewsLoadSignature = $state<string | null>(null);
   let metadataRequest = 0;
   let dataSources = $state<NotesDataSourceListItem[]>([]);
   let sourcesLoading = $state(false);
   let sourceName = $state("");
-  let sourceError = $state<string | null>(null);
+  let sourceError = $state<NotesFailure | null>(null);
   let sourceRequest = 0;
   let viewLoadState = $state<LazyComponentLoadState<NotesDatabaseViewKind, LoadedNotesDatabaseView> | null>(untrack(() => {
     const kind = (views.find((view) => view.id === selectedViewId) ?? views[0])?.type ?? "table";
@@ -290,7 +292,7 @@
       dataSources = loaded;
       sourceError = null;
     } catch (caught: unknown) {
-      if (request === sourceRequest) sourceError = caught instanceof Error ? caught.message : String(caught);
+      if (request === sourceRequest) sourceError = notesFailure(caught, t("notes.databaseSourcesLoadFailed"));
     } finally { if (request === sourceRequest) sourcesLoading = false; }
   }
 
@@ -326,7 +328,7 @@
       await reloadViews(result.view.id);
       sourceName = "";
       await loadSources();
-    } catch (caught: unknown) { sourceError = caught instanceof Error ? caught.message : String(caught); }
+    } catch (caught: unknown) { sourceError = notesFailure(caught, t("notes.databaseSourceChangeFailed")); }
     finally { busy = false; }
   }
 
@@ -337,7 +339,7 @@
     try {
       const reference = await setNotesDatabaseEditingLock(databaseId, !editingLocked);
       onEditingLockChange(reference.editing_locked);
-    } catch (caught: unknown) { viewError = caught instanceof Error ? caught.message : String(caught); }
+    } catch (caught: unknown) { viewError = notesFailure(caught, t("notes.databaseEditingLockFailed")); }
     finally { busy = false; }
   }
 
@@ -354,7 +356,7 @@
       templateError = null;
     } catch (caught) {
       if (sourceId !== activeSourceId) return;
-      templateError = caught instanceof Error ? caught.message : String(caught);
+      templateError = notesFailure(caught, t("notes.databaseTemplatesLoadFailed"));
     }
   }
 
@@ -378,7 +380,7 @@
       viewError = null;
     } catch (caught) {
       if (request !== metadataRequest) return;
-      viewError = caught instanceof Error ? caught.message : String(caught);
+      viewError = notesFailure(caught, t("notes.databaseViewsLoadFailed"));
     }
   }
 
@@ -409,7 +411,7 @@
   /** Reloads the view list after it failed, rejecting while the list is still unavailable. */
   async function retryViews(): Promise<void> {
     await reloadViews(initialViewId);
-    if (viewError) throw new Error(viewError);
+    if (viewError) throw new LocalizedError(viewError.message);
   }
 
   function viewLabel(view: NotesDatabaseViewKind): string {
@@ -442,7 +444,7 @@
         : await seedView(kind);
       await reloadViews(created.id);
     } catch (caught) {
-      viewError = caught instanceof Error ? caught.message : String(caught);
+      viewError = notesFailure(caught, t("notes.databaseViewChangeFailed"));
     } finally {
       busy = false;
     }
@@ -460,7 +462,7 @@
       });
       await reloadViews(duplicate.id);
     } catch (caught) {
-      viewError = caught instanceof Error ? caught.message : String(caught);
+      viewError = notesFailure(caught, t("notes.databaseViewChangeFailed"));
     } finally {
       busy = false;
     }
@@ -481,7 +483,7 @@
       await renameNotesDatabaseView(databaseId, current.id, name);
       await reloadViews(current.id);
     } catch (caught) {
-      viewError = caught instanceof Error ? caught.message : String(caught);
+      viewError = notesFailure(caught, t("notes.databaseViewChangeFailed"));
     } finally {
       busy = false;
     }
@@ -498,7 +500,7 @@
       notesDatabaseViewTabDisplays.set(current.id, null);
       await reloadViews(null);
     } catch (caught) {
-      viewError = caught instanceof Error ? caught.message : String(caught);
+      viewError = notesFailure(caught, t("notes.databaseViewChangeFailed"));
     } finally {
       busy = false;
     }
@@ -588,11 +590,11 @@
     viewError = null;
     const save = viewOrderSave.then(() => reorderNotesDatabaseViews(shellId, viewIds));
     viewOrderSave = save.then(() => undefined, () => undefined);
-    let failure: string | null = null;
+    let failure: NotesFailure | null = null;
     try {
       await save;
     } catch (caught) {
-      failure = caught instanceof Error ? caught.message : String(caught);
+      failure = notesFailure(caught, t("notes.databaseViewChangeFailed"));
     }
     if (pendingViewOrder !== viewIds) return;
     pendingViewOrder = null;
@@ -661,7 +663,7 @@
   async function copyViewLink(viewId: string): Promise<void> {
     try {
       await onCopyViewLink?.(viewId);
-    } catch (caught: unknown) { viewError = caught instanceof Error ? caught.message : String(caught); }
+    } catch (caught: unknown) { viewError = notesFailure(caught, t("notes.databaseViewLinkCopyFailed")); }
   }
 
   function tabDisplayLabel(display: NotesDatabaseViewTabDisplay): string {
@@ -694,7 +696,7 @@
       });
       onSelectPage(created.page.id);
     } catch (caught) {
-      viewError = caught instanceof Error ? caught.message : String(caught);
+      viewError = notesFailure(caught, t("notes.databaseRowCreateFailed"));
     } finally {
       busy = false;
     }
@@ -708,7 +710,7 @@
       const created = await applyNotesDataSourceTemplate(activeSourceId, templateId, { title: t("notes.untitled") });
       onSelectPage(created.page.id);
     } catch (caught) {
-      viewError = caught instanceof Error ? caught.message : String(caught);
+      viewError = notesFailure(caught, t("notes.databaseRowCreateFailed"));
     } finally {
       busy = false;
     }
@@ -791,7 +793,7 @@
   <CollectionMenu bind:this={sourceSettingsRow} fullWidth label={t("notes.databaseViewSource")} summary={activeSource ? sourceTitle(activeSource) : ""} icon={Database} disabled={selectionDisabled}>
     <input class="field mb-1 w-full min-w-0" aria-label={t("notes.databaseSourceSearch")} placeholder={t("notes.databaseSourceSearch")}
       bind:value={sourceName} disabled={selectionDisabled} onkeydown={(event) => event.stopPropagation()} />
-    {#if sourceError}<Notice class="px-2 py-1" message={sourceError} />{/if}
+    {#if sourceError}<Notice class="px-2 py-1" message={sourceError.message} copy={sourceError.detail} />{/if}
     {#if sourcesLoading && dataSources.length === 0}<Loading layout="rows" rows={3} label={t("notes.databaseSourcesLoading")} />{/if}
     {#if matchingAttachedSources.length > 0}
       <p class="menu-label">{t("notes.databaseSourcesAttached")}</p>
@@ -920,7 +922,7 @@
     <span class="h-5 w-px bg-primary-foreground/25" aria-hidden="true"></span>
     <CollectionMenu label={t("notes.databaseNewOptions")} kind="new-options" iconOnly primary compact showHeader={false} dismissOnAction>
       <p class="menu-label">{t("notes.databaseTemplatesTitle")}</p>
-      {#if templateError}<Notice class="mb-2 px-2 text-panel-detail" message={templateError} />{/if}
+      {#if templateError}<Notice class="mb-2 px-2 text-panel-detail" message={templateError.message} copy={templateError.detail} />{/if}
       {#if templates.length === 0}
         <p class="mb-2 px-2 text-panel-detail text-muted-foreground">{t("notes.databaseTemplatesEmpty")}</p>
       {:else}
@@ -949,7 +951,7 @@
 {/if}
 
 {#if viewError && selectedView}
-  <Notice class="my-2 text-[0.8rem]" message={viewError} />
+  <Notice class="my-2 text-[0.8rem]" message={viewError.message} copy={viewError.detail} />
 {/if}
 
 {#key layoutInstance.identity}
@@ -973,7 +975,7 @@
   {@const NotesDatabaseTimelineView = viewLoadState.component.component}
   <NotesDatabaseTimelineView settingsOpen={viewSettingsOpen} {settingsAnchor} {settingsHeader} onCloseSettings={() => { viewSettingsOpen = false; }} onEditProperties={editProperties} {onReady} onSavingChange={reportLayoutSaving} dataSourceId={activeSourceId} {databaseId} {editingLocked} viewId={activeViewId} {onSelectPage} reloadKey={reloadKeys.timeline} />
 {:else if viewError && !selectedView}
-  <div class="min-h-32 text-[0.8rem]"><Notice layout="fill" message={viewError} onRetry={retryViews} /></div>
+  <div class="min-h-32 text-[0.8rem]"><Notice layout="fill" message={viewError.message} copy={viewError.detail} onRetry={retryViews} /></div>
 {:else if viewLoadState?.status === "failed" && viewLoadState.key === activeViewKind}
   <div class="min-h-32 text-[0.8rem]"><Notice layout="fill" message={t("common.viewLoadFailed", viewLabel(activeViewKind))} copy={false} onRetry={() => requestActiveView(true)} /></div>
 {:else}

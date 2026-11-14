@@ -187,7 +187,7 @@ describe("Notes cover selection", () => {
     const onSelect = vi.fn(async (_cover: NotesPageCover | null) => {}).mockRejectedValueOnce(new Error("Storage unavailable"));
     const { onClose } = await mountCoverMenu(onSelect);
     button("Grid").click();
-    await vi.waitFor(() => expect(document.querySelector('[role="alert"]')?.textContent).toContain("Storage unavailable"));
+    await vi.waitFor(() => expect(document.querySelector('[role="alert"]')?.textContent).toContain("The cover could not be saved."));
     expect(onClose).not.toHaveBeenCalled();
     button("Grid").click();
     await vi.waitFor(() => expect(onClose).toHaveBeenCalledOnce());

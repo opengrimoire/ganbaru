@@ -1,3 +1,4 @@
+import { notesErrorDetail } from "$lib/notes/failure";
 import {
   listArchivedNotesPages,
   listTrashedNotesPages,
@@ -31,10 +32,6 @@ interface NotesPickerArchiveState {
 
 /** Largest summary window the archive read accepts, so the pickers need as few reads as possible. */
 const PICKER_ARCHIVE_WINDOW_SIZE = 100;
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 /** Own archive and trash query windows with independent stale-request guards. */
 export function createNotesArchiveController() {
@@ -108,7 +105,7 @@ export function createNotesArchiveController() {
       });
     } catch (error) {
       if (read(kind).requestId !== requestId) return;
-      write(kind, { ...read(kind), error: errorMessage(error) });
+      write(kind, { ...read(kind), error: notesErrorDetail(error) });
       throw error;
     } finally {
       if (read(kind).requestId === requestId) {
@@ -134,7 +131,7 @@ export function createNotesArchiveController() {
       write(kind, { ...read(kind), pages, nextCursor: window.next_cursor });
     } catch (error) {
       // Report the failure like a reload while keeping the pages and cursor already loaded.
-      if (read(kind).requestId === requestId) write(kind, { ...read(kind), error: errorMessage(error) });
+      if (read(kind).requestId === requestId) write(kind, { ...read(kind), error: notesErrorDetail(error) });
     } finally {
       if (read(kind).requestId === requestId) {
         write(kind, { ...read(kind), loading: false });
@@ -157,7 +154,7 @@ export function createNotesArchiveController() {
       } while (cursor !== null);
       pickerArchive = { ...pickerArchive, pages: [...new Map(pages.map((page) => [page.id, page])).values()], loaded: true };
     } catch (error) {
-      if (pickerArchive.requestId === requestId) pickerArchive = { ...pickerArchive, error: errorMessage(error) };
+      if (pickerArchive.requestId === requestId) pickerArchive = { ...pickerArchive, error: notesErrorDetail(error) };
     } finally {
       if (pickerArchive.requestId === requestId) pickerArchive = { ...pickerArchive, loading: false };
     }

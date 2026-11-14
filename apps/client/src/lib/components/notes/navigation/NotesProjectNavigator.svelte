@@ -991,9 +991,9 @@
         {#if projects.loading && !projects.loaded}
           <Loading layout="rows" rows={3} label={t("projects.loading")} />
         {:else if projects.loadError}
-          <Notice class="px-3 py-2" message={t("projects.loadFailed", projects.loadError)} copy={projects.loadError} onRetry={() => projects.load()} />
+          <Notice class="px-3 py-2" message={t("projects.loadFailed")} copy={projects.loadError} onRetry={() => projects.load()} />
         {:else if isSearchActive && pageSearch.error}
-          <Notice class="px-3 py-2" message={t("notes.searchFailed", pageSearch.error)} copy={pageSearch.error} />
+          <Notice class="px-3 py-2" message={t("notes.searchFailed")} copy={pageSearch.error} />
         {:else if isSearchActive && pageSearchGroups.length > 0}
           <div class="grid px-1">
             {#each pageSearchGroups as resultGroup (resultGroup.project?.id ?? "")}

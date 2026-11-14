@@ -333,7 +333,7 @@
     {/if}
 
     {#if notes.commentsError}
-      <Notice class="mt-3 text-panel-detail" message={t("notes.loadCommentsFailed", notes.commentsError)} copy={notes.commentsError} onRetry={retryComments} />
+      <Notice class="mt-3 text-panel-detail" message={t("notes.loadCommentsFailed")} copy={notes.commentsError} onRetry={retryComments} />
     {/if}
 
     {#if groups.length === 0}

@@ -33,6 +33,8 @@
   import { notesPropertyHasSchemaOptions, notesPropertyKind, notesPropertyTypeOptions } from "$lib/components/notes/database/property-kinds";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { LocalizedError } from "$lib/i18n/user-errors";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { notesDatabaseCellCaret, notesDatabaseCellKeepsKey } from "$lib/notes/database/cell-keyboard";
@@ -119,8 +121,8 @@
   let root: HTMLElement | undefined = $state();
   let addButton: HTMLButtonElement | undefined = $state();
   let context = $state<NotesDataSourceRowPageContext | null>(null);
-  let loadError = $state<string | null>(null);
-  let error = $state<string | null>(null);
+  let loadError = $state<NotesFailure | null>(null);
+  let error = $state<NotesFailure | null>(null);
   let expanded = $state(false);
   let adding = $state(false);
   let availableDataSources = $state<NotesDataSource[]>([]);
@@ -199,10 +201,6 @@
     return { ...column, displayFormat: { ...column.displayFormat, wrap: true } };
   }
 
-  function messageOf(caught: unknown): string {
-    return caught instanceof Error ? caught.message : String(caught);
-  }
-
   function busy(): boolean {
     return editingIds.size > 0 || savingIds.size > 0 || pendingSaves > 0 || relationSaves > 0;
   }
@@ -224,14 +222,14 @@
     }).catch((caught: unknown) => {
       if (request !== loadRequest) return;
       if (context) console.warn("Reload database row properties failed", caught);
-      else loadError = messageOf(caught);
+      else loadError = notesFailure(caught, t("notes.databaseRowPageLoadFailed"));
     });
   }
 
   /** Reads the row again after its first load failed, rejecting while it is still unavailable. */
   async function retryLoad(): Promise<void> {
     await refresh();
-    if (loadError) throw new Error(loadError);
+    if (loadError) throw new LocalizedError(loadError.message);
   }
 
   /** Run a reload that waited for editors and saves, once none remain. */
@@ -264,7 +262,7 @@
       const updated = await updateNotesDataSourceRowProperty(dataSourceId, row.id, { property_id: column.id, value });
       if (context?.row.id === updated.id) context = { ...context, row: updated };
     } catch (caught) {
-      throw new Error(t("notes.databaseRowPageValueSaveFailed", column.name, messageOf(caught)), { cause: caught });
+      throw new LocalizedError(t("notes.databaseRowPageValueSaveFailed", column.name), { cause: caught });
     } finally {
       writeEpoch += 1;
       savingIds.delete(column.id);
@@ -279,7 +277,7 @@
       await writeValue(column, value);
       return true;
     } catch (caught) {
-      error = messageOf(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
       return false;
     }
   }
@@ -287,12 +285,12 @@
   /** Create a page in a relation's target source and return its id, so the relation can link it. */
   async function createRelationTarget(column: NotesDatabaseTableColumn, title: string): Promise<string> {
     const targetId = column.relationDataSourceId;
-    if (!targetId) throw new Error(t("notes.databaseRelationConfigureTarget"));
+    if (!targetId) throw new LocalizedError(t("notes.databaseRelationConfigureTarget"));
     try {
       const created = await createNotesDataSourceRowPage(targetId, { id: crypto.randomUUID(), title, first_block_id: crypto.randomUUID() });
       return created.page.id;
     } catch (caught) {
-      throw new Error(t("notes.databaseRowPageRelationFailed", messageOf(caught)), { cause: caught });
+      throw new LocalizedError(t("notes.databaseRowPageRelationFailed"), { cause: caught });
     }
   }
 
@@ -313,7 +311,7 @@
       const result = await task();
       if (context) context = apply(context, result);
     } catch (caught) {
-      throw new Error(t("notes.databaseRowPageRelationFailed", messageOf(caught)), { cause: caught });
+      throw new LocalizedError(t("notes.databaseRowPageRelationFailed"), { cause: caught });
     } finally {
       relationSaves -= 1;
       writeEpoch += 1;
@@ -377,7 +375,7 @@
     try {
       await clickNotesDataSourceButton(dataSourceId, row.id, { property_id: column.id, confirmed });
     } catch (caught) {
-      error = t("notes.databaseRowPageValueSaveFailed", column.name, messageOf(caught));
+      error = notesFailure(caught, t("notes.databaseRowPageValueSaveFailed", column.name));
     } finally {
       writeEpoch += 1;
       savingIds.delete(column.id);
@@ -410,7 +408,7 @@
   /** The source, database, and default view a structure change saves in. */
   function editingScope(): NotesDatabaseSourceEditingScope {
     const schema = context?.schema;
-    if (!schema) throw new Error(t("notes.databaseSchemaLoadFailed", ""));
+    if (!schema) throw new LocalizedError(t("notes.databaseSchemaLoadFailed"));
     return { dataSourceId: schema.data_source.id, databaseId: schema.data_source.parent.database_id, viewId: schema.view.id };
   }
 
@@ -421,7 +419,7 @@
 
   /** Run structure changes one at a time, each starting from the newest saved schema. */
   function enqueue<T>(task: () => Promise<T>): Promise<T> {
-    if (locked) return Promise.reject(new Error(t("notes.databaseEditingLockDescription")));
+    if (locked) return Promise.reject(new LocalizedError(t("notes.databaseEditingLockDescription")));
     pendingSaves += 1;
     writeEpoch += 1;
     const result = saveQueue.then(task);
@@ -441,7 +439,7 @@
   /** Run a menu action, showing a failure below the properties and in the open menu. */
   function runAction(task: () => Promise<void>): void {
     error = null;
-    void task().catch((caught: unknown) => { error = t("collections.property.saveFailed", messageOf(caught)); });
+    void task().catch((caught: unknown) => { error = notesFailure(caught, t("notes.databaseSchemaSaveFailed")); });
   }
 
   /** Load the sources a relation or rollup can point to, once, when a property menu first opens. */
@@ -486,7 +484,7 @@
       });
       return status;
     } catch (caught: unknown) {
-      error = t("collections.property.saveFailed", messageOf(caught));
+      error = notesFailure(caught, t("notes.databaseSchemaSaveFailed"));
       return "unchanged";
     }
   }
@@ -549,7 +547,7 @@
     try {
       await stepProperty(propertyId, event.key === "ArrowUp" ? -1 : 1);
     } catch (caught) {
-      error = t("collections.property.saveFailed", messageOf(caught));
+      error = notesFailure(caught, t("notes.databaseSchemaSaveFailed"));
     }
     await tick();
     root?.querySelector<HTMLElement>(`[data-row-page-grip="${CSS.escape(propertyId)}"]`)?.focus({ preventScroll: true });
@@ -611,7 +609,7 @@
 
 {#snippet messages()}
   {#if locked}<p class="px-2 py-1 text-panel-detail text-muted-foreground">{t("notes.databaseEditingLockDescription")}</p>{/if}
-  {#if error}<Notice class="px-2 py-1 text-panel-detail" message={error} />{/if}
+  {#if error}<Notice class="px-2 py-1 text-panel-detail" message={error.message} copy={error.detail} />{/if}
 {/snippet}
 
 {#snippet propertyMenu(property: NotesDataSourceSchemaPropertyDraft, index: number)}
@@ -724,7 +722,7 @@
         {/if}
       {/if}
     </div>
-    {#if error}<Notice class="px-1.5 py-1 text-panel-detail" message={error} />{/if}
+    {#if error}<Notice class="px-1.5 py-1 text-panel-detail" message={error.message} copy={error.detail} />{/if}
     <NotesDatabaseRowPageRelations {dataSourceId} sourceName={sourceTitle(context.schema.data_source)} {row}
       hierarchy={context.hierarchy} parent={context.parent} subitems={context.children} {onOpenPage}
       onSetParent={setParent} onCreateParent={createParent} onLinkSubitem={linkSubitem} onUnlinkSubitem={unlinkSubitem}
@@ -735,7 +733,7 @@
       maxLength={NOTES_DATA_SOURCE_PROPERTY_NAME_MAX_CHARACTERS} onCreate={createProperty} onClose={() => { adding = false; }} />
   {/if}
 {:else if loadError}
-  <Notice class="text-panel-detail" message={t("notes.databaseRowPageLoadFailed", loadError)} copy={loadError} onRetry={retryLoad} />
+  <Notice class="text-panel-detail" message={loadError.message} copy={loadError.detail} onRetry={retryLoad} />
 {/if}
 
 {#if pendingConfirm}

@@ -8,6 +8,7 @@
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { formatList } from "$lib/i18n/formatters";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { notesCommentBodyRichText } from "$lib/notes/collaboration/comments";
   import type { NotesComment, NotesCommentReaction, NotesCommentThread } from "$lib/notes/contracts/collaboration";
@@ -69,7 +70,7 @@
 
   let editing = $state(false);
   let confirmingDelete = $state(false);
-  let errorMessage = $state<string | null>(null);
+  let errorMessage = $state<NotesFailure | null>(null);
   let linkCopied = $state(false);
   let copiedTimer: ReturnType<typeof setTimeout> | null = null;
   let ReactionPicker = $state<typeof IconPicker | null>(null);
@@ -108,7 +109,7 @@
   }
 
   function reportError(error: unknown): void {
-    errorMessage = t("notes.commentActionFailed", error instanceof Error ? error.message : String(error));
+    errorMessage = notesFailure(error, t("notes.commentActionFailed"));
   }
 
   async function run(action: () => Promise<unknown>): Promise<void> {
@@ -247,7 +248,7 @@
       {/if}
     {/if}
     {#if errorMessage}
-      <Notice class="mt-1 text-panel-detail" message={errorMessage} />
+      <Notice class="mt-1 text-panel-detail" message={errorMessage.message} copy={errorMessage.detail} />
     {/if}
   </div>
   {#if !editing}

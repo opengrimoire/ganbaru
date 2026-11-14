@@ -16,6 +16,7 @@
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import NotesRoundTripDiagnostics from "$lib/components/notes/NotesRoundTripDiagnostics.svelte";
   import NotesTransferFieldRow from "./NotesTransferFieldRow.svelte";
 
@@ -47,7 +48,7 @@
   let includeResolvedComments = $state(false);
   let selectedProjectId = $state("");
   let exporting = $state(false);
-  let error = $state<string | null>(null);
+  let error = $state<NotesFailure | null>(null);
   let result = $state<NotesAgentBridgeExportSaveResult | null>(null);
   let dialogEl = $state<HTMLDivElement | null>(null);
   const activeProjects = $derived(
@@ -142,7 +143,7 @@
         projectIds: includeTaskContext && selectedProjectId ? [selectedProjectId] : [],
       });
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.agentBridgeExportFailed"));
     } finally {
       exporting = false;
     }
@@ -280,11 +281,11 @@
         {#if projects.loading}
           <Loading layout="inline" label={t("notes.agentBridgeExportProjectLoading")} class="text-[0.8rem]" />
         {:else if projects.loadError}
-          <Notice class="text-[0.8rem]" message={t("notes.agentBridgeExportProjectLoadFailed", projects.loadError)} copy={projects.loadError} onRetry={() => projects.load()} />
+          <Notice class="text-[0.8rem]" message={t("notes.agentBridgeExportProjectLoadFailed")} copy={projects.loadError} onRetry={() => projects.load()} />
         {/if}
 
         {#if error}
-          <Notice class="text-[0.8rem]" message={t("notes.agentBridgeExportFailed", error)} copy={error} />
+          <Notice class="text-[0.8rem]" message={error.message} copy={error.detail} />
         {/if}
 
         {#if result}

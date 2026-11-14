@@ -1,3 +1,4 @@
+import { notesErrorDetail } from "$lib/notes/failure";
 import { SvelteSet } from "svelte/reactivity";
 import { getNotesDatabaseReference } from "$lib/api/notes";
 import { createNotesCompoundPersistence } from "./compound-edits";
@@ -122,7 +123,7 @@ export function createNotesDatabasePasteController(context: DatabasePasteContext
       await context.updateRichText(block.id, replaceRichTextRange(blockEditableRichText(block), current.start, current.end, [mention]));
       if (prompt === current) dismiss();
     } catch (caught: unknown) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesErrorDetail(caught);
     } finally { busy = false; }
   }
 
@@ -193,7 +194,7 @@ export function createNotesDatabasePasteController(context: DatabasePasteContext
         await (current.kind === "copy" ? syncCopies(current) : linkView(current));
       }
     } catch (caught: unknown) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesErrorDetail(caught);
     } finally { busy = false; }
   }
 

@@ -22,5 +22,8 @@ export const workingMarkdown = {
     copyLocal: "Copiar texto local",
     discardConfirm: "¿Descartar los cambios sin guardar de este archivo Markdown?",
     discardConfirmAction: "Descartar",
+    treeLoadFailed: "No se pudieron listar los archivos Markdown.",
+    loadFailed: "No se pudo abrir este archivo Markdown.",
+    saveFailed: "No se pudo guardar este archivo Markdown.",
   },
 } as const satisfies MessageShape<typeof enWorkingMarkdown>;

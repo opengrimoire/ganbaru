@@ -1,3 +1,4 @@
+import { notesErrorDetail } from "$lib/notes/failure";
 import {
   acceptNotesSuggestion,
   createNotesComment,
@@ -50,10 +51,6 @@ interface NotesCollaborationControllerContext {
   requestBlockFocus: (blockId: string) => void;
   updateBlockRichText: (blockId: string, richText: readonly NotesRichText[]) => Promise<void>;
   isPanelOpen: (panel: "suggestions") => boolean;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** Own Notes comments, suggestions, and local collaboration identity. */
@@ -112,7 +109,7 @@ export function createNotesCollaborationController(
     } catch (error) {
       if (requestId !== commentsRequestId || pageId !== context.readSelectedPageId()) return;
       commentThreads = previousThreads;
-      commentsError = errorMessage(error);
+      commentsError = notesErrorDetail(error);
     } finally {
       if (requestId === commentsRequestId) commentsLoading = false;
     }
@@ -136,7 +133,7 @@ export function createNotesCollaborationController(
     } catch (error) {
       if (requestId !== suggestionsRequestId || pageId !== context.readSelectedPageId()) return;
       suggestions = [];
-      suggestionsError = errorMessage(error);
+      suggestionsError = notesErrorDetail(error);
     } finally {
       if (requestId === suggestionsRequestId) suggestionsLoading = false;
     }
@@ -153,7 +150,7 @@ export function createNotesCollaborationController(
       return next;
     } catch (error) {
       if (requestId !== localUserRequestId) return localUser;
-      localUserError = errorMessage(error);
+      localUserError = notesErrorDetail(error);
       return null;
     } finally {
       if (requestId === localUserRequestId) localUserLoading = false;

@@ -2,7 +2,7 @@ import type { editor as enEditor } from "../../en/notes/editor";
 import type { MessageShape } from "../../types";
 
 export const editor = {
-  editorSaveFailed: (message: string) => `No se pudieron guardar los cambios. El borrador sigue abierto. Mantén esta ventana abierta e inténtalo de nuevo: ${message}`,
+  editorSaveFailed: "No se pudieron guardar los cambios, pero el borrador sigue abierto, así que mantén esta ventana abierta e inténtalo de nuevo.",
   editorChangedElsewhere: "Esta nota cambió en otra ventana, así que la última versión guardada reemplazó tu última edición.",
   blockList: "Bloques de la nota",
   richTextEditorLabel: "Editor de bloque con texto enriquecido",
@@ -89,8 +89,8 @@ export const editor = {
   linkCopy: "Copiar enlace",
   linkEdit: "Editar",
   linkOpenFailed: "No se pudo abrir este enlace. Comprueba que su destino esté disponible.",
-  linkCopyFailed: "No se pudo copiar el enlace. Inténtalo de nuevo.",
-  linkSaveFailed: "No se pudo guardar el enlace. Inténtalo de nuevo.",
+  linkCopyFailed: "No se pudo copiar el enlace.",
+  linkSaveFailed: "No se pudo guardar el enlace.",
   linkSelectionChanged: "Este texto cambió mientras el editor del enlace estaba abierto. Selecciónalo de nuevo para editar su enlace.",
   linkTitleRequired: "Ingresa un título para el enlace.",
   applyLink: "Aplicar",
@@ -106,7 +106,7 @@ export const editor = {
   moveSelectionUp: "Mover selección arriba",
   moveSelectionDown: "Mover selección abajo",
   deleteSelection: "Eliminar",
-  selectionActionFailed: "Error en la acción de selección:",
+  selectionActionFailed: "No se pudo completar la acción de selección.",
   turnInto: "Convertir en",
   color: "Color",
   backgroundColor: "Fondo",
@@ -172,10 +172,10 @@ export const editor = {
   bookmarkCaption: "Texto del marcador",
   bookmarkCaptionPlaceholder: "Agregar texto",
   openBookmark: (url: string) => (url ? `Abrir ${url}` : "Abrir marcador"),
-  openBookmarkFailed: (message: string) => `No se pudo abrir el marcador: ${message}`,
+  openBookmarkFailed: "No se pudo abrir el marcador.",
   linkPreviewUrl: "URL de vista previa",
   linkPreviewUrlPlaceholder: "Pega un enlace...",
   linkPreviewPreview: "Vista previa de enlace",
   openLinkPreview: (url: string) => (url ? `Abrir ${url}` : "Abrir vista previa"),
-  openLinkPreviewFailed: (message: string) => `No se pudo abrir la vista previa: ${message}`
+  openLinkPreviewFailed: "No se pudo abrir la vista previa.",
 } as const satisfies MessageShape<typeof enEditor>;

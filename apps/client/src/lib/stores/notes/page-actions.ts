@@ -1,3 +1,4 @@
+import { notesErrorDetail } from "$lib/notes/failure";
 import {
   archiveNotesPage,
   createNotesChildPageFromBlock,
@@ -350,7 +351,7 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
     } catch (error) {
       // A held edit refuses the trash; the page's conflict strip already asks the user to choose first.
       if (!removalConfirmed && !(error instanceof NotesHeldEditError)) {
-        context.setTrashActionError(error instanceof Error ? error.message : String(error));
+        context.setTrashActionError(notesErrorDetail(error));
       }
       throw error;
     } finally {

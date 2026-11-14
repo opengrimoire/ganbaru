@@ -1,4 +1,5 @@
-import type { NotesConflictTarget, NotesFieldConflict } from "$lib/api/notes/conflicts";
+import type { NotesConflictError, NotesConflictTarget, NotesFieldConflict } from "$lib/api/notes/conflicts";
+import type { TranslationKey } from "$lib/i18n/translator.svelte";
 import { NOTES_BLOCK_TEXT_KEYS } from "$lib/notes/editor/block-rebase";
 import type { NotesBlock, NotesBlockUpdate } from "$lib/notes/types";
 import type { NotesBlockConflictChoice, NotesBlockEditConflict } from "$lib/stores/notes/persistence";
@@ -75,6 +76,16 @@ export type NotesFieldConflictTitleKey =
   | "notes.conflict.blockTitle"
   | "notes.conflict.threadTitle"
   | "notes.conflict.commentTitle";
+
+/** Stable failure code of a Notes conflict resolution. */
+export type NotesConflictErrorCode = NotesConflictError["code"];
+
+/** Localized message for each conflict resolution failure code, so no backend text reaches the card. */
+export const NOTES_CONFLICT_ERROR_MESSAGE_KEYS = {
+  resolved: "notes.conflict.resolved",
+  unfit: "notes.conflict.unfit",
+  failed: "notes.conflict.failed",
+} as const satisfies Record<NotesConflictErrorCode, TranslationKey>;
 
 /** Title key of a surfaced conflict card, or null for a property value, whose title names the property. */
 export function notesFieldConflictTitleKey(target: NotesConflictTarget): NotesFieldConflictTitleKey | null {

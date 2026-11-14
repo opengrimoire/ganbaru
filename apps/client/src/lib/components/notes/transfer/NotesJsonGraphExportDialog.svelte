@@ -9,6 +9,7 @@
   } from "$lib/notes/types";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import NotesRoundTripDiagnostics from "$lib/components/notes/NotesRoundTripDiagnostics.svelte";
   import NotesTransferFieldRow from "./NotesTransferFieldRow.svelte";
 
@@ -37,7 +38,7 @@
   let includeLocalState = $state(true);
   let pretty = $state(true);
   let exporting = $state(false);
-  let error = $state<string | null>(null);
+  let error = $state<NotesFailure | null>(null);
   let result = $state<NotesJsonGraphExportSaveResult | null>(null);
   let dialogEl = $state<HTMLDivElement | null>(null);
   const canExport = $derived(!exporting);
@@ -123,7 +124,7 @@
         pretty,
       });
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.jsonGraphExportFailed"));
     } finally {
       exporting = false;
     }
@@ -230,7 +231,7 @@
         </NotesTransferFieldRow>
 
         {#if error}
-          <Notice class="text-[0.8rem]" message={t("notes.jsonGraphExportFailed", error)} copy={error} />
+          <Notice class="text-[0.8rem]" message={error.message} copy={error.detail} />
         {/if}
 
         {#if result}

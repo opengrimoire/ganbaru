@@ -1,9 +1,6 @@
+import { notesErrorDetail } from "$lib/notes/failure";
 import { searchNotes } from "$lib/api/notes";
 import type { NotesSearchResult } from "$lib/notes/types";
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 /** Own Notes search pagination and stale-result rejection. */
 export function createNotesSearchController() {
@@ -44,7 +41,7 @@ export function createNotesSearchController() {
     } catch (caught) {
       if (currentRequestId !== requestId) return;
       results = [];
-      error = errorMessage(caught);
+      error = notesErrorDetail(caught);
     } finally {
       if (currentRequestId === requestId) loading = false;
     }
@@ -68,7 +65,7 @@ export function createNotesSearchController() {
       ];
       nextCursor = window.next_cursor;
     } catch (caught) {
-      if (currentRequestId === requestId) error = errorMessage(caught);
+      if (currentRequestId === requestId) error = notesErrorDetail(caught);
     } finally {
       if (currentRequestId === requestId) loading = false;
     }

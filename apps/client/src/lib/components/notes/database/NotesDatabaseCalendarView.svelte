@@ -1,6 +1,8 @@
 <script lang="ts">
   import NotesLoadingSkeleton from "$lib/components/notes/NotesLoadingSkeleton.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { LocalizedError } from "$lib/i18n/user-errors";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import { untrack, type Snippet } from "svelte";
   import { databaseResource, notesDatabaseSession, rememberDatabaseScroll } from "$lib/notes/database/session.svelte";
   import NotesDatabasePropertyValue from "./NotesDatabasePropertyValue.svelte";
@@ -108,7 +110,7 @@
     onSavingChange(mutating);
     return () => onSavingChange(false);
   });
-  let error = $state<string | null>(null);
+  let error = $state<NotesFailure | null>(null);
   let selectedPanelRowId = $state<string | null>(null);
   let lastLoadSignature = $state("");
   let lastReloadKey = untrack(() => reloadKey);
@@ -164,7 +166,7 @@
       return loaded;
     } catch (caught) {
       if (currentRequest !== requestId) return null;
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseCalendarFailed"));
       return null;
     } finally {
       if (currentRequest === requestId) loading = false;
@@ -174,7 +176,7 @@
   /** Reloads a view that failed to load, rejecting while it is still unavailable. */
   async function retryCalendar(): Promise<void> {
     await loadCalendar();
-    if (error) throw new Error(error);
+    if (error) throw new LocalizedError(error.message);
   }
 
   async function loadMoreCalendar(): Promise<void> {
@@ -193,7 +195,7 @@
       calendar = { ...loaded, rows: mergeNotesDatabaseRows(current.rows, loaded.rows) };
       notesDatabaseSession.write(databaseResource("calendar", dataSourceId, viewScope()), calendar);
     } catch (caught) {
-      if (currentRequest === requestId) error = caught instanceof Error ? caught.message : String(caught);
+      if (currentRequest === requestId) error = notesFailure(caught, t("notes.databaseCalendarFailed"));
     } finally {
       if (currentRequest === requestId) loadingMore = false;
     }
@@ -218,7 +220,7 @@
       );
       notesDatabaseSession.write(resource, calendar, epoch);
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally {
       mutating = false;
     }
@@ -253,7 +255,7 @@
       await loadCalendar();
       return true;
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseRowCreateFailed"));
       return false;
     } finally {
       mutating = false;
@@ -268,7 +270,7 @@
       selectedPanelRowId = loaded.page.id;
       await loadCalendar();
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally {
       mutating = false;
     }
@@ -282,7 +284,7 @@
       if (selectedPanelRowId === row.id) selectedPanelRowId = null;
       await loadCalendar();
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally {
       mutating = false;
     }
@@ -374,7 +376,7 @@
     {#if loading}
       {t("notes.databaseCalendarLoading")}
     {:else if error}
-      {t("notes.databaseCalendarFailed", error)}
+      {error.message}
     {:else}
       {t("notes.databaseCalendarRowsCount", calendar?.rows.length ?? 0)}
     {/if}
@@ -408,7 +410,7 @@
 <section class="space-y-3 pt-2" aria-label={t("notes.databaseCalendarTitle")}>
 
   <NotesDatabaseQueryBar properties={columns} {filters} {sorts} pending={mutating || editingLocked} onFiltersChange={saveFilters} onSortsChange={saveSorts} />
-  {#if error && calendar}<Notice class="text-[0.8rem]" message={error} />{/if}
+  {#if error && calendar}<Notice class="text-[0.8rem]" message={error.message} copy={error.detail} />{/if}
   {#if settingsOpen}
     <CollectionSettings label={t("notes.databaseViewSettings")} anchor={settingsAnchor} preferredWidth={COLLECTION_VIEW_SETTINGS_PANEL_WIDTH} showHeader={false} onClose={onCloseSettings}>
       {@render settingsHeader?.()}
@@ -452,7 +454,7 @@
   </div>
 
   {#if !calendar && error}
-    <div class="min-h-32 text-[0.8rem]"><Notice layout="fill" message={t("notes.databaseCalendarFailed", error)} copy={error} onRetry={retryCalendar} /></div>
+    <div class="min-h-32 text-[0.8rem]"><Notice layout="fill" message={error.message} copy={error.detail} onRetry={retryCalendar} /></div>
   {:else if !calendar}<NotesLoadingSkeleton kind="calendar" />{/if}
   {#if calendar}
     {#if dateColumns.length === 0}

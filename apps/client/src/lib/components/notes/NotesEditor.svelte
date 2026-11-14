@@ -107,6 +107,8 @@
   import NotesPeekModeIcon from "$lib/components/notes/pages/NotesPeekModeIcon.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { LocalizedError } from "$lib/i18n/user-errors";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
   import {
     loadNotesEditorPanel,
@@ -165,7 +167,7 @@
   let coverMenuOpen = $state(false);
   let coverPosition = $state<{ pageId: string; cover: Exclude<CoverValue, { type: "design" }>; focal: NotesCoverFocalPoint } | null>(null);
   let coverPositionSaving = $state(false);
-  let coverPositionError = $state<string | null>(null);
+  let coverPositionError = $state<NotesFailure | null>(null);
   let coverStatus = $state<"loading" | "ready" | "error">("loading");
   let repositionButton: HTMLButtonElement | null = $state(null);
   let coverBanner: HTMLDivElement | null = $state(null);
@@ -903,7 +905,7 @@
         void tick().then(() => repositionButton?.focus({ preventScroll: true }));
       }
     } catch (cause) {
-      if (coverPosition === draft) coverPositionError = t("notes.pageCoverSaveFailed", cause instanceof Error ? cause.message : String(cause));
+      if (coverPosition === draft) coverPositionError = notesFailure(cause, t("notes.pageCoverSaveFailed"));
       else console.error("Could not save Notes cover position", cause);
     } finally {
       if (!coverPosition || coverPosition === draft) coverPositionSaving = false;
@@ -947,7 +949,7 @@
 
   function notesIconAssetMetadata(asset: IconPickerAsset): NotesPageIconAssetMetadata {
     if (!asset.contentType || asset.byteSize === undefined || !asset.sha256) {
-      throw new Error(t("notes.pageIconUploadFailed"));
+      throw new LocalizedError(t("notes.pageIconUploadFailed"));
     }
     return {
       relativePath: asset.relativePath,
@@ -1167,7 +1169,8 @@
     {#if notes.editorSaveError}
       <Notice
         class="shrink-0 border-b border-border px-4 py-2 text-sm"
-        message={t("notes.editorSaveFailed", notes.editorSaveError)}
+        message={t("notes.editorSaveFailed")}
+        copy={notes.editorSaveError}
         onRetry={() => notes.retryEditorMutations()}
       />
     {:else if notes.editorConflict}
@@ -1610,7 +1613,8 @@
     {#if notes.pageCreationError}
       <Notice
         class="shrink-0 border-b border-border px-3 py-2 text-[0.8rem]"
-        message={t("notes.pageCreationFailed", notes.pageCreationError)}
+        message={t("notes.pageCreationFailed")}
+        copy={notes.pageCreationError}
         onRetry={notes.retryPageCreation}
       />
     {/if}
@@ -1675,7 +1679,7 @@
         </div>
       {/if}
 
-      {#if coverPositionError}<Notice class="px-3 py-2 text-[0.8rem]" message={coverPositionError} />{/if}
+      {#if coverPositionError}<Notice class="px-3 py-2 text-[0.8rem]" message={coverPositionError.message} copy={coverPositionError.detail} />{/if}
 
       {#if coverMenuOpen}
         {#if panelLoadStates["cover-menu"]?.status === "ready" && panelLoadStates["cover-menu"].component.kind === "cover-menu"}

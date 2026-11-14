@@ -9,6 +9,8 @@
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { LocalizedError } from "$lib/i18n/user-errors";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { notesDatabaseRowSearch } from "$lib/notes/database/row-page-properties";
   import { notesDatabaseRowTitle } from "$lib/notes/database/table";
@@ -58,8 +60,8 @@
   let query = $state("");
   let rows = $state<NotesPage[]>([]);
   let loading = $state(true);
-  let loadError = $state<string | null>(null);
-  let error = $state<string | null>(null);
+  let loadError = $state<NotesFailure | null>(null);
+  let error = $state<NotesFailure | null>(null);
   let pending = $state(false);
   let activeIndex = $state(0);
   let loadRequest = 0;
@@ -98,10 +100,6 @@
     return `${listboxId}-${index}`;
   }
 
-  function messageOf(caught: unknown): string {
-    return caught instanceof Error ? caught.message : String(caught);
-  }
-
   async function load(): Promise<void> {
     const request = ++loadRequest;
     loadError = null;
@@ -110,7 +108,7 @@
       if (request !== loadRequest) return;
       rows = loaded;
     } catch (caught) {
-      if (request === loadRequest) loadError = messageOf(caught);
+      if (request === loadRequest) loadError = notesFailure(caught, t("notes.databaseRowPickerLoadFailed"));
     } finally {
       if (request === loadRequest) loading = false;
     }
@@ -119,7 +117,7 @@
   /** Loads the rows again after a failure, rejecting while they are still unavailable. */
   async function retryLoad(): Promise<void> {
     await load();
-    if (loadError) throw new Error(loadError);
+    if (loadError) throw new LocalizedError(loadError.message);
   }
 
   async function choose(option: PickerOption | undefined): Promise<void> {
@@ -141,7 +139,7 @@
         return;
       }
     } catch (caught) {
-      error = messageOf(caught);
+      error = notesFailure(caught, t("notes.databaseRowPageRelationFailed"));
     } finally {
       pending = false;
     }
@@ -199,7 +197,7 @@
     {#if loading}
       <Loading layout="rows" rows={3} label={t("notes.databaseRelationLoading")} />
     {:else if loadError}
-      <Notice class="px-2 py-1.5 text-panel-detail" message={t("notes.databaseRowPickerLoadFailed", loadError)} copy={loadError} onRetry={retryLoad} />
+      <Notice class="px-2 py-1.5 text-panel-detail" message={loadError.message} copy={loadError.detail} onRetry={retryLoad} />
     {:else if matches.length === 0}
       <p class="px-2 py-1.5 text-panel-detail text-muted-foreground">{t("notes.databaseRowPickerEmpty")}</p>
     {/if}
@@ -225,7 +223,7 @@
       </div>
     {/each}
   </div>
-  {#if error}<Notice class="border-t border-border px-3 py-1.5 text-panel-detail" message={error} />{/if}
+  {#if error}<Notice class="border-t border-border px-3 py-1.5 text-panel-detail" message={error.message} copy={error.detail} />{/if}
 </div>
 
 <style>

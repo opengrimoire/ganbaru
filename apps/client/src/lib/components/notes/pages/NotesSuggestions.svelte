@@ -63,7 +63,7 @@
   function suggestionErrorMessage(message: string): string {
     return message === "target_missing"
       ? t("notes.suggestionTargetMissing")
-      : t("notes.loadSuggestionsFailed", message);
+      : t("notes.loadSuggestionsFailed");
   }
 
   async function saveSuggestionDraft(): Promise<void> {
@@ -138,7 +138,7 @@
       </div>
 
       {#if notes.suggestionsError}
-        <Notice class="mt-2 text-[0.8rem]" message={suggestionErrorMessage(notes.suggestionsError)} />
+        <Notice class="mt-2 text-[0.8rem]" message={suggestionErrorMessage(notes.suggestionsError)} copy={notes.suggestionsError === "target_missing" ? false : notes.suggestionsError} />
       {/if}
 
       {#if draft}

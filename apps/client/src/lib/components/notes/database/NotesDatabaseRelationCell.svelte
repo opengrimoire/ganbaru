@@ -1,6 +1,8 @@
 <script lang="ts">
   import Select from "$lib/components/ui/Select.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { LocalizedError } from "$lib/i18n/user-errors";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import { listNotesDataSourceRowPages } from "$lib/api/notes";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
@@ -36,7 +38,7 @@
   let targetRows = $state<NotesPage[]>([]);
   let loadedDataSourceId = $state<string | null>(null);
   let loading = $state(false);
-  let error = $state<string | null>(null);
+  let error = $state<NotesFailure | null>(null);
   let selectedRowId = $state("");
 
   const targetDataSourceId = $derived(column.relationDataSourceId);
@@ -58,7 +60,7 @@
       targetRows = await listNotesDataSourceRowPages(targetDataSourceId);
       loadedDataSourceId = targetDataSourceId;
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseRelationLoadFailed"));
     } finally {
       loading = false;
     }
@@ -67,7 +69,7 @@
   /** Reloads relation targets after a failure, rejecting while they are still unavailable. */
   async function retryTargets(): Promise<void> {
     await loadTargets();
-    if (error) throw new Error(error);
+    if (error) throw new LocalizedError(error.message);
   }
 
   function addRelation(targetId: string): void {
@@ -144,6 +146,6 @@
   {/if}
 
   {#if error}
-    <Notice class="text-[0.733333rem]" message={t("notes.databaseRelationLoadFailed", error)} copy={error} onRetry={retryTargets} />
+    <Notice class="text-[0.733333rem]" message={error.message} copy={error.detail} onRetry={retryTargets} />
   {/if}
 </div>

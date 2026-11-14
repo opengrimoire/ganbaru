@@ -1,3 +1,4 @@
+import { notesErrorDetail } from "$lib/notes/failure";
 import { getNotesDatabaseReference } from "$lib/api/notes";
 import type { NotesBlock } from "$lib/notes/types";
 
@@ -45,7 +46,7 @@ export function createNotesDatabaseDeletionController(context: DatabaseDeletionC
       current.error = null;
     } catch (caught: unknown) {
       if (generation !== request || prompt !== current) return;
-      current.error = caught instanceof Error ? caught.message : String(caught);
+      current.error = notesErrorDetail(caught);
     } finally {
       if (generation === request && prompt === current) current.loading = false;
     }

@@ -1,6 +1,8 @@
 <script lang="ts">
   import NotesLoadingSkeleton from "$lib/components/notes/NotesLoadingSkeleton.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { LocalizedError } from "$lib/i18n/user-errors";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import { untrack, type Snippet } from "svelte";
   import CollectionSettings from "$lib/components/collections/CollectionSettings.svelte";
   import { COLLECTION_VIEW_SETTINGS_PANEL_WIDTH } from "$lib/components/collections/collection-panel-width";
@@ -114,7 +116,7 @@
     onSavingChange(mutating);
     return () => onSavingChange(false);
   });
-  let error = $state<string | null>(null);
+  let error = $state<NotesFailure | null>(null);
   let selectedPanelRowId = $state<string | null>(null);
   let lastLoadSignature = $state("");
   let lastReloadKey = untrack(() => reloadKey);
@@ -180,7 +182,7 @@
       return loaded;
     } catch (caught) {
       if (currentRequest !== requestId) return null;
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseTimelineFailed"));
       return null;
     } finally {
       if (currentRequest === requestId) loading = false;
@@ -190,7 +192,7 @@
   /** Reloads a view that failed to load, rejecting while it is still unavailable. */
   async function retryTimeline(): Promise<void> {
     await loadTimeline();
-    if (error) throw new Error(error);
+    if (error) throw new LocalizedError(error.message);
   }
 
   async function loadMoreTimeline(): Promise<void> {
@@ -209,7 +211,7 @@
       timeline = { ...loaded, rows: mergeNotesDatabaseRows(current.rows, loaded.rows) };
       notesDatabaseSession.write(databaseResource("timeline", dataSourceId, viewScope()), timeline);
     } catch (caught) {
-      if (currentRequest === requestId) error = caught instanceof Error ? caught.message : String(caught);
+      if (currentRequest === requestId) error = notesFailure(caught, t("notes.databaseTimelineFailed"));
     } finally {
       if (currentRequest === requestId) loadingMore = false;
     }
@@ -234,7 +236,7 @@
       );
       notesDatabaseSession.write(resource, timeline, epoch);
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally {
       mutating = false;
     }
@@ -269,7 +271,7 @@
       selectedPanelRowId = loaded.page.id;
       await loadTimeline();
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseRowCreateFailed"));
     } finally {
       mutating = false;
     }
@@ -286,7 +288,7 @@
       });
       await loadTimeline();
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally {
       mutating = false;
     }
@@ -300,7 +302,7 @@
       selectedPanelRowId = loaded.page.id;
       await loadTimeline();
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally {
       mutating = false;
     }
@@ -314,7 +316,7 @@
       if (selectedPanelRowId === row.id) selectedPanelRowId = null;
       await loadTimeline();
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally {
       mutating = false;
     }
@@ -434,7 +436,7 @@
 <section class="space-y-3 pt-2" aria-label={t("notes.databaseTimelineTitle")}>
 
   <NotesDatabaseQueryBar properties={columns} {filters} {sorts} pending={mutating || editingLocked} onFiltersChange={saveFilters} onSortsChange={saveSorts} />
-  {#if error && timeline}<Notice class="text-[0.8rem]" message={error} />{/if}
+  {#if error && timeline}<Notice class="text-[0.8rem]" message={error.message} copy={error.detail} />{/if}
   {#if settingsOpen}
     <CollectionSettings label={t("notes.databaseViewSettings")} anchor={settingsAnchor} preferredWidth={COLLECTION_VIEW_SETTINGS_PANEL_WIDTH} showHeader={false} onClose={onCloseSettings}>
       {@render settingsHeader?.()}
@@ -518,7 +520,7 @@
   </div>
 
   {#if !timeline && error}
-    <div class="min-h-32 text-[0.8rem]"><Notice layout="fill" message={t("notes.databaseTimelineFailed", error)} copy={error} onRetry={retryTimeline} /></div>
+    <div class="min-h-32 text-[0.8rem]"><Notice layout="fill" message={error.message} copy={error.detail} onRetry={retryTimeline} /></div>
   {:else if !timeline}<NotesLoadingSkeleton kind="timeline" />{/if}
   {#if timeline}
     {#if dateColumns.length === 0}

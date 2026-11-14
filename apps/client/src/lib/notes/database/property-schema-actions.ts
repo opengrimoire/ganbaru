@@ -4,6 +4,7 @@ import {
   listNotesDataSources,
   updateNotesDataSourceSchema,
 } from "$lib/api/notes";
+import { LocalizedError } from "$lib/i18n/user-errors";
 import type { Translate } from "$lib/i18n/translator.svelte";
 import type { NotesDataSource, NotesDataSourcePropertyAction, NotesDataSourcePropertyType, NotesDataSourceSchema } from "$lib/notes/types";
 import {
@@ -94,7 +95,7 @@ export function updateNotesDataSourceSchemaProperty(
 ): Promise<NotesDataSourceSchemaActionResult> {
   return updateNotesDataSourceSchemaDrafts(context, (drafts) => {
     const target = drafts.find((property) => property.id === propertyId);
-    if (!target) throw new Error(context.t("notes.databaseSchemaSaveFailed", propertyId));
+    if (!target) throw new LocalizedError(context.t("notes.databaseSchemaSaveFailed"));
     const patch = update(target, drafts);
     return patch ? drafts.map((property) => property.id === propertyId ? { ...property, ...patch } : property) : null;
   });
@@ -111,7 +112,7 @@ export function renameNotesDataSourceSchemaProperty(
     const renamed = notesDataSourceRenameProperty(drafts, propertyId, rawName);
     if (renamed.status === "unchanged") return null;
     if (renamed.status !== "renamed") {
-      throw new Error(renamed.status === "duplicate" ? t("collections.property.nameExists") : t("notes.databaseSchemaSaveFailed", propertyId));
+      throw new LocalizedError(renamed.status === "duplicate" ? t("collections.property.nameExists") : t("notes.databaseSchemaSaveFailed"));
     }
     return { name: renamed.properties.find((property) => property.id === propertyId)?.name ?? rawName.trim() };
   });
@@ -139,14 +140,14 @@ export async function changeNotesDataSourceSchemaPropertyType(
   const target = notesDataSourceSchemaActionTarget(context);
   const { drafts } = await loadNotesDataSourceSchemaDrafts(scope);
   const current = drafts.find((property) => property.id === propertyId);
-  if (!current) throw new Error(t("notes.databaseSchemaSaveFailed", propertyId));
+  if (!current) throw new LocalizedError(t("notes.databaseSchemaSaveFailed"));
   const dataSources = propertyType === "rollup" ? await listNotesDataSources() : undefined;
   const plan = planNotesDataSourceTypeChange(current, propertyType, {
     dataSourceId: scope.dataSourceId,
     drafts,
     dataSources: dataSources ?? context.dataSources,
   });
-  if (plan.status !== "ready") throw new Error(t("notes.databaseSchemaRollupNoRelations"));
+  if (plan.status !== "ready") throw new LocalizedError(t("notes.databaseSchemaRollupNoRelations"));
   const result = await applyNotesDataSourcePropertyAction(scope.dataSourceId, target.databaseId, target.viewId,
     { type: "change_type", property_id: propertyId, property_type: propertyType, config: plan.config });
   return { schema: result.schema, changed: true, dataSources };
@@ -175,7 +176,7 @@ export async function duplicateNotesDataSourceSchemaProperty(
   const target = notesDataSourceSchemaActionTarget(context);
   const { drafts } = await loadNotesDataSourceSchemaDrafts(scope);
   const original = drafts.find((property) => property.id === propertyId);
-  if (!original) throw new Error(t("notes.databaseSchemaSaveFailed", propertyId));
+  if (!original) throw new LocalizedError(t("notes.databaseSchemaSaveFailed"));
   const name = notesDataSourceDuplicatePropertyName(original.name, drafts,
     (propertyName) => t("notes.databaseSchemaDuplicateName", propertyName));
   const action: NotesDataSourcePropertyAction = { type: "duplicate", property_id: propertyId, name };
@@ -233,7 +234,7 @@ export async function appendNotesDataSourceSchemaProperty(
 /** The database and view a native property action places its change in. */
 function notesDataSourceSchemaActionTarget(context: NotesDataSourceSchemaActionContext): { databaseId: string; viewId: string } {
   const { databaseId, viewId } = context.scope;
-  if (!databaseId || !viewId) throw new Error(context.t("notes.databaseSchemaLoadFailed", ""));
+  if (!databaseId || !viewId) throw new LocalizedError(context.t("notes.databaseSchemaLoadFailed"));
   return { databaseId, viewId };
 }
 
@@ -242,6 +243,6 @@ function notesDataSourcePlannedProperty(
   context: NotesDataSourceSchemaActionContext,
   plan: NotesDataSourcePropertyPlan,
 ): NotesDataSourceSchemaPropertyDraft {
-  if (plan.status !== "ready") throw new Error(context.t("notes.databaseSchemaRollupNoRelations"));
+  if (plan.status !== "ready") throw new LocalizedError(context.t("notes.databaseSchemaRollupNoRelations"));
   return plan.property;
 }

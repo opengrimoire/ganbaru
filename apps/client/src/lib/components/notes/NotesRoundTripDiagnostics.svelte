@@ -31,6 +31,23 @@
     return t("notes.roundTripCategoryInfo", count);
   }
 
+  const categoryDescriptionKeys = {
+    preserved: "notes.roundTripDiagnosticPreserved",
+    approximated: "notes.roundTripDiagnosticApproximated",
+    skipped: "notes.roundTripDiagnosticSkipped",
+    unsupported: "notes.roundTripDiagnosticUnsupported",
+    error: "notes.roundTripDiagnosticError",
+    warning: "notes.roundTripDiagnosticWarning",
+    info: "notes.roundTripDiagnosticInfo",
+  } as const satisfies Record<NotesRoundTripDiagnosticCategory, string>;
+
+  /**
+   * Describe a diagnostic in the active locale; the backend message stays secondary detail.
+   */
+  function categoryDescription(category: NotesRoundTripDiagnosticCategory): string {
+    return t(categoryDescriptionKeys[category]);
+  }
+
   function severityLabel(severity: NotesRoundTripDiagnosticItem["severity"]): string {
     if (severity === "error") return t("notes.roundTripSeverityError");
     if (severity === "warning") return t("notes.roundTripSeverityWarning");
@@ -101,7 +118,10 @@
               <span class="min-w-0 truncate text-muted-foreground">{diagnostic.sourceLabel}</span>
             {/if}
           </div>
-          <div class="text-foreground/85">{diagnostic.message}</div>
+          <div class="text-foreground/85">{categoryDescription(diagnostic.category)}</div>
+          {#if diagnostic.message}
+            <div class="text-[0.666667rem] break-words text-muted-foreground">{diagnostic.message}</div>
+          {/if}
         </li>
       {/each}
     </ul>

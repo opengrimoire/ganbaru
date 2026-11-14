@@ -1,6 +1,8 @@
 <script lang="ts">
   import NotesLoadingSkeleton from "$lib/components/notes/NotesLoadingSkeleton.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { LocalizedError } from "$lib/i18n/user-errors";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import { untrack, type Snippet } from "svelte";
   import { databaseResource, notesDatabaseSession } from "$lib/notes/database/session.svelte";
   import NotesDatabasePropertyValue from "./NotesDatabasePropertyValue.svelte";
@@ -104,7 +106,7 @@
     onSavingChange(mutating);
     return () => onSavingChange(false);
   });
-  let error = $state<string | null>(null);
+  let error = $state<NotesFailure | null>(null);
   let selectedPanelRowId = $state<string | null>(null);
   let lastLoadSignature = $state("");
   let lastReloadKey = untrack(() => reloadKey);
@@ -162,7 +164,7 @@
       return loaded;
     } catch (caught) {
       if (currentRequest !== requestId) return null;
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseListFailed"));
       return null;
     } finally {
       if (currentRequest === requestId) loading = false;
@@ -172,7 +174,7 @@
   /** Reloads a view that failed to load, rejecting while it is still unavailable. */
   async function retryList(): Promise<void> {
     await loadList();
-    if (error) throw new Error(error);
+    if (error) throw new LocalizedError(error.message);
   }
 
   async function loadMoreList(): Promise<void> {
@@ -189,7 +191,7 @@
       list = { ...loaded, rows: mergeNotesDatabaseRows(current.rows, loaded.rows) };
       notesDatabaseSession.write(databaseResource("list", dataSourceId, viewScope()), list);
     } catch (caught) {
-      if (currentRequest === requestId) error = caught instanceof Error ? caught.message : String(caught);
+      if (currentRequest === requestId) error = notesFailure(caught, t("notes.databaseListFailed"));
     } finally {
       if (currentRequest === requestId) loadingMore = false;
     }
@@ -214,7 +216,7 @@
       );
       notesDatabaseSession.write(resource, list, epoch);
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally {
       mutating = false;
     }
@@ -238,7 +240,7 @@
       selectedPanelRowId = loaded.page.id;
       await loadList();
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally {
       mutating = false;
     }
@@ -252,7 +254,7 @@
       if (selectedPanelRowId === row.id) selectedPanelRowId = null;
       await loadList();
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally {
       mutating = false;
     }
@@ -327,7 +329,7 @@
     {#if loading}
       {t("notes.databaseListLoading")}
     {:else if error}
-      {t("notes.databaseListFailed", error)}
+      {error.message}
     {:else}
       {t("notes.databaseListRowsCount", list?.rows.length ?? 0)}
     {/if}
@@ -376,7 +378,7 @@
 <section class="space-y-3 pt-2" aria-label={t("notes.databaseListTitle")}>
 
   <NotesDatabaseQueryBar properties={columns} {filters} {sorts} pending={mutating || editingLocked} onFiltersChange={saveFilters} onSortsChange={saveSorts} />
-  {#if error && list}<Notice class="text-[0.8rem]" message={error} />{/if}
+  {#if error && list}<Notice class="text-[0.8rem]" message={error.message} copy={error.detail} />{/if}
   {#if settingsOpen}
     <CollectionSettings label={t("notes.databaseViewSettings")} anchor={settingsAnchor} preferredWidth={COLLECTION_VIEW_SETTINGS_PANEL_WIDTH} showHeader={false} onClose={onCloseSettings}>
       {@render settingsHeader?.()}
@@ -388,7 +390,7 @@
   {/if}
 
   {#if !list && error}
-    <div class="min-h-32 text-[0.8rem]"><Notice layout="fill" message={t("notes.databaseListFailed", error)} copy={error} onRetry={retryList} /></div>
+    <div class="min-h-32 text-[0.8rem]"><Notice layout="fill" message={error.message} copy={error.detail} onRetry={retryList} /></div>
   {:else if !list}<NotesLoadingSkeleton kind="list" />{/if}
   {#if list}
     <div class="grid gap-2 @container">

@@ -1,6 +1,8 @@
 <script lang="ts">
   import NotesLoadingSkeleton from "$lib/components/notes/NotesLoadingSkeleton.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { LocalizedError } from "$lib/i18n/user-errors";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import { untrack, type Snippet } from "svelte";
   import { databaseResource, notesDatabaseSession, rememberDatabaseScroll } from "$lib/notes/database/session.svelte";
   import NotesDatabaseOptionBadge from "./NotesDatabaseOptionBadge.svelte";
@@ -107,7 +109,7 @@
     onSavingChange(mutating);
     return () => onSavingChange(false);
   });
-  let error = $state<string | null>(null);
+  let error = $state<NotesFailure | null>(null);
   let selectedPanelRowId = $state<string | null>(null);
   let lastLoadSignature = $state("");
   let lastReloadKey = untrack(() => reloadKey);
@@ -166,7 +168,7 @@
       return loaded;
     } catch (caught) {
       if (currentRequest !== requestId) return null;
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseBoardFailed"));
       return null;
     } finally {
       if (currentRequest === requestId) loading = false;
@@ -176,7 +178,7 @@
   /** Reloads a view that failed to load, rejecting while it is still unavailable. */
   async function retryBoard(): Promise<void> {
     await loadBoard();
-    if (error) throw new Error(error);
+    if (error) throw new LocalizedError(error.message);
   }
 
   async function loadMoreBoard(): Promise<void> {
@@ -193,7 +195,7 @@
       board = mergeNotesDatabaseBoardWindow(current, loaded);
       notesDatabaseSession.write(databaseResource("board", dataSourceId, viewScope()), board);
     } catch (caught) {
-      if (currentRequest === requestId) error = caught instanceof Error ? caught.message : String(caught);
+      if (currentRequest === requestId) error = notesFailure(caught, t("notes.databaseBoardFailed"));
     } finally {
       if (currentRequest === requestId) loadingMore = false;
     }
@@ -224,7 +226,7 @@
       );
       notesDatabaseSession.write(resource, board, epoch);
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally {
       mutating = false;
     }
@@ -253,7 +255,7 @@
       await loadBoard();
     } catch (caught) {
       if (created) await loadBoard();
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseRowCreateFailed"));
     } finally {
       mutating = false;
     }
@@ -270,7 +272,7 @@
       board = await moveNotesDataSourceBoardRow(dataSourceId, { page_id: row.id, group_id: group.id }, viewScope());
       notesDatabaseSession.write(resource, board, epoch);
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally {
       mutating = false;
     }
@@ -284,7 +286,7 @@
       selectedPanelRowId = loaded.page.id;
       await loadBoard();
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally {
       mutating = false;
     }
@@ -298,7 +300,7 @@
       if (selectedPanelRowId === row.id) selectedPanelRowId = null;
       await loadBoard();
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = notesFailure(caught, t("notes.databaseChangeFailed"));
     } finally {
       mutating = false;
     }
@@ -379,7 +381,7 @@
     {#if loading}
       {t("notes.databaseBoardLoading")}
     {:else if error}
-      {t("notes.databaseBoardFailed", error)}
+      {error.message}
     {:else}
       {t("notes.databaseBoardCardsCount", cardCount)}
     {/if}
@@ -424,7 +426,7 @@
 <section class="space-y-3 pt-2" aria-label={t("notes.databaseBoardTitle")}>
 
   <NotesDatabaseQueryBar properties={columns} {filters} {sorts} pending={mutating || editingLocked} onFiltersChange={saveFilters} onSortsChange={saveSorts} />
-  {#if error && board}<Notice class="text-[0.8rem]" message={error} />{/if}
+  {#if error && board}<Notice class="text-[0.8rem]" message={error.message} copy={error.detail} />{/if}
   {#if settingsOpen}
     <CollectionSettings label={t("notes.databaseViewSettings")} anchor={settingsAnchor} preferredWidth={COLLECTION_VIEW_SETTINGS_PANEL_WIDTH} showHeader={false} onClose={onCloseSettings}>
       {@render settingsHeader?.()}
@@ -436,7 +438,7 @@
   {/if}
 
   {#if !board && error}
-    <div class="min-h-32 text-[0.8rem]"><Notice layout="fill" message={t("notes.databaseBoardFailed", error)} copy={error} onRetry={retryBoard} /></div>
+    <div class="min-h-32 text-[0.8rem]"><Notice layout="fill" message={error.message} copy={error.detail} onRetry={retryBoard} /></div>
   {:else if !board}<NotesLoadingSkeleton kind="board" />{/if}
   {#if board}
     <div use:rememberDatabaseScroll={databaseResource("board", dataSourceId, viewScope()).key} class="grid gap-2 @container">

@@ -750,7 +750,7 @@
   {/if}
   {#if documentSelection.error || selectionActionError || selectionMenuError}
     {@const selectionError = documentSelection.error ?? selectionActionError ?? selectionMenuError ?? ""}
-    <Notice class="text-sm" role="status" message={`${t("notes.selectionActionFailed")} ${selectionError}`} copy={selectionError} />
+    <Notice class="text-sm" role="status" message={t("notes.selectionActionFailed")} copy={selectionError} />
   {/if}
   {#if visibleRange.topHeight > 0}
     <div aria-hidden="true" style:height={`${visibleRange.topHeight}px`}></div>
@@ -800,7 +800,7 @@
     <DatabasePastePrompt controller={notes.databasePaste} anchor={pastePromptAnchor} />
   {/key}
 {:else if databasePastePrompt && pastePromptError}
-  <Notice layout="floating" class="text-panel" message={t("notes.databasePasteFailed", pastePromptError)} copy={pastePromptError} onRetry={() => loadPastePrompt(true)} onDismiss={() => notes.databasePaste.dismiss()} />
+  <Notice layout="floating" class="text-panel" message={t("notes.databasePasteFailed")} copy={pastePromptError} onRetry={() => loadPastePrompt(true)} onDismiss={() => notes.databasePaste.dismiss()} />
 {/if}
 
 <style>

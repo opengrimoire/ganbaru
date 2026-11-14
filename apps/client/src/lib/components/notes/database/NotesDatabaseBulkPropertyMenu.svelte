@@ -10,6 +10,8 @@
   import CollectionPropertyIcon from "$lib/components/collections/CollectionPropertyIcon.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { LocalizedError } from "$lib/i18n/user-errors";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
   import { listNotesDataSourceRowPages } from "$lib/api/notes";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { notesDatabaseBulkToggledItem, notesDatabaseBulkValue } from "$lib/notes/database/bulk-edit";
@@ -50,7 +52,7 @@
 
   let targetRows = $state<NotesPage[]>([]);
   let targetsLoading = $state(false);
-  let targetsError = $state<string | null>(null);
+  let targetsError = $state<NotesFailure | null>(null);
 
   async function loadTargets(open: boolean): Promise<void> {
     const targetId = column.relationDataSourceId;
@@ -60,7 +62,7 @@
     try {
       targetRows = await listNotesDataSourceRowPages(targetId);
     } catch (caught) {
-      targetsError = caught instanceof Error ? caught.message : String(caught);
+      targetsError = notesFailure(caught, t("notes.databaseRelationLoadFailed"));
     } finally {
       targetsLoading = false;
     }
@@ -69,7 +71,7 @@
   /** Reloads relation targets after a failure, rejecting while they are still unavailable. */
   async function retryTargets(): Promise<void> {
     await loadTargets(true);
-    if (targetsError) throw new Error(targetsError);
+    if (targetsError) throw new LocalizedError(targetsError.message);
   }
 
   let dateTrigger: HTMLButtonElement | undefined = $state();
@@ -146,7 +148,7 @@
         {/each}
       {:else if column.type === "relation"}
         {#if targetsError}
-          <Notice class="px-2 py-1" message={t("notes.databaseRelationLoadFailed", targetsError)} copy={targetsError} onRetry={retryTargets} />
+          <Notice class="px-2 py-1" message={targetsError.message} copy={targetsError.detail} onRetry={retryTargets} />
         {:else if targetsLoading && targetRows.length === 0}
           <Loading layout="rows" rows={2} label={t("notes.databaseRelationLoading")} />
         {:else if !column.relationDataSourceId}

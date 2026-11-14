@@ -356,7 +356,7 @@ describe("Notes preview ownership", () => {
       title.value = "Unsaved title";
       title.dispatchEvent(new Event("input", { bubbles: true }));
       title.blur();
-      await vi.waitFor(() => expect(document.body.textContent).toContain("Rename failed"));
+      await vi.waitFor(() => expect(document.body.textContent).toContain("The change could not be saved."));
       expect(blockPlainText(notes.blockById(blockId)!)).toBe("");
       expect(title.value).toBe("");
     } finally {
@@ -812,7 +812,7 @@ describe("Notes preview ownership", () => {
     expect(document.querySelector("[data-notes-main-page]")?.textContent).toContain("Main note content");
     rejectLoad(new Error("Read failed"));
     await failure; await tick();
-    expect(document.querySelector("[data-notes-page-peek] [role='alert']")?.textContent).toContain("Read failed");
+    expect(document.querySelector("[data-notes-page-peek] [role='alert']")?.textContent).toContain("Notes could not be loaded.");
     [...document.querySelectorAll<HTMLButtonElement>("[data-notes-page-peek] button")].find((button) => button.textContent?.trim() === "Close")!.click();
     await vi.waitFor(() => {
       expect(notes.selectedPageId).toBe(parent.page.id);
@@ -850,7 +850,7 @@ describe("Notes preview ownership", () => {
     await expect(notes.selectPage(child.page.id, { openMode: "full" })).rejects.toThrow("Read failed");
     await tick();
     const pane = document.querySelector("[data-notes-main-page]")!;
-    expect(pane.querySelector("[role='alert']")?.textContent).toContain("Read failed");
+    expect(pane.querySelector("[role='alert']")?.textContent).toContain("Notes could not be loaded.");
     expect(pane.querySelector('[data-notes-skeleton="page"]')).toBeNull();
     expect([...pane.querySelectorAll<HTMLButtonElement>("button")].some((button) => button.textContent?.trim() === "Close")).toBe(false);
     expect(pane.querySelector("[data-notice-dismiss]")).toBeNull();

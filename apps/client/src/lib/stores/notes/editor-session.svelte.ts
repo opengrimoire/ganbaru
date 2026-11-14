@@ -1,3 +1,4 @@
+import { notesErrorDetail } from "$lib/notes/failure";
 import {
   getNotesDatabaseReference,
   getNotesPageBreadcrumb,
@@ -6,6 +7,7 @@ import {
 } from "$lib/api/notes";
 import { blockPlainText, isTextEditableBlock } from "$lib/notes/blocks/factory";
 import { getLocalization } from "$lib/i18n/translator.svelte";
+import { LocalizedError } from "$lib/i18n/user-errors";
 import type { NotesBlockLinkTarget, NotesPageLinkTarget } from "$lib/notes/links/block-link";
 import { parseNotesLinkHash } from "$lib/notes/links/block-link";
 import { notesDatabaseSession } from "$lib/notes/database/session.svelte";
@@ -621,7 +623,7 @@ export function createNotesEditorStore(
       if (pendingPageOutline?.promise === outlinePromise) pendingPageOutline = null;
     }, (error: unknown) => {
       if (pageSession.isCurrent(requestId, pageId)) {
-        workspaceController.setError(error instanceof Error ? error.message : String(error));
+        workspaceController.setError(notesErrorDetail(error));
       }
     });
     return true;
@@ -801,7 +803,7 @@ export function createNotesEditorStore(
     } catch (error) {
       if (!pageSession.isCurrent(loadGeneration, pageId) || pendingPageRemovalIds.has(pageId)) return;
       if (options.databaseBlockId) closeDatabase();
-      workspaceController.setError(error instanceof Error ? error.message : String(error));
+      workspaceController.setError(notesErrorDetail(error));
       throw error;
     } finally {
       if (pageSession.isCurrent(loadGeneration, pageId)) workspaceController.setLoading(false);
@@ -1061,7 +1063,7 @@ export function createNotesEditorStore(
 
   function refreshAfterConflict(): void {
     void refreshCanonicalPage().catch((error: unknown) => {
-      editorSaveError = error instanceof Error ? error.message : String(error);
+      editorSaveError = notesErrorDetail(error);
     });
   }
 
@@ -1405,7 +1407,7 @@ export function createNotesEditorStore(
   /** Preserve database source identities instead of turning their shells into unrelated blocks. */
   async function convertBlock(...args: Parameters<typeof blockActions.convertBlock>): Promise<void> {
     if (blockById(args[0])?.type === "child_database" && args[1] !== "child_database") {
-      throw new Error(getLocalization().t("notes.databaseCannotConvert"));
+      throw new LocalizedError(getLocalization().t("notes.databaseCannotConvert"));
     }
     await blockActions.convertBlock(...args);
   }
@@ -1552,7 +1554,7 @@ export function createNotesEditorStore(
       }
       return await undoController.undo();
     } catch (error) {
-      workspaceController.setError(error instanceof Error ? error.message : String(error));
+      workspaceController.setError(notesErrorDetail(error));
       throw error;
     }
   }
@@ -1564,7 +1566,7 @@ export function createNotesEditorStore(
       }
       return await undoController.redo();
     } catch (error) {
-      workspaceController.setError(error instanceof Error ? error.message : String(error));
+      workspaceController.setError(notesErrorDetail(error));
       throw error;
     }
   }

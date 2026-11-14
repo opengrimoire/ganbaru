@@ -25,6 +25,7 @@
   import { cn } from "$lib/utils";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { notesFailure, type NotesFailure } from "$lib/notes/failure";
 
   let {
     file,
@@ -40,7 +41,7 @@
   let draft = $state("");
   let loading = $state(false);
   let saving = $state(false);
-  let error = $state<string | null>(null);
+  let error = $state<NotesFailure | null>(null);
   let mode = $state<"edit" | "preview">("edit");
   let loadGeneration = 0;
   const dirty = $derived(isWorkingMarkdownDirty(loadedFile?.content ?? null, draft));
@@ -84,7 +85,7 @@
       if (generation !== loadGeneration) return;
       loadedFile = null;
       draft = "";
-      error = errorMessage(reason);
+      error = notesFailure(reason, t("notes.workingMarkdown.loadFailed"));
     } finally {
       if (generation === loadGeneration) loading = false;
     }
@@ -105,7 +106,7 @@
       loadedFile = result;
       draft = result.content;
     } catch (reason) {
-      error = errorMessage(reason);
+      error = notesFailure(reason, t("notes.workingMarkdown.saveFailed"));
       await detectConflict();
     } finally {
       saving = false;
@@ -135,7 +136,7 @@
       draft = remote.content;
       remoteConflict = null;
     } catch (reason) {
-      error = errorMessage(reason);
+      error = notesFailure(reason, t("notes.workingMarkdown.loadFailed"));
     }
   }
 
@@ -164,7 +165,7 @@
     if (!target) return;
     event.preventDefault();
     void openNotesExternalUrl(target.href).catch((reason) => {
-      error = errorMessage(reason);
+      error = notesFailure(reason, t("notes.linkOpenFailed"));
     });
   }
 
@@ -173,10 +174,6 @@
     return {
       destroy: () => node.removeEventListener("click", handlePreviewClick),
     };
-  }
-
-  function errorMessage(reason: unknown): string {
-    return reason instanceof Error ? reason.message : String(reason);
   }
 </script>
 
@@ -222,7 +219,7 @@
       </div>
     </div>
   {:else if error}
-    <Notice class="shrink-0 border-b border-border px-3 py-2 text-sm" message={error} />
+    <Notice class="shrink-0 border-b border-border px-3 py-2 text-sm" message={error.message} copy={error.detail} />
   {/if}
 
   {#if loading && !loadedFile}

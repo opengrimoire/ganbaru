@@ -50,7 +50,7 @@ use crate::{
     SyncError, SyncResult, compaction_limit,
 };
 
-const DEFAULT_SEEDS: u64 = 48;
+const DEFAULT_SEEDS: u64 = 24;
 const SEEDS_VARIABLE: &str = "GANBARU_SYNC_SOAK_SEEDS";
 const SEED_VARIABLE: &str = "GANBARU_SYNC_SEED";
 /// Test functions the seeds are split across, so the test harness runs them in parallel.

@@ -44,6 +44,7 @@ mod dispatch;
 mod inputs;
 #[cfg(desktop)]
 mod primary_folder;
+mod push_approvals;
 #[cfg(desktop)]
 mod push_requests;
 mod reads;
@@ -80,6 +81,8 @@ pub(crate) use delegation::{
 };
 #[cfg(desktop)]
 use dispatch::{deliver_assignment_input, dispatch_assignment_job};
+#[cfg(desktop)]
+pub(crate) use push_requests::push_standing_requests_after_turn;
 pub(crate) use reads::read_memberships_for_conversation;
 use reads::{
     read_active_or_latest_assignment, read_assignment, read_message, read_reply_thread_page,
@@ -954,6 +957,28 @@ pub async fn chat_read_push_request_states(
     request_item_ids: Vec<ChatConversationItemId>,
 ) -> ChatResult<Vec<ChatPushRequestStateRead>> {
     push_requests::read_push_request_states(app, db_url, request_item_ids).await
+}
+
+/// Lists a teammate's active standing push approvals.
+#[tauri::command]
+pub async fn chat_list_push_approvals(
+    app: tauri::AppHandle,
+    db_url: String,
+    teammate_id: ChatParticipantId,
+) -> ChatResult<Vec<ChatPushApprovalRead>> {
+    let pool = chat_pool(app, db_url).await?;
+    push_approvals::list_push_approvals(&pool, &teammate_id).await
+}
+
+/// Revokes a standing push approval, so later matching push requests ask again.
+#[tauri::command]
+pub async fn chat_revoke_push_approval(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: RevokeChatPushApprovalCommand,
+) -> ChatResult<()> {
+    let pool = chat_pool(app, db_url).await?;
+    push_approvals::revoke_push_approval(&pool, &request).await
 }
 
 /// Lists the live notes of a channel the local person belongs to, newest updated first.

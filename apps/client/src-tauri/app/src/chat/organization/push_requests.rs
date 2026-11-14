@@ -8,6 +8,7 @@
 //! request, so confirming one request on two devices posts one reply.
 
 use super::{PostOutcome, chat_pool, identifier_error, persistence_error, post_message};
+use crate::chat::channels::now_timestamp;
 use crate::chat::internal_mcp::InternalMcpFolderSource;
 use crate::chat::internal_mcp_tools::verify_authorized_folder_source;
 use crate::chat::workspace::WorkingFolderAuthorizationOperation;
@@ -17,12 +18,15 @@ use ganbaru_chat::coordination::push_requests::{
     PUSH_CONFIRMATION_REFERENCE_PREFIX, PushRequest, PushRequestRefusal, StoredPushRequest,
     push_confirmation_id, read_push_request, read_push_request_state,
 };
+use ganbaru_chat::coordination::reports::HOST_TOOL_SOURCE;
 use ganbaru_chat::git::hardened::requested_configuration;
 use ganbaru_chat::git::{
     GitFolder, GitPushTarget, advance_branch, commit_tree, push_object, push_target,
     worktree_commit,
 };
+use ganbaru_chat::ids::derived_id;
 use ganbaru_chat_contracts::models::*;
+use ganbaru_sync_contracts::chat_push_approvals::PUSH_APPROVAL_KEY_PREFIX;
 use serde_json::json;
 use sqlx::{Row, SqlitePool};
 use tauri::Manager;
@@ -30,8 +34,45 @@ use tauri::Manager;
 /// Most push requests one state read may name.
 const MAX_PUSH_REQUEST_STATE_READS: usize = 200;
 
+/// Reply a push made under a person's standing approval posts.
+const STANDING_APPROVAL_REPLY: &str = "Pushed automatically under your standing approval.";
+
+/// Reply a push made because the asking turn ran with full access posts.
+const FULL_ACCESS_REPLY: &str = "Pushed automatically because this turn ran with full access.";
+
+/// Who lets a push request push.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PushAuthority {
+    /// A person confirmed the request, and approves later matching pushes when `remember`.
+    Person { remember: bool },
+    /// Nobody confirmed it, so a standing approval or a full access turn must let it push.
+    Standing,
+}
+
+/// What lets a push request push without a person confirming it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StandingPermission {
+    /// An active approval names the teammate, folder, push URL, and destination branch, and
+    /// still records the run's approval policy and the teammate's safety mode.
+    Approval,
+    /// The asking run's grant resolved to the unattended approval policy.
+    FullAccess,
+}
+
+impl StandingPermission {
+    /// The reply the push posts after the teammate mention.
+    const fn reply(self) -> &'static str {
+        match self {
+            Self::Approval => STANDING_APPROVAL_REPLY,
+            Self::FullAccess => FULL_ACCESS_REPLY,
+        }
+    }
+}
+
 /// Pushes the commit a teammate's open push request names and answers the request with
-/// `request.normalized_markdown` after a mention of the teammate.
+/// `request.normalized_markdown` after a mention of the teammate. When
+/// `request.remember_approval` is set and the push succeeds, later matching requests of the
+/// teammate push without asking.
 ///
 /// # Errors
 ///
@@ -44,8 +85,92 @@ pub(in crate::chat::organization) async fn confirm_push_request(
     db_url: String,
     request: ConfirmPushRequestCommand,
 ) -> ChatResult<PostChatMessageResult> {
+    let authority = PushAuthority::Person {
+        remember: request.remember_approval,
+    };
+    answer_push_request(
+        app,
+        db_url,
+        request.request_item_id.as_str(),
+        Some(&request.normalized_markdown),
+        authority,
+    )
+    .await
+}
+
+/// Pushes, once the organizational provider turn `turn_id` ended, each open push request its
+/// run asked that a standing approval or a full access turn lets push, through the checks a
+/// person's confirmation runs. A request nothing lets push stays open for a person. Call it
+/// after the turn's settlement committed and its workspace mutation ended.
+pub(crate) fn push_standing_requests_after_turn(app: &tauri::AppHandle, turn_id: &ChatTurnId) {
+    let app = app.clone();
+    let turn_id = turn_id.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = push_standing_requests(app, &turn_id).await {
+            eprintln!(
+                "Chat push requests of a turn were not checked for standing approval: {error}"
+            );
+        }
+    });
+}
+
+async fn push_standing_requests(app: tauri::AppHandle, turn_id: &ChatTurnId) -> ChatResult<()> {
+    let db_url = format!("sqlite:{}", crate::vault::APP_SQLITE_FILE);
     let pool = chat_pool(app.clone(), db_url.clone()).await?;
-    let item_id = request.request_item_id.as_str();
+    let item_ids = push_request_items_of_turn(&pool, turn_id).await?;
+    for item_id in item_ids {
+        match answer_push_request(
+            app.clone(),
+            db_url.clone(),
+            &item_id,
+            None,
+            PushAuthority::Standing,
+        )
+        .await
+        {
+            Ok(_) => {}
+            // A refused request waits for a person, who sees the same refusal on the card.
+            Err(error) if error.code == ChatErrorCode::Permission => {}
+            Err(error) => eprintln!("A standing Chat push did not complete: {error}"),
+        }
+    }
+    Ok(())
+}
+
+/// The push request items the run of provider turn `turn_id` posted, oldest first.
+async fn push_request_items_of_turn(
+    pool: &SqlitePool,
+    turn_id: &ChatTurnId,
+) -> ChatResult<Vec<String>> {
+    sqlx::query_scalar(
+        "SELECT semantic.item_id
+         FROM chat_agent_runs run
+         JOIN chat_work_semantic_updates semantic
+           ON semantic.assignment_id = run.assignment_id
+          AND json_extract(semantic.payload_data, '$.agentRunId') = run.id
+         JOIN chat_conversation_items item ON item.id = semantic.item_id
+         WHERE run.provider_turn_id = ? AND semantic.update_kind = 'question'
+           AND json_extract(semantic.payload_data, '$.payload.source') = ?
+           AND json_type(semantic.payload_data, '$.payload.push') = 'object'
+         ORDER BY item.order_key, item.id",
+    )
+    .bind(turn_id.as_str())
+    .bind(HOST_TOOL_SOURCE)
+    .fetch_all(pool)
+    .await
+    .map_err(persistence_error)
+}
+
+/// Pushes the open push request `item_id` when `authority` lets it, and answers it with `text`,
+/// or with the standing reply when `text` is `None`.
+async fn answer_push_request(
+    app: tauri::AppHandle,
+    db_url: String,
+    item_id: &str,
+    text: Option<&str>,
+    authority: PushAuthority,
+) -> ChatResult<PostChatMessageResult> {
+    let pool = chat_pool(app.clone(), db_url.clone()).await?;
     let mut connection = pool.acquire().await.map_err(persistence_error)?;
     let stored = read_push_request(&mut connection, item_id).await?;
     drop(connection);
@@ -53,18 +178,134 @@ pub(in crate::chat::organization) async fn confirm_push_request(
         .state
         .require_open()
         .map_err(PushRequestRefusal::into_error)?;
-    let reply = confirmation_post(&stored, item_id, &request.normalized_markdown)?;
     let source = publish_source(&pool, &stored).await?;
     let authorization_revision_id = stored
         .authorization_revision_id
         .as_deref()
         .ok_or_else(|| PushRequestRefusal::Closed.into_error())?;
     verify_authorized_folder_source(&pool, authorization_revision_id, &source).await?;
+    let text = match authority {
+        PushAuthority::Person { .. } => text.unwrap_or_default(),
+        PushAuthority::Standing => standing_permission(&pool, &stored, &source)
+            .await?
+            .ok_or_else(confirmation_needed)?
+            .reply(),
+    };
+    let reply = confirmation_post(&stored, item_id, text)?;
     push_confirmed(&app, &pool, &stored.request).await?;
+    if authority == (PushAuthority::Person { remember: true })
+        && let Err(error) = remember_push_approval(&pool, &stored, &source).await
+    {
+        eprintln!("The standing push approval was not saved: {error}");
+    }
     match post_message(app, db_url, &reply, None, None).await? {
         PostOutcome::Posted(result) => Ok(result),
         PostOutcome::Refused(refusal) => Err(refusal),
     }
+}
+
+/// What lets the open request `stored` push without a person, given the asking run's publish
+/// `source`, or `None` when a person must confirm it. An archived or removed teammate never
+/// pushes on its own.
+///
+/// # Errors
+///
+/// Returns a persistence error when the read fails.
+async fn standing_permission(
+    pool: &SqlitePool,
+    stored: &StoredPushRequest,
+    source: &InternalMcpFolderSource,
+) -> ChatResult<Option<StandingPermission>> {
+    if stored.teammate_name.is_none() {
+        return Ok(None);
+    }
+    if source.runtime_approval_policy == ChatRuntimeApprovalPolicy::Unattended {
+        return Ok(Some(StandingPermission::FullAccess));
+    }
+    let approved: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM chat_push_approvals approval
+           JOIN chat_teammates teammate ON teammate.participant_id = approval.teammate_id
+           WHERE approval.teammate_id = ? AND approval.working_folder_id = ?
+             AND approval.push_url = ? AND approval.destination_branch = ?
+             AND approval.revoked_at IS NULL AND approval.runtime_approval_policy = ?
+             AND approval.safety_mode = teammate.current_policy_safety_mode
+         )",
+    )
+    .bind(&stored.teammate_id)
+    .bind(&stored.request.working_folder_id)
+    .bind(&stored.request.target.push_url)
+    .bind(&stored.request.target.destination_branch)
+    .bind(super::wire_runtime_approval_policy(
+        source.runtime_approval_policy,
+    ))
+    .fetch_one(pool)
+    .await
+    .map_err(persistence_error)?;
+    Ok(approved.then_some(StandingPermission::Approval))
+}
+
+/// Records, after a person's confirmed push succeeded, that later pushes of the teammate from
+/// the folder to the same push URL and destination branch need no confirmation while the run's
+/// approval policy `source` resolved to and the teammate's current safety mode stay the same.
+/// Approving again clears an earlier revocation. A teammate without a current policy gets no
+/// approval.
+///
+/// # Errors
+///
+/// Returns a validation error when the key cannot be derived and a persistence error when the
+/// write fails.
+async fn remember_push_approval(
+    pool: &SqlitePool,
+    stored: &StoredPushRequest,
+    source: &InternalMcpFolderSource,
+) -> ChatResult<()> {
+    let request = &stored.request;
+    let sync_key = derived_id(
+        PUSH_APPROVAL_KEY_PREFIX,
+        &[
+            &stored.teammate_id,
+            &request.working_folder_id,
+            &request.target.push_url,
+            &request.target.destination_branch,
+        ],
+    )?;
+    let now = now_timestamp()?;
+    sqlx::query(
+        "INSERT INTO chat_push_approvals
+            (teammate_id, working_folder_id, push_url, destination_branch, sync_key,
+             runtime_approval_policy, safety_mode, approved_by_participant_id, approved_at)
+         SELECT teammate.participant_id, ?, ?, ?, ?, ?, teammate.current_policy_safety_mode, ?, ?
+         FROM chat_teammates teammate
+         WHERE teammate.participant_id = ? AND teammate.current_policy_safety_mode IS NOT NULL
+         ON CONFLICT (teammate_id, working_folder_id, push_url, destination_branch) DO UPDATE SET
+             runtime_approval_policy = excluded.runtime_approval_policy,
+             safety_mode = excluded.safety_mode,
+             approved_by_participant_id = excluded.approved_by_participant_id,
+             approved_at = excluded.approved_at, revoked_at = NULL, revision = revision + 1",
+    )
+    .bind(&request.working_folder_id)
+    .bind(&request.target.push_url)
+    .bind(&request.target.destination_branch)
+    .bind(&sync_key)
+    .bind(super::wire_runtime_approval_policy(
+        source.runtime_approval_policy,
+    ))
+    .bind(super::LOCAL_PARTICIPANT_ID)
+    .bind(now.as_str())
+    .bind(&stored.teammate_id)
+    .execute(pool)
+    .await
+    .map_err(persistence_error)?;
+    Ok(())
+}
+
+fn confirmation_needed() -> ChatError {
+    ChatError::new(
+        ChatErrorCode::Permission,
+        "The push needs a person's confirmation",
+        false,
+    )
 }
 
 /// Reads where each push request in `request_item_ids` stands.

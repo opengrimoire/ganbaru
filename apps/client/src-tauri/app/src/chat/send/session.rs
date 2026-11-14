@@ -614,6 +614,9 @@ impl ProviderEventSink for DurableChatEventSink {
                 // The ingested completion settled the assignment, so replies queued behind the
                 // turn can continue it now.
                 crate::chat::organization::continue_queued_replies_after_turn(&self.app, &turn_id);
+                // Push requests the turn asked push now when a standing approval or a full
+                // access turn lets them, through the checks a person's confirmation runs.
+                crate::chat::organization::push_standing_requests_after_turn(&self.app, &turn_id);
             }
             ingestion
         })

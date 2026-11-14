@@ -364,6 +364,10 @@ pub struct ConfirmPushRequestCommand {
     pub request_item_id: ChatConversationItemId,
     /// The reply text without the teammate mention the confirmation adds.
     pub normalized_markdown: String,
+    /// Whether the person also approves later pushes of the teammate from this folder to the
+    /// same push URL and destination branch, recorded only once this push succeeds.
+    #[serde(default)]
+    pub remember_approval: bool,
 }
 
 /// Where a push request stands.
@@ -386,6 +390,29 @@ pub enum ChatPushRequestState {
 pub struct ChatPushRequestStateRead {
     pub request_item_id: ChatConversationItemId,
     pub state: ChatPushRequestState,
+}
+
+/// A person's standing approval of a teammate's pushes from one working folder to one push URL
+/// and destination branch.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatPushApprovalRead {
+    /// The replicated key that names the approval.
+    pub approval_id: String,
+    pub teammate_id: ChatParticipantId,
+    pub working_folder_id: ProjectWorkingFolderId,
+    /// The folder's current display name.
+    pub working_folder_name: String,
+    pub push_url: String,
+    pub destination_branch: String,
+    pub approved_at: String,
+}
+
+/// Revokes a standing push approval, so later matching push requests ask again.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RevokeChatPushApprovalCommand {
+    pub approval_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

@@ -616,3 +616,258 @@ async fn confirmed_push_refuses_remote_helpers_the_repository_allows() {
     );
     assert!(fixture.remote_branch("main").await.is_none());
 }
+
+async fn status_lines(fixture: &PushFixture) -> String {
+    fixture
+        .git(&["status", "--porcelain", "--untracked-files=all"])
+        .await
+}
+
+/// A commit Ganbaru makes for a push request records every change under the folder, untracked
+/// files included and ignored files left out, on the recorded parent; the push sends it and the
+/// local branch then follows with nothing left to commit.
+#[tokio::test]
+async fn a_worktree_commit_records_every_change_and_pushes_on_the_parent() {
+    use super::{advance_branch, commit_tree, worktree_commit};
+
+    let fixture = PushFixture::new().await;
+    fs::write(fixture.work.path().join(".gitignore"), "ignored.txt\n").expect("ignore file");
+    stage(fixture.folder(), &[".gitignore".to_string()])
+        .await
+        .expect("ignore file should stage");
+    commit(fixture.folder(), "test: ignore")
+        .await
+        .expect("commit should succeed");
+    let parent = fixture.head().await;
+    fs::write(fixture.work.path().join("one.txt"), "changed").expect("file should write");
+    fs::write(fixture.work.path().join("new.txt"), "new").expect("file should write");
+    fs::write(fixture.work.path().join("ignored.txt"), "ignored").expect("file should write");
+    let before = status_lines(&fixture).await;
+
+    let worktree = worktree_commit(fixture.folder(), &parent)
+        .await
+        .expect("the working tree should commit");
+    assert_eq!(worktree.changed_paths, ["new.txt", "one.txt"]);
+    assert_eq!(worktree.changed_path_count, 2);
+    assert_eq!(worktree.author, "Ganbaru test <test@example.invalid>");
+    assert!(!worktree.signed);
+    assert!(worktree.is_well_formed());
+    assert_eq!(
+        status_lines(&fixture).await,
+        before,
+        "reading leaves the index and branch alone"
+    );
+    assert_eq!(
+        worktree_commit(fixture.folder(), &parent).await.ok(),
+        Some(worktree.clone()),
+        "an unchanged working tree reads the same"
+    );
+
+    let object_id = commit_tree(
+        fixture.folder(),
+        &parent,
+        &worktree.tree_id,
+        "test: worktree",
+        worktree.signed,
+    )
+    .await
+    .expect("the commit should be made");
+    assert_eq!(
+        fixture.head().await,
+        parent,
+        "making the commit moves no ref"
+    );
+    let target = GitPushTarget {
+        object_id: object_id.clone(),
+        ..push_target(fixture.folder(), Some("origin"))
+            .await
+            .expect("target should read")
+    };
+    push_object(fixture.folder(), &target)
+        .await
+        .expect("the commit should push");
+    assert_eq!(
+        fixture.remote_branch("main").await.as_deref(),
+        Some(object_id.as_str())
+    );
+    let recorded = fixture
+        .git(&["show", "-s", "--format=%T %P %an <%ae>%n%B", &object_id])
+        .await;
+    assert_eq!(
+        recorded.trim(),
+        format!(
+            "{} {parent} Ganbaru test <test@example.invalid>\ntest: worktree",
+            worktree.tree_id
+        )
+    );
+
+    advance_branch(fixture.folder(), "main", &object_id, &parent)
+        .await
+        .expect("the branch should follow");
+    assert_eq!(fixture.head().await, object_id);
+    assert_eq!(status_lines(&fixture).await, "");
+    assert!(
+        advance_branch(fixture.folder(), "main", &object_id, &parent)
+            .await
+            .is_err(),
+        "a branch that is no longer on the parent stays put"
+    );
+}
+
+/// A working tree with no change, or a change made after the read, never yields the recorded
+/// commit, so a request asks for nothing empty and a confirmation sees the edit.
+#[tokio::test]
+async fn a_worktree_commit_needs_a_change_and_sees_later_edits() {
+    use super::{GitWorktreeCommitError, worktree_commit};
+
+    let fixture = PushFixture::new().await;
+    let parent = fixture.head().await;
+    assert!(matches!(
+        worktree_commit(fixture.folder(), &parent).await,
+        Err(GitWorktreeCommitError::NothingToCommit)
+    ));
+    fs::write(fixture.work.path().join("one.txt"), "changed").expect("file should write");
+    let read = worktree_commit(fixture.folder(), &parent)
+        .await
+        .expect("the change should commit");
+    fs::write(fixture.work.path().join("one.txt"), "changed again").expect("file should write");
+    let fresh = worktree_commit(fixture.folder(), &parent)
+        .await
+        .expect("the change should commit");
+    assert_ne!(fresh.tree_id, read.tree_id);
+    assert_eq!(fresh.changed_paths, read.changed_paths);
+}
+
+/// Hooks and filter drivers the repository's own configuration names never run while Ganbaru
+/// reads, makes, and records a push request commit.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_worktree_commit_runs_no_hooks_or_repository_filters() {
+    use super::{advance_branch, commit_tree, worktree_commit};
+
+    let fixture = PushFixture::new().await;
+    let marker_directory = TestDirectory::new("commit-markers");
+    let marker = marker_directory.path().join("ran");
+    let git_directory = fixture.work.path().join(".git");
+    for hook in [
+        "pre-commit",
+        "prepare-commit-msg",
+        "commit-msg",
+        "post-commit",
+        "reference-transaction",
+        "post-index-change",
+        "post-checkout",
+    ] {
+        write_marker_hook(&git_directory.join("hooks").join(hook), &marker, hook);
+    }
+    let filter = marker_directory.path().join("filter");
+    write_marker_hook(&filter, &marker, "filter");
+    fixture
+        .git(&[
+            "config",
+            "filter.planted.clean",
+            filter.to_str().expect("filter path should be UTF-8"),
+        ])
+        .await;
+    fixture
+        .git(&["config", "filter.planted.required", "true"])
+        .await;
+    fs::write(
+        fixture.work.path().join(".gitattributes"),
+        "* filter=planted\n",
+    )
+    .expect("attributes should write");
+    fs::write(fixture.work.path().join("one.txt"), "changed").expect("file should write");
+    let parent = fixture.head().await;
+
+    let worktree = worktree_commit(fixture.folder(), &parent)
+        .await
+        .expect("the working tree should commit");
+    let object_id = commit_tree(
+        fixture.folder(),
+        &parent,
+        &worktree.tree_id,
+        "test: hooks",
+        worktree.signed,
+    )
+    .await
+    .expect("the commit should be made");
+    advance_branch(fixture.folder(), "main", &object_id, &parent)
+        .await
+        .expect("the branch should follow");
+    assert_eq!(markers(&marker), "", "no hook or filter may run");
+    assert_eq!(
+        fixture
+            .git(&["show", &format!("{object_id}:one.txt")])
+            .await,
+        "changed"
+    );
+}
+
+/// A commit is signed with the person's signing configuration, and a signing failure fails the
+/// commit instead of making it unsigned.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_worktree_commit_signs_and_never_falls_back_to_unsigned() {
+    use super::{commit_tree, worktree_commit};
+
+    let fixture = PushFixture::new().await;
+    let keys = TestDirectory::new("signing-key");
+    let key = keys.path().join("key");
+    let generated = std::process::Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-C", "test", "-f"])
+        .arg(&key)
+        .status()
+        .expect("ssh-keygen should run");
+    assert!(generated.success());
+    let key_text = key.to_str().expect("key path should be UTF-8");
+    for (name, value) in [
+        ("gpg.format", "ssh"),
+        ("user.signingKey", key_text),
+        ("commit.gpgSign", "true"),
+    ] {
+        fixture.git(&["config", name, value]).await;
+    }
+    fs::write(fixture.work.path().join("one.txt"), "changed").expect("file should write");
+    let parent = fixture.head().await;
+    let worktree = worktree_commit(fixture.folder(), &parent)
+        .await
+        .expect("the working tree should commit");
+    assert!(worktree.signed);
+
+    let object_id = commit_tree(
+        fixture.folder(),
+        &parent,
+        &worktree.tree_id,
+        "test: signed",
+        worktree.signed,
+    )
+    .await
+    .expect("the signed commit should be made");
+    let raw = fixture.git(&["cat-file", "commit", &object_id]).await;
+    assert!(
+        raw.contains("gpgsig -----BEGIN SSH SIGNATURE-----"),
+        "{raw}"
+    );
+
+    let missing = keys.path().join("missing");
+    fixture
+        .git(&[
+            "config",
+            "user.signingKey",
+            missing.to_str().expect("key path should be UTF-8"),
+        ])
+        .await;
+    assert!(
+        commit_tree(
+            fixture.folder(),
+            &parent,
+            &worktree.tree_id,
+            "test: unsigned",
+            worktree.signed,
+        )
+        .await
+        .is_err(),
+        "a commit that cannot be signed is not made"
+    );
+}

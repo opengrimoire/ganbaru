@@ -1200,6 +1200,45 @@ describe("chat push request contracts", () => {
     expect(() => parseChatPushRequest({ ...push, executionEnvironmentId: undefined })).toThrow("executionEnvironmentId");
   });
 
+  it("parses a commit the request asks Ganbaru to make", () => {
+    const commit = {
+      message: "feat: add search\n\nIndexes titles.",
+      treeId: "c".repeat(40),
+      author: "Ada Lovelace <ada@example.invalid>",
+      signed: true,
+      changedPaths: ["src/search.ts", "docs/search.md"],
+      changedPathCount: 2,
+    };
+    expect(parseChatPushRequest({ ...push, commit })).toEqual({ ...push, commit });
+    expect(parseChatPushRequest(push)).not.toHaveProperty("commit");
+    const unlisted = { ...commit, changedPaths: [], changedPathCount: 400 };
+    expect(parseChatPushRequest({ ...push, commit: unlisted }).commit).toEqual(unlisted);
+  });
+
+  it("refuses commits whose message, author, or paths Rust never writes", () => {
+    const commit = {
+      message: "fix: guard",
+      treeId: "c".repeat(40),
+      author: "Ada <ada@example.invalid>",
+      signed: false,
+      changedPaths: ["a.ts"],
+      changedPathCount: 1,
+    };
+    for (const message of ["", " fix: guard", "fix\u0007", "fix\r\nguard", "x".repeat(5_001)]) {
+      expect(() => parseChatPushRequest({ ...push, commit: { ...commit, message } }), message).toThrow("message");
+    }
+    expect(() => parseChatPushRequest({ ...push, commit: { ...commit, author: "Ada\u001b[31m" } })).toThrow("author");
+    expect(() => parseChatPushRequest({ ...push, commit: { ...commit, author: "" } })).toThrow("author");
+    expect(() => parseChatPushRequest({ ...push, commit: { ...commit, changedPaths: ["a\nb"] } })).toThrow("changedPaths");
+    expect(() => parseChatPushRequest({ ...push, commit: { ...commit, changedPaths: ["é".repeat(513)] } })).toThrow("changedPaths");
+    const tooMany = Array.from({ length: 51 }, (_, index) => `f${index}`);
+    expect(() => parseChatPushRequest({ ...push, commit: { ...commit, changedPaths: tooMany, changedPathCount: 51 } })).toThrow("changedPaths");
+    expect(() => parseChatPushRequest({ ...push, commit: { ...commit, changedPathCount: 0 } })).toThrow("changedPaths");
+    expect(() => parseChatPushRequest({ ...push, commit: { ...commit, changedPaths: [], changedPathCount: 0 } })).toThrow("changedPaths");
+    expect(() => parseChatPushRequest({ ...push, commit: { ...commit, treeId: "c".repeat(39) } })).toThrow("treeId");
+    expect(() => parseChatPushRequest({ ...push, commit: { ...commit, signed: "yes" } })).toThrow("signed");
+  });
+
   it("parses push request states", () => {
     const states = [{ requestItemId: "item:a", state: "waiting" }, { requestItemId: "item:b", state: "pushed" }];
     expect(parseChatPushRequestStates(states)).toEqual(states);

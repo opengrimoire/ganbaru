@@ -16,6 +16,7 @@ fn request(working_folder_id: &str, execution_environment_id: Option<&str>) -> P
             object_id: "a".repeat(40),
         },
         git_config_digest: "b".repeat(64),
+        commit: None,
     }
 }
 

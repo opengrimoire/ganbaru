@@ -17,6 +17,7 @@ fn request() -> PushRequest {
             object_id: "a".repeat(40),
         },
         git_config_digest: "b".repeat(64),
+        commit: None,
     }
 }
 
@@ -105,6 +106,46 @@ fn a_request_with_an_unsafe_field_is_malformed() {
     for change in cases {
         let mut changed = request();
         change(&mut changed);
+        assert!(!changed.is_well_formed(), "{changed:?}");
+    }
+}
+
+fn commit_request() -> PushRequest {
+    PushRequest {
+        commit: Some(PushRequestCommit {
+            message: "Fix the docs\n\nExplain the push request.".to_string(),
+            worktree: GitWorktreeCommit {
+                tree_id: "c".repeat(40),
+                author: "Person <person@example.invalid>".to_string(),
+                signed: true,
+                changed_paths: vec!["docs/README.md".to_string()],
+                changed_path_count: 3,
+            },
+        }),
+        ..request()
+    }
+}
+
+#[test]
+fn a_request_with_an_unsafe_commit_is_malformed() {
+    let request = commit_request();
+    assert!(request.is_well_formed());
+    let round_trip: PushRequest =
+        serde_json::from_value(serde_json::to_value(&request).unwrap()).unwrap();
+    assert_eq!(round_trip, request);
+    let cases: [fn(&mut PushRequestCommit); 8] = [
+        |commit| commit.message = "  ".to_string(),
+        |commit| commit.message = " padded".to_string(),
+        |commit| commit.message = "bell\u{7}".to_string(),
+        |commit| commit.message = "a".repeat(crate::git::MAX_COMMIT_MESSAGE_CHARS + 1),
+        |commit| commit.worktree.tree_id = "HEAD".to_string(),
+        |commit| commit.worktree.author = "Name\n<e>".to_string(),
+        |commit| commit.worktree.changed_paths = vec!["a\rb".to_string()],
+        |commit| commit.worktree.changed_path_count = 0,
+    ];
+    for change in cases {
+        let mut changed = commit_request();
+        change(changed.commit.as_mut().unwrap());
         assert!(!changed.is_well_formed(), "{changed:?}");
     }
 }

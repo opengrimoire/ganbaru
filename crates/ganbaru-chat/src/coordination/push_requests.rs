@@ -3,15 +3,20 @@
 //! A teammate never pushes. It asks: a push request is a host question in its reply thread whose
 //! payload records the commit, the remote, the destination branch, and the push URL a push would
 //! reach, read by Ganbaru from the folder, with the digest of the folder's whole effective Git
-//! configuration. The assignment waits for an answer like any question. Only a person who
-//! confirms the request pushes, and only while a fresh read still names the same target, so a
+//! configuration. A request may also carry a commit message: Ganbaru then commits the working tree
+//! on that commit at confirmation, and records the tree, author, signing, and changed paths it
+//! read. The assignment waits for an answer like any question. Only a person who confirms the
+//! request pushes, and only while a fresh read still names the same target and tree, so a
 //! teammate cannot change what reaches the remote after the person looked.
 
 use super::contracts::ChatPushRequestState;
 use super::reports::{
     HOST_TOOL_SOURCE, HostCall, HostCallOutcome, HostUpdateIds, record_question_update,
 };
-use crate::git::{GitPushTarget, is_object_id, is_supported_push_url, validate_branch_name};
+use crate::git::{
+    GitPushTarget, GitWorktreeCommit, is_object_id, is_supported_push_url,
+    normalize_commit_message, validate_branch_name,
+};
 use crate::ids::derived_id;
 use crate::models::{ChatError, ChatErrorCode, ChatResult};
 use serde::{Deserialize, Serialize};
@@ -44,6 +49,22 @@ pub struct PushRequest {
     /// Hexadecimal digest of the folder's whole effective Git configuration when the target was
     /// read.
     pub git_config_digest: String,
+    /// The commit Ganbaru makes from the working tree on the target commit when the person
+    /// confirms, `None` to push the target commit itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<PushRequestCommit>,
+}
+
+/// A commit a push request asks Ganbaru to make at confirmation: the teammate's message on the
+/// working tree Ganbaru read, whose parent is the target commit.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PushRequestCommit {
+    /// The commit message.
+    pub message: String,
+    /// The tree, author, signing, and changed paths Ganbaru read.
+    #[serde(flatten)]
+    pub worktree: GitWorktreeCommit,
 }
 
 impl PushRequest {
@@ -71,6 +92,10 @@ impl PushRequest {
                 .git_config_digest
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            && self.commit.as_ref().is_none_or(|commit| {
+                normalize_commit_message(&commit.message) == Some(commit.message.as_str())
+                    && commit.worktree.is_well_formed()
+            })
     }
 }
 
@@ -95,17 +120,27 @@ pub enum PushRequestRefusal {
     Pending,
     /// The request was answered, superseded, or its run did not complete.
     Closed,
-    /// The folder no longer names the recorded target or Git configuration.
+    /// The commit message is empty, longer than [`crate::git::MAX_COMMIT_MESSAGE_CHARS`], or
+    /// carries control characters.
+    CommitMessageInvalid,
+    /// A commit was asked for, but the working tree has no change to commit.
+    NothingToCommit,
+    /// A commit was asked for, but the person's Git configuration names no author.
+    CommitIdentityMissing,
+    /// The folder no longer names the recorded target, working tree, or Git configuration.
     TargetChanged,
 }
 
 impl PushRequestRefusal {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 11] = [
         Self::SummaryInvalid,
         Self::Detached,
         Self::RemoteUnavailable,
         Self::TargetUnsupported,
         Self::RepositoryConnection,
+        Self::CommitMessageInvalid,
+        Self::NothingToCommit,
+        Self::CommitIdentityMissing,
         Self::Pending,
         Self::Closed,
         Self::TargetChanged,
@@ -119,6 +154,9 @@ impl PushRequestRefusal {
             Self::RemoteUnavailable => "push_remote_unavailable",
             Self::TargetUnsupported => "push_target_unsupported",
             Self::RepositoryConnection => "push_repository_connection",
+            Self::CommitMessageInvalid => "push_commit_message_invalid",
+            Self::NothingToCommit => "push_nothing_to_commit",
+            Self::CommitIdentityMissing => "push_commit_identity_missing",
             Self::Pending => "push_request_pending",
             Self::Closed => "push_request_closed",
             Self::TargetChanged => "push_target_changed",

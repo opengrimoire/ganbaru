@@ -243,7 +243,7 @@ fn definition(tool: HostTool) -> Option<Tool> {
         ),
         HostTool::RequestPush => mutating_tool(
             name,
-            "Ask the person who assigned this work to push the checked out branch of a folder you may publish from; nothing is pushed until the person confirms it",
+            "Ask the person who assigned this work to push the checked out branch of a folder you may publish from; pass commitMessage instead of committing yourself to have Ganbaru commit every change in the folder with the person's identity and signing first; nothing is committed or pushed until the person confirms it",
             push::properties(),
             false,
         ),

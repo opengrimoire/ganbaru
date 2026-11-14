@@ -1,15 +1,32 @@
 import {
+  CHAT_PUSH_COMMIT_MAX_LISTED_PATHS,
   CHAT_PUSH_REQUEST_STATES,
   type ChatPushRequest,
+  type ChatPushRequestCommit,
   type ChatPushRequestStateRead,
 } from "../contracts";
-import { readArray, readEnum, readIdentifier, readNullable, readRecord, readString } from "./readers";
+import {
+  readArray,
+  readBoolean,
+  readEnum,
+  readIdentifier,
+  readNonNegativeSafeInteger,
+  readNullable,
+  readRecord,
+  readString,
+} from "./readers";
 
 /** Longest push URL Ganbaru records, in UTF-8 bytes. */
 const MAX_PUSH_URL_BYTES = 2_048;
 const OBJECT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 const UNSAFE_URL_CHARACTER_PATTERN = /[\p{Cc}\s]/u;
+/** Longest commit message Ganbaru records, in characters. */
+const MAX_COMMIT_MESSAGE_CHARS = 5_000;
+/** Longest listed path or author Ganbaru records, in UTF-8 bytes. */
+const MAX_COMMIT_FIELD_BYTES = 1_024;
+const CONTROL_CHARACTER_PATTERN = /\p{Cc}/u;
+const MESSAGE_CONTROL_CHARACTER_PATTERN = /[^\P{Cc}\n\t]/u;
 
 /**
  * Reads the push target of a teammate's push request. Requests replicate from other devices, so every
@@ -26,6 +43,7 @@ export function parseChatPushRequest(value: unknown, label = "Chat push request"
     pushUrl: readPushUrl(record.pushUrl, `${label}.pushUrl`),
     objectId: readPattern(record.objectId, OBJECT_ID_PATTERN, `${label}.objectId`),
     gitConfigDigest: readPattern(record.gitConfigDigest, DIGEST_PATTERN, `${label}.gitConfigDigest`),
+    ...(record.commit === undefined ? {} : { commit: parseChatPushRequestCommit(record.commit, `${label}.commit`) }),
   };
 }
 
@@ -65,4 +83,40 @@ function readPushUrl(value: unknown, label: string): string {
     throw new Error(`${label} must not carry a password`);
   }
   return url;
+}
+
+/** Reads the commit a push request asks Ganbaru to make, with the bounds Rust writes it within. */
+function parseChatPushRequestCommit(value: unknown, label: string): ChatPushRequestCommit {
+  const record = readRecord(value, label);
+  const message = readString(record.message, `${label}.message`);
+  if (
+    !message
+    || message !== message.trim()
+    || [...message].length > MAX_COMMIT_MESSAGE_CHARS
+    || MESSAGE_CONTROL_CHARACTER_PATTERN.test(message)
+  ) {
+    throw new Error(`${label}.message is malformed`);
+  }
+  const changedPaths = readArray(record.changedPaths, `${label}.changedPaths`, readCommitField);
+  const changedPathCount = readNonNegativeSafeInteger(record.changedPathCount, `${label}.changedPathCount`);
+  if (changedPaths.length > CHAT_PUSH_COMMIT_MAX_LISTED_PATHS || changedPathCount < Math.max(changedPaths.length, 1)) {
+    throw new Error(`${label}.changedPaths is malformed`);
+  }
+  return {
+    message,
+    treeId: readPattern(record.treeId, OBJECT_ID_PATTERN, `${label}.treeId`),
+    author: readCommitField(record.author, `${label}.author`),
+    signed: readBoolean(record.signed, `${label}.signed`),
+    changedPaths,
+    changedPathCount,
+  };
+}
+
+/** A bounded, nonempty text without control characters. */
+function readCommitField(value: unknown, label: string): string {
+  const text = readString(value, label);
+  if (!text || new TextEncoder().encode(text).byteLength > MAX_COMMIT_FIELD_BYTES || CONTROL_CHARACTER_PATTERN.test(text)) {
+    throw new Error(`${label} is malformed`);
+  }
+  return text;
 }

@@ -3,9 +3,9 @@
 //! A confirmation pushes only while the request is open, the asking run's publish grant still
 //! holds, the folder's repository configuration chooses nothing about how Git connects, and a
 //! fresh read of the folder names the recorded commit, remote, destination, push URL, and Git
-//! configuration. It then answers the request with a reply by the local person that mentions the
-//! teammate, whose ids derive from the request, so confirming one request on two devices posts
-//! one reply.
+//! configuration, and for a request with a commit the recorded working tree. It then answers the
+//! request with a reply by the local person that mentions the teammate, whose ids derive from the
+//! request, so confirming one request on two devices posts one reply.
 
 use super::{PostOutcome, chat_pool, identifier_error, persistence_error, post_message};
 use crate::chat::internal_mcp::InternalMcpFolderSource;
@@ -18,7 +18,10 @@ use ganbaru_chat::coordination::push_requests::{
     push_confirmation_id, read_push_request, read_push_request_state,
 };
 use ganbaru_chat::git::hardened::requested_configuration;
-use ganbaru_chat::git::{GitFolder, GitPushTarget, push_object, push_target};
+use ganbaru_chat::git::{
+    GitFolder, GitPushTarget, advance_branch, commit_tree, push_object, push_target,
+    worktree_commit,
+};
 use ganbaru_chat_contracts::models::*;
 use serde_json::json;
 use sqlx::{Row, SqlitePool};
@@ -90,9 +93,11 @@ pub(in crate::chat::organization) async fn read_push_request_states(
 }
 
 /// Authorizes the request's folder, re-reads its push target and Git configuration under the
-/// folder's mutation guard, and pushes the recorded commit when nothing changed. The push runs
-/// as a confirmed teammate request, so it never runs the folder's repository programs or hooks
-/// and needs no trust decision for the folder's Git configuration.
+/// folder's mutation guard, and pushes the recorded commit when nothing changed. A request with a
+/// commit also needs the working tree to record the same tree, author, signing, and paths; the
+/// commit is made on the recorded commit and pushed, and the local branch then moves to it. Every
+/// run is a confirmed teammate request, so it never runs the folder's repository programs or
+/// hooks and needs no trust decision for the folder's Git configuration.
 async fn push_confirmed(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
@@ -128,7 +133,31 @@ async fn push_confirmed(
     let digest = configuration.map(|configuration| configuration.digest.to_hex());
     require_unchanged(request, fresh.as_ref(), digest.as_deref())
         .map_err(PushRequestRefusal::into_error)?;
-    push_object(folder, &request.target).await
+    let Some(commit) = &request.commit else {
+        return push_object(folder, &request.target).await;
+    };
+    let parent = request.target.object_id.as_str();
+    let worktree = worktree_commit(folder, parent).await.ok();
+    if worktree.as_ref() != Some(&commit.worktree) {
+        return Err(PushRequestRefusal::TargetChanged.into_error());
+    }
+    let target = GitPushTarget {
+        object_id: commit_tree(
+            folder,
+            parent,
+            &commit.worktree.tree_id,
+            &commit.message,
+            commit.worktree.signed,
+        )
+        .await?,
+        ..request.target.clone()
+    };
+    push_object(folder, &target).await?;
+    // The remote holds the commit now, so the confirmation stands even when the local branch
+    // cannot follow; the folder then shows the change as uncommitted until a fetch.
+    advance_branch(folder, &target.local_branch, &target.object_id, parent)
+        .await
+        .or(Ok(()))
 }
 
 /// `Ok` when a fresh read names exactly the recorded target and Git configuration digest.

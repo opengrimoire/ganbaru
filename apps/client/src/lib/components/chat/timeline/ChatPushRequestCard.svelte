@@ -34,6 +34,7 @@
   let error = $state<string | null>(null);
 
   const shortCommit = $derived(push.objectId.slice(0, SHORT_COMMIT_LENGTH));
+  const unlistedPaths = $derived(push.commit ? push.commit.changedPathCount - push.commit.changedPaths.length : 0);
   const confirmable = $derived(chatPushRequestsAvailable && (requestState === "open" || requestState === "waiting"));
 
   $effect(() => {
@@ -64,7 +65,9 @@
     try {
       await chat.confirmPushRequest({
         requestItemId,
-        normalizedMarkdown: t("chat.organization.push.reply", shortCommit, push.remote, push.destinationBranch),
+        normalizedMarkdown: push.commit
+          ? t("chat.organization.push.replyCommitted", push.remote, push.destinationBranch)
+          : t("chat.organization.push.reply", shortCommit, push.remote, push.destinationBranch),
       }, push.workingFolderId);
       requestState = "pushed";
     } catch (cause: unknown) {
@@ -88,9 +91,23 @@
     <dd><code>{push.remote}/{push.destinationBranch}</code></dd>
     <dt>{t("chat.organization.push.url")}</dt>
     <dd><code>{push.pushUrl}</code></dd>
-    <dt>{t("chat.organization.push.commit")}</dt>
+    <dt>{t(push.commit ? "chat.organization.push.parent" : "chat.organization.push.commit")}</dt>
     <dd><code title={push.objectId}>{shortCommit}</code></dd>
+    {#if push.commit}
+      <dt>{t("chat.organization.push.author")}</dt>
+      <dd>{push.commit.author}</dd>
+      <dt>{t("chat.organization.push.signing")}</dt>
+      <dd>{t(push.commit.signed ? "chat.organization.push.signed" : "chat.organization.push.unsigned")}</dd>
+    {/if}
   </dl>
+  {#if push.commit}
+    <p class="push-message">{push.commit.message}</p>
+    <p class="push-status">{t("chat.organization.push.files", push.commit.changedPathCount)}</p>
+    <ul class="push-files">
+      {#each push.commit.changedPaths as path, index (index)}<li><code>{path}</code></li>{/each}
+      {#if unlistedPaths > 0}<li class="push-status">{t("chat.organization.push.moreFiles", unlistedPaths)}</li>{/if}
+    </ul>
+  {/if}
   {#if !chatPushRequestsAvailable}
     <p class="push-status">{t("chat.organization.push.unavailable")}</p>
   {:else if requestState === "pushed"}
@@ -101,7 +118,7 @@
     {#if requestState === "waiting"}<p class="push-status">{t("chat.organization.push.waiting")}</p>{/if}
     <div class="push-actions">
       <button type="button" class="push-confirm" disabled={pending} onclick={() => void confirm()}>
-        {t("chat.organization.push.confirm")}
+        {t(push.commit ? "chat.organization.push.confirmCommit" : "chat.organization.push.confirm")}
       </button>
     </div>
   {/if}
@@ -116,6 +133,8 @@
   dt { color:var(--muted-foreground); }
   dd { min-width:0; margin:0; overflow-wrap:anywhere; color:var(--foreground); }
   .push-status { color:var(--muted-foreground); }
+  .push-message { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; color:var(--foreground); }
+  .push-files { display:grid; gap:0.1rem; max-height:8rem; margin:0; overflow:auto; padding:0; list-style:none; overflow-wrap:anywhere; }
   .push-actions { display:flex; flex-wrap:wrap; gap:0.35rem; }
   .push-confirm { min-height:1.9rem; border-radius:var(--floating-item-radius); padding:0.2rem 0.7rem; font-weight:600; background:var(--primary); color:var(--primary-foreground); }
   .push-confirm:disabled { cursor:not-allowed; opacity:0.5; }

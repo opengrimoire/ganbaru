@@ -9,8 +9,9 @@ pub use draft_context::{
     ChatCommitDraftContextRead, change_request_draft_context, commit_draft_context,
 };
 pub use push::{
-    GitPushTarget, GitPushTargetError, is_object_id, is_supported_push_url, push_object,
-    push_target,
+    GitPushTarget, GitPushTargetError, GitWorktreeCommit, GitWorktreeCommitError,
+    MAX_COMMIT_MESSAGE_CHARS, advance_branch, commit_tree, is_object_id, is_supported_push_url,
+    normalize_commit_message, push_object, push_target, worktree_commit,
 };
 
 use super::models::{ChatError, ChatErrorCode, ChatResult};

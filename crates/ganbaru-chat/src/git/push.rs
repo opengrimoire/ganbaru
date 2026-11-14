@@ -6,6 +6,13 @@
 //! the same target. The push names the commit object, never a local ref, so a branch that
 //! moved after the person looked cannot change what reaches the remote, and it never forces.
 
+mod commit;
+
+pub use commit::{
+    GitWorktreeCommit, GitWorktreeCommitError, MAX_COMMIT_MESSAGE_CHARS, advance_branch,
+    commit_tree, normalize_commit_message, worktree_commit,
+};
+
 use super::hardened::{empty_hooks_directory, requested_configuration, shell_quote};
 use super::{GitCall, GitFolder, require_configured_remote, run, status, validate_branch_name};
 use crate::models::{ChatError, ChatErrorCode, ChatResult};

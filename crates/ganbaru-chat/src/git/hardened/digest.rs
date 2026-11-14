@@ -186,17 +186,22 @@ fn is_connection_key(key: &str) -> bool {
         Some((subsection, name)) => (Some(subsection), name),
         None => (None, rest),
     };
-    match (section, subsection, name) {
-        ("credential", _, "helper") => true,
-        ("core", None, "sshcommand" | "gitproxy" | "askpass") => true,
-        ("remote", Some(_), "proxy") => true,
-        (
-            "http",
-            _,
-            "proxy" | "sslverify" | "sslcainfo" | "sslcapath" | "pinnedpubkey" | "curloptresolve",
-        ) => true,
-        _ => false,
-    }
+    matches!(
+        (section, subsection, name),
+        ("credential", _, "helper")
+            | ("core", None, "sshcommand" | "gitproxy" | "askpass")
+            | ("remote", Some(_), "proxy")
+            | (
+                "http",
+                _,
+                "proxy"
+                    | "sslverify"
+                    | "sslcainfo"
+                    | "sslcapath"
+                    | "pinnedpubkey"
+                    | "curloptresolve"
+            )
+    )
 }
 
 pub(super) struct DigestOutcome {

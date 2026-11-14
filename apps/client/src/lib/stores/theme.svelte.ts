@@ -30,6 +30,7 @@ import {
   DEFAULT_CALENDAR_DEFAULT_CUSTOM,
   deriveCalendarColorDefaultBundle,
   type CalendarColorDefaultMode,
+  type ThemeValidationIssue,
 } from "$lib/themes";
 import {
   canResetTokenToSeed,
@@ -47,7 +48,8 @@ import {
   type ThemeSaveOutcome,
 } from "$lib/themes/editor-save";
 import { rgbToHex } from "$lib/color/math";
-import { translate } from "$lib/i18n/translator.svelte";
+import { getLocalization, translate } from "$lib/i18n/translator.svelte";
+import { themeValidationMessages } from "$lib/i18n/theme-labels";
 import { userErrorMessage } from "$lib/i18n/user-errors";
 import { readNativeBackground } from "$lib/themes/native-background";
 import { resolveActiveThemeId, resolveQuickToggleThemeId } from "$lib/themes/active-theme";
@@ -1455,6 +1457,12 @@ async function dismissUpgrade(id: ThemeId): Promise<boolean> {
   return true;
 }
 
+/** Catalog messages for theme validation issues in the active locale. */
+function localizedIssues(issues: readonly ThemeValidationIssue[]): string[] {
+  return themeValidationMessages(issues, translate, getLocalization().locale);
+}
+
+/** Outcome of a theme import; `errors` holds catalog messages. */
 export type ImportThemeResult =
   | { ok: true; id: ThemeId }
   | { ok: false; errors: string[] };
@@ -1467,7 +1475,7 @@ async function importTheme(json: string): Promise<ImportThemeResult> {
     return { ok: false, errors: [translate("settings.theme.invalidJson")] };
   }
   const result = validateThemeJson(parsed);
-  if (!result.ok) return result;
+  if (!result.ok) return { ok: false, errors: localizedIssues(result.issues) };
   const theme = importedTheme(result.theme, generateThemeId(), existingDisplayNames());
   const write = userThemeToWrite(theme);
   try {
@@ -1519,7 +1527,7 @@ function replaceThemeDraft(
     (parsed as Record<string, unknown>).id = id;
   }
   const result = validateThemeJson(parsed);
-  if (!result.ok) return result;
+  if (!result.ok) return { ok: false, errors: localizedIssues(result.issues) };
   customThemes[id] = withSeedOf(result.theme, current);
   if (id === activeId) applyThemeToDom();
   return { ok: true };

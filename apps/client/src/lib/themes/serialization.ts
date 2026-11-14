@@ -23,12 +23,15 @@ const CALENDAR_TOKEN_KEY_SET: ReadonlySet<string> = new Set<string>(
   CALENDAR_TOKEN_KEYS,
 );
 
-const CALENDAR_COLOR_DEFAULT_MODES: ReadonlySet<string> = new Set([
+const CALENDAR_COLOR_DEFAULT_MODE_LIST: readonly CalendarColorDefaultMode[] = [
   "light",
   "dark",
   "app-canvas",
   "custom",
-]);
+];
+const CALENDAR_COLOR_DEFAULT_MODES: ReadonlySet<string> = new Set(
+  CALENDAR_COLOR_DEFAULT_MODE_LIST,
+);
 
 const HEX_COLOR_RE = /^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
 const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
@@ -140,16 +143,49 @@ function orderedTokens(
   return out;
 }
 
+/** The theme JSON schema version imports accept. */
+export const THEME_SCHEMA_VERSION = 1;
+
+/**
+ * One problem theme validation found. `path` names the field from the theme
+ * JSON root (`appTokens.--primary`, `eventPalette[3]`), empty for the root
+ * itself. Paths and parameters come only from known field names, token keys,
+ * indexes, and limits, never from values the JSON supplied, so they are safe
+ * to show.
+ */
+export type ThemeValidationIssue =
+  | { code: "not_object"; path: "" }
+  | { code: "schema_version"; path: string; expected: number }
+  | { code: "required"; path: string }
+  | { code: "non_empty_string"; path: string }
+  | { code: "slug"; path: string }
+  | { code: "built_in_id"; path: string }
+  | { code: "max_length"; path: string; limit: number }
+  | { code: "hex_color"; path: string }
+  | { code: "hex_color_list"; path: string; count: number }
+  | { code: "entry_count"; path: string; expected: number; actual: number }
+  | { code: "object"; path: string }
+  | { code: "token_color_map"; path: string }
+  | { code: "token_name_list"; path: string }
+  | { code: "string"; path: string }
+  | { code: "number"; path: string }
+  | { code: "non_negative_integer"; path: string }
+  | { code: "one_of"; path: string; allowed: readonly string[] };
+
+export type ThemeValidationIssueCode = ThemeValidationIssue["code"];
+
 export type ThemeValidationResult =
   | { ok: true; theme: UserTheme }
-  | { ok: false; errors: string[] };
+  | { ok: false; issues: ThemeValidationIssue[] };
+
+const ICON_LABELS: readonly string[] = ["light", "dark"];
 
 /**
  * Validate an unknown JSON-parsed value as a Theme suitable for import.
  * Returns a {@link UserTheme} on success (built-ins are never imported);
- * on failure returns a list of all problems found so the UI can surface
- * them at once instead of one round-trip per error. Unknown token keys
- * are stripped silently because dropping a stale token name should not
+ * on failure returns every {@link ThemeValidationIssue} found so the UI can
+ * surface them at once instead of one round-trip per error. Unknown token
+ * keys are stripped silently because dropping a stale token name should not
  * block an otherwise valid theme.
  *
  * Theme imports must use the current `schemaVersion: 1` export shape: full
@@ -158,17 +194,20 @@ export type ThemeValidationResult =
  */
 export function validateThemeJson(input: unknown): ThemeValidationResult {
   if (!isPlainObject(input)) {
-    return { ok: false, errors: ["theme must be a JSON object"] };
+    return { ok: false, issues: [{ code: "not_object", path: "" }] };
   }
-  if (input.schemaVersion !== 1) {
-    return { ok: false, errors: ["schemaVersion must be 1"] };
+  if (input.schemaVersion !== THEME_SCHEMA_VERSION) {
+    return {
+      ok: false,
+      issues: [{ code: "schema_version", path: "schemaVersion", expected: THEME_SCHEMA_VERSION }],
+    };
   }
   return validateSnapshot(input);
 }
 
 function validateIdentity(
   input: Record<string, unknown>,
-  errors: string[],
+  errors: ThemeValidationIssue[],
 ): {
   cleanId: string;
   cleanDisplayName: string;
@@ -179,29 +218,27 @@ function validateIdentity(
 
   let cleanId = "";
   if (typeof id !== "string" || id.length === 0) {
-    errors.push("id must be a non-empty string");
+    errors.push({ code: "non_empty_string", path: "id" });
   } else if (!SLUG_RE.test(id)) {
-    errors.push(
-      "id must be a slug (lowercase letters, digits, and hyphens; must start with a letter or digit)",
-    );
+    errors.push({ code: "slug", path: "id" });
   } else if (id === "light" || id === "dark") {
-    errors.push("id must not collide with a built-in theme");
+    errors.push({ code: "built_in_id", path: "id" });
   } else {
     cleanId = id;
   }
 
   let cleanDisplayName = "";
   if (typeof displayName !== "string" || displayName.trim().length === 0) {
-    errors.push("displayName must be a non-empty string");
+    errors.push({ code: "non_empty_string", path: "displayName" });
   } else if (displayName.length > MAX_DISPLAY_NAME_LENGTH) {
-    errors.push(`displayName must be ${MAX_DISPLAY_NAME_LENGTH} characters or fewer`);
+    errors.push({ code: "max_length", path: "displayName", limit: MAX_DISPLAY_NAME_LENGTH });
   } else {
     cleanDisplayName = displayName;
   }
 
   let cleanBlend = "";
   if (!isHexColor(blendCanvas)) {
-    errors.push("blendCanvas must be a hex color (#RRGGBB or #RRGGBBAA)");
+    errors.push({ code: "hex_color", path: "blendCanvas" });
   } else {
     cleanBlend = blendCanvas;
   }
@@ -216,24 +253,27 @@ function validateIdentity(
 
 function sanitizeEventPalette(
   source: unknown,
-  errors: string[],
+  errors: ThemeValidationIssue[],
   label: "eventPalette" | "seedEventPalette",
 ): string[] | undefined {
   if (!Array.isArray(source)) {
-    errors.push(`${label} must be an array of ${PALETTE_SIZE} hex strings`);
+    errors.push({ code: "hex_color_list", path: label, count: PALETTE_SIZE });
     return undefined;
   }
   if (source.length !== PALETTE_SIZE) {
-    errors.push(
-      `${label} must contain exactly ${PALETTE_SIZE} entries (got ${source.length})`,
-    );
+    errors.push({
+      code: "entry_count",
+      path: label,
+      expected: PALETTE_SIZE,
+      actual: source.length,
+    });
     return undefined;
   }
   const out: string[] = [];
   for (let i = 0; i < source.length; i++) {
     const value = source[i];
     if (!isHexColor(value)) {
-      errors.push(`${label}[${i}] must be a hex color`);
+      errors.push({ code: "hex_color", path: `${label}[${i}]` });
       out.push("#000000");
     } else {
       out.push(value);
@@ -243,7 +283,7 @@ function sanitizeEventPalette(
 }
 
 function validateSnapshot(input: Record<string, unknown>): ThemeValidationResult {
-  const errors: string[] = [];
+  const errors: ThemeValidationIssue[] = [];
   const { cleanId, cleanDisplayName, cleanBlend, cleanPalette } =
     validateIdentity(input, errors);
 
@@ -278,8 +318,8 @@ function validateSnapshot(input: Record<string, unknown>): ThemeValidationResult
     errors,
     "sources",
   );
-  if (!cleanSources && !errors.some((e) => e.startsWith("sources"))) {
-    errors.push("sources is required");
+  if (!cleanSources && !errors.some((e) => e.path.startsWith("sources"))) {
+    errors.push({ code: "required", path: "sources" });
   }
 
   const cleanAppTokens = cleanSources
@@ -309,10 +349,10 @@ function validateSnapshot(input: Record<string, unknown>): ThemeValidationResult
     ) {
       cleanEngineVersion = input.derivationEngineVersion;
     } else {
-      errors.push("derivationEngineVersion must be a non-negative integer");
+      errors.push({ code: "non_negative_integer", path: "derivationEngineVersion" });
     }
   } else if (input.derivationEngineVersion !== undefined) {
-    errors.push("derivationEngineVersion must be a number");
+    errors.push({ code: "number", path: "derivationEngineVersion" });
   }
 
   const cleanIconLabel = sanitizeIconLabel(
@@ -327,7 +367,7 @@ function validateSnapshot(input: Record<string, unknown>): ThemeValidationResult
     errors,
   );
 
-  if (errors.length > 0) return { ok: false, errors };
+  if (errors.length > 0) return { ok: false, issues: errors };
 
   const theme: UserTheme = {
     kind: "user",
@@ -363,39 +403,41 @@ function sanitizeIconLabel(
   raw: unknown,
   fallbackCanvasHex: string,
   fieldName: string,
-  errors: string[],
+  errors: ThemeValidationIssue[],
 ): "light" | "dark" {
   if (raw === undefined) {
-    errors.push(`${fieldName} is required`);
+    errors.push({ code: "required", path: fieldName });
     return defaultIconLabelFromCanvas(fallbackCanvasHex);
   }
   if (raw === "light" || raw === "dark") return raw;
-  errors.push(`${fieldName} must be "light" or "dark"`);
+  errors.push({ code: "one_of", path: fieldName, allowed: ICON_LABELS });
   return defaultIconLabelFromCanvas(fallbackCanvasHex);
 }
 
 function sanitizeCalendarDefaults(
   raw: unknown,
   fallbackCustomBasis: string,
-  errors: string[],
+  errors: ThemeValidationIssue[],
 ): { mode: CalendarColorDefaultMode; customBasis: string } {
   const fallbackBasis = isHexColor(fallbackCustomBasis)
     ? fallbackCustomBasis
     : DEFAULT_CALENDAR_DEFAULT_CUSTOM;
   if (raw === undefined) {
-    errors.push("calendarDefaults is required");
+    errors.push({ code: "required", path: "calendarDefaults" });
     return { mode: "app-canvas", customBasis: fallbackBasis };
   }
   if (!isPlainObject(raw)) {
-    errors.push("calendarDefaults must be an object");
+    errors.push({ code: "object", path: "calendarDefaults" });
     return { mode: "app-canvas", customBasis: fallbackBasis };
   }
   const mode = raw.mode;
   let cleanMode: CalendarColorDefaultMode = "app-canvas";
   if (typeof mode !== "string" || !CALENDAR_COLOR_DEFAULT_MODES.has(mode)) {
-    errors.push(
-      'calendarDefaults.mode must be "light", "dark", "app-canvas", or "custom"',
-    );
+    errors.push({
+      code: "one_of",
+      path: "calendarDefaults.mode",
+      allowed: CALENDAR_COLOR_DEFAULT_MODE_LIST,
+    });
   } else {
     cleanMode = mode as CalendarColorDefaultMode;
   }
@@ -404,7 +446,7 @@ function sanitizeCalendarDefaults(
     return { mode: cleanMode, customBasis: fallbackBasis };
   }
   if (!isHexColor(customBasis)) {
-    errors.push("calendarDefaults.customBasis must be a hex color");
+    errors.push({ code: "hex_color", path: "calendarDefaults.customBasis" });
     return { mode: cleanMode, customBasis: fallbackBasis };
   }
   return { mode: cleanMode, customBasis };
@@ -414,21 +456,21 @@ function sanitizeIsolatedList(
   source: unknown,
   allowed: ReadonlySet<string>,
   fieldName: string,
-  errors: string[],
+  errors: ThemeValidationIssue[],
 ): Set<string> {
   if (source === undefined) {
-    errors.push(`${fieldName} is required`);
+    errors.push({ code: "required", path: fieldName });
     return new Set();
   }
   if (!Array.isArray(source)) {
-    errors.push(`${fieldName} must be an array of token-key strings`);
+    errors.push({ code: "token_name_list", path: fieldName });
     return new Set();
   }
   const out = new Set<string>();
   for (let i = 0; i < source.length; i++) {
     const value = source[i];
     if (typeof value !== "string") {
-      errors.push(`${fieldName}[${i}] must be a string`);
+      errors.push({ code: "string", path: `${fieldName}[${i}]` });
       continue;
     }
     if (!allowed.has(value)) continue;
@@ -444,22 +486,22 @@ function sanitizeFullTokenSnapshot(
   allowed: ReadonlySet<string>,
   base: Readonly<Record<string, string>>,
   fieldName: string,
-  errors: string[],
+  errors: ThemeValidationIssue[],
 ): Record<string, string> {
   if (!isPlainObject(source)) {
-    errors.push(`${fieldName} must be an object of token-hex pairs`);
+    errors.push({ code: "token_color_map", path: fieldName });
     return { ...base };
   }
   const out: Record<string, string> = {};
   for (const key of order) {
     const value = (source as Record<string, unknown>)[key];
     if (value === undefined) {
-      errors.push(`${fieldName}.${key} is required`);
+      errors.push({ code: "required", path: `${fieldName}.${key}` });
       out[key] = base[key];
       continue;
     }
     if (!isHexColor(value)) {
-      errors.push(`${fieldName}.${key} must be a hex color`);
+      errors.push({ code: "hex_color", path: `${fieldName}.${key}` });
       continue;
     }
     if (!allowed.has(key)) continue;
@@ -470,15 +512,15 @@ function sanitizeFullTokenSnapshot(
 
 function sanitizeSources(
   source: unknown,
-  errors: string[],
+  errors: ThemeValidationIssue[],
   fieldName: string = "sources",
 ): ThemeSources | undefined {
   if (source === undefined) {
-    errors.push(`${fieldName} is required`);
+    errors.push({ code: "required", path: fieldName });
     return undefined;
   }
   if (!isPlainObject(source)) {
-    errors.push(`${fieldName} must be an object`);
+    errors.push({ code: "object", path: fieldName });
     return undefined;
   }
   const out: Partial<ThemeSources> = {};
@@ -486,12 +528,12 @@ function sanitizeSources(
   for (const key of SOURCE_KEY_ORDER) {
     const value = (source as Record<string, unknown>)[key];
     if (value === undefined) {
-      errors.push(`${fieldName}.${key} is required`);
+      errors.push({ code: "required", path: `${fieldName}.${key}` });
       ok = false;
       continue;
     }
     if (!isHexColor(value)) {
-      errors.push(`${fieldName}.${key} must be a hex color`);
+      errors.push({ code: "hex_color", path: `${fieldName}.${key}` });
       ok = false;
       continue;
     }

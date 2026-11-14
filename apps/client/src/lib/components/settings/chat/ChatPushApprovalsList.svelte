@@ -80,6 +80,7 @@
 
 <style>
   .push-approvals {
+    font-size: calc(0.733333rem * var(--type-scale));
     display: grid;
     gap: 0.4rem;
   }

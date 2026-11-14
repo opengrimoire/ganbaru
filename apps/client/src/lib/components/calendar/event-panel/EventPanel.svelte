@@ -1512,6 +1512,7 @@
 
         {#if session.heavyLoadFailed}
           <Notice
+            class="text-[0.8rem]"
             role="status"
             tone="warning"
             copy={false}

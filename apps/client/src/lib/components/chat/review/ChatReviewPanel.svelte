@@ -965,6 +965,7 @@
   .review-file-list > p { padding: 0.7rem; color: var(--muted-foreground); text-align: center; font-size: calc(0.7rem * var(--type-scale)); }
   .git-imported-toggle { display: flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0.35rem 0.45rem; color: var(--muted-foreground); font-size: calc(0.7rem * var(--type-scale)); }
   .executed-elsewhere { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 0.5rem; overflow: auto; padding: 0.55rem; }
+  .executed-elsewhere > :global(.notice) { font-size: calc(0.7rem * var(--type-scale)); }
   .executed-elsewhere ul { display: flex; flex-direction: column; gap: 0.15rem; }
   .executed-elsewhere li { display: flex; min-width: 0; align-items: center; gap: 0.4rem; font-size: calc(0.7rem * var(--type-scale)); }
   .executed-elsewhere li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

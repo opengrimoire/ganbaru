@@ -70,6 +70,10 @@
 </div>
 
 <style>
+  .usage-list {
+    font-size: calc(0.733333rem * var(--type-scale));
+  }
+
   .usage-list ul {
     display: grid;
     gap: 0.25rem;

@@ -1277,7 +1277,7 @@
   .chat-workspace[data-rail-presentation="column"][data-rail-docked="true"] .chat-rail-shell { grid-row: 1 / 5; }
   .chat-workspace[data-rail-docked="true"] .chat-rail-shell { margin: calc(-1 * var(--chat-canvas-inset)) var(--chat-canvas-inset) calc(-1 * var(--chat-canvas-inset)) calc(-1 * var(--chat-canvas-inset)); }
   .main-shell { grid-column: 2; grid-row: 2; min-width: min(440px, 100cqw); min-height: 0; }
-  .main-shell :global(.waiting-work-notice) { flex: none; margin: 0.35rem 0.5rem 0; padding: 0.25rem 0.35rem; font-size: 0.75rem; }
+  .main-shell :global(.waiting-work-notice) { flex: none; margin: 0.35rem 0.5rem 0; padding: 0.25rem 0.35rem; font-size: calc(0.75rem * var(--type-scale)); }
   .chat-workspace[data-reply-thread-presentation="column"] .main-shell { min-width: min(320px, 100cqw); }
   /* Beside a docked rail the main column owns the canvas's bottom-left corner, so its full-bleed fills (composer docks, panels) follow the rounded edge. Only that corner is clipped, so popovers still escape upward and rightward. */
   .chat-workspace[data-rail-docked="true"]:not(:has(.chat-bottom-transition-shell.open)) .main-shell { clip-path: inset(-100vmax -100vmax 0 0 round 0 0 0 max(0px, var(--content-radius) - var(--chat-canvas-inset))); }

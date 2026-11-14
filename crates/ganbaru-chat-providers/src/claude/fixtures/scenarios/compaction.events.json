@@ -35,19 +35,9 @@
       "turn": "turn-1"
     },
     {
-      "type": "runtime_warning",
-      "turn": "turn-1",
-      "code": "claude_status"
-    },
-    {
       "type": "item_completed",
       "kind": "context_compaction",
       "status": "completed"
-    },
-    {
-      "type": "runtime_warning",
-      "turn": "turn-1",
-      "code": "claude_status"
     },
     {
       "type": "item_started",

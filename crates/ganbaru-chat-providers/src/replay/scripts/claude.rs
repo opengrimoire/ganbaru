@@ -86,7 +86,7 @@ pub(super) fn script(scenario: &str) -> Option<ReplayScript> {
         "compaction" => direct(vec![
             START,
             send("turn-1", "Summarize the project"),
-            awaited("runtime_warning", 1),
+            awaited("thread_metadata_updated", 1),
             ReplayStep::Steer {
                 turn: "turn-1",
                 prompt: "Focus on the tests",

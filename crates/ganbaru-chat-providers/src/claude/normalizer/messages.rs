@@ -149,23 +149,10 @@ impl ClaudeEventNormalizer {
                 event.turn_id = None;
                 Ok(vec![event])
             }
-            "status" => Ok(vec![
-                self.event(
-                    state,
-                    "system/status",
-                    None,
-                    None,
-                    None,
-                    CanonicalEvent::RuntimeWarning(NotificationEvent {
-                        code: "claude_status".to_string(),
-                        title: text(object, "status")
-                            .unwrap_or("Claude status changed")
-                            .to_string(),
-                        detail: text(object, "message")
-                            .map(|value| bounded_text(value, MAX_TEXT_BYTES)),
-                    }),
-                )?,
-            ]),
+            // Status frames are transient progress cues such as `requesting` or `compacting`.
+            // The turn lifecycle and `compact_boundary` already record what they announce, so
+            // surfacing them as notices would show internal states as timeline activity.
+            "status" => Ok(Vec::new()),
             "permission_denied" => {
                 Ok(vec![
                     self.event(

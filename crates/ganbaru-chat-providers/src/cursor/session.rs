@@ -109,8 +109,8 @@ pub struct AcpTerminalCallbacks {
     workspace: PathBuf,
     session_id: String,
     terminals: Arc<Mutex<HashMap<String, AcpTerminal>>>,
-    /// Folder access and terminal sandbox of an organizational Grok session; `None` keeps the
-    /// plain workspace boundary.
+    /// Folder access, terminal sandbox, and metadata guard of a confined Grok or Cursor session;
+    /// `None` keeps the plain workspace boundary.
     confinement: Option<Arc<AcpCallbackConfinement>>,
 }
 
@@ -152,7 +152,7 @@ impl AcpTerminalCallbacks {
         }
     }
 
-    /// Applies the folder access and terminal sandbox of an organizational Grok session.
+    /// Applies the folder access and confinement of a confined Grok or Cursor session.
     pub(super) fn with_confinement(mut self, confinement: Option<AcpCallbackConfinement>) -> Self {
         self.confinement = confinement.map(Arc::new);
         self
@@ -163,6 +163,17 @@ impl AcpTerminalCallbacks {
         self.confinement
             .as_deref()
             .and_then(AcpCallbackConfinement::git_metadata_tripped)
+    }
+
+    /// Checks the folder metadata of a session whose agent writes the folder itself; a change
+    /// trips the guard. Other sessions are checked where their writes and commands run.
+    pub(super) fn verify_direct_writes(&self) -> ChatResult<()> {
+        match self.confinement.as_deref() {
+            Some(confinement) if confinement.watches_direct_writes() => {
+                confinement.verify_git_metadata()
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Refuses a terminal command the session may not run, before the person is asked.

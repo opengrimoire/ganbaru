@@ -18,6 +18,8 @@ use std::time::Duration;
 pub const CURSOR_STDERR_LIMIT_BYTES: usize = 256 * 1024;
 const VERSION_OUTPUT_LIMIT_BYTES: usize = 16 * 1024;
 const ABOUT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Appended to the continuation group digest of confined Cursor launches only.
+const CONFINED_CONTINUATION_MARKER: &[u8] = b"\0confined";
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct CursorVersion {
@@ -349,23 +351,57 @@ pub fn launch_arguments(
     Ok(arguments)
 }
 
+/// Starts Cursor over ACP, under the sandbox helper for an organizational launch when the
+/// device has one; see [`super::confinement`].
 pub fn spawn_connection_process(
     configuration: &ProviderInstanceConfig,
     settings: &CursorProviderSettings,
     working_directory: &Path,
 ) -> ChatResult<crate::process::ProviderProcessHandle> {
+    use super::confinement::*;
+
+    let access = AcpFolderAccess::for_launch(configuration.internal_mcp.as_ref())?;
+    let helper = cursor_confinement(access, sandbox_helper())?;
     let environment = process_environment(configuration)?;
     let executable = resolve_executable(&configuration.executable, &environment)?;
     let arguments = launch_arguments(&configuration.launch_arguments, settings)?;
-    spawn_provider_process(ProviderProcessConfig {
-        executable,
-        arguments,
-        working_directory: working_directory.to_path_buf(),
-        environment,
-        stderr_limit_bytes: CURSOR_STDERR_LIMIT_BYTES,
-        purpose: crate::process::ProviderProcessPurpose::Session,
-        provider_instance_label: Some(configuration.label.clone()),
-    })
+    let process = |executable, arguments, environment| {
+        spawn_provider_process(ProviderProcessConfig {
+            executable,
+            arguments,
+            working_directory: working_directory.to_path_buf(),
+            environment,
+            stderr_limit_bytes: CURSOR_STDERR_LIMIT_BYTES,
+            purpose: crate::process::ProviderProcessPurpose::Session,
+            provider_instance_label: Some(configuration.label.clone()),
+        })
+    };
+    let (Some(helper), Some(access)) = (helper, access) else {
+        return process(executable, arguments, environment);
+    };
+    ensure_confined_endpoint(settings.api_endpoint.as_deref())?;
+    let workspace =
+        fs::canonicalize(working_directory).map_err(|_| cursor_sandbox_unavailable_error())?;
+    let launch = prepare_cursor_launch(
+        &executable,
+        &workspace,
+        access,
+        &environment,
+        &configuration.environment,
+        configuration.internal_mcp.as_ref(),
+    )?;
+    let mut confined_arguments = launch.leading_arguments;
+    confined_arguments.extend(arguments);
+    let arguments = crate::confinement::helper_arguments(
+        helper,
+        &launch.policy,
+        &launch.program,
+        &confined_arguments,
+        "Cursor",
+    )?;
+    let mut handle = process(helper.path().to_path_buf(), arguments, launch.environment)?;
+    handle.retain_directory(launch.directory);
+    Ok(handle)
 }
 
 pub fn spawn_acp_connection_process(
@@ -511,6 +547,15 @@ pub fn continuation_group(
     );
     digest.update(b"\0");
     digest.update(account_identity.unwrap_or("default").as_bytes());
+    // A confined launch keeps its sessions in a private configuration folder, so it never
+    // continues an unconfined session or the reverse. Only confined groups carry the marker,
+    // because the unconfined launch identity is unchanged by it.
+    if super::confinement::cursor_launch_is_confined(
+        configuration.internal_mcp.as_ref(),
+        super::confinement::sandbox_helper(),
+    ) {
+        digest.update(CONFINED_CONTINUATION_MARKER);
+    }
     ContinuationGroupId::new(format!("cursor-account-{:x}", digest.finalize()))
         .map_err(|_| protocol_error("continuation identity"))
 }

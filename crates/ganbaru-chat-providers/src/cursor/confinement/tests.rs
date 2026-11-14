@@ -246,10 +246,20 @@ fn unconfined_sessions_keep_the_plain_workspace_boundary() {
     let commands = Some(folder(ProviderFolderCapability::Execute));
     assert!(
         session(
-            AcpProviderFlavor::Cursor,
+            AcpProviderFlavor::Generic,
             commands,
             &workspace,
             Some(helper())
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert!(
+        session(
+            AcpProviderFlavor::Cursor,
+            Some(ProviderOrganizationalScope::Conversation),
+            &workspace,
+            None
         )
         .unwrap()
         .is_none()
@@ -361,4 +371,83 @@ async fn a_changed_git_folder_ends_the_session_and_refuses_later_commands() {
         refusal_code(confinement.verify_write().unwrap_err()),
         "acp_git_metadata_changed"
     );
+}
+
+#[test]
+fn cursor_sessions_never_run_commands_and_need_the_helper_for_a_folder() {
+    let workspace = crate::probe_directory::ProbeDirectory::create().unwrap();
+    for helper in [None, Some(helper())] {
+        let Err(error) = session(
+            AcpProviderFlavor::Cursor,
+            Some(folder(ProviderFolderCapability::Execute)),
+            &workspace,
+            helper,
+        ) else {
+            panic!("a Cursor session was offered commands");
+        };
+        assert_eq!(refusal_code(error), "acp_command_outside_scope");
+    }
+    for capability in [
+        ProviderFolderCapability::Read,
+        ProviderFolderCapability::Edit,
+    ] {
+        let Err(error) = session(
+            AcpProviderFlavor::Cursor,
+            Some(folder(capability)),
+            &workspace,
+            None,
+        ) else {
+            panic!("a Cursor folder session started without the sandbox");
+        };
+        assert_eq!(error.code, ChatErrorCode::Permission);
+    }
+}
+
+#[tokio::test]
+async fn a_cursor_edit_session_watches_its_direct_writes_to_folder_configuration() {
+    let workspace = crate::probe_directory::ProbeDirectory::create().unwrap();
+    std::fs::create_dir_all(workspace.join(".git/hooks")).unwrap();
+    std::fs::create_dir_all(workspace.join(".cursor")).unwrap();
+    let read = session(
+        AcpProviderFlavor::Cursor,
+        Some(folder(ProviderFolderCapability::Read)),
+        &workspace,
+        Some(helper()),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(!read.watches_direct_writes());
+    assert!(!read.offers_terminal());
+    let edit = session(
+        AcpProviderFlavor::Cursor,
+        Some(folder(ProviderFolderCapability::Edit)),
+        &workspace,
+        Some(helper()),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(edit.watches_direct_writes());
+    assert!(!edit.offers_terminal());
+    assert_eq!(
+        refusal_code(edit.terminal_sandbox().err().unwrap()),
+        "acp_command_outside_scope"
+    );
+    let tripped = edit.git_metadata_tripped().unwrap();
+
+    std::fs::write(workspace.join("README.md"), "ordinary edit").unwrap();
+    std::fs::write(workspace.join(".cursor/notes.md"), "not command bearing").unwrap();
+    edit.verify_git_metadata().unwrap();
+
+    std::fs::write(
+        workspace.join(".cursor/mcp.json"),
+        r#"{"mcpServers":{"x":{"command":"sh"}}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        refusal_code(edit.verify_git_metadata().unwrap_err()),
+        "acp_git_metadata_changed"
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(5), tripped.notified())
+        .await
+        .expect("the trip signals the session router");
 }

@@ -313,7 +313,15 @@ impl CursorProviderDriver {
         let executable = resolve_executable(&self.configuration.executable, &environment)?;
         let about = match self.flavor {
             AcpProviderFlavor::Cursor => {
-                let about = probe_about(&executable, workspace, environment).await?;
+                // An organizational launch never runs Cursor unconfined in its folder, so the
+                // version probe runs in a neutral directory.
+                let neutral = if self.configuration.internal_mcp.is_some() {
+                    Some(crate::probe_directory::ProbeDirectory::create()?)
+                } else {
+                    None
+                };
+                let probe_directory = neutral.as_deref().unwrap_or(workspace);
+                let about = probe_about(&executable, probe_directory, environment).await?;
                 ensure_supported_version(about.version)?;
                 AcpProviderAbout::from(about)
             }

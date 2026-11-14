@@ -1,4 +1,4 @@
-//! Kernel confinement of Grok teammates and of the commands they ask Ganbaru to run.
+//! Kernel confinement of Grok and Cursor teammates and of the commands Grok asks Ganbaru to run.
 //!
 //! An organizational Grok launch runs the Grok process under the `ganbaru-sandbox` helper. The
 //! process reads the system, its own Grok home, and the working folder, writes only its session
@@ -6,7 +6,8 @@
 //! only to TCP port 443 and the internal MCP endpoint. Its writes to the working folder go
 //! through `fs/write_text_file`, and its commands through `terminal/create`, which Ganbaru
 //! confines again with write access to the folder and no network. When the helper is missing or
-//! the kernel cannot enforce a policy, folder and scratch launches are refused.
+//! the kernel cannot enforce a policy, folder and scratch launches are refused. Cursor launches
+//! are confined as described in [`cursor_agent`].
 
 use crate::confinement::{
     DEVICE_WRITE, GitMetadataGuard, PROVIDER_API_PORT, TerminalSandbox, existing_paths,
@@ -18,8 +19,15 @@ use std::path::{Path, PathBuf};
 
 pub(super) use crate::confinement::{CONFINED_TEMPORARY_PREFIX, sandbox_helper};
 
+mod cursor_agent;
 #[cfg(test)]
 mod tests;
+
+pub(super) use cursor_agent::{
+    cursor_authority_support, cursor_confinement, cursor_launch_is_confined,
+    ensure_confined_endpoint, prepare_cursor_launch,
+    sandbox_unavailable_error as cursor_sandbox_unavailable_error,
+};
 
 /// Teammate provider named in confinement refusals.
 const PROVIDER: &str = "Grok";
@@ -278,17 +286,20 @@ fn organizational_permission_error() -> ChatError {
     )
 }
 
-/// What the client callbacks of one organizational Grok session may do.
+/// What the client callbacks of one confined Grok or Cursor session may do.
 pub(super) struct AcpCallbackConfinement {
     access: AcpFolderAccess,
-    /// Confines terminal commands; present only when the access runs commands.
+    /// Confines terminal commands; present only when a Grok access runs commands.
     terminals: Option<TerminalSandbox>,
+    /// Watches the folder metadata of a Cursor edit session, whose process writes the folder
+    /// itself.
+    writes: Option<GitMetadataGuard>,
 }
 
 impl AcpCallbackConfinement {
     /// The confinement of a session, or `None` when its callbacks keep the plain workspace
-    /// boundary: every flavor but Grok, direct personal threads, and conversations whose Grok
-    /// process runs unconfined because the device has no enforcing helper.
+    /// boundary: generic agents, direct personal threads, and conversations whose process runs
+    /// unconfined because the device has no enforcing helper.
     pub(super) fn for_session(
         flavor: super::driver::AcpProviderFlavor,
         internal_mcp: Option<&ProviderInternalMcpConfig>,
@@ -304,21 +315,34 @@ impl AcpCallbackConfinement {
         workspace: &Path,
         helper: Option<&'static SandboxHelper>,
     ) -> ChatResult<Option<Self>> {
-        if flavor != super::driver::AcpProviderFlavor::Grok {
-            return Ok(None);
-        }
+        use super::driver::AcpProviderFlavor;
+
         let Some(access) = AcpFolderAccess::for_launch(internal_mcp)? else {
             return Ok(None);
         };
-        let Some(helper) = grok_confinement(Some(access), helper)? else {
+        let confining = match flavor {
+            AcpProviderFlavor::Grok => grok_confinement(Some(access), helper)?,
+            AcpProviderFlavor::Cursor => cursor_confinement(Some(access), helper)?,
+            AcpProviderFlavor::Generic => None,
+        };
+        let Some(helper) = confining else {
             return Ok(None);
         };
-        let terminals = if access.runs_commands() {
+        let terminals = if flavor == AcpProviderFlavor::Grok && access.runs_commands() {
             Some(TerminalSandbox::prepare(helper, workspace, PROVIDER)?)
         } else {
             None
         };
-        Ok(Some(Self { access, terminals }))
+        let writes = if flavor == AcpProviderFlavor::Cursor && access.writes_files() {
+            Some(GitMetadataGuard::watch(workspace)?)
+        } else {
+            None
+        };
+        Ok(Some(Self {
+            access,
+            terminals,
+            writes,
+        }))
     }
 
     /// Whether the session offers `terminal/create` to the agent.
@@ -361,7 +385,16 @@ impl AcpCallbackConfinement {
         self.guard().map(GitMetadataGuard::tripped)
     }
 
+    /// Whether the agent writes the folder itself, so its tool results are followed by a
+    /// metadata check.
+    pub(super) fn watches_direct_writes(&self) -> bool {
+        self.writes.is_some()
+    }
+
     fn guard(&self) -> Option<&GitMetadataGuard> {
-        self.terminals.as_ref().map(TerminalSandbox::guard)
+        self.terminals
+            .as_ref()
+            .map(TerminalSandbox::guard)
+            .or(self.writes.as_ref())
     }
 }

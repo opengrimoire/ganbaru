@@ -18,7 +18,7 @@ mod tests;
 mod toolchains;
 
 pub(crate) use git_guard::{GitMetadataGuard, changed_error as git_metadata_changed_error};
-pub(crate) use terminal::{TerminalSandbox, confined_env_arguments};
+pub(crate) use terminal::TerminalSandbox;
 
 /// Files every confined process may write without reaching user data.
 pub(crate) const DEVICE_WRITE: &[&str] = &["/dev/null"];

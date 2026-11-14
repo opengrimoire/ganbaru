@@ -1,4 +1,4 @@
-use super::terminal::{terminal_policy, toolchain_directories};
+use super::terminal::{confined_env_arguments, terminal_policy, toolchain_directories};
 use super::toolchains::{self, ToolchainGrants};
 use super::*;
 use ganbaru_sandbox::NetworkAccess;

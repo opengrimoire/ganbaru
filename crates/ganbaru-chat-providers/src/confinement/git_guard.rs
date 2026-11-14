@@ -1,10 +1,12 @@
-//! Detection of Git metadata changes made by confined teammate commands.
+//! Detection of command-bearing metadata changes made by confined teammates.
 //!
 //! A confined command writes the working folder, and the Git directory inside it, because Git
 //! itself must update refs, objects, and the index. A command could also plant a hook or a
-//! command-bearing configuration key that a later unconfined Git process would run. The guard
-//! records a digest of that command-bearing metadata when the session starts and compares it
-//! after every confined command and file write. A change is detected, never reverted: the
+//! command-bearing configuration key that a later unconfined Git process would run, and a
+//! teammate that writes files could plant a Cursor MCP server, hook, or command allowlist that a
+//! later unconfined Cursor run would start. The guard records a digest of that command-bearing
+//! metadata when the session starts and compares it after every confined command and file
+//! write. A change is detected, never reverted: the
 //! session ends with an error and the folder runs no further confined commands in it.
 
 use crate::models::*;
@@ -16,6 +18,11 @@ use tokio::sync::Notify;
 
 /// Name of the Git directory or gitfile at the root of a working folder.
 const GIT_METADATA_NAME: &str = ".git";
+/// Name of the Cursor project configuration folder at the root of a working folder.
+const CURSOR_METADATA_NAME: &str = ".cursor";
+/// Cursor project configuration entries that can name a command: MCP servers, hooks, the
+/// command allowlist, and rules that steer an unconfined Cursor run.
+const CURSOR_COMMAND_BEARING: &[&str] = &["cli.json", "hooks.json", "mcp.json", "rules"];
 /// Git directory files whose content can name a command or redirect Git to other metadata.
 const COMMAND_BEARING_FILES: &[&str] = &["config", "config.worktree", "commondir", "gitdir"];
 /// Git directory folders whose whole content is command-bearing: hooks run as programs, and
@@ -101,8 +108,9 @@ fn is_git_directory(path: &Path) -> bool {
 pub(crate) fn changed_error() -> ChatError {
     ChatError::new(
         ChatErrorCode::Permission,
-        "acp_git_metadata_changed: a confined command changed the Git hooks or configuration \
-         of this folder, so Ganbaru stopped the session and runs no more commands in it",
+        "acp_git_metadata_changed: a confined teammate changed the Git hooks or configuration, \
+         or the Cursor configuration, of this folder, so Ganbaru stopped the session and runs \
+         no more commands in it",
         false,
     )
 }
@@ -130,12 +138,18 @@ pub(crate) enum DigestError {
 /// a gitfile; and inside a Git directory, at any depth such as submodule and worktree folders,
 /// the files named in [`COMMAND_BEARING_FILES`] and everything under [`COMMAND_BEARING_FOLDERS`],
 /// with their types, permission bits, link targets, and bytes. History, refs, and the index are
-/// left out, so commits, checkouts, and fetches do not change it.
+/// left out, so commits, checkouts, and fetches do not change it. It also covers whether
+/// `.cursor` is missing, a link, a file, or a folder, and inside the folder every entry named in
+/// [`CURSOR_COMMAND_BEARING`].
 pub(crate) fn git_metadata_digest(workspace: &Path) -> Result<[u8; 32], DigestError> {
     let mut digest = MetadataDigest::default();
     digest.entry(
         &workspace.join(GIT_METADATA_NAME),
         Path::new(GIT_METADATA_NAME),
+    )?;
+    digest.cursor_configuration(
+        &workspace.join(CURSOR_METADATA_NAME),
+        Path::new(CURSOR_METADATA_NAME),
     )?;
     Ok(digest.hasher.finalize().into())
 }
@@ -165,6 +179,35 @@ impl MetadataDigest {
                 }
             }
         }
+    }
+
+    /// Adds `.cursor` itself and, when it is a folder, its command-bearing entries.
+    fn cursor_configuration(&mut self, path: &Path, relative: &Path) -> Result<(), DigestError> {
+        let metadata = match std::fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                self.record(b"missing", relative, 0, &[]);
+                return Ok(());
+            }
+            Err(_) => return Err(DigestError::Unreadable),
+            Ok(metadata) => metadata,
+        };
+        if !metadata.is_dir() {
+            return self.leaf(path, relative, &metadata);
+        }
+        self.record(b"folder", relative, permission_bits(&metadata), &[]);
+        for name in CURSOR_COMMAND_BEARING {
+            self.visit()?;
+            let child = path.join(name);
+            let child_relative = relative.join(name);
+            match std::fs::symlink_metadata(&child) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    self.record(b"missing", &child_relative, 0, &[]);
+                }
+                Err(_) => return Err(DigestError::Unreadable),
+                Ok(child_metadata) => self.tree(&child, &child_relative, &child_metadata, 1)?,
+            }
+        }
+        Ok(())
     }
 
     /// Adds the command-bearing entries of the Git directory folder at `path`.
@@ -406,6 +449,49 @@ mod tests {
         fs::create_dir_all(&deep).unwrap();
         assert_eq!(git_metadata_digest(&workspace), Err(DigestError::Unbounded));
         assert!(GitMetadataGuard::watch(&workspace).is_err());
+    }
+
+    #[test]
+    fn cursor_command_configuration_changes_the_digest() {
+        let changes: [fn(&Path); 6] = [
+            |cursor| fs::write(cursor.join("mcp.json"), "{\"mcpServers\":{}}").unwrap(),
+            |cursor| fs::write(cursor.join("hooks.json"), "{}").unwrap(),
+            |cursor| fs::write(cursor.join("cli.json"), "{}").unwrap(),
+            |cursor| fs::write(cursor.join("rules/style.mdc"), "changed").unwrap(),
+            |cursor| fs::remove_dir_all(cursor).unwrap(),
+            |cursor| {
+                fs::remove_dir_all(cursor).unwrap();
+                fs::write(cursor, "file").unwrap();
+            },
+        ];
+        for (index, change) in changes.into_iter().enumerate() {
+            let workspace = repository();
+            let cursor = workspace.join(".cursor");
+            fs::create_dir_all(cursor.join("rules")).unwrap();
+            fs::write(cursor.join("rules/style.mdc"), "rule").unwrap();
+            let before = git_metadata_digest(&workspace).unwrap();
+            change(&cursor);
+            assert_ne!(
+                git_metadata_digest(&workspace).unwrap(),
+                before,
+                "change {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_cursor_files_and_a_missing_cursor_folder_leave_the_digest_unchanged() {
+        let workspace = repository();
+        let before = git_metadata_digest(&workspace).unwrap();
+        assert_eq!(git_metadata_digest(&workspace).unwrap(), before);
+        fs::create_dir_all(workspace.join("src/.cursor")).unwrap();
+        fs::write(workspace.join("src/.cursor/mcp.json"), "{}").unwrap();
+        assert_eq!(git_metadata_digest(&workspace).unwrap(), before);
+        fs::create_dir_all(workspace.join(".cursor")).unwrap();
+        let folder = git_metadata_digest(&workspace).unwrap();
+        assert_ne!(folder, before);
+        fs::write(workspace.join(".cursor/notes.txt"), "text").unwrap();
+        assert_eq!(git_metadata_digest(&workspace).unwrap(), folder);
     }
 
     #[tokio::test]

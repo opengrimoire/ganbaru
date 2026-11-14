@@ -94,16 +94,18 @@ impl ProviderDriver for CursorProviderDriver {
     /// Boundaries any ACP agent of this flavor can hold; a probe narrows `internal_host_tools` to
     /// the agent's HTTP MCP support.
     ///
-    /// Cursor and generic agents hold no folder boundary. Cursor writes files itself without a
-    /// permission request or a client file callback, in every mode and with `--sandbox`, and a
-    /// project `.cursor/cli.json` allowlist runs the shell unasked. A generic agent documents
-    /// nothing. Grok holds folder boundaries exactly when the sandbox helper confines its
-    /// process on this device; see [`super::confinement::grok_authority_support`].
+    /// Generic agents hold no folder boundary, because they document nothing. Grok and Cursor
+    /// hold folder boundaries exactly when the sandbox helper confines their process on this
+    /// device; see [`super::confinement::grok_authority_support`] and
+    /// [`super::confinement::cursor_authority_support`].
     fn authority_support(&self) -> ProviderAuthoritySupport {
-        if self.flavor == AcpProviderFlavor::Grok {
-            return super::confinement::grok_authority_support(
-                super::confinement::sandbox_helper().is_some(),
-            );
+        let confined = super::confinement::sandbox_helper().is_some();
+        match self.flavor {
+            AcpProviderFlavor::Grok => return super::confinement::grok_authority_support(confined),
+            AcpProviderFlavor::Cursor => {
+                return super::confinement::cursor_authority_support(confined);
+            }
+            AcpProviderFlavor::Generic => {}
         }
         ProviderAuthoritySupport {
             isolated_conversation: true,
@@ -393,6 +395,7 @@ impl ProviderDriver for CursorProviderDriver {
             let terminal_error = Arc::clone(&live.terminal_error);
             let prompt_completions = Arc::clone(&live.prompt_completions);
             let delivered_instructions = Arc::clone(&live.delivered_instructions);
+            let terminal_callbacks = live.terminal_callbacks.clone();
             let prompt_context = DriverOperationContext {
                 operation_id: context.operation_id.clone(),
                 deadline: Instant::now() + PROMPT_TIMEOUT,
@@ -444,6 +447,9 @@ impl ProviderDriver for CursorProviderDriver {
                         .await
                 };
                 let events = match response {
+                    // A folder change trips the guard, whose signal ends the turn and the
+                    // session in the router.
+                    Ok(_) if terminal_callbacks.verify_direct_writes().is_err() => Ok(Vec::new()),
                     Ok(response) => {
                         // The agent answered the prompt, so its context holds the instructions
                         // whatever the stop reason.

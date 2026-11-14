@@ -104,7 +104,7 @@ async fn end_after_git_metadata_change(resources: &CursorRouterResources) {
                 None,
                 CanonicalEvent::RuntimeWarning(NotificationEvent {
                     code: "acp_git_metadata_changed".to_string(),
-                    title: "A teammate command changed this folder's Git hooks or configuration"
+                    title: "A teammate changed this folder's Git or Cursor configuration"
                         .to_string(),
                     detail: Some(error.message.clone()),
                 }),
@@ -134,6 +134,10 @@ async fn handle_notification(
     {
         return handle_grok_prompt_completion(resources, params);
     }
+    if method == "session/update" && finishes_tool_call(&params) {
+        // A change trips the guard, whose signal ends the session in `route_inbound`.
+        let _ = resources.terminal_callbacks.verify_direct_writes();
+    }
     let events = {
         let mut state = resources.route.lock().map_err(|_| driver_state_error())?;
         match method {
@@ -162,6 +166,21 @@ async fn handle_notification(
         resources.sink.emit(event).await?;
     }
     Ok(())
+}
+
+/// Whether a `session/update` reports a tool call that completed or failed, after which an
+/// agent that writes the folder itself may have changed it.
+fn finishes_tool_call(params: &Value) -> bool {
+    let Some(update) = params.get("update") else {
+        return false;
+    };
+    matches!(
+        update.get("sessionUpdate").and_then(Value::as_str),
+        Some("tool_call" | "tool_call_update")
+    ) && matches!(
+        update.get("status").and_then(Value::as_str),
+        Some("completed" | "failed")
+    )
 }
 
 fn handle_grok_prompt_completion(

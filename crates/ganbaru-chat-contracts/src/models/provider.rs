@@ -97,6 +97,12 @@ pub struct ProviderInstanceConfig {
     pub provider_config: VersionedJson,
     #[serde(skip)]
     pub internal_mcp: Option<ProviderInternalMcpConfig>,
+    /// Device-local provider home that Ganbaru owns, set when a launch is resolved and never
+    /// stored. For a Grok instance with an API key it replaces `provider_home`, so a browser
+    /// login kept in the user's Grok home cannot outrank the key, and only the launched process
+    /// writes it.
+    #[serde(skip)]
+    pub private_home: Option<String>,
     #[serde(flatten)]
     pub unknown_fields: BTreeMap<String, Value>,
 }

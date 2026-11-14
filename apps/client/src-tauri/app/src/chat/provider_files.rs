@@ -588,6 +588,7 @@ mod tests {
                 value: serde_json::json!({}),
             },
             internal_mcp: None,
+            private_home: None,
             unknown_fields: BTreeMap::new(),
         }
     }

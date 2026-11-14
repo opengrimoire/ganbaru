@@ -2,12 +2,14 @@
 //!
 //! An organizational Grok launch runs the Grok process under the `ganbaru-sandbox` helper. The
 //! process reads the system, its own Grok home, and the working folder, writes only its session
-//! store, logs, and a private temporary directory, executes only its own binary, and connects
-//! only to TCP port 443 and the internal MCP endpoint. Its writes to the working folder go
-//! through `fs/write_text_file`, and its commands through `terminal/create`, which Ganbaru
-//! confines again with write access to the folder and no network. When the helper is missing or
-//! the kernel cannot enforce a policy, folder and scratch launches are refused. Cursor launches
-//! are confined as described in [`cursor_agent`].
+//! store and logs in a configured Grok home and a private temporary directory, executes only its
+//! own binary, and connects only to TCP port 443 and the internal MCP endpoint. A launch with a
+//! private Grok home, which Ganbaru owns and which holds no login, reads and writes that home
+//! whole and reads the binary where it is installed. Its writes to the working folder go through
+//! `fs/write_text_file`, and its commands through `terminal/create`, which Ganbaru confines again
+//! with write access to the folder and no network. When the helper is missing or the kernel
+//! cannot enforce a policy, folder and scratch launches are refused. Cursor launches are confined
+//! as described in [`cursor_agent`].
 
 use crate::confinement::{
     DEVICE_WRITE, GitMetadataGuard, PROVIDER_API_PORT, TerminalSandbox, existing_paths,
@@ -169,7 +171,9 @@ pub(super) fn prepare_grok_launch(
     let internal_mcp_port = internal_mcp
         .map(|server| internal_mcp_port(&server.url))
         .transpose()?;
-    prepare_grok_home(paths.home)?;
+    if !paths.private_home {
+        prepare_grok_home(paths.home)?;
+    }
     let temporary =
         crate::probe_directory::ProbeDirectory::create_with_prefix(CONFINED_TEMPORARY_PREFIX)?;
     let policy = grok_process_policy(paths, &temporary, internal_mcp_port, |path| path.exists())?;
@@ -184,6 +188,9 @@ pub(super) struct GrokPolicyPaths<'a> {
     pub executable: &'a Path,
     /// Canonical working folder, or the neutral directory of a conversation.
     pub workspace: &'a Path,
+    /// Whether the home is a private one Ganbaru owns for an API key launch, which the process
+    /// writes whole because no other program uses it.
+    pub private_home: bool,
 }
 
 /// The policy of one Grok process.
@@ -199,13 +206,21 @@ pub(super) fn grok_process_policy(
     let mut read = existing_paths(GROK_SYSTEM_READ, &exists);
     read.extend(resolver_configuration().filter(|path| !path.starts_with("/etc") && exists(path)));
     read.push(paths.home.to_path_buf());
+    // The executable lives outside a private home, and a self-contained build reads itself.
+    if !paths.executable.starts_with(paths.home) {
+        read.push(paths.executable.to_path_buf());
+    }
     read.push(paths.workspace.to_path_buf());
-    let mut write = GROK_HOME_WRITABLE_FOLDERS
-        .iter()
-        .chain(GROK_HOME_WRITABLE_FILES)
-        .map(|name| paths.home.join(name))
-        .filter(|path| exists(path))
-        .collect::<Vec<_>>();
+    let mut write = if paths.private_home {
+        vec![paths.home.to_path_buf()]
+    } else {
+        GROK_HOME_WRITABLE_FOLDERS
+            .iter()
+            .chain(GROK_HOME_WRITABLE_FILES)
+            .map(|name| paths.home.join(name))
+            .filter(|path| exists(path))
+            .collect::<Vec<_>>()
+    };
     write.push(temporary.to_path_buf());
     write.extend(existing_paths(DEVICE_WRITE, &exists));
     // A Grok home around the folder would also expose what surrounds it, such as the vault.

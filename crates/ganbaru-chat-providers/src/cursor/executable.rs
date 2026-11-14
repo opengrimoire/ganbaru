@@ -91,12 +91,7 @@ pub fn process_environment_for(
         environment.insert(name.clone(), value.clone());
     }
     if configuration.family_id.as_str() == "grok" {
-        if let Some(home) = configuration
-            .provider_home
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
+        if let Some(home) = grok_home_setting(configuration) {
             let path = Path::new(home);
             if !path.is_absolute() || path.components().any(|part| part == Component::ParentDir) {
                 return Err(ChatError::validation(
@@ -108,6 +103,33 @@ pub fn process_environment_for(
         }
     }
     Ok(environment)
+}
+
+/// The Grok home a launch names: the private home Ganbaru owns when one is set, otherwise the
+/// configured provider home.
+fn grok_home_setting(configuration: &ProviderInstanceConfig) -> Option<&str> {
+    configuration
+        .private_home
+        .as_deref()
+        .or(configuration.provider_home.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+/// Creates the private Grok home of an API key launch, readable only by this user, since Grok
+/// keeps its sessions there.
+fn create_private_home(home: &Path) -> ChatResult<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(home).map_err(|error| {
+        ChatError::new(
+            ChatErrorCode::ConfigurationInvalid,
+            format!("Grok private home could not be created: {}", error.kind()),
+            true,
+        )
+    })
 }
 
 pub async fn probe_grok_about(
@@ -446,6 +468,14 @@ fn spawn_grok_connection_process(
     let helper = grok_confinement(access, sandbox_helper())?;
     let mut environment = process_environment_for(configuration, "Grok")?;
     environment.insert("GROK_OAUTH2_REFERRER".to_string(), "ganbaru".to_string());
+    let private_home = configuration
+        .private_home
+        .as_deref()
+        .map(str::trim)
+        .filter(|home| !home.is_empty());
+    if let Some(home) = private_home {
+        create_private_home(Path::new(home))?;
+    }
     let executable = resolve_executable(&configuration.executable, &environment)
         .map_err(|_| grok_executable_missing_error())?;
     let process = |executable, arguments, environment| {
@@ -470,6 +500,7 @@ fn spawn_grok_connection_process(
             home: &home,
             executable: &executable,
             workspace: &workspace,
+            private_home: private_home.is_some(),
         },
         configuration.internal_mcp.as_ref(),
     )?;
@@ -574,7 +605,7 @@ pub fn acp_continuation_group(
     }
     let mut digest = Sha256::new();
     digest.update(b"ganbaru-chat-grok-account-v1\0");
-    if let Some(home) = configuration.provider_home.as_deref() {
+    if let Some(home) = grok_home_setting(configuration) {
         digest.update(home.as_bytes());
     }
     digest.update(b"\0");

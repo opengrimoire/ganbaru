@@ -90,6 +90,7 @@ pub(crate) fn default_provider_configuration(
             value: provider_config,
         },
         internal_mcp: None,
+        private_home: None,
         unknown_fields: BTreeMap::new(),
     })
 }

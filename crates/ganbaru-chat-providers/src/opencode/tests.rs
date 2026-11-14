@@ -1301,6 +1301,7 @@ pub(super) fn configuration(provider_config: serde_json::Value) -> ProviderInsta
             value: provider_config,
         },
         internal_mcp: None,
+        private_home: None,
         unknown_fields: BTreeMap::new(),
     }
 }

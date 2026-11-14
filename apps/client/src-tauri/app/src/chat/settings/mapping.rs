@@ -46,6 +46,7 @@ pub(crate) fn provider_instance_read(
         favorite_model_ids: portable.favorite_model_ids.clone(),
         provider_config: portable.provider_config.clone(),
         internal_mcp: None,
+        private_home: None,
         unknown_fields: portable.unknown_fields.clone(),
     };
     let runtime_review = runtime_review_reads(&pending_portable_items(&configuration, device));

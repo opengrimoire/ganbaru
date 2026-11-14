@@ -253,6 +253,41 @@ fn grok_process_environment_uses_the_configured_provider_home() {
     );
 }
 
+/// A private home replaces the configured one in the environment and in the continuation group,
+/// so a keyed launch never reads the login kept in the configured home or resumes its sessions.
+#[test]
+fn a_private_grok_home_replaces_the_configured_home() {
+    let home = TestDirectory::new("grok-configured-home");
+    let private = TestDirectory::new("grok-private-home");
+    let mut provider = configuration(home.path(), None);
+    provider.family_id = ProviderFamilyId::new("grok").unwrap();
+    let settings = CursorProviderSettings::default();
+    let configured_group = acp_continuation_group(
+        &provider,
+        &settings,
+        super::driver::AcpProviderFlavor::Grok,
+        None,
+    )
+    .unwrap();
+    provider.private_home = Some(private.path().to_string_lossy().into_owned());
+    let environment = process_environment_for(&provider, "Grok").unwrap();
+    assert_eq!(
+        environment.get("GROK_HOME").map(String::as_str),
+        Some(private.path().to_string_lossy().as_ref())
+    );
+    let private_group = acp_continuation_group(
+        &provider,
+        &settings,
+        super::driver::AcpProviderFlavor::Grok,
+        None,
+    )
+    .unwrap();
+    assert_ne!(configured_group, private_group);
+
+    provider.private_home = Some("relative/home".to_string());
+    assert!(process_environment_for(&provider, "Grok").is_err());
+}
+
 /// A configured xAI key, resolved from a credential reference before launch, reaches the
 /// process environment and selects key authentication; a blank or absent key keeps the account
 /// login, and the app's own environment never selects the key on its own.

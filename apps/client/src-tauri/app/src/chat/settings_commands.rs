@@ -2,8 +2,7 @@
 
 use super::credentials::{
     CredentialStore, CredentialStoreAvailability, PlatformCredentialStore, SecretValue,
-    is_provider_credential_reference, materialize_provider_environment,
-    provider_credential_reference,
+    is_provider_credential_reference, provider_credential_reference,
 };
 #[cfg(test)]
 use super::device_state::ChatProviderDeviceState;
@@ -13,8 +12,9 @@ use super::settings::installed_provider_executables;
 pub(crate) use super::settings::read_provider;
 use super::settings::{
     ProviderRuntimePrompt, ProviderRuntimeReviewRead, RuntimeReceipts, approval_digests,
-    approved_runtime, ask_runtime_approval, ingress_review_items, pending_portable_items,
-    require_runtime_approved_on_device, validate_runtime_prompt,
+    approved_runtime, ask_runtime_approval, ingress_review_items, launch_configuration,
+    pending_portable_items, remove_private_home, require_runtime_approved_on_device,
+    validate_runtime_prompt,
 };
 use super::settings::{
     apply_provider_probe, config_io_error, credential_error, device_configuration,
@@ -334,6 +334,7 @@ pub fn chat_remove_provider(
         Ok(())
     })
     .map_err(device_state_error)?;
+    remove_private_home(&app, &instance_id);
     let store = PlatformCredentialStore::default();
     let mut credential_cleanup_failed = false;
     for (name, reference) in &provider.credential_references {
@@ -378,10 +379,7 @@ pub async fn chat_test_provider(
             .runtime_receipts
             .record_confirmed_items(&request.configuration.instance_id, &pending);
     }
-    let configuration = materialize_provider_environment(
-        &request.configuration,
-        &PlatformCredentialStore::default(),
-    )?;
+    let configuration = launch_configuration(&app, &request.configuration)?;
     let mut driver = ProviderDriverRegistry.create_driver(configuration)?;
     let probe = driver.probe(&operation_context("test-provider")).await?;
     let model_catalog = if probe.state == ProbeState::Healthy {
@@ -409,9 +407,10 @@ pub async fn chat_probe_provider(
     let original_configuration = read.configuration;
     require_runtime_approved_on_device(&app, &original_configuration)?;
     let original =
-        probe_provider_configuration(original_configuration.clone(), "probe-provider").await?;
+        probe_provider_configuration(&app, original_configuration.clone(), "probe-provider")
+            .await?;
     let selected = if original.probe.state == ProbeState::ExecutableMissing {
-        discover_replacement_provider_executable(&original_configuration)
+        discover_replacement_provider_executable(&app, &original_configuration)
             .await?
             .unwrap_or(original)
     } else {
@@ -437,11 +436,11 @@ struct ProviderProbeAttempt {
 }
 
 async fn probe_provider_configuration(
+    app: &tauri::AppHandle,
     configuration: ProviderInstanceConfig,
     operation_id: &str,
 ) -> ChatResult<ProviderProbeAttempt> {
-    let materialized =
-        materialize_provider_environment(&configuration, &PlatformCredentialStore::default())?;
+    let materialized = launch_configuration(app, &configuration)?;
     let mut driver = ProviderDriverRegistry.create_driver(materialized)?;
     let probe = driver.probe(&operation_context(operation_id)).await?;
     Ok(ProviderProbeAttempt {
@@ -452,6 +451,7 @@ async fn probe_provider_configuration(
 }
 
 async fn discover_replacement_provider_executable(
+    app: &tauri::AppHandle,
     configuration: &ProviderInstanceConfig,
 ) -> ChatResult<Option<ProviderProbeAttempt>> {
     let Some(metadata) = ProviderDriverRegistry
@@ -469,7 +469,7 @@ async fn discover_replacement_provider_executable(
     let mut fallback = None;
     for replacement in replacements {
         let Ok(attempt) =
-            probe_provider_configuration(replacement, "rediscover-provider-executable").await
+            probe_provider_configuration(app, replacement, "rediscover-provider-executable").await
         else {
             continue;
         };

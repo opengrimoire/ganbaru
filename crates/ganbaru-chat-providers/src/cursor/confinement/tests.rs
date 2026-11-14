@@ -122,6 +122,7 @@ fn the_grok_process_reads_its_home_and_folder_and_writes_only_its_own_state() {
         home: Path::new("/home/person/.grok"),
         executable: Path::new("/home/person/.grok/downloads/grok"),
         workspace: Path::new("/home/person/Documents/Ganbaru/projects/site"),
+        private_home: false,
     };
     let temporary = Path::new("/tmp/ganbaru-confined-a");
     let policy = grok_process_policy(&paths, temporary, Some(41234), |_| true).unwrap();
@@ -160,11 +161,47 @@ fn the_grok_process_reads_its_home_and_folder_and_writes_only_its_own_state() {
 }
 
 #[test]
+fn a_private_grok_home_is_written_whole_and_the_user_grok_home_stays_out_of_reach() {
+    let paths = GrokPolicyPaths {
+        home: Path::new("/home/person/.config/ganbaru/chat-provider-homes/v/i"),
+        executable: Path::new("/home/person/.grok/downloads/grok-linux-x86_64"),
+        workspace: Path::new("/home/person/Documents/Ganbaru/projects/site"),
+        private_home: true,
+    };
+    let temporary = Path::new("/tmp/ganbaru-confined-b");
+    let policy = grok_process_policy(&paths, temporary, None, |_| true).unwrap();
+    assert!(policy.read.contains(&PathBuf::from(paths.home)));
+    assert!(policy.read.contains(&PathBuf::from(paths.executable)));
+    assert_eq!(
+        policy.write,
+        vec![
+            PathBuf::from(paths.home),
+            PathBuf::from(temporary),
+            PathBuf::from("/dev/null"),
+        ]
+    );
+    for path in policy.read.iter().chain(&policy.write) {
+        assert!(
+            path == paths.executable || !path.starts_with("/home/person/.grok"),
+            "{path:?}"
+        );
+    }
+    assert_eq!(policy.execute, vec![PathBuf::from(paths.executable)]);
+
+    let around = GrokPolicyPaths {
+        home: Path::new("/home/person/Documents"),
+        ..paths
+    };
+    assert!(grok_process_policy(&around, temporary, None, |_| true).is_err());
+}
+
+#[test]
 fn the_grok_process_policy_skips_missing_paths_and_refuses_folder_overlap() {
     let paths = GrokPolicyPaths {
         home: Path::new("/srv/grok"),
         executable: Path::new("/srv/grok/grok"),
         workspace: Path::new("/srv/work"),
+        private_home: false,
     };
     let policy = grok_process_policy(&paths, Path::new("/tmp/t"), Some(443), |path| {
         !path.starts_with("/lib64") && path != Path::new("/srv/grok/managed_config.lock")

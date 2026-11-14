@@ -1,6 +1,7 @@
 //! Closed-world organizational host tools for provider assignments.
 
 use super::internal_mcp::{InternalMcpRunScope, generate_opaque_handle};
+use ganbaru_chat::coordination::push_requests::PushRequestRefusal;
 use ganbaru_chat::coordination::reports::HostReportRefusal;
 use ganbaru_chat::coordination::schedule_proposals::ScheduleProposalRefusal;
 use ganbaru_chat_contracts::models::{ChatError, ChatErrorCode, ChatFolderCapability, ChatResult};
@@ -16,6 +17,7 @@ mod authorization;
 mod channels;
 pub(super) mod delegation;
 mod pointers;
+mod push;
 mod registry;
 mod reports;
 mod schedule;
@@ -237,6 +239,12 @@ fn definition(tool: HostTool) -> Option<Tool> {
             schedule::properties(),
             false,
         ),
+        HostTool::RequestPush => mutating_tool(
+            name,
+            "Ask the person who assigned this work to push the checked out branch of a folder you may publish from; nothing is pushed until the person confirms it",
+            push::properties(),
+            false,
+        ),
     };
     Some(definition)
 }
@@ -354,6 +362,12 @@ fn typed_refusal(tool: Option<HostTool>, error: &ChatError) -> Option<(&'static 
             .map(|refusal| (refusal.code(), refusal.into_error())),
         HostTool::Ask | HostTool::Report => HostReportRefusal::from_error(error)
             .map(|refusal| (refusal.code(), refusal.into_error())),
+        HostTool::RequestPush => PushRequestRefusal::from_error(error)
+            .map(|refusal| (refusal.code(), refusal.into_error()))
+            .or_else(|| {
+                HostReportRefusal::from_error(error)
+                    .map(|refusal| (refusal.code(), refusal.into_error()))
+            }),
         HostTool::RequestSecret => secrets::SecretToolRefusal::from_error(error)
             .map(|refusal| (refusal.code(), refusal.into_error())),
         HostTool::ProposeSchedule => ScheduleProposalRefusal::from_error(error)
@@ -409,6 +423,7 @@ async fn dispatch(
         HostTool::RequestSecret => secrets::request_secret(context, arguments).await,
         HostTool::SecretStatus => secrets::secret_status(context, arguments).await,
         HostTool::ProposeSchedule => schedule::propose(context, arguments).await,
+        HostTool::RequestPush => push::request_push(context, arguments).await,
     }
 }
 
@@ -521,7 +536,7 @@ fn configured_tool(
         .filter(|key| {
             !matches!(
                 key.as_str(),
-                "cursor" | "limit" | "folders" | "choices" | "recurrence"
+                "cursor" | "limit" | "folders" | "choices" | "recurrence" | "remote"
             )
         })
         .cloned()
@@ -775,6 +790,7 @@ mod tests {
 
     #[test]
     fn every_host_tool_round_trips_its_name_and_is_listed_only_when_implemented() {
+        let publishing = working_scope(ChatFolderCapability::Publish);
         let editing = working_scope(ChatFolderCapability::Edit);
         let reading = working_scope(ChatFolderCapability::Read);
         for tool in HostTool::ALL {
@@ -784,12 +800,18 @@ mod tests {
                 tool.class(),
                 HostToolClass::Edit | HostToolClass::Destructive
             );
+            let publishes = tool == HostTool::RequestPush;
             assert_eq!(
                 tool.offered(&reading),
-                tool.implemented() && !mutates_folders,
+                tool.implemented() && !mutates_folders && !publishes,
                 "{tool:?}"
             );
-            assert_eq!(tool.offered(&editing), tool.implemented(), "{tool:?}");
+            assert_eq!(
+                tool.offered(&editing),
+                tool.implemented() && !publishes,
+                "{tool:?}"
+            );
+            assert_eq!(tool.offered(&publishing), tool.implemented(), "{tool:?}");
         }
         assert_eq!(HostTool::from_name("chat_unknown"), None);
         let listed: Vec<String> = definitions(&reading)
@@ -814,6 +836,12 @@ mod tests {
         assert!(listed.contains(&"chat_request_secret".to_owned()));
         assert!(listed.contains(&"chat_secret_status".to_owned()));
         assert!(listed.contains(&"chat_propose_schedule".to_owned()));
+        assert!(!listed.contains(&"chat_request_push".to_owned()));
+        assert!(
+            definitions(&publishing)
+                .iter()
+                .any(|tool| tool.name == "chat_request_push")
+        );
     }
 
     #[test]
@@ -837,6 +865,10 @@ mod tests {
         assert_eq!(
             required(HostTool::ProposeSchedule),
             ["clientRequestId", "firstAt", "message", "reason"]
+        );
+        assert_eq!(
+            required(HostTool::RequestPush),
+            ["clientRequestId", "rootHandle", "summary"]
         );
     }
 
@@ -882,7 +914,7 @@ mod tests {
             let listed = names.contains(&format!("mcp__ganbaru-chat__{}", tool.name()));
             if listed {
                 assert!(
-                    tool.offered(&working_scope(ChatFolderCapability::Read)),
+                    tool.offered(&working_scope(ChatFolderCapability::Publish)),
                     "{tool:?}"
                 );
             }
@@ -1117,5 +1149,18 @@ mod tests {
         assert_eq!(code, "secret_request_limit");
         assert_eq!(refusal.message, "secret_request_limit");
         assert!(typed_refusal(Some(HostTool::SecretStatus), &limited).is_none());
+    }
+
+    #[test]
+    fn push_request_refusals_reach_the_teammate_and_other_errors_stay_generic() {
+        let detached = PushRequestRefusal::Detached.into_error();
+        let (code, refusal) = typed_refusal(Some(HostTool::RequestPush), &detached).unwrap();
+        assert_eq!(code, "push_branch_detached");
+        assert_eq!(refusal.message, "push_branch_detached");
+        let inactive = HostReportRefusal::AssignmentInactive.into_error();
+        let (code, _) = typed_refusal(Some(HostTool::RequestPush), &inactive).unwrap();
+        assert_eq!(code, HostReportRefusal::AssignmentInactive.code());
+        assert!(typed_refusal(Some(HostTool::Ask), &detached).is_none());
+        assert!(typed_refusal(Some(HostTool::RequestPush), &generic_denial_error()).is_none());
     }
 }

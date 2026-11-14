@@ -335,7 +335,7 @@ fn invalidate_workspace_path(
         );
 }
 
-fn folder_source<'a>(
+pub(super) fn folder_source<'a>(
     scope: &'a InternalMcpRunScope,
     root_handle: &str,
     minimum: ChatFolderCapability,
@@ -349,7 +349,7 @@ fn folder_source<'a>(
         .ok_or_else(generic_denial_error)
 }
 
-async fn authorize_folder(
+pub(super) async fn authorize_folder(
     context: &HostToolContext<'_>,
     source: &InternalMcpFolderSource,
     write: bool,

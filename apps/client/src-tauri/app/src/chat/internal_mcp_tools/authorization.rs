@@ -324,6 +324,17 @@ pub(super) async fn verify_folder_source(
     scope: &InternalMcpRunScope,
     source: &InternalMcpFolderSource,
 ) -> ChatResult<()> {
+    verify_authorized_folder_source(pool, scope.authorization_revision_id.as_str(), source).await
+}
+
+/// Verifies that the folder source `source` of the authorization revision
+/// `authorization_revision_id` is still granted and covered, as [`verify_folder_source`] does
+/// for a live run.
+pub(crate) async fn verify_authorized_folder_source(
+    pool: &SqlitePool,
+    authorization_revision_id: &str,
+    source: &InternalMcpFolderSource,
+) -> ChatResult<()> {
     let capability = wire_folder_capability(source.capability);
     let live = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT live_grant.runtime_approval_policy AS grant_runtime_approval_policy,
@@ -385,7 +396,7 @@ pub(super) async fn verify_folder_source(
                   END",
         live_teammate_safety_mode_sql("assignment.teammate_id"),
     )))
-    .bind(scope.authorization_revision_id.as_str())
+    .bind(authorization_revision_id)
     .bind(&source.root_handle)
     .bind(source.working_folder_id.as_str())
     .bind(capability)

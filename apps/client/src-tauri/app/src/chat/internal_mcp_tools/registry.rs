@@ -26,11 +26,12 @@ pub(super) enum HostTool {
     RequestSecret,
     SecretStatus,
     ProposeSchedule,
+    RequestPush,
 }
 
 impl HostTool {
     /// Every host tool, in the order the tool list presents them.
-    pub(crate) const ALL: [Self; 17] = [
+    pub(crate) const ALL: [Self; 18] = [
         Self::ListReferencedChannels,
         Self::SearchChannelMessages,
         Self::ReadChannelMessages,
@@ -48,6 +49,7 @@ impl HostTool {
         Self::RequestSecret,
         Self::SecretStatus,
         Self::ProposeSchedule,
+        Self::RequestPush,
     ];
 
     /// The wire name a provider calls the tool by.
@@ -70,6 +72,7 @@ impl HostTool {
             Self::RequestSecret => "chat_request_secret",
             Self::SecretStatus => "chat_secret_status",
             Self::ProposeSchedule => "chat_propose_schedule",
+            Self::RequestPush => "chat_request_push",
         }
     }
 
@@ -92,7 +95,7 @@ impl HostTool {
             }
             Self::DeleteWorkspaceFile => HostToolClass::Destructive,
             Self::DelegateAssignment => HostToolClass::Delegate,
-            Self::Ask => HostToolClass::Ask,
+            Self::Ask | Self::RequestPush => HostToolClass::Ask,
             Self::Report => HostToolClass::Report,
             Self::RequestSecret | Self::SecretStatus => HostToolClass::Secret,
             Self::ProposeSchedule => HostToolClass::Schedule,
@@ -119,14 +122,23 @@ impl HostTool {
             | Self::ReadReplyPointer
             | Self::RequestSecret
             | Self::SecretStatus
-            | Self::ProposeSchedule => true,
+            | Self::ProposeSchedule
+            | Self::RequestPush => true,
         }
     }
 
     /// Whether the run's tool list carries the tool. A call to a tool the run is not offered
-    /// is denied even when the provider names it.
+    /// is denied even when the provider names it. A push request also needs a folder authorized
+    /// at publish rank.
     pub(crate) fn offered(self, scope: &InternalMcpRunScope) -> bool {
-        self.implemented() && self.class().offered(scope)
+        let tool_offered = match self {
+            Self::RequestPush => scope
+                .folder_sources
+                .iter()
+                .any(|source| source.capability.rank() >= ChatFolderCapability::Publish.rank()),
+            _ => true,
+        };
+        self.implemented() && self.class().offered(scope) && tool_offered
     }
 
     /// Whether an organizational run calls the tool without a provider approval prompt. Only

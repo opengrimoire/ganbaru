@@ -24,7 +24,7 @@ use super::fixture::{
 };
 use super::holds::sealed_create;
 use super::refusal::take;
-use super::replica::{Replica, converge, device_id, forge_change, quoted};
+use super::replica::{Replica, converge, device_id, forge_change, prepared, quoted};
 use super::sim::Rng;
 use crate::domains::chat::LOCAL_OWNER_PARTICIPANT_KEY;
 use crate::error::failpoints;
@@ -65,21 +65,25 @@ const SAFETY_MODES: [&str; 4] = [
 const CAPABILITIES: [&str; 5] = ["publish", "execute", "edit", "read", "none"];
 
 /// Replicas that each seeded their existing rows at vault open, as the app does, with operations
-/// exchanged, so the seeded local owner and routine projects are published everywhere.
+/// exchanged, so the seeded local owner and routine projects are published everywhere. Built once
+/// per count and copied, since converging the seeded rows dominates every Chat test.
 async fn replicas(count: usize) -> Vec<Replica> {
-    let mut replicas = Vec::with_capacity(count);
-    for index in 0..count {
-        let mut replica = Replica::new(index, SALT).await;
-        let now = replica.now_ms;
-        replica
-            .engine
-            .seed_captures(&mut replica.conn, now)
-            .await
-            .unwrap();
-        replicas.push(replica);
-    }
-    converge(&mut replicas).await;
-    replicas
+    prepared(&format!("chat seeded {count}"), async || {
+        let mut replicas = Vec::with_capacity(count);
+        for index in 0..count {
+            let mut replica = Replica::new(index, SALT).await;
+            let now = replica.now_ms;
+            replica
+                .engine
+                .seed_captures(&mut replica.conn, now)
+                .await
+                .unwrap();
+            replicas.push(replica);
+        }
+        converge(&mut replicas).await;
+        replicas
+    })
+    .await
 }
 
 /// A write of a built-in profile that the protecting trigger refuses keeps the seeded row and its

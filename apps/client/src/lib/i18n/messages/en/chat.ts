@@ -131,7 +131,6 @@ export const chat = {
     showArchived: "Show archived channels",
     hideArchived: "Hide archived channels",
     archivedChannel: "Archived channel",
-    archivedLoadFailed: (message: string) => `Archived channels could not be loaded: ${message}`,
     noTopic: "No topic",
     changeFolderDraftWarning: "Changing the working folder removes the attachments and file mentions of this draft.",
     changeFolderConfirm: "Change folder",

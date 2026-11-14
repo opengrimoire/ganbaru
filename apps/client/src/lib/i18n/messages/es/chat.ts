@@ -134,7 +134,6 @@ export const chat = {
     showArchived: "Mostrar canales archivados",
     hideArchived: "Ocultar canales archivados",
     archivedChannel: "Canal archivado",
-    archivedLoadFailed: (message: string) => `No se pudieron cargar los canales archivados: ${message}`,
     noTopic: "Sin tema",
     changeFolderDraftWarning: "Cambiar la carpeta de trabajo elimina los adjuntos y menciones de archivos de este borrador.",
     changeFolderConfirm: "Cambiar carpeta",

@@ -104,6 +104,10 @@ fn is_git_directory(path: &Path) -> bool {
     is_file(GIT_DIRECTORY_HEAD) && GIT_DIRECTORY_MARKERS.iter().any(|name| is_file(name))
 }
 
+/// Code of the warning and error a session ends with after its confined commands changed the
+/// Git metadata of the folder, the same wire name for every provider.
+pub(crate) const GIT_METADATA_CHANGED_CODE: &str = "acp_git_metadata_changed";
+
 /// The error a session ends with after its confined commands changed Git metadata.
 pub(crate) fn changed_error() -> ChatError {
     ChatError::new(

@@ -103,7 +103,7 @@ async fn end_after_git_metadata_change(resources: &CursorRouterResources) {
                 "session/git_metadata_changed",
                 None,
                 CanonicalEvent::RuntimeWarning(NotificationEvent {
-                    code: "acp_git_metadata_changed".to_string(),
+                    code: crate::confinement::GIT_METADATA_CHANGED_CODE.to_string(),
                     title: "A teammate changed this folder's Git or Cursor configuration"
                         .to_string(),
                     detail: Some(error.message.clone()),

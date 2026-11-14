@@ -180,6 +180,16 @@ pub const CLAUDE_COMPATIBILITY: ProviderCompatibilityRange = ProviderCompatibili
 /// together with a `--setting-sources` value that ignores left-out files (2.1.314).
 pub const MINIMUM_ORGANIZATIONAL_CLAUDE_VERSION: ClaudeVersion = ClaudeVersion::new(2, 1, 314);
 
+/// First CLI version whose shell prefix Ganbaru verified: it runs every shell command as
+/// `PREFIX COMMAND`, with the command line as one argument, and writes its working directory
+/// file under `CLAUDE_CODE_TMPDIR`. Older versions keep their commands unconfined and asked.
+pub const MINIMUM_CONFINED_SHELL_CLAUDE_VERSION: ClaudeVersion = ClaudeVersion::new(2, 1, 325);
+
+/// Variable naming the program the CLI places in front of every shell command.
+pub const SHELL_PREFIX_ENVIRONMENT: &str = "CLAUDE_CODE_SHELL_PREFIX";
+/// Variable naming the directory the CLI keeps shell command state and output in.
+pub const TEMPORARY_DIRECTORY_ENVIRONMENT: &str = "CLAUDE_CODE_TMPDIR";
+
 impl VersionOrder for ClaudeVersion {
     fn parse_version(value: &str) -> ChatResult<Self> {
         parse_version(value)
@@ -229,6 +239,22 @@ pub fn ensure_organizational_version(value: ClaudeVersion) -> ChatResult<()> {
     Ok(())
 }
 
+/// Refuses a teammate launch whose safety mode needs confined commands on a Claude Code
+/// version below `MINIMUM_CONFINED_SHELL_CLAUDE_VERSION`.
+pub fn ensure_confined_shell_version(value: ClaudeVersion) -> ChatResult<()> {
+    if value < MINIMUM_CONFINED_SHELL_CLAUDE_VERSION {
+        return Err(version_refusal(
+            ProviderVersionAdmission::BelowMinimum,
+            &value.to_string(),
+            format!(
+                "Claude Code {value} cannot run teammate commands in the Ganbaru sandbox; version {MINIMUM_CONFINED_SHELL_CLAUDE_VERSION} or newer is required"
+            ),
+            true,
+        ));
+    }
+    Ok(())
+}
+
 fn parse_version_part(value: Option<&str>) -> ChatResult<u64> {
     value
         .and_then(|part| part.parse::<u64>().ok())
@@ -269,8 +295,8 @@ pub struct ClaudeInternalMcpLaunch<'a> {
 ///
 /// It sees only the internal server, loads no settings files, loads only the built-in tools
 /// its scope allows, and cannot reach the denied ones. The file tools are confined to the
-/// working directory, and the shell, when the scope loads it, asks the person for every
-/// command.
+/// working directory, and every shell command, when the scope loads the shell, reaches
+/// Ganbaru as a permission request.
 #[derive(Clone, Copy, Debug)]
 pub struct ClaudeOrganizationalLaunch<'a> {
     pub internal_server_name: &'a str,
@@ -279,6 +305,8 @@ pub struct ClaudeOrganizationalLaunch<'a> {
     pub pre_approved_tools: &'a [String],
     /// The authorized target the launch enforces.
     pub scope: ProviderOrganizationalScope,
+    /// Whether the session's shell commands run under the Ganbaru sandbox.
+    pub commands_confined: bool,
 }
 
 /// The comma-joined `--allowedTools` value of an organizational launch, or `None` when it
@@ -395,7 +423,7 @@ pub fn organizational_tools(scope: ProviderOrganizationalScope) -> ClaudeOrganiz
     }
 }
 
-/// Whether the scope loads the shell, whose every command the person approves.
+/// Whether the scope loads the shell.
 pub fn organizational_runs_commands(scope: ProviderOrganizationalScope) -> bool {
     organizational_tools(scope).allowed.contains(&"Bash")
 }
@@ -447,6 +475,7 @@ pub fn launch_arguments(
         Some((_, organizational, _)) => Some(organizational_permission_mode(
             options.modes,
             organizational.scope,
+            organizational.commands_confined,
         )?),
         None => permission_mode(options.modes),
     };
@@ -626,21 +655,43 @@ pub fn internal_mcp_config_argument(name: &str, url: &str) -> ChatResult<String>
 
 /// Maps the modes of an organizational run to its permission mode.
 ///
-/// A scope that loads the shell admits only AskForApproval, because the person approving each
-/// command is its confinement. It asks before edits and commands in Build and stays read-only
-/// in Plan. A scope without the shell maps every safety mode to the same asking modes, since
-/// its tool surface, not the safety mode, bounds what the run can reach.
+/// A scope that loads the shell admits AskForApproval, where the person approving each command
+/// confines it, and, when the sandbox confines its commands, ApproveForMe and FullAccess. The
+/// mode asks before edits in Build and stays read-only in Plan for every safety mode; Ganbaru
+/// answers each command request itself (see `organizational_runs_unattended`), so the CLI
+/// never bypasses permissions. A scope without the shell maps every safety mode to the same
+/// asking modes, since its tool surface, not the safety mode, bounds what the run can reach.
 pub fn organizational_permission_mode(
     modes: TurnModeSnapshot,
     scope: ProviderOrganizationalScope,
+    commands_confined: bool,
 ) -> ChatResult<&'static str> {
-    if organizational_runs_commands(scope) && modes.safety_mode != SafetyMode::AskForApproval {
-        return Err(organizational_permission_error());
+    if organizational_runs_commands(scope) {
+        match (modes.safety_mode, commands_confined) {
+            (SafetyMode::AskForApproval, _)
+            | (SafetyMode::ApproveForMe | SafetyMode::FullAccess, true) => {}
+            _ => return Err(organizational_permission_error()),
+        }
     }
     Ok(match modes.interaction_mode {
         InteractionMode::Plan => "plan",
         InteractionMode::Build => ORGANIZATIONAL_ASK_PERMISSION_MODE,
     })
+}
+
+/// Whether Ganbaru allows a shell command of an organizational run without asking: only when
+/// the sandbox confines the session's commands and the turn runs in Build with FullAccess,
+/// the one safety mode that already runs commands unattended. The decision follows the
+/// current turn, so a later asking turn of the same session asks again.
+pub fn organizational_runs_unattended(
+    tool_name: &str,
+    modes: TurnModeSnapshot,
+    commands_confined: bool,
+) -> bool {
+    tool_name == "Bash"
+        && commands_confined
+        && modes.safety_mode == SafetyMode::FullAccess
+        && modes.interaction_mode == InteractionMode::Build
 }
 
 /// The error of an organizational Claude run whose boundary cannot be proven.
@@ -656,9 +707,9 @@ pub fn organizational_permission_error() -> ChatError {
 ///
 /// Every launch setting joins this object, because the CLI reads a single `--settings` value.
 /// A configured `--settings` argument stays refused for every run. An organizational launch
-/// confines the file tools to the working directory, and a scope that loads the shell asks
-/// for every command: the ask rule outranks the read-only commands manual mode runs unasked,
-/// and plan mode keeps its classifier from approving commands.
+/// confines the file tools to the working directory, and a scope that loads the shell sends
+/// every command to Ganbaru as a permission request: the ask rule outranks the read-only
+/// commands manual mode runs unasked, and plan mode keeps its classifier from approving them.
 pub fn launch_settings(
     fast_mode: Option<bool>,
     organizational: Option<ProviderOrganizationalScope>,

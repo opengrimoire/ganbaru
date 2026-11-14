@@ -47,8 +47,10 @@ impl ProviderDriver for ClaudeProviderDriver {
     }
 
     /// Teammate launches load only the tools their scope allows, confine the file tools to
-    /// the working directory, deny the network tools, and relay every shell command to the
-    /// person. Claude cannot confine the commands themselves or classify publication.
+    /// the working directory, deny the network tools, and send every shell command to Ganbaru
+    /// as a permission request. Where the Ganbaru sandbox is present, the commands run under
+    /// it as the CLI's shell prefix, and a launch on a CLI too old for that is refused unless
+    /// the person approves each command. Claude cannot classify publication.
     fn authority_support(&self) -> ProviderAuthoritySupport {
         ProviderAuthoritySupport {
             isolated_conversation: true,
@@ -56,7 +58,7 @@ impl ProviderDriver for ClaudeProviderDriver {
             deny_shell: true,
             read_only_root: true,
             writable_root: true,
-            confined_commands: false,
+            confined_commands: crate::confinement::sandbox_helper().is_some(),
             network_boundary: true,
             classified_publish: false,
             person_approved_commands: true,
@@ -235,7 +237,11 @@ impl ProviderDriver for ClaudeProviderDriver {
                 || (requested_fast_mode.is_some()
                     && requested_fast_mode != live.effective_fast_mode);
             let permission_mode = if let Some(scope) = live.organizational {
-                Some(organizational_permission_mode(request.modes, scope)?)
+                Some(organizational_permission_mode(
+                    request.modes,
+                    scope,
+                    live.shell.is_some(),
+                )?)
             } else {
                 permission_mode(request.modes)
             };

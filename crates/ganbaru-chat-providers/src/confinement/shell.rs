@@ -87,6 +87,11 @@ impl ShellSandbox {
         &self.shell
     }
 
+    /// The private directory the commands use as home and temporary directory.
+    pub(crate) fn temporary(&self) -> PathBuf {
+        self.directory.join(TEMPORARY_NAME)
+    }
+
     /// The variable the provider process sets so the helper finds the policy file.
     pub(crate) fn policy_variable(&self, provider: &str) -> ChatResult<(String, String)> {
         let path = self.directory.join(POLICY_FILE_NAME);

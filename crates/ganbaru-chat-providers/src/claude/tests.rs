@@ -1018,3 +1018,21 @@ fn claude_versions_admit_against_the_tested_range() {
         }
     }
 }
+
+#[test]
+fn configured_environment_cannot_name_the_sandbox_variables() {
+    let home = TestDirectory::new("home-sandbox-environment");
+    let resolved = resolve_claude_home(&configuration(home.path())).unwrap();
+    for name in [
+        "CLAUDE_CODE_SHELL_PREFIX",
+        "claude_code_tmpdir",
+        ganbaru_sandbox::POLICY_FILE_VARIABLE,
+    ] {
+        let mut configured = configuration(home.path());
+        configured
+            .environment
+            .insert(name.to_string(), "/tmp/elsewhere".to_string());
+        let error = claude_process_environment(&configured, &resolved).unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Validation, "{name}");
+    }
+}

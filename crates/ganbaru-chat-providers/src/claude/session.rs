@@ -11,6 +11,7 @@ use super::protocol::{
     control_error, control_success, organizational_permission_error, protocol_error,
 };
 use super::transport::{ClaudeInboundMessage, ClaudeJsonlClient};
+use crate::confinement::ShellSandbox;
 use crate::events::*;
 use crate::models::*;
 use crate::process::systemd_scope::{memory_limit_warning, reached_memory_limit};
@@ -70,6 +71,9 @@ pub struct ClaudeRouterResources {
     pub organizational: Option<ClaudeOrganizationalRoute>,
     /// Present for organizational sessions, whose permission requests stay inside the scope.
     pub organizational_permissions: Option<ClaudeOrganizationalPermissions>,
+    /// The sandbox of an organizational session whose shell commands are confined; its Git
+    /// metadata guard is checked before each permission request, tool result, and turn end.
+    pub shell: Option<Arc<ShellSandbox>>,
     /// Tells whether the resource scope's memory ceiling stopped the provider; `None` when unscoped.
     pub memory_limit: Option<crate::process::systemd_scope::MemoryLimitWatch>,
 }
@@ -144,6 +148,21 @@ async fn route_gated(
     match gate.admit(value)? {
         ClaudeGateAction::Route(frames) => {
             for frame in frames {
+                if let Err(error) = verify_confined_work(resources, &frame) {
+                    fail_session(
+                        resources,
+                        gate,
+                        &error,
+                        "organizational/git_metadata_changed",
+                        Some(NotificationEvent {
+                            code: crate::confinement::GIT_METADATA_CHANGED_CODE.to_string(),
+                            title: "A teammate changed this folder's Git configuration".to_string(),
+                            detail: Some(error.message.clone()),
+                        }),
+                    )
+                    .await;
+                    return Err(error);
+                }
                 route_message(resources, frame).await?;
             }
             Ok(())
@@ -161,15 +180,46 @@ async fn route_gated(
     }
 }
 
-/// Fails an organizational session whose tool surface could not be proven: held frames are
-/// dropped, the active turn fails without retry, and the process is killed. The router
-/// returns afterwards, so the closed stream never replaces the permission error.
+/// Checks the folder's Git metadata before a frame that asks to run a tool, carries a tool
+/// result, or ends a turn, when the session's commands run in the sandbox. The CLI also runs
+/// Git in the folder itself, outside the sandbox, so a change is caught before the next
+/// command is allowed.
+fn verify_confined_work(resources: &ClaudeRouterResources, frame: &Value) -> ChatResult<()> {
+    let Some(shell) = resources.shell.as_ref() else {
+        return Ok(());
+    };
+    match frame.get("type").and_then(Value::as_str) {
+        Some("control_request" | "user" | "result") => shell.guard().verify(),
+        _ => Ok(()),
+    }
+}
+
+/// Fails an organizational session whose tool surface could not be proven.
 async fn fail_organizational(
     resources: &ClaudeRouterResources,
     gate: &mut ClaudeOrganizationalGate,
 ) {
+    fail_session(
+        resources,
+        gate,
+        &organizational_permission_error(),
+        "organizational/unverified",
+        None,
+    )
+    .await;
+}
+
+/// Fails an organizational session with `error`: held frames are dropped, the active turn
+/// fails without retry, and the process is killed. The router returns afterwards, so the
+/// closed stream never replaces the error. A `warning` is raised before the failure.
+async fn fail_session(
+    resources: &ClaudeRouterResources,
+    gate: &mut ClaudeOrganizationalGate,
+    error: &ChatError,
+    source: &str,
+    warning: Option<NotificationEvent>,
+) {
     gate.discard();
-    let error = organizational_permission_error();
     if let Ok(mut terminal) = resources.terminal_error.lock() {
         *terminal = Some(error.clone());
     }
@@ -178,11 +228,19 @@ async fn fail_organizational(
         .lock()
         .map_err(|_| state_error())
         .and_then(|mut state| {
-            let failed = resources.normalizer.failed_event(
-                &mut state,
-                "organizational/unverified",
-                &error.message,
-            )?;
+            let warning = warning
+                .map(|warning| {
+                    resources.normalizer.external_event(
+                        &state,
+                        source,
+                        None,
+                        CanonicalEvent::RuntimeWarning(warning),
+                    )
+                })
+                .transpose()?;
+            let failed = resources
+                .normalizer
+                .failed_event(&mut state, source, &error.message)?;
             let previous_state = if failed.is_some() {
                 ProviderSessionState::Active
             } else {
@@ -191,7 +249,7 @@ async fn fail_organizational(
             state.session_state = ProviderSessionState::Failed;
             let changed = resources.normalizer.external_event(
                 &state,
-                "organizational/unverified",
+                source,
                 None,
                 CanonicalEvent::SessionStateChanged(SessionStateChangedEvent {
                     session_id: resources.normalizer.session_id(),
@@ -200,7 +258,11 @@ async fn fail_organizational(
                     reason: Some(error.message.clone()),
                 }),
             )?;
-            Ok(failed.into_iter().chain([changed]).collect::<Vec<_>>())
+            Ok(warning
+                .into_iter()
+                .chain(failed)
+                .chain([changed])
+                .collect::<Vec<_>>())
         });
     if let Ok(events) = events {
         let _ = emit_events(&resources.sink, events).await;
@@ -234,10 +296,12 @@ async fn route_provider_request(
         .get("request")
         .and_then(Value::as_object)
         .ok_or_else(|| protocol_error("control request body"))?;
+    let modes = resources.route.lock().map_err(|_| state_error())?.modes;
     let routed = route_scoped_control_request(
         control_request_id,
         request,
         resources.organizational_permissions.as_ref(),
+        modes,
     )?;
     if let Some(response) = routed.immediate_response {
         resources
@@ -459,16 +523,27 @@ pub fn route_control_request(
     control_request_id: &str,
     request: &Map<String, Value>,
 ) -> ChatResult<RoutedClaudeRequest> {
-    route_scoped_control_request(control_request_id, request, None)
+    route_scoped_control_request(
+        control_request_id,
+        request,
+        None,
+        TurnModeSnapshot {
+            safety_mode: SafetyMode::AskForApproval,
+            interaction_mode: InteractionMode::Build,
+        },
+    )
 }
 
-/// Routes one control request. Under an organizational policy, a request outside the scope is
-/// denied without reaching the person, and no approval offers a session-wide grant, because
-/// shell rules, extra directories, and accepting edits would all widen the boundary.
+/// Routes one control request of a turn running with `modes`. Under an organizational policy,
+/// a request outside the scope is denied without reaching the person, a confined command the
+/// turn's modes run unattended is allowed without reaching the person, and no approval offers
+/// a session-wide grant, because shell rules, extra directories, and accepting edits would all
+/// widen the boundary.
 pub fn route_scoped_control_request(
     control_request_id: &str,
     request: &Map<String, Value>,
     organizational: Option<&ClaudeOrganizationalPermissions>,
+    modes: TurnModeSnapshot,
 ) -> ChatResult<RoutedClaudeRequest> {
     let subtype = required_text(request, "subtype")?;
     if subtype != "can_use_tool" {
@@ -508,6 +583,20 @@ pub fn route_scoped_control_request(
             immediate_response: Some(control_success(
                 control_request_id,
                 json!({ "behavior": "deny", "message": message }),
+            )?),
+        });
+    }
+    if organizational.is_some_and(|policy| policy.runs_unattended(tool_name, modes)) {
+        return Ok(RoutedClaudeRequest {
+            pending: None,
+            event: CanonicalEvent::Unknown(UnknownEvent {
+                source_type: "claude/organizational/confined_command".to_string(),
+                summary: "Ganbaru ran a teammate command in the sandbox without asking".to_string(),
+                safe_payload: None,
+            }),
+            immediate_response: Some(control_success(
+                control_request_id,
+                json!({ "behavior": "allow", "updatedInput": tool_input }),
             )?),
         });
     }

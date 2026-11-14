@@ -7,11 +7,12 @@
 //! deadline armed by the first user message bounds the wait. Any failure stops the process.
 
 use super::protocol::{
-    control_error, control_success, organizational_permission_error, organizational_tools,
+    control_error, control_success, organizational_permission_error,
+    organizational_runs_unattended, organizational_tools,
 };
 use super::transport::{ClaudeConnectionKill, ClaudeJsonlClient, ClaudeTransportFailure};
 use crate::DriverOperationContext;
-use crate::models::{ChatResult, ProviderOrganizationalScope};
+use crate::models::{ChatResult, ProviderOrganizationalScope, TurnModeSnapshot};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -363,6 +364,8 @@ pub struct ClaudeOrganizationalPermissions {
     scope: ProviderOrganizationalScope,
     root: PathBuf,
     internal_prefix: String,
+    /// Whether the session's shell commands run under the Ganbaru sandbox.
+    commands_confined: bool,
 }
 
 impl ClaudeOrganizationalPermissions {
@@ -373,11 +376,23 @@ impl ClaudeOrganizationalPermissions {
             scope,
             root: std::fs::canonicalize(&root).unwrap_or(root),
             internal_prefix: format!("mcp__{expected_server}__"),
+            commands_confined: false,
         }
     }
 
+    /// Records whether the session's shell commands run under the Ganbaru sandbox.
+    pub fn with_confined_commands(mut self, commands_confined: bool) -> Self {
+        self.commands_confined = commands_confined;
+        self
+    }
+
+    /// Whether a request for `tool_name` in a turn with `modes` is allowed without asking.
+    pub fn runs_unattended(&self, tool_name: &str, modes: TurnModeSnapshot) -> bool {
+        organizational_runs_unattended(tool_name, modes, self.commands_confined)
+    }
+
     /// The denial message for a permission request outside the scope, or none when the
-    /// request may reach the person. Shell commands always reach the person.
+    /// request may proceed. Shell commands are never denied here.
     pub fn denial(&self, tool_name: &str, input: &Value) -> Option<&'static str> {
         if tool_name.starts_with(&self.internal_prefix) {
             return None;

@@ -31,6 +31,7 @@ fn options(
             internal_server_name: SERVER_NAME,
             pre_approved_tools: &[],
             scope: ProviderOrganizationalScope::Conversation,
+            commands_confined: false,
         }),
         system_prompt,
         cli_version: None,

@@ -31,9 +31,6 @@ const MAX_RECONNECT_ATTEMPTS: usize = 6;
 pub(super) const OPENCODE_BUSY_STREAM_TIMEOUT: Duration = Duration::from_secs(180);
 const MAX_RECONCILIATION_PAGES: usize = 100;
 const MAX_RECONCILIATION_MESSAGES: usize = 10_000;
-/// Code of the warning and error a session ends with after its confined commands changed the
-/// Git metadata of the folder, shared with the ACP providers.
-const GIT_METADATA_CHANGED_CODE: &str = "acp_git_metadata_changed";
 
 pub struct OpenCodeProviderDriver {
     pub(super) configuration: ProviderInstanceConfig,
@@ -1065,7 +1062,7 @@ async fn end_after_git_metadata_change(resources: &EventPumpResources) -> bool {
                 &state,
                 "session/git_metadata_changed",
                 CanonicalEvent::RuntimeWarning(NotificationEvent {
-                    code: GIT_METADATA_CHANGED_CODE.to_string(),
+                    code: crate::confinement::GIT_METADATA_CHANGED_CODE.to_string(),
                     title: "A teammate changed this folder's Git configuration".to_string(),
                     detail: Some(error.message.clone()),
                 }),
@@ -1074,7 +1071,7 @@ async fn end_after_git_metadata_change(resources: &EventPumpResources) -> bool {
                 &state,
                 "session/git_metadata_changed",
                 CanonicalEvent::RuntimeError(RuntimeErrorEvent {
-                    code: GIT_METADATA_CHANGED_CODE.to_string(),
+                    code: crate::confinement::GIT_METADATA_CHANGED_CODE.to_string(),
                     message: error.message.clone(),
                     recoverable: false,
                     safe_details: None,

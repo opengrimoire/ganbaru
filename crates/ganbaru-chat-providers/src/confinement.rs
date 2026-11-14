@@ -18,7 +18,9 @@ mod terminal;
 mod tests;
 mod toolchains;
 
-pub(crate) use git_guard::{GitMetadataGuard, changed_error as git_metadata_changed_error};
+pub(crate) use git_guard::{
+    GIT_METADATA_CHANGED_CODE, GitMetadataGuard, changed_error as git_metadata_changed_error,
+};
 pub(crate) use shell::ShellSandbox;
 pub(crate) use terminal::TerminalSandbox;
 

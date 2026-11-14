@@ -11,6 +11,7 @@ use super::protocol::*;
 use super::session::*;
 use super::support::*;
 use super::transport::ClaudeJsonlConnection;
+use crate::confinement::ShellSandbox;
 use crate::events::*;
 use crate::models::*;
 use crate::process::{ProviderProcessConfig, spawn_provider_process};
@@ -30,6 +31,17 @@ pub(super) const SESSION_GRACEFUL_STOP: Duration = Duration::from_millis(500);
 pub(super) const SESSION_FORCE_STOP: Duration = Duration::from_secs(2);
 pub(super) static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 pub(super) static NEXT_UUID: AtomicU64 = AtomicU64::new(1);
+/// Provider name in sandbox errors.
+pub(super) const CLAUDE_PROVIDER_NAME: &str = "Claude";
+
+/// A started CLI process with its configuration directory, version, and the confined shell
+/// its commands run under, when they are confined.
+type ClaudeOpenedConnection = (
+    ClaudeJsonlConnection,
+    ClaudeHome,
+    ClaudeVersion,
+    Option<Arc<ShellSandbox>>,
+);
 
 pub struct ClaudeProviderDriver {
     pub(super) configuration: ProviderInstanceConfig,
@@ -67,6 +79,9 @@ pub(super) struct ClaudeLiveSession {
     /// The instructions in the session system prompt, with the file that carries them when
     /// they are too large to pass inline. Turns compare their instructions to its digest.
     pub(super) instructions: Option<ClaudeSessionInstructions>,
+    /// The sandbox an organizational session's shell commands run under; none when they are
+    /// unconfined and asked.
+    pub(super) shell: Option<Arc<ShellSandbox>>,
 }
 
 impl Drop for ClaudeLiveSession {
@@ -137,7 +152,7 @@ impl ClaudeProviderDriver {
     ) -> ChatResult<ClaudeProbeSnapshot> {
         let workspace = crate::probe_directory::ProbeDirectory::create()?;
         let session_uuid = new_uuid(&self.configuration.instance_id);
-        let (mut connection, home, version) = self
+        let (mut connection, home, version, _) = self
             .open_connection(
                 &workspace,
                 ClaudeLaunchOptions {
@@ -190,14 +205,18 @@ impl ClaudeProviderDriver {
         }
     }
 
+    /// Starts the CLI in `working_directory`. An organizational launch whose scope loads the
+    /// shell runs its commands under the Ganbaru sandbox when the helper is present and the
+    /// CLI version supports it; the returned sandbox must live as long as the process.
     async fn open_connection(
         &self,
         working_directory: &Path,
         options: ClaudeLaunchOptions<'_>,
-    ) -> ChatResult<(ClaudeJsonlConnection, ClaudeHome, ClaudeVersion)> {
+    ) -> ChatResult<ClaudeOpenedConnection> {
         #[cfg(test)]
         if let Some(factory) = self.connection_factory.as_ref() {
-            return factory(working_directory);
+            let (connection, home, version) = factory(working_directory)?;
+            return Ok((connection, home, version, None));
         }
         let home = resolve_claude_home(&self.configuration)?;
         let mut environment = claude_process_environment(&self.configuration, &home)?;
@@ -215,6 +234,23 @@ impl ClaudeProviderDriver {
                 server.bearer_token.clone(),
             );
         }
+        let shell = self.organizational_shell(working_directory, version, options.modes)?;
+        if let Some(shell) = shell.as_ref() {
+            environment.insert(
+                SHELL_PREFIX_ENVIRONMENT.to_string(),
+                shell.shell().to_string(),
+            );
+            let temporary = shell.temporary();
+            let temporary = temporary
+                .to_str()
+                .ok_or_else(|| crate::confinement::sandbox_policy_error(CLAUDE_PROVIDER_NAME))?;
+            environment.insert(
+                TEMPORARY_DIRECTORY_ENVIRONMENT.to_string(),
+                temporary.to_string(),
+            );
+            let (name, value) = shell.policy_variable(CLAUDE_PROVIDER_NAME)?;
+            environment.insert(name, value);
+        }
         let arguments = launch_arguments(
             executable.prefix_arguments.clone(),
             &self.configuration.launch_arguments,
@@ -228,6 +264,7 @@ impl ClaudeProviderDriver {
                         internal_server_name: &server.name,
                         pre_approved_tools: &server.pre_approved_tools,
                         scope,
+                        commands_confined: shell.is_some(),
                     }),
                     _ => None,
                 },
@@ -244,7 +281,39 @@ impl ClaudeProviderDriver {
             purpose: crate::process::ProviderProcessPurpose::Session,
             provider_instance_label: Some(self.configuration.label.clone()),
         })?;
-        Ok((ClaudeJsonlConnection::from_process(process)?, home, version))
+        Ok((
+            ClaudeJsonlConnection::from_process(process)?,
+            home,
+            version,
+            shell.map(Arc::new),
+        ))
+    }
+
+    /// Prepares the confined shell of an organizational launch whose scope loads the shell,
+    /// when the helper is present. Below the CLI version that supports it, the commands stay
+    /// unconfined and asked, and a safety mode that needs them confined is refused.
+    fn organizational_shell(
+        &self,
+        working_directory: &Path,
+        version: ClaudeVersion,
+        modes: TurnModeSnapshot,
+    ) -> ChatResult<Option<ShellSandbox>> {
+        let Some(scope) = self.organizational_scope()? else {
+            return Ok(None);
+        };
+        let Some(helper) = crate::confinement::sandbox_helper() else {
+            return Ok(None);
+        };
+        if !organizational_runs_commands(scope) {
+            return Ok(None);
+        }
+        if version < MINIMUM_CONFINED_SHELL_CLAUDE_VERSION {
+            if modes.safety_mode == SafetyMode::AskForApproval {
+                return Ok(None);
+            }
+            ensure_confined_shell_version(version)?;
+        }
+        ShellSandbox::prepare(helper, working_directory, &[], CLAUDE_PROVIDER_NAME).map(Some)
     }
 
     pub(super) async fn open_session(
@@ -284,7 +353,7 @@ impl ClaudeProviderDriver {
             matches!(&input, SessionOpenInput::Fresh(_)).then_some(cursor.session_uuid.as_str());
         let resume_uuid =
             matches!(&input, SessionOpenInput::Resume(_)).then_some(cursor.session_uuid.as_str());
-        let (mut connection, _, _) = self
+        let (mut connection, _, _, shell) = self
             .open_connection(
                 &workspace,
                 ClaudeLaunchOptions {
@@ -370,6 +439,7 @@ impl ClaudeProviderDriver {
             .zip(organizational_scope)
             .map(|(server, scope)| {
                 ClaudeOrganizationalPermissions::new(scope, workspace.clone(), server)
+                    .with_confined_commands(shell.is_some())
             });
         let (organizational_deadline, organizational_route) = organizational_server
             .zip(organizational_scope)
@@ -386,6 +456,7 @@ impl ClaudeProviderDriver {
             terminal_error: Arc::clone(&terminal_error),
             organizational: organizational_route,
             organizational_permissions,
+            shell: shell.clone(),
             memory_limit: connection.memory_limit_watch(),
         });
         let capabilities = claude_capabilities();
@@ -438,6 +509,7 @@ impl ClaudeProviderDriver {
             organizational: organizational_scope,
             organizational_deadline,
             instructions,
+            shell,
         });
         Ok(ProviderSessionSnapshot {
             session_id,

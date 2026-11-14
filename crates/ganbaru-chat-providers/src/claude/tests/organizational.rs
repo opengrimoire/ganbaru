@@ -37,6 +37,7 @@ fn options(modes: TurnModeSnapshot, organizational: bool) -> ClaudeLaunchOptions
             internal_server_name: SERVER_NAME,
             pre_approved_tools: &[],
             scope: EDIT_SCOPE,
+            commands_confined: false,
         }),
         system_prompt: None,
         cli_version: None,
@@ -133,6 +134,7 @@ fn scoped_options(
         internal_server_name: SERVER_NAME,
         pre_approved_tools: &[],
         scope,
+        commands_confined: false,
     });
     options
 }
@@ -269,6 +271,7 @@ fn organizational_launch_never_pre_approves_the_shell() {
             internal_server_name: SERVER_NAME,
             pre_approved_tools: &tools,
             scope,
+            commands_confined: false,
         });
         assert_eq!(
             launch(&[], options).unwrap_err().code,
@@ -405,6 +408,7 @@ fn organizational_launch_requires_the_matching_internal_server() {
         internal_server_name: "other-server",
         pre_approved_tools: &[],
         scope: EDIT_SCOPE,
+        commands_confined: false,
     });
     assert_eq!(
         launch(&[], renamed).unwrap_err().code,
@@ -418,6 +422,7 @@ fn pre_approving(tools: &[String]) -> ClaudeLaunchOptions<'_> {
         internal_server_name: SERVER_NAME,
         pre_approved_tools: tools,
         scope: EDIT_SCOPE,
+        commands_confined: false,
     });
     options
 }
@@ -939,6 +944,7 @@ fn organizational_routing_denies_outside_requests_without_asking() {
         "ctrl-1",
         request.as_object().unwrap(),
         Some(&policy),
+        ask(InteractionMode::Build),
     )
     .unwrap();
     assert!(routed.pending.is_none());
@@ -972,6 +978,7 @@ fn organizational_routing_offers_no_session_grant() {
             "ctrl-2",
             request.as_object().unwrap(),
             Some(&policy),
+            ask(InteractionMode::Build),
         )
         .unwrap();
         assert!(routed.immediate_response.is_none(), "{tool}");
@@ -1006,4 +1013,143 @@ fn driver_refuses_organizational_authority_without_a_scope() {
         driver.organizational_scope().unwrap_err(),
         organizational_permission_error()
     );
+}
+
+fn confined_options(
+    modes: TurnModeSnapshot,
+    scope: ProviderOrganizationalScope,
+) -> ClaudeLaunchOptions<'static> {
+    let mut options = scoped_options(modes, scope);
+    if let Some(organizational) = options.organizational.as_mut() {
+        organizational.commands_confined = true;
+    }
+    options
+}
+
+#[test]
+fn confined_launch_admits_unattended_safety_modes_without_bypassing_permissions() {
+    for scope in COMMAND_SCOPES {
+        for safety_mode in [
+            SafetyMode::AskForApproval,
+            SafetyMode::ApproveForMe,
+            SafetyMode::FullAccess,
+        ] {
+            for (interaction_mode, expected) in [
+                (InteractionMode::Build, "default"),
+                (InteractionMode::Plan, "plan"),
+            ] {
+                let arguments = launch(
+                    &[],
+                    confined_options(modes(safety_mode, interaction_mode), scope),
+                )
+                .unwrap();
+                assert_eq!(
+                    flag_value(&arguments, "--permission-mode"),
+                    Some(expected),
+                    "{scope:?} {safety_mode:?}"
+                );
+                let settings = flag_value(&arguments, "--settings").unwrap();
+                assert!(
+                    settings.contains("\"ask\":[\"Bash\"]"),
+                    "every command still reaches Ganbaru: {settings}"
+                );
+            }
+        }
+        let custom = launch(
+            &[],
+            confined_options(modes(SafetyMode::Custom, InteractionMode::Build), scope),
+        )
+        .unwrap_err();
+        assert_eq!(custom.code, ChatErrorCode::Permission, "{scope:?}");
+    }
+}
+
+#[test]
+fn confined_permission_mode_matches_the_launch() {
+    for scope in COMMAND_SCOPES {
+        for safety_mode in [SafetyMode::ApproveForMe, SafetyMode::FullAccess] {
+            let turn = modes(safety_mode, InteractionMode::Build);
+            assert!(organizational_permission_mode(turn, scope, true).is_ok());
+            assert!(organizational_permission_mode(turn, scope, false).is_err());
+        }
+        let custom = modes(SafetyMode::Custom, InteractionMode::Build);
+        assert!(organizational_permission_mode(custom, scope, true).is_err());
+    }
+}
+
+#[test]
+fn confined_shell_requires_the_sandbox_floor() {
+    let refused = ensure_confined_shell_version(parse_version("2.1.324").unwrap()).unwrap_err();
+    assert_eq!(refused.code, ChatErrorCode::UnsupportedVersion);
+    assert!(refused.message.contains("2.1.325"), "{}", refused.message);
+    for admitted in ["2.1.325", "2.2.0"] {
+        assert!(
+            ensure_confined_shell_version(parse_version(admitted).unwrap()).is_ok(),
+            "{admitted}"
+        );
+    }
+}
+
+fn route_command(
+    policy: &ClaudeOrganizationalPermissions,
+    turn: TurnModeSnapshot,
+) -> crate::claude::session::RoutedClaudeRequest {
+    let request = can_use_tool("Bash", serde_json::json!({ "command": "ls" }));
+    crate::claude::session::route_scoped_control_request(
+        "ctrl-3",
+        request.as_object().unwrap(),
+        Some(policy),
+        turn,
+    )
+    .unwrap()
+}
+
+#[test]
+fn confined_commands_run_unattended_only_in_full_access_build_turns() {
+    let root = TestDirectory::new("scope-route-confined");
+    for scope in COMMAND_SCOPES {
+        let confined = policy(scope, root.path()).with_confined_commands(true);
+        let routed = route_command(
+            &confined,
+            modes(SafetyMode::FullAccess, InteractionMode::Build),
+        );
+        assert!(routed.pending.is_none(), "{scope:?}");
+        let crate::events::CanonicalEvent::Unknown(event) = routed.event else {
+            panic!("an unattended command opens no request");
+        };
+        assert_eq!(event.source_type, "claude/organizational/confined_command");
+        let response = routed.immediate_response.unwrap();
+        assert_eq!(response["response"]["request_id"], "ctrl-3");
+        assert_eq!(response["response"]["response"]["behavior"], "allow");
+        assert_eq!(
+            response["response"]["response"]["updatedInput"]["command"],
+            "ls"
+        );
+        for turn in [
+            ask(InteractionMode::Build),
+            modes(SafetyMode::ApproveForMe, InteractionMode::Build),
+            modes(SafetyMode::FullAccess, InteractionMode::Plan),
+        ] {
+            let routed = route_command(&confined, turn);
+            assert!(routed.immediate_response.is_none(), "{scope:?} {turn:?}");
+            assert!(
+                matches!(
+                    routed.event,
+                    crate::events::CanonicalEvent::RequestOpened(_)
+                ),
+                "{scope:?} {turn:?}"
+            );
+        }
+        let unconfined = route_command(
+            &policy(scope, root.path()),
+            modes(SafetyMode::FullAccess, InteractionMode::Build),
+        );
+        assert!(
+            matches!(
+                unconfined.event,
+                crate::events::CanonicalEvent::RequestOpened(_)
+            ),
+            "an unconfined command always reaches the person"
+        );
+    }
 }

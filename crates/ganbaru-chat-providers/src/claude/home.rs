@@ -15,6 +15,13 @@ const MAX_MODEL_ID_BYTES: usize = 256;
 const MAX_MODEL_LABEL_BYTES: usize = 160;
 #[cfg(windows)]
 const MAX_SHIM_BYTES: u64 = 64 * 1024;
+/// Variables Ganbaru sets to run shell commands under the sandbox, which a configured
+/// environment may not name.
+const SANDBOX_ENVIRONMENT_NAMES: &[&str] = &[
+    super::protocol::SHELL_PREFIX_ENVIRONMENT,
+    super::protocol::TEMPORARY_DIRECTORY_ENVIRONMENT,
+    ganbaru_sandbox::POLICY_FILE_VARIABLE,
+];
 /// Appended to the continuation group digest of organizational sessions only.
 const ORGANIZATIONAL_CONTINUATION_MARKER: &[u8] = b"\0organizational";
 
@@ -145,6 +152,9 @@ pub fn claude_process_environment(
             || name.eq_ignore_ascii_case("CLAUDE_CONFIG_DIR")
             || name.eq_ignore_ascii_case("HOME")
             || name.eq_ignore_ascii_case("USERPROFILE")
+            || SANDBOX_ENVIRONMENT_NAMES
+                .iter()
+                .any(|reserved| name.eq_ignore_ascii_case(reserved))
         {
             return Err(ChatError::validation(
                 "environment",

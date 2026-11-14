@@ -3,6 +3,7 @@
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { musicErrorMessage } from "$lib/music/user-errors";
   import type { MusicSourcesController } from "$lib/music/sources/controller.svelte";
 
   let { controller, onAdded = () => undefined }: {
@@ -20,7 +21,7 @@
       const collectionId = await controller.addDetectedDefaultFolder();
       if (collectionId) onAdded();
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = musicErrorMessage(cause, t("music.errors.folderAddFailed"));
     }
   }
 </script>

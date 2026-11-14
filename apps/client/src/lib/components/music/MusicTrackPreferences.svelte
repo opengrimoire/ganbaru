@@ -22,6 +22,7 @@
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { musicErrorMessage } from "$lib/music/user-errors";
   import type { MusicMembershipMatrixEntry, MusicPlaylistSummary, MusicSnooze, MusicWeight } from "$lib/music/library/contracts";
   import { notifyMusicLibraryChanged } from "$lib/music/library/events";
   import { musicSnoozeEndsAt, musicSnoozePreset, type MusicSnoozePreset } from "$lib/music/session/snooze";
@@ -191,7 +192,7 @@
       scopePlaylistId = !activeGlobalSnooze && nextMemberships.some((entry) => entry.playlistId === player.activePlaylistId)
         ? player.activePlaylistId : null;
     } catch (cause) {
-      if (open && itemId === targetItemId && generation === loadGeneration) error = cause instanceof Error ? cause.message : String(cause);
+      if (open && itemId === targetItemId && generation === loadGeneration) error = musicErrorMessage(cause, localization.t("music.errors.trackSettingsLoadFailed"));
     } finally {
       if (generation === loadGeneration) loading = false;
     }
@@ -221,7 +222,7 @@
     } catch (cause) {
       if (generation === loadGeneration && itemId === targetItemId) {
         memberships = previousMemberships;
-        error = cause instanceof Error ? cause.message : String(cause);
+        error = musicErrorMessage(cause, localization.t("music.errors.trackSettingsSaveFailed"));
       } else console.error("Could not save Mix frequency for the previous track", cause);
     } finally {
       busy = false;
@@ -265,9 +266,9 @@
       notifyMusicLibraryChanged();
       close(false);
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = musicErrorMessage(cause, localization.t("music.errors.snoozeFailed"));
       try { snoozes = (await getMusicInspectorDetail(targetItemId)).snoozes; }
-      catch (refreshCause) { error += ` ${refreshCause instanceof Error ? refreshCause.message : String(refreshCause)}`; }
+      catch (refreshCause) { console.error("Could not refresh snoozes after a failed snooze", refreshCause); }
     } finally {
       busy = false;
     }

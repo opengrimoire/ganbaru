@@ -3,6 +3,7 @@
   import { untrack } from "svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { musicErrorMessage } from "$lib/music/user-errors";
   import type { MusicAddSourceKind, MusicLocalSourceSelection } from "$lib/music/sources/drafts";
   import type { MusicSourcesController } from "$lib/music/sources/controller.svelte";
   import type { MusicYouTubeSourcePreview } from "$lib/music/sources/youtube-source-resolver";
@@ -66,7 +67,7 @@
       await controller.addLocalFolder(localSelection, name);
       onSaved();
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = musicErrorMessage(cause, t("music.errors.folderAddFailed"));
     } finally {
       saving = false;
     }
@@ -80,7 +81,7 @@
       await controller.addYouTube(preview, name);
       onSaved();
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = musicErrorMessage(cause, t("music.errors.sourceAddFailed"));
     } finally {
       saving = false;
     }

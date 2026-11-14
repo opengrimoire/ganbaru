@@ -45,6 +45,9 @@ import {
 } from "./refresh";
 import { parseMusicSourceInput, type YouTubePlaylistSource, type YouTubeVideoSource } from "$lib/music/sources";
 import { notifyMusicLibraryChanged } from "$lib/music/library/events";
+import { musicErrorMessage, musicSourceInputErrorMessage } from "$lib/music/user-errors";
+import { LocalizedError } from "$lib/i18n/user-errors";
+import { translate } from "$lib/i18n/translator.svelte";
 import {
   resolveMusicYouTubeSource,
   type MusicYouTubeSourcePreview,
@@ -111,7 +114,7 @@ const defaultApi: MusicSourcesControllerApi = {
 
 function refreshFailure(statuses: readonly MusicSourceRefreshStatus[]): string | null {
   const failed = statuses.find((status) => status.state === "failed");
-  return failed ? failed.error ?? `Failed to refresh ${failed.name}.` : null;
+  return failed ? translate("music.errors.sourceRefreshFailed", failed.name) : null;
 }
 
 export class MusicSourcesController {
@@ -254,7 +257,7 @@ export class MusicSourcesController {
       return true;
     } catch (error) {
       if (generation !== this.loadGeneration || vaultId !== this.vaultId) return false;
-      this.error = error instanceof Error ? error.message : String(error);
+      this.error = musicErrorMessage(error, translate("music.errors.sourcesLoadFailed"));
       return false;
     } finally {
       if (generation === this.loadGeneration) {
@@ -281,7 +284,7 @@ export class MusicSourcesController {
       return selection;
     } catch (error) {
       if (vaultId === this.vaultId) {
-        this.defaultFolderPreparationError = error instanceof Error ? error.message : String(error);
+        this.defaultFolderPreparationError = musicErrorMessage(error, translate("music.errors.folderPrepareFailed"));
       }
       return null;
     } finally {
@@ -335,7 +338,7 @@ export class MusicSourcesController {
       return await this.addLocalFolder(selection, name, true);
     } catch (error) {
       if (vaultId === this.vaultId) {
-        this.defaultFolderPreparationError = error instanceof Error ? error.message : String(error);
+        this.defaultFolderPreparationError = musicErrorMessage(error, translate("music.errors.folderPrepareFailed"));
       }
       return null;
     } finally {
@@ -355,9 +358,9 @@ export class MusicSourcesController {
   }
 
   async addLocalFolder(selection: MediaFolderSelection, name: string, waitForRefresh = false): Promise<string> {
-    if (!this.vaultId) throw new Error("The active Ganbaru folder is unavailable.");
+    if (!this.vaultId) throw new LocalizedError(translate("music.errors.vaultUnavailable"));
     const trimmedName = name.trim();
-    if (!trimmedName) throw new Error("Enter a source name.");
+    if (!trimmedName) throw new LocalizedError(translate("music.errors.sourceNameRequired"));
     const rootId = this.id();
     const createdAtMs = this.now();
     const { id: collectionId } = await this.api.createRoot({
@@ -373,7 +376,7 @@ export class MusicSourcesController {
       const failure = refreshFailure(await this.runRefresh(plan, true));
       if (failure) {
         this.error = failure;
-        throw new Error(failure);
+        throw new LocalizedError(failure);
       }
       notifyMusicLibraryChanged();
     } else {
@@ -383,7 +386,7 @@ export class MusicSourcesController {
           if (failure) this.error = failure;
           else notifyMusicLibraryChanged();
         })
-        .catch((error: unknown) => { this.error = error instanceof Error ? error.message : String(error); });
+        .catch((error: unknown) => { this.error = musicErrorMessage(error, translate("music.errors.sourceRefreshFailed", trimmedName)); });
     }
     return collectionId;
   }
@@ -392,9 +395,9 @@ export class MusicSourcesController {
     | { source: YouTubeVideoSource | YouTubePlaylistSource; error: null }
     | { source: null; error: string } {
     const parsed = parseMusicSourceInput(input);
-    if (!parsed.source || parsed.error) return { source: null, error: parsed.error ?? "Enter a YouTube link." };
+    if (!parsed.source || parsed.error) return { source: null, error: musicSourceInputErrorMessage(parsed.error ?? "empty") };
     if (parsed.source.kind !== "youtube-video" && parsed.source.kind !== "youtube-playlist") {
-      return { source: null, error: "Enter a YouTube video or playlist link." };
+      return { source: null, error: translate("music.errors.youtubeLinkRequired") };
     }
     return { source: parsed.source, error: null };
   }
@@ -402,8 +405,8 @@ export class MusicSourcesController {
   async renameCollection(collectionId: string, name: string): Promise<void> {
     const collection = this.collections.find((entry) => entry.id === collectionId);
     const trimmedName = name.trim();
-    if (!collection) throw new Error("The music source is unavailable.");
-    if (!trimmedName) throw new Error("Enter a source name.");
+    if (!collection) throw new LocalizedError(translate("music.errors.sourceUnavailable"));
+    if (!trimmedName) throw new LocalizedError(translate("music.errors.sourceNameRequired"));
     await this.api.saveCollection({
       kind: collection.kind,
       name: trimmedName,
@@ -432,7 +435,7 @@ export class MusicSourcesController {
       return preview;
     } catch (error) {
       if (this.resolutionController !== controller || controller.signal.aborted) return null;
-      this.resolutionError = error instanceof Error ? error.message : String(error);
+      this.resolutionError = musicErrorMessage(error, translate("music.errors.youtubeResolveFailed"));
       return null;
     } finally {
       if (this.resolutionController === controller) {
@@ -461,7 +464,7 @@ export class MusicSourcesController {
       });
       return preview.videoId;
     }
-    if (!preview.playlistId || preview.videoIds.length === 0) throw new Error("The playlist has no available videos.");
+    if (!preview.playlistId || preview.videoIds.length === 0) throw new LocalizedError(translate("music.errors.playlistHasNoVideos"));
     const { collectionId } = await this.api.saveYouTubePlaylist({
       playlistId: preview.playlistId,
       name: name.trim() || preview.title || preview.playlistId,
@@ -533,7 +536,7 @@ export class MusicSourcesController {
   }
 
   async forgetBinding(rootId: string): Promise<void> {
-    if (!this.vaultId) throw new Error("The active Ganbaru folder is unavailable.");
+    if (!this.vaultId) throw new LocalizedError(translate("music.errors.vaultUnavailable"));
     await this.api.clearBinding(this.vaultId, rootId);
     await this.load();
   }
@@ -544,9 +547,9 @@ export class MusicSourcesController {
    * Covers an Android document-tree grant replacement and a desktop source that has no folder on this device yet.
    */
   async reselectLocalRoot(collection: MusicSourceCollection): Promise<boolean> {
-    if (!this.vaultId) throw new Error("The active Ganbaru folder is unavailable.");
+    if (!this.vaultId) throw new LocalizedError(translate("music.errors.vaultUnavailable"));
     if (collection.kind !== "local-root" || !collection.localRootId) {
-      throw new Error("The local music source is unavailable.");
+      throw new LocalizedError(translate("music.errors.sourceUnavailable"));
     }
     const selection = await this.api.pickFolder();
     if (!selection) return false;
@@ -643,7 +646,7 @@ export class MusicSourcesController {
   async applyRelink(decisions: MusicRelinkDecision[]): Promise<void> {
     const plan = this.relinkPlan;
     const folderPath = this.relinkFolderPath;
-    if (!plan || !folderPath) throw new Error("No relink plan is ready.");
+    if (!plan || !folderPath) throw new LocalizedError(translate("music.errors.relinkNotReady"));
     this.relinkPlan = await this.api.applyRelink({
       planId: plan.id,
       decisions,
@@ -654,7 +657,7 @@ export class MusicSourcesController {
     const collection = this.collections.find((entry) => entry.kind === "local-root" && entry.localRootId === plan.rootId);
     if (!collection) return;
     void this.refreshLocalRoot(collection, plan.rootId, folderPath).catch((error: unknown) => {
-      this.error = error instanceof Error ? error.message : String(error);
+      this.error = musicErrorMessage(error, translate("music.errors.sourceRefreshFailed", collection.name));
     });
   }
 
@@ -675,7 +678,7 @@ export class MusicSourcesController {
   }
 
   private async bindLocalRoot(rootId: string, folderPath: string): Promise<void> {
-    if (!this.vaultId) throw new Error("The active Ganbaru folder is unavailable.");
+    if (!this.vaultId) throw new LocalizedError(translate("music.errors.vaultUnavailable"));
     await this.api.bindRoot(this.vaultId, rootId, folderPath);
     await this.load();
   }
@@ -685,7 +688,7 @@ export class MusicSourcesController {
     const failure = refreshFailure(await this.runRefresh(this.refresh.prepare([target]), true));
     if (failure) {
       this.error = failure;
-      throw new Error(failure);
+      throw new LocalizedError(failure);
     }
     notifyMusicLibraryChanged();
   }

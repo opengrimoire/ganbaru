@@ -12,6 +12,8 @@ import type { NativeMusicEffect, NativeMusicIntent, NativeMusicQueueEntry, Nativ
 import { onActiveVaultIdentityChange } from "$lib/vault/active-vault";
 import { focusMusicWindow } from "$lib/music/session/platform-controls";
 import { getLocalization } from "$lib/i18n/translator.svelte";
+import { nativeMusicSnapshotMessage } from "$lib/music/playback-errors";
+import { musicErrorMessage, musicSourceInputErrorMessage } from "$lib/music/user-errors";
 import { MusicSurfaceClaims } from "$lib/stores/music-player/surface-claims";
 import { initialMusicSnapshot, loadMusicPlayerSettings, persistMusicPlayerSettings } from "$lib/stores/music-player/settings";
 import { MusicLoadRuntime } from "$lib/stores/music-player/load-runtime";
@@ -338,8 +340,8 @@ class MusicPlayerStore {
     finally { this.isHeartbeatRunning = false; }
   }
   private reportError(error: unknown): void {
-    this.playerError = error instanceof Error ? error.message
-      : typeof error === "object" && error !== null && "message" in error ? String(error.message) : String(error);
+    console.error("Music player command failed.", error);
+    this.playerError = musicErrorMessage(error, getLocalization().t("music.errors.playerFailed"));
   }
 
   private clearNativePresentation(): void {
@@ -375,9 +377,7 @@ class MusicPlayerStore {
     this.currentSource = value.currentSource;
     this.snapshot = { status: value.status, positionMs: value.positionMs, durationMs: value.durationMs, volume: value.volume, rate: value.rate, error: value.error };
     const { t } = getLocalization();
-    this.playerError = value.error ?? (value.issue === "browser-host-unavailable"
-      ? t(this.decodesBrowserMedia ? "music.nativeSession.browserUnavailable" : "music.nativeSession.browserUnavailableOtherWindow")
-      : value.issue === "interrupted" ? t("music.nativeSession.interrupted") : null);
+    this.playerError = nativeMusicSnapshotMessage(value.error, value.issue, this.decodesBrowserMedia);
     this.muted = value.muted; this.shuffleEnabled = value.order !== "in-order"; this.mixEnabled = value.order === "mix";
     this.pinSessionVolume(value.volume);
     this.activePlaylistId = value.playlistId; this.activePlaylistName = value.queueName || null; this.activePlaylistRepeatMode = value.repeatMode;
@@ -494,7 +494,7 @@ class MusicPlayerStore {
   }
 
   async loadFromInput(): Promise<void> {
-    const parsed = parseMusicSourceInput(this.sourceInput); this.parseError = parsed.error;
+    const parsed = parseMusicSourceInput(this.sourceInput); this.parseError = parsed.error ? musicSourceInputErrorMessage(parsed.error) : null;
     if (parsed.source) await this.loadSource(parsed.source, { autoplay: true });
   }
   async loadFolder(): Promise<void> {

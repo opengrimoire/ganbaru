@@ -14,6 +14,7 @@
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { musicErrorMessage } from "$lib/music/user-errors";
   import type { MusicItemListEntry, MusicSnooze, MusicWeight } from "$lib/music/library/contracts";
   import { formatMusicDuration } from "$lib/music/builder/presentation";
   import { projectMusicItemMenuLayout } from "$lib/music/builder/item-menu-layout";
@@ -119,7 +120,7 @@
         snoozePlaylistId = detail.memberships.find((entry) => entry.id === item.membershipId)?.playlistId ?? null;
       }
     } catch (cause) {
-      if (open && subpanel === "snooze") error = cause instanceof Error ? cause.message : String(cause);
+      if (open && subpanel === "snooze") error = musicErrorMessage(cause, t("music.errors.trackSettingsLoadFailed"));
     } finally {
       snoozesLoading = false;
     }
@@ -141,7 +142,7 @@
       await action();
       if (closeAfter) close(false);
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = musicErrorMessage(cause, t("music.errors.trackSettingsSaveFailed"));
     } finally {
       busy = false;
     }

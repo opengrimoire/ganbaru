@@ -13,6 +13,7 @@
   } from "$lib/api/music-library";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { musicErrorMessage } from "$lib/music/user-errors";
   import type { MusicPlaylistSummary } from "$lib/music/library/contracts";
   import { projectMusicPlaylistPlayback } from "$lib/music/playlists/playback";
   import { getMusicPlaylistSummaryCache } from "$lib/music/playlists/summary-cache.svelte";
@@ -197,7 +198,7 @@
       if (loaded) close();
       else noEligiblePlaylist = playlist;
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = musicErrorMessage(cause, t("music.errors.playlistPlayFailed"));
     } finally {
       playingId = null;
     }

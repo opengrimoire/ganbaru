@@ -74,7 +74,7 @@ describe("parseMusicSourceInput", () => {
   it("rejects malformed YouTube identities", () => {
     const result = parseMusicSourceInput("https://www.youtube.com/watch?v=bad!");
     expect(result.source).toBeNull();
-    expect(result.error).toBe("The YouTube video ID is not valid.");
+    expect(result.error).toBe("invalid-youtube-video");
   });
 
   it("parses local absolute paths", () => {
@@ -93,7 +93,7 @@ describe("parseMusicSourceInput", () => {
     const result = parseMusicSourceInput("https://example.com/file.mp3");
 
     expect(result.source).toBeNull();
-    expect(result.error).toBe("Only local files and YouTube links are supported.");
+    expect(result.error).toBe("unsupported");
   });
 });
 

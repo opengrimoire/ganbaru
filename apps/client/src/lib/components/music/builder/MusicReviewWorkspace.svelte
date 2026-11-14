@@ -18,6 +18,7 @@
   import IconPicker from "$lib/components/icon-picker/IconPicker.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { musicIssueMessageKey } from "$lib/music/library/issue-presentation";
   import { formatList } from "$lib/i18n/formatters";
   import type { MusicBuilderInspectorController } from "$lib/music/builder/inspector.svelte";
   import type { MusicBulkEditController } from "$lib/music/builder/bulk-edit-controller.svelte";
@@ -236,7 +237,7 @@
   function attentionLabel(): string {
     if (unboundRootId) return t("music.builder.notOnThisDevice");
     if (detail?.item.availability !== "available") return availabilityLabel();
-    return issue?.message ?? "";
+    return issue ? t(musicIssueMessageKey(issue.issueKind)) : "";
   }
 
   $effect(() => {

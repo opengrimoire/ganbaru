@@ -7,6 +7,8 @@ import {
   getMusicPlaylistPlaybackEntries,
   updateMusicPlaylist,
 } from "$lib/api/music-library";
+import { musicErrorMessage } from "$lib/music/user-errors";
+import { translate } from "$lib/i18n/translator.svelte";
 import { getMusicPlayer } from "$lib/stores/music-player.svelte";
 import { projectMusicPlaylistPlayback, type MusicPlaylistPlaybackProjection } from "./playback";
 import type { MusicLibraryController } from "$lib/music/library/controller.svelte";
@@ -56,7 +58,7 @@ export class MusicPlaylistController {
       return true;
     } catch (error) {
       if (generation !== this.loadGeneration) return false;
-      this.error = error instanceof Error ? error.message : String(error);
+      this.error = musicErrorMessage(error, translate("music.errors.playlistLoadFailed"));
       this.detail = null;
       return false;
     } finally {
@@ -87,7 +89,7 @@ export class MusicPlaylistController {
       await this.load(playlistId);
       return playlistId;
     } catch (error) {
-      this.error = error instanceof Error ? error.message : String(error);
+      this.error = musicErrorMessage(error, translate("music.errors.playlistCreateFailed"));
       return null;
     } finally {
       this.saving = false;
@@ -123,7 +125,7 @@ export class MusicPlaylistController {
       detail.version = receipt.version;
       return true;
     } catch (error) {
-      this.error = error instanceof Error ? error.message : String(error);
+      this.error = musicErrorMessage(error, translate("music.errors.playlistSaveFailed"));
       return false;
     } finally {
       this.saving = false;
@@ -146,7 +148,7 @@ export class MusicPlaylistController {
       await this.library.refreshAfterMutation();
       return playlistId;
     } catch (error) {
-      this.error = error instanceof Error ? error.message : String(error);
+      this.error = musicErrorMessage(error, translate("music.errors.playlistDuplicateFailed"));
       return null;
     } finally {
       this.saving = false;
@@ -161,7 +163,7 @@ export class MusicPlaylistController {
       this.deleteImpact = await getMusicPlaylistDeleteImpact(detail.id);
       return true;
     } catch (error) {
-      this.error = error instanceof Error ? error.message : String(error);
+      this.error = musicErrorMessage(error, translate("music.errors.playlistDeleteFailed"));
       return false;
     }
   }
@@ -196,7 +198,7 @@ export class MusicPlaylistController {
       if (!loaded) this.playbackIssue = "no-eligible-items";
       return loaded;
     } catch (error) {
-      this.error = error instanceof Error ? error.message : String(error);
+      this.error = musicErrorMessage(error, translate("music.errors.playlistPlayFailed"));
       return false;
     } finally {
       this.saving = false;
@@ -215,7 +217,7 @@ export class MusicPlaylistController {
       await this.library.refreshAfterMutation();
       return true;
     } catch (error) {
-      this.error = error instanceof Error ? error.message : String(error);
+      this.error = musicErrorMessage(error, translate("music.errors.playlistDeleteFailed"));
       return false;
     } finally {
       this.saving = false;

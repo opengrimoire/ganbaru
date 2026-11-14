@@ -2,6 +2,7 @@
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { musicErrorMessage } from "$lib/music/user-errors";
   import type { MusicSourcesController } from "$lib/music/sources/controller.svelte";
   import { formatMusicDuration } from "$lib/music/builder/presentation";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
@@ -24,7 +25,7 @@
     error = null;
     acceptedWeak = false;
     try { await controller.chooseItemRepair(itemId); }
-    catch (cause) { error = cause instanceof Error ? cause.message : String(cause); }
+    catch (cause) { error = musicErrorMessage(cause, t("music.errors.itemRepairFailed")); }
     finally { busy = false; }
   }
 
@@ -32,14 +33,14 @@
     busy = true;
     error = null;
     try { await controller.applyItemRepair(acceptedWeak); onRepaired(); }
-    catch (cause) { error = cause instanceof Error ? cause.message : String(cause); }
+    catch (cause) { error = musicErrorMessage(cause, t("music.errors.itemRepairFailed")); }
     finally { busy = false; }
   }
 
   async function undo(): Promise<void> {
     busy = true;
     try { await controller.undoItemRepair(); }
-    catch (cause) { error = cause instanceof Error ? cause.message : String(cause); }
+    catch (cause) { error = musicErrorMessage(cause, t("music.errors.itemRepairFailed")); }
     finally { busy = false; }
   }
 </script>

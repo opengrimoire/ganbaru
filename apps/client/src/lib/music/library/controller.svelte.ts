@@ -18,6 +18,7 @@ import type {
   MusicSortDirection,
   MusicSourceSummary,
 } from "./contracts";
+import { localizedMusicError } from "$lib/music/user-errors";
 
 export type MusicBuilderLocation =
   | { kind: "review" }
@@ -311,7 +312,7 @@ export class MusicLibraryController {
       return true;
     } catch (error) {
       if (!this.isCurrent(generation, vaultId)) return false;
-      this.error = error instanceof Error ? error : new Error(String(error));
+      this.error = localizedMusicError(error, "music.errors.libraryLoadFailed");
       return false;
     } finally {
       if (this.isCurrent(generation, vaultId)) this.busy = false;
@@ -356,7 +357,7 @@ export class MusicLibraryController {
       return true;
     } catch (error) {
       if (!this.isCurrent(generation, vaultId)) return false;
-      this.error = error instanceof Error ? error : new Error(String(error));
+      this.error = localizedMusicError(error, "music.errors.libraryLoadFailed");
       return false;
     }
   }
@@ -404,7 +405,7 @@ export class MusicLibraryController {
       return true;
     } catch (error) {
       if (!this.isCurrent(generation, vaultId)) return false;
-      this.error = error instanceof Error ? error : new Error(String(error));
+      this.error = localizedMusicError(error, "music.errors.libraryLoadFailed");
       return false;
     } finally {
       if (this.isCurrent(generation, vaultId)) this.busy = false;
@@ -431,7 +432,7 @@ export class MusicLibraryController {
       return true;
     } catch (error) {
       if (this.vaultId !== vaultId || this.currentKey !== key) return false;
-      this.loadMoreError = error instanceof Error ? error : new Error(String(error));
+      this.loadMoreError = localizedMusicError(error, "music.errors.libraryLoadFailed");
       return false;
     } finally {
       if (this.vaultId === vaultId && this.currentKey === key) this.loadingMore = false;

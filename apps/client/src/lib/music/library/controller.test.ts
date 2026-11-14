@@ -333,7 +333,7 @@ describe("Music library controller", () => {
     controller.navigate({ kind: "review" });
 
     expect(await controller.refresh()).toBe(false);
-    expect(controller.error?.message).toBe("The complete Review list could not be loaded.");
+    expect(controller.error?.message).toBe("The music library could not be loaded, so try again.");
     expect(itemWindow).toHaveBeenCalledTimes(2);
   });
 });

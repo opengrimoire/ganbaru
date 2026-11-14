@@ -11,6 +11,8 @@
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import Undo2 from "@lucide/svelte/icons/undo-2";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { LocalizedError } from "$lib/i18n/user-errors";
+  import { localizedMusicError, musicErrorMessage } from "$lib/music/user-errors";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { revealLocalFile } from "$lib/api/music";
@@ -340,7 +342,7 @@
       firstUsePreparationActive = false;
     } catch (error) {
       if (generation === firstUseFinalizationGeneration && vaultId === library.vaultId) {
-        library.error = error instanceof Error ? error : new Error(String(error));
+        library.error = localizedMusicError(error, "music.errors.libraryLoadFailed");
         builderInitializing = false;
         firstUsePreparationActive = false;
       }
@@ -400,7 +402,7 @@
       if (generation !== firstUseFinalizationGeneration
         || vaultId !== library.vaultId || vaultId !== sources.vaultId) return;
       if (!libraryLoaded) throw library.error ?? new Error("The music library could not be loaded.");
-      if (!sourcesLoaded) throw new Error(sources.error ?? "The music sources could not be loaded.");
+      if (!sourcesLoaded) throw new LocalizedError(sources.error ?? t("music.errors.sourcesLoadFailed"));
       const recoveryPlan = sources.prepareUninitializedLocalRefresh();
       if (recoveryPlan.targets.length > 0) {
         await sources.runRefresh(recoveryPlan, false);
@@ -430,7 +432,7 @@
       }
     } catch (error) {
       if (generation !== firstUseFinalizationGeneration || vaultId !== library.vaultId) return;
-      library.error = error instanceof Error ? error : new Error(String(error));
+      library.error = localizedMusicError(error, "music.errors.libraryLoadFailed");
       builderInitializing = false;
       firstUsePreparationActive = false;
     }
@@ -492,7 +494,7 @@
       }
       sourceRenameNodeId = null;
     } catch (error) {
-      sourceRenameError = error instanceof Error ? error.message : String(error);
+      sourceRenameError = musicErrorMessage(error, t("music.errors.sourceRenameFailed"));
     } finally {
       sourceRenameSaving = false;
     }
@@ -585,7 +587,7 @@
       try {
         if (await sources.reselectLocalRoot(collection)) await library.refreshAfterMutation();
       } catch (error) {
-        sources.error = error instanceof Error ? error.message : String(error);
+        sources.error = musicErrorMessage(error, t("music.errors.folderRelinkFailed"));
       }
       return;
     }
@@ -851,7 +853,7 @@
       await sources.addLocalFolder(draft.selection, draft.name, true);
       await finalizeFirstUsePreparation();
     } catch (error) {
-      firstUseFolderError = error instanceof Error ? error.message : String(error);
+      firstUseFolderError = musicErrorMessage(error, t("music.errors.folderAddFailed"));
       builderInitializing = false;
       firstUsePreparationActive = false;
     } finally {
@@ -1010,7 +1012,7 @@
     };
     window.addEventListener(MUSIC_CONTEXT_BOUNDARY_EVENT, handleBoundary);
     try { void loadVault(requireActiveVaultIdentity()); }
-    catch (error) { library.error = error instanceof Error ? error : new Error(String(error)); }
+    catch (error) { library.error = localizedMusicError(error, "music.errors.libraryLoadFailed"); }
     unsubscribeVault = onActiveVaultIdentityChange((_previous, next) => {
       if (audition.active) audition.discard();
       if (next) void loadVault(next);
@@ -1185,7 +1187,7 @@
             </div>
           </div>
         {:else if library.error && library.currentWindow.items.length === 0}
-          <MusicBuilderAsyncState kind="error" title={library.error.message} onRetry={() => library.refresh()} />
+          <MusicBuilderAsyncState kind="error" title={musicErrorMessage(library.error, t("music.errors.libraryLoadFailed"))} onRetry={() => library.refresh()} />
         {:else if library.busy && library.currentWindow.items.length === 0}
           <MusicBuilderAsyncState kind="loading" />
         {:else if library.currentWindow.items.length === 0}
@@ -1230,7 +1232,7 @@
         />
         {/if}
         {#if library.error && library.currentWindow.items.length === 0}
-          <MusicBuilderAsyncState kind="error" title={library.error.message} onRetry={() => library.refresh()} />
+          <MusicBuilderAsyncState kind="error" title={musicErrorMessage(library.error, t("music.errors.libraryLoadFailed"))} onRetry={() => library.refresh()} />
         {:else if library.busy && library.currentWindow.items.length === 0}
           <MusicBuilderAsyncState kind="loading" />
         {:else if library.currentWindow.items.length === 0}

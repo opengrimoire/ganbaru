@@ -117,7 +117,7 @@
     <div class="flex flex-col gap-1 text-xs">
       <MusicSoundscapeActiveLevel idPrefix="builder-soundscape" />
       {#if soundscape.error}
-        <Notice class="text-xs" message={t("music.soundscape.genericError")} />
+        <Notice class="text-xs" message={soundscape.error} />
       {/if}
     </div>
 

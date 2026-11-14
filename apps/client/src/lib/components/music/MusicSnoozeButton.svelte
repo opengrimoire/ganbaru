@@ -1,6 +1,7 @@
 <script lang="ts">
   import ClockFading from "@lucide/svelte/icons/clock-fading";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { musicErrorMessage } from "$lib/music/user-errors";
 
   let { onRemove }: { onRemove: () => Promise<void> } = $props();
 
@@ -16,7 +17,7 @@
     try {
       await onRemove();
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = musicErrorMessage(cause, t("music.errors.snoozeFailed"));
     } finally {
       busy = false;
     }

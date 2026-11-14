@@ -50,8 +50,8 @@ use callbacks::{
 use callbacks::{callback_permission_error, require_acp_session};
 pub use configuration::{
     AcpAuthPreference, AcpRequestedConfiguration, AcpSessionInitialization,
-    apply_provider_configuration, auth_preference, initialize_provider_session,
-    negotiate_initialize, select_auth_method,
+    apply_provider_configuration, auth_preference, grok_api_key_configured,
+    initialize_provider_session, negotiate_initialize, select_auth_method,
 };
 #[cfg(test)]
 pub use configuration::{initialize_session, require_session_loading};

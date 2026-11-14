@@ -5,6 +5,7 @@ import {
   PROVIDER_IMPLEMENTATION_STATUSES,
   PROVIDER_MATURITIES,
   PROBE_STATES,
+  PROVIDER_AUTH_SOURCES,
   PROVIDER_VERSION_ADMISSIONS,
   type ModelChoiceOption,
   type ModelOptionDefinition,
@@ -118,6 +119,9 @@ export function parseProviderProbeResult(value: unknown, label = "provider probe
     version: readNullable(record.version, `${label}.version`, readString),
     negotiatedProtocolVersion: readNullable(record.negotiatedProtocolVersion, `${label}.negotiatedProtocolVersion`, readString),
     accountLabel: readNullable(record.accountLabel, `${label}.accountLabel`, readString),
+    authSource: readNullable(record.authSource, `${label}.authSource`, (entry, entryLabel) =>
+      readEnum(entry, PROVIDER_AUTH_SOURCES, entryLabel),
+    ),
     capabilities: parseProviderCapabilities(record.capabilities, `${label}.capabilities`),
     authoritySupport: parseProviderAuthoritySupport(
       record.authoritySupport,

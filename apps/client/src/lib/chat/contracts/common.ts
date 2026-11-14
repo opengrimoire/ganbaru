@@ -166,6 +166,10 @@ export const PROVIDER_VERSION_ADMISSIONS = [
 /** Where a probed CLI version falls against the provider's compatibility range. */
 export type ProviderVersionAdmission = (typeof PROVIDER_VERSION_ADMISSIONS)[number];
 
+export const PROVIDER_AUTH_SOURCES = ["api_key", "account_login"] as const;
+/** How a provider authenticates the sessions it starts: an API key or the CLI's account login. */
+export type ProviderAuthSource = (typeof PROVIDER_AUTH_SOURCES)[number];
+
 export const MODEL_AVAILABILITIES = ["available", "unavailable", "deprecated", "stale", "unknown"] as const;
 export type ModelAvailability = (typeof MODEL_AVAILABILITIES)[number];
 

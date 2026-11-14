@@ -165,6 +165,16 @@ pub struct ProviderFamilyMetadataRead {
     pub unavailable_reason: Option<String>,
 }
 
+/// How a provider authenticates the sessions it starts, when the driver can tell.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAuthSource {
+    /// An API key the provider configuration supplies through its environment.
+    ApiKey,
+    /// The account login the CLI keeps in its own home.
+    AccountLogin,
+}
+
 /// Where a probed CLI version falls against the provider family's compatibility range.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -190,6 +200,9 @@ pub struct ProviderProbeResult {
     pub version: Option<String>,
     pub negotiated_protocol_version: Option<String>,
     pub account_label: Option<String>,
+    /// How sessions authenticate; `None` when the driver cannot tell.
+    #[serde(default)]
+    pub auth_source: Option<ProviderAuthSource>,
     pub capabilities: ProviderCapabilities,
     pub authority_support: ProviderAuthoritySupport,
     pub checked_at: UtcTimestamp,

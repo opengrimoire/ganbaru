@@ -1,5 +1,7 @@
 <script lang="ts">
   import Mail from "@lucide/svelte/icons/mail";
+  import KeyRound from "@lucide/svelte/icons/key-round";
+  import UserRound from "@lucide/svelte/icons/user-round";
   import Pencil from "@lucide/svelte/icons/pencil";
   import Plus from "@lucide/svelte/icons/plus";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
@@ -511,6 +513,24 @@
                           data-app-tooltip={selectedProvider.lastProbe.accountLabel}
                           data-app-tooltip-keep-on-click="true"
                         ><Mail size={12} strokeWidth={1.8} /></button>
+                      {/if}
+                      {#if selectedProvider?.lastProbe?.authSource}
+                        {@const authSourceLabel = selectedProvider.lastProbe.authSource === "api_key"
+                          ? t("settings.chat.providers.authSourceApiKey")
+                          : t("settings.chat.providers.authSourceAccountLogin")}
+                        <button
+                          type="button"
+                          class="editor-account"
+                          aria-label={`${t("settings.chat.providers.authSource")}: ${authSourceLabel}`}
+                          data-app-tooltip={authSourceLabel}
+                          data-app-tooltip-keep-on-click="true"
+                        >
+                          {#if selectedProvider.lastProbe.authSource === "api_key"}
+                            <KeyRound size={12} strokeWidth={1.8} />
+                          {:else}
+                            <UserRound size={12} strokeWidth={1.8} />
+                          {/if}
+                        </button>
                       {/if}
                     </div>
                   </div>

@@ -61,6 +61,7 @@ function provider(
       version: null,
       negotiatedProtocolVersion: null,
       accountLabel: null,
+      authSource: null,
       capabilities: capabilities(),
       authoritySupport: {
         isolatedConversation: true,

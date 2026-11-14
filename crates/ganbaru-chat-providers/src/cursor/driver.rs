@@ -663,17 +663,21 @@ impl CursorProviderDriver {
         )
     }
 
+    /// Whether this Grok instance authenticates with the xAI API key its configured
+    /// environment supplies, which a credential reference or an inherited entry resolves into
+    /// before the driver starts.
     pub(super) fn grok_uses_api_key(&self) -> bool {
         self.flavor == AcpProviderFlavor::Grok
-            && self
-                .configuration
-                .environment
-                .iter()
-                .find(|(name, _)| name.eq_ignore_ascii_case("XAI_API_KEY"))
-                .map(|(_, value)| !value.trim().is_empty())
-                .unwrap_or_else(|| {
-                    std::env::var("XAI_API_KEY").is_ok_and(|value| !value.trim().is_empty())
-                })
+            && grok_api_key_configured(&self.configuration.environment)
+    }
+
+    /// How this instance's sessions authenticate, for the flavors whose source is known.
+    pub(super) fn auth_source(&self) -> Option<ProviderAuthSource> {
+        match self.flavor {
+            AcpProviderFlavor::Grok if self.grok_uses_api_key() => Some(ProviderAuthSource::ApiKey),
+            AcpProviderFlavor::Grok => Some(ProviderAuthSource::AccountLogin),
+            AcpProviderFlavor::Cursor | AcpProviderFlavor::Generic => None,
+        }
     }
 
     pub(super) fn live_mut(

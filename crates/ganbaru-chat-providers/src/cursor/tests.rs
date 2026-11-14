@@ -253,6 +253,85 @@ fn grok_process_environment_uses_the_configured_provider_home() {
     );
 }
 
+/// A configured xAI key, resolved from a credential reference before launch, reaches the
+/// process environment and selects key authentication; a blank or absent key keeps the account
+/// login, and the app's own environment never selects the key on its own.
+#[test]
+fn grok_authenticates_with_the_configured_api_key_and_reports_its_source() {
+    let home = TestDirectory::new("grok-api-key");
+    let mut provider = configuration(home.path(), None);
+    provider.family_id = ProviderFamilyId::new("grok").unwrap();
+
+    let login = CursorProviderDriver::new_grok(provider.clone()).unwrap();
+    assert!(!login.grok_uses_api_key());
+    assert_eq!(login.auth_source(), Some(ProviderAuthSource::AccountLogin));
+    assert_eq!(
+        login.auth_preference(),
+        AcpAuthPreference::Flavor("cached_token")
+    );
+    assert!(
+        !process_environment_for(&provider, "Grok")
+            .unwrap()
+            .contains_key("XAI_API_KEY")
+    );
+
+    let mut blank = provider.clone();
+    blank
+        .environment
+        .insert("XAI_API_KEY".to_string(), "  ".to_string());
+    let blank = CursorProviderDriver::new_grok(blank).unwrap();
+    assert_eq!(blank.auth_source(), Some(ProviderAuthSource::AccountLogin));
+
+    let mut keyed = provider;
+    keyed
+        .environment
+        .insert("XAI_API_KEY".to_string(), "xai-fixture-key".to_string());
+    let environment = process_environment_for(&keyed, "Grok").unwrap();
+    assert_eq!(
+        environment.get("XAI_API_KEY").map(String::as_str),
+        Some("xai-fixture-key")
+    );
+    let keyed = CursorProviderDriver::new_grok(keyed).unwrap();
+    assert!(keyed.grok_uses_api_key());
+    assert_eq!(keyed.auth_source(), Some(ProviderAuthSource::ApiKey));
+    assert_eq!(
+        keyed.auth_preference(),
+        AcpAuthPreference::Flavor("xai.api_key")
+    );
+
+    let mut cursor = configuration(home.path(), None);
+    cursor
+        .environment
+        .insert("XAI_API_KEY".to_string(), "xai-fixture-key".to_string());
+    let cursor = CursorProviderDriver::new(cursor).unwrap();
+    assert!(!cursor.grok_uses_api_key());
+    assert_eq!(cursor.auth_source(), None);
+}
+
+#[test]
+fn grok_api_key_detection_needs_the_exact_variable_with_a_value() {
+    use std::collections::BTreeMap;
+    let environment =
+        |name: &str, value: &str| BTreeMap::from([(name.to_string(), value.to_string())]);
+    assert!(super::session::grok_api_key_configured(&environment(
+        "XAI_API_KEY",
+        "key"
+    )));
+    assert!(!super::session::grok_api_key_configured(&environment(
+        "XAI_API_KEY",
+        " \t"
+    )));
+    assert!(!super::session::grok_api_key_configured(&environment(
+        "GROK_API_KEY",
+        "key"
+    )));
+    assert!(!super::session::grok_api_key_configured(&BTreeMap::new()));
+    assert_eq!(
+        super::session::grok_api_key_configured(&environment("xai_api_key", "key")),
+        cfg!(windows)
+    );
+}
+
 #[test]
 fn negotiated_capabilities_and_model_traits_are_truthful() {
     let initialize = parse_initialize(initialize_response(false)).unwrap();

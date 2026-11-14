@@ -108,6 +108,7 @@ impl ProviderDriver for ClaudeProviderDriver {
                         },
                         version: Some(snapshot.version.to_string()),
                         negotiated_protocol_version: Some("stream-json".to_string()),
+                        auth_source: None,
                         account_label: snapshot.initialize.account.and_then(|account| {
                             account
                                 .email
@@ -134,6 +135,7 @@ impl ProviderDriver for ClaudeProviderDriver {
                         state: probe_state_for_error(error.code),
                         version: refusal.as_ref().map(|(_, version)| version.clone()),
                         negotiated_protocol_version: None,
+                        auth_source: None,
                         account_label: None,
                         capabilities: claude_capabilities(),
                         authority_support: self.authority_support(),

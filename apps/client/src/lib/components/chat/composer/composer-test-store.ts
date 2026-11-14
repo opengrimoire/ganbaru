@@ -285,6 +285,7 @@ export function modelSettings(): ChatSettingsRead {
         version: "1.0.0",
         negotiatedProtocolVersion: "2",
         accountLabel: null,
+        authSource: null,
         capabilities: { entries: [{ capability: "native_plan", supported: true, explanation: null }] },
         authoritySupport: {
           isolatedConversation: true,

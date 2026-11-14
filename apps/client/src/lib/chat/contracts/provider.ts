@@ -10,6 +10,7 @@ import type {
   ProviderMaturity,
   ProviderInstanceId,
   ProbeState,
+  ProviderAuthSource,
   ProviderVersionAdmission,
   UtcTimestamp,
   VersionedJson,
@@ -76,6 +77,7 @@ export interface ProviderProbeResult {
   version: string | null;
   negotiatedProtocolVersion: string | null;
   accountLabel: string | null;
+  authSource: ProviderAuthSource | null;
   capabilities: ProviderCapabilities;
   authoritySupport: ProviderAuthoritySupport;
   checkedAt: UtcTimestamp;

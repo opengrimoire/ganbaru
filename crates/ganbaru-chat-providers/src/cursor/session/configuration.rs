@@ -202,6 +202,25 @@ pub enum AcpAuthPreference<'a> {
     Configured(Option<&'a str>),
 }
 
+/// The variable Grok reads its xAI API key from, ahead of the account login in its home.
+pub const GROK_API_KEY_VARIABLE: &str = "XAI_API_KEY";
+
+/// Whether the environment a Grok process starts with carries a non-blank xAI API key.
+///
+/// Only the launched environment counts: the app's own environment reaches the process only
+/// through a configured entry, so a key that is not configured never selects key
+/// authentication. Names match case-insensitively only where the platform does.
+pub fn grok_api_key_configured(environment: &std::collections::BTreeMap<String, String>) -> bool {
+    environment.iter().any(|(name, value)| {
+        let matches = if cfg!(windows) {
+            name.eq_ignore_ascii_case(GROK_API_KEY_VARIABLE)
+        } else {
+            name == GROK_API_KEY_VARIABLE
+        };
+        matches && !value.trim().is_empty()
+    })
+}
+
 /// The authentication preference of a flavor and its instance settings.
 pub fn auth_preference(
     flavor: AcpProviderFlavor,

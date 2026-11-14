@@ -550,6 +550,7 @@ describe("Chat provider contracts", () => {
       version: "2.1.400",
       negotiatedProtocolVersion: "stream-json",
       accountLabel: null,
+      authSource: "api_key",
       capabilities: { entries: [] },
       authoritySupport: {
         isolatedConversation: true,
@@ -570,6 +571,10 @@ describe("Chat provider contracts", () => {
     expect(parseProviderProbeResult({ ...probe, versionAdmission: null }).versionAdmission).toBeNull();
     expect(() => parseProviderProbeResult({ ...probe, versionAdmission: "too_new" }))
       .toThrow("versionAdmission has an unsupported value");
+    expect(parseProviderProbeResult({ ...probe, authSource: "account_login" }).authSource).toBe("account_login");
+    expect(parseProviderProbeResult({ ...probe, authSource: null }).authSource).toBeNull();
+    expect(() => parseProviderProbeResult({ ...probe, authSource: "browser" }))
+      .toThrow("authSource has an unsupported value");
   });
 
   it("reads the newest tested CLI version from provider metadata", () => {

@@ -3,6 +3,7 @@
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { userErrorMessage } from "$lib/i18n/user-errors";
   import { projectLifecycleLabel } from "$lib/projects/display";
   import type { Project, ProjectGroup } from "$lib/projects/types";
   import { getProjects } from "$lib/stores/projects.svelte";
@@ -36,7 +37,7 @@
     try {
       await projects.setProjectStatus(project, "active");
     } catch (error) {
-      actionError = t("settings.projectsInactive.activateFailed", project.name, error instanceof Error ? error.message : String(error));
+      actionError = userErrorMessage(error, t("settings.projectsInactive.activateFailed", project.name));
     } finally {
       pendingProjectId = null;
     }

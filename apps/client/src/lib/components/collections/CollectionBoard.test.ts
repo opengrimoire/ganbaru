@@ -49,7 +49,7 @@ describe("shared Kanban movement", () => {
     drag(destination, "drop");
     await tick();
     await tick();
-    expect(document.querySelector('[role="alert"]')?.textContent).toContain("Status update failed");
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain("The item could not be moved.");
     expect(handle.disabled).toBe(false);
   });
 });

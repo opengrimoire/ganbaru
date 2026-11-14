@@ -107,7 +107,7 @@ export const general = {
     empty: "No hay proyectos ocultos ni archivados",
     showProject: (name: string) => `Mostrar ${name}`,
     restoreProject: (name: string) => `Restaurar ${name}`,
-    activateFailed: (name: string, message: string) => `No se pudo actualizar ${name}: ${message}`,
+    activateFailed: (name: string) => `No se pudo actualizar ${name}.`,
   },
   notesGeneral: {
     heading: "General",
@@ -129,8 +129,7 @@ export const general = {
     historyRetentionPruneTitle: "¿Acortar el historial de versiones?",
     historyRetentionPruneMessage: (versions: number, storage: string) =>
       `Se eliminarán permanentemente ${versions} ${versions === 1 ? "versión" : "versiones"} que usan ${storage}. Los ajustes específicos de cada proyecto no cambiarán.`,
-    historyRetentionUpdateFailed: (message: string) =>
-      `No se pudo actualizar la retención del historial de versiones: ${message}`,
+    historyRetentionUpdateFailed: "No se pudo actualizar la retención del historial de versiones.",
   },
   notesNotifications: {
     heading: "Notificaciones",

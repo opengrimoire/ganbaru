@@ -918,7 +918,7 @@ describe("Notes table property drafts", () => {
     onPropertyAction.mockRejectedValueOnce(new Error("Disk full"));
     action(await propertyMenu("Status"), "Insert left").click();
     const draft = await fillDraft("Owner", "people");
-    await vi.waitFor(() => expect(draft.querySelector('[role="alert"]')?.textContent).toBe("Disk full"));
+    await vi.waitFor(() => expect(draft.querySelector('[role="alert"]')?.textContent).toBe("The property could not be saved."));
     expect(draft.isConnected).toBe(true);
     expect(document.querySelector('[role="dialog"][aria-label="Status"]')).toBeNull();
     draft.querySelector<HTMLButtonElement>('[data-property-type="people"]')!.click();

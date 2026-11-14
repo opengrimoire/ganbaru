@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { userErrorMessage } from "$lib/i18n/user-errors";
   import { anchoredPanelContentHeight, anchoredPanelStyle } from "$lib/utils/anchored-panel";
   import { portal } from "$lib/utils/portal";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
@@ -85,7 +86,7 @@
     try {
       if (await onCreate(type, name.trim(), icon)) close(true);
     } catch (caught: unknown) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = userErrorMessage(caught, t("collections.property.saveFailed"));
     } finally {
       creating = false;
     }

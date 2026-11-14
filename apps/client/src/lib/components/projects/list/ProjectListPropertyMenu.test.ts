@@ -95,7 +95,7 @@ describe("Projects property-name drafts", () => {
     input.dispatchEvent(new Event("input", {bubbles: true}));
     await tick();
     input.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true}));
-    await vi.waitFor(() => expect(document.querySelector('[role="alert"]')?.textContent).toBe("Could not rename property: Disk full"));
+    await vi.waitFor(() => expect(document.querySelector('[role="alert"]')?.textContent).toBe("The property could not be renamed."));
     expect(store.updateCustomField).toHaveBeenCalledWith(expect.objectContaining({id: "points"}), {name: "Unsaved correction"});
     instance.setField({...initialField, name: "Renamed elsewhere"});
     await tick();

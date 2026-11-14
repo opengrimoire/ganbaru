@@ -60,7 +60,7 @@ describe("Collection property name field", () => {
     onRename.mockRejectedValueOnce(new Error("Disk full"));
     edit("Estimate");
     enter();
-    await vi.waitFor(() => expect(document.querySelector('[role="alert"]')?.textContent).toBe("Could not rename property: Disk full"));
+    await vi.waitFor(() => expect(document.querySelector('[role="alert"]')?.textContent).toBe("The property could not be renamed."));
     expect(input().value).toBe("Estimate");
     await unmount(component!);
     component = undefined;

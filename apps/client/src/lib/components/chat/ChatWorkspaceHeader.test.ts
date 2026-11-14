@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { createRawSnippet, mount, tick, unmount } from "svelte";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getChat } from "$lib/stores/chat.svelte";
 import ChatWorkspaceHeader from "./ChatWorkspaceHeader.svelte";
 
@@ -82,6 +82,11 @@ class ResizeObserverMock implements ResizeObserver {
 
 describe("ChatWorkspaceHeader", () => {
   const mounted: { target: HTMLDivElement; component: ReturnType<typeof mount> }[] = [];
+
+  // The header loads the members panel lazily; warming the module keeps the cold transform out of the interaction waits.
+  beforeAll(async () => {
+    await import("$lib/components/chat/channels/ChatChannelMembersPanel.svelte");
+  }, 30_000);
 
   beforeEach(() => {
     vi.stubGlobal("ResizeObserver", ResizeObserverMock);

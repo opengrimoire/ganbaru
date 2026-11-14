@@ -9,6 +9,7 @@
 //! forward, and the Chat hook is handed applied messages and revisions to refresh search.
 //! Attachment references arrive by value with their revision and name only non-empty files.
 //! Channel notes follow their channel, and a deletion of one wins over a concurrent edit.
+//! Standing push approvals follow their folder, and a revocation wins over a concurrent approval.
 //! Device local Chat rows stay on their device.
 
 use std::sync::{Arc, Mutex};
@@ -2118,4 +2119,5 @@ fn chat_a_crash_while_sealing_or_applying_attachment_references_leaves_nothing_p
 mod assignments;
 mod budgets;
 mod channel_notes;
+mod push_approvals;
 mod teammate_usage;

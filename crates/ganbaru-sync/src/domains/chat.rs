@@ -24,6 +24,9 @@
 
 use ganbaru_sync_contracts::bounds::{MAX_DEVICE_ID_BYTES, MAX_ORDER_KEY_BYTES};
 use ganbaru_sync_contracts::builtin_profiles::{BUILTIN_ACCESS_PROFILES, builtin_profile_key};
+use ganbaru_sync_contracts::chat_push_approvals::{
+    MAX_PUSH_APPROVAL_BRANCH_BYTES, MAX_PUSH_APPROVAL_URL_BYTES,
+};
 use ganbaru_sync_contracts::chat_recurrence;
 use ganbaru_sync_contracts::chat_usage::teammate_usage_key;
 use ganbaru_sync_contracts::{Field, GroupId, GroupValue, OrderKey, RowKey, TableId, Value};
@@ -40,15 +43,15 @@ use crate::manifest::vault::chat::{
     CONVERSATION_CURSORS_TABLE, CONVERSATIONS_TABLE, ENVIRONMENT_TARGETS_TABLE,
     FOLDER_GRANTS_TABLE, FOLDER_TARGETS_TABLE, INPUTS_TABLE, ITEMS_TABLE, MEMBERSHIPS_TABLE,
     MESSAGES_TABLE, PARTICIPANT_TARGETS_TABLE, PARTICIPANTS_TABLE, PATH_TARGETS_TABLE,
-    POLICY_REVISIONS_TABLE, PROFILE_REVISIONS_TABLE, PROFILES_TABLE, RECURRENCES_TABLE,
-    REFERENCES_TABLE, REPLY_CURSORS_TABLE, REPLY_THREADS_TABLE, REVISIONS_TABLE,
+    POLICY_REVISIONS_TABLE, PROFILE_REVISIONS_TABLE, PROFILES_TABLE, PUSH_APPROVALS_TABLE,
+    RECURRENCES_TABLE, REFERENCES_TABLE, REPLY_CURSORS_TABLE, REPLY_THREADS_TABLE, REVISIONS_TABLE,
     SCHEDULED_ATTACHMENT_REFERENCES, SCHEDULED_REFERENCES, SCHEDULED_TABLE, SEMANTIC_UPDATES_TABLE,
     TEAMMATE_USAGE_DAILY_TABLE, TEAMMATES_TABLE, assignment_group, budget_group, channel_group,
     channel_membership_group, channel_note_group, conversation_group, folder_grant_group,
     input_group, item_group, membership_group, message_group, participant_group,
-    policy_revision_group, profile_group, profile_revision_group, read_cursor_group,
-    recurrence_group, reply_thread_group, scheduled_group, semantic_update_group, teammate_group,
-    teammate_usage_group, timeline_group,
+    policy_revision_group, profile_group, profile_revision_group, push_approval_group,
+    read_cursor_group, recurrence_group, reply_thread_group, scheduled_group,
+    semantic_update_group, teammate_group, teammate_usage_group, timeline_group,
 };
 
 /// Characters of a display name after trimming.
@@ -609,6 +612,49 @@ fn validate_folder_grant(group: GroupId, fields: &[Field]) -> Result<(), Adapter
         }
         (folder_grant_group::CREATED, [_project, created_at]) => timestamp(created_at),
         _ => Err(AdapterError("chat folder grant value")),
+    }
+}
+
+fn validate_push_approval(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (push_approval_group::IDENTITY, [_teammate, _folder, push_url, destination_branch]) => {
+            git_word(
+                push_url,
+                MAX_PUSH_APPROVAL_URL_BYTES,
+                "chat push approval URL",
+            )?;
+            git_word(
+                destination_branch,
+                MAX_PUSH_APPROVAL_BRANCH_BYTES,
+                "chat push approval branch",
+            )
+        }
+        (
+            push_approval_group::APPROVAL,
+            [policy, safety_mode, _approver, approved_at, revoked_at],
+        ) => {
+            one_of(policy, &APPROVAL_POLICIES, "chat approval policy")?;
+            one_of(safety_mode, &SAFETY_MODES, "chat safety mode")?;
+            timestamp(approved_at)?;
+            optional_timestamp(revoked_at)
+        }
+        (push_approval_group::EXISTS, []) => Ok(()),
+        _ => Err(AdapterError("chat push approval value")),
+    }
+}
+
+/// Text of 1 to `max` bytes without whitespace or control characters, as a push URL or Git
+/// branch name is.
+fn git_word(field: &Field, max: usize, what: &'static str) -> Result<(), AdapterError> {
+    let value = text(field)?;
+    if (1..=max).contains(&value.len())
+        && !value
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+    {
+        Ok(())
+    } else {
+        Err(AdapterError(what))
     }
 }
 
@@ -1573,6 +1619,11 @@ fn folder_grant_priority(fields: &[Field]) -> u8 {
     1 + (capability - 1) * APPROVAL_RANKS + (approval_rank(fields.get(3)) - 1)
 }
 
+/// A revocation wins over a concurrent approval.
+fn push_approval_priority(fields: &[Field]) -> u8 {
+    if ended(fields, 4) { ENDED } else { 1 }
+}
+
 /// An archive wins over a concurrent unarchive.
 fn lifecycle_priority(fields: &[Field]) -> u8 {
     if ended(fields, 0) { 2 } else { 1 }
@@ -1668,6 +1719,8 @@ impl DomainAdapter for ChatAdapter {
             membership_priority(value.fields())
         } else if table == CHANNEL_MEMBERSHIPS_TABLE && group == channel_membership_group::ACCESS {
             channel_membership_priority(value.fields())
+        } else if table == PUSH_APPROVALS_TABLE && group == push_approval_group::APPROVAL {
+            push_approval_priority(value.fields())
         } else if table == FOLDER_GRANTS_TABLE && group == folder_grant_group::GRANT {
             folder_grant_priority(value.fields())
         } else if (table == CHANNELS_TABLE && group == channel_group::LIFECYCLE)
@@ -1720,6 +1773,8 @@ impl DomainAdapter for ChatAdapter {
             validate_membership(group, fields)
         } else if table == CHANNEL_MEMBERSHIPS_TABLE {
             validate_channel_membership(group, fields)
+        } else if table == PUSH_APPROVALS_TABLE {
+            validate_push_approval(group, fields)
         } else if table == FOLDER_GRANTS_TABLE {
             validate_folder_grant(group, fields)
         } else if table == CHANNELS_TABLE {

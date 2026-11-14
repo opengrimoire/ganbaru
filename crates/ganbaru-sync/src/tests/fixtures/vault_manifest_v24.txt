@@ -687,6 +687,11 @@ table 363 chat_teammate_working_folder_grants replicated key sync_key rule any
   group 1 coupled capability:text(..=32) capability_inherits_profile:flag is_default:flag runtime_approval_policy:optional_text(..=32) revoked_at:optional_timestamp
   group 2 register project_id:row_key created_at:timestamp
   group 3 register
+table 365 chat_push_approvals replicated key sync_key rule any
+  derived key exists 2 inputs teammate_id,working_folder_id,push_url,destination_branch prefix push-approval
+  group 0 immutable teammate_id:row_key->353:cascade working_folder_id:row_key->98:cascade push_url:text(..=2048) destination_branch:text(..=1024)
+  group 1 coupled runtime_approval_policy:text(..=32) safety_mode:text(..=32) approved_by_participant_id:optional_row_key->352:set_null approved_at:timestamp revoked_at:optional_timestamp
+  group 2 register
 table 364 chat_channels replicated key id rule any
   group 0 immutable project_id:row_key->97:cascade conversation_id:row_key->360:cascade is_default:flag created_at:timestamp
   group 1 register surfaced recoverable name:text(..=80) topic:text(..=250)

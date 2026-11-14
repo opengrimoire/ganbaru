@@ -32,6 +32,10 @@
 //! executes it. Input ids derive from their message, so concurrent routing of one message
 //! converges, and a settled assignment state wins over a concurrent active one.
 //!
+//! Standing push approvals replicate (table 365) with a key derived from the teammate, folder,
+//! push URL, and destination branch. Only people approve, and a revocation wins over a
+//! concurrent approval.
+//!
 //! Channel notes replicate (table 400). People write them, a teammate only proposes one, and a
 //! deletion wins over a concurrent edit, so a dismissed proposal stays dismissed.
 //!
@@ -44,9 +48,12 @@
 //! Execution, drafts, review history, provider state, receipts, dispatch claims, cleanup jobs,
 //! and the access and audience counters stay on the device as `Local` tables, and message search
 //! is `Derived`. Replicas write Chat like the owner; device-local state never leaves the device.
-//! Ids 357 to 359, 365 to 369, 382 to 389, 391 to 394, and 402 to 447 are reserved.
+//! Ids 357 to 359, 366 to 369, 382 to 389, 391 to 394, and 402 to 447 are reserved.
 
 use ganbaru_sync_contracts::bounds::MAX_DEVICE_ID_BYTES;
+use ganbaru_sync_contracts::chat_push_approvals::{
+    MAX_PUSH_APPROVAL_BRANCH_BYTES, MAX_PUSH_APPROVAL_URL_BYTES, PUSH_APPROVAL_KEY_PREFIX,
+};
 use ganbaru_sync_contracts::chat_recurrence;
 use ganbaru_sync_contracts::chat_usage::{
     ASSIGNMENT_BUDGET_KEY_PREFIX, LOCAL_DATE_CHARS, MAX_DAILY_COUNTED_TOKENS, MAX_DAILY_RUNS,
@@ -103,6 +110,8 @@ pub const CHANNEL_MEMBERSHIPS_TABLE: TableId = TableId(362);
 pub const FOLDER_GRANTS_TABLE: TableId = TableId(363);
 /// `chat_channels`.
 pub const CHANNELS_TABLE: TableId = TableId(364);
+/// `chat_push_approvals`.
+pub const PUSH_APPROVALS_TABLE: TableId = TableId(365);
 /// `chat_channel_notes`.
 pub const CHANNEL_NOTES_TABLE: TableId = TableId(400);
 /// `chat_reply_threads`.
@@ -270,6 +279,19 @@ pub mod channel_membership_group {
     pub const UPDATED: GroupId = group_id(3);
     /// Whether the row exists.
     pub const EXISTS: GroupId = group_id(4);
+}
+
+/// Push approval field groups.
+pub mod push_approval_group {
+    use super::{GroupId, group_id};
+
+    /// `teammate_id`, `working_folder_id`, `push_url`, and `destination_branch`.
+    pub const IDENTITY: GroupId = group_id(0);
+    /// `runtime_approval_policy`, `safety_mode`, `approved_by_participant_id`, `approved_at`,
+    /// and `revoked_at`.
+    pub const APPROVAL: GroupId = group_id(1);
+    /// Whether the row exists.
+    pub const EXISTS: GroupId = group_id(2);
 }
 
 /// Working folder grant field groups.
@@ -792,7 +814,10 @@ pub const PARTICIPANTS: TableSpec = TableSpec {
     ],
     local_columns: &[REVISION],
     revision_column: Some("revision"),
-    triggers: &[applier_visible("chat_participants_local_user_identity")],
+    triggers: &[
+        gated("chat_participant_push_approvals_archive"),
+        applier_visible("chat_participants_local_user_identity"),
+    ],
     deletion: Deletion::Never,
     ..BASE
 };
@@ -833,7 +858,10 @@ pub const TEAMMATES: TableSpec = TableSpec {
         &["current_policy_revision_id", "current_policy_safety_mode"],
         teammate_group::POLICY,
     )],
-    triggers: &[gated("chat_teammate_create_access_state")],
+    triggers: &[
+        gated("chat_teammate_create_access_state"),
+        gated("chat_teammate_push_approvals_safety_mode"),
+    ],
     deletion: Deletion::Never,
     ..BASE
 };
@@ -924,6 +952,7 @@ pub const PROFILES: TableSpec = TableSpec {
     redirects: true,
     triggers: &[
         applier_visible("chat_access_profile_builtin_protected"),
+        gated("chat_access_profile_push_approvals_update"),
         gated("chat_access_profile_revision_counter_monotonic"),
     ],
     deletion: Deletion::Never,
@@ -1089,6 +1118,8 @@ pub const CHANNEL_MEMBERSHIPS: TableSpec = TableSpec {
     )],
     triggers: &[
         gated("chat_teammate_channel_membership_audience_delete"),
+        gated("chat_teammate_channel_membership_push_approvals_delete"),
+        gated("chat_teammate_channel_membership_push_approvals_update"),
         gated("chat_teammate_channel_membership_audience_insert"),
         gated("chat_teammate_channel_membership_audience_update"),
         applier_visible("chat_teammate_channel_membership_identity_insert"),
@@ -1150,6 +1181,8 @@ pub const FOLDER_GRANTS: TableSpec = TableSpec {
         gated("chat_teammate_folder_grant_identity_insert"),
         gated("chat_teammate_folder_grant_project_insert"),
         gated("chat_teammate_folder_grant_project_update"),
+        gated("chat_teammate_folder_grant_push_approvals_delete"),
+        gated("chat_teammate_folder_grant_push_approvals_update"),
         gated("chat_teammate_folder_grant_single_default_insert"),
         gated("chat_teammate_folder_grant_single_default_update"),
     ],
@@ -1157,6 +1190,63 @@ pub const FOLDER_GRANTS: TableSpec = TableSpec {
         exists_group: folder_grant_group::EXISTS,
         prefix: Some(FOLDER_GRANT_KEY_PREFIX),
         key_inputs: &["conversation_id", "teammate_id", "working_folder_id"],
+    }),
+    ..BASE
+};
+
+/// `chat_push_approvals`, revoked by `revoked_at`. Only a person approves, which local triggers
+/// check, and the triggers of the grants, channel memberships, access profiles, participants,
+/// and teammates that let a teammate publish revoke its approvals when that access narrows. A
+/// revocation wins over a concurrent approval.
+pub const PUSH_APPROVALS: TableSpec = TableSpec {
+    id: PUSH_APPROVALS_TABLE,
+    name: "chat_push_approvals",
+    key_column: SYNC_KEY_COLUMN,
+    groups: &[
+        identity(
+            push_approval_group::IDENTITY,
+            &[
+                row_key("teammate_id"),
+                row_key("working_folder_id"),
+                text("push_url", MAX_PUSH_APPROVAL_URL_BYTES),
+                text("destination_branch", MAX_PUSH_APPROVAL_BRANCH_BYTES),
+            ],
+            &[
+                cascade("teammate_id", TEAMMATES_TABLE),
+                cascade("working_folder_id", FOLDERS_TABLE),
+            ],
+        ),
+        bumps(referencing(
+            coupled(
+                push_approval_group::APPROVAL,
+                "approval",
+                &[
+                    text("runtime_approval_policy", MAX_ENUM_CHARS),
+                    text("safety_mode", MAX_ENUM_CHARS),
+                    optional_row_key("approved_by_participant_id"),
+                    timestamp("approved_at"),
+                    optional_timestamp("revoked_at"),
+                ],
+            ),
+            &[set_null("approved_by_participant_id", PARTICIPANTS_TABLE)],
+        )),
+        exists(push_approval_group::EXISTS),
+    ],
+    local_columns: &[REVISION],
+    revision_column: Some("revision"),
+    triggers: &[
+        gated("chat_push_approvals_approver_is_person_insert"),
+        gated("chat_push_approvals_approver_is_person_update"),
+    ],
+    derived_key: Some(DerivedKey {
+        exists_group: push_approval_group::EXISTS,
+        prefix: Some(PUSH_APPROVAL_KEY_PREFIX),
+        key_inputs: &[
+            "teammate_id",
+            "working_folder_id",
+            "push_url",
+            "destination_branch",
+        ],
     }),
     ..BASE
 };
@@ -2129,6 +2219,7 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         MEMBERSHIPS,
         CHANNEL_MEMBERSHIPS,
         FOLDER_GRANTS,
+        PUSH_APPROVALS,
         CHANNELS,
         REPLY_THREADS,
         ITEMS,

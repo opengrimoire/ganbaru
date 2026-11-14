@@ -2572,6 +2572,13 @@ fn channel_notes_are_written_only_by_people_outside_the_sync_applier() {
         insert_channel_note(&pool, "note-person", "Fact", Some("participant-person"))
             .await
             .unwrap();
+        sqlx::query(
+            "UPDATE chat_push_approvals SET approved_by_participant_id = NULL
+             WHERE destination_branch = 'release'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         for update in [
             "UPDATE chat_channel_notes SET body = 'Changed',
@@ -2625,5 +2632,288 @@ fn channel_notes_are_written_only_by_people_outside_the_sync_applier() {
             Some("Fact"),
             "removing a person keeps their notes"
         );
+    });
+}
+
+/// Inserts a standing push approval of the fixture teammate for the managed folder, made by
+/// `approver`.
+async fn insert_push_approval(
+    pool: &sqlx::SqlitePool,
+    branch: &str,
+    approver: Option<&str>,
+) -> Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO chat_push_approvals
+             (teammate_id, working_folder_id, push_url, destination_branch, sync_key,
+              runtime_approval_policy, safety_mode, approved_by_participant_id, approved_at)
+         VALUES ('participant-teammate', 'folder-managed', 'git@example.com:team/app.git', ?,
+                 'push-approval-' || ?, 'ask', 'ask_for_approval', ?, ?)",
+    )
+    .bind(branch)
+    .bind(branch)
+    .bind(approver)
+    .bind(NOW)
+    .execute(pool)
+    .await
+}
+
+/// The revocation time and revision of the approval for `branch`.
+async fn push_approval_state(pool: &sqlx::SqlitePool, branch: &str) -> (Option<String>, i64) {
+    let row = sqlx::query(
+        "SELECT revoked_at, revision FROM chat_push_approvals WHERE destination_branch = ?",
+    )
+    .bind(branch)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    (row.get("revoked_at"), row.get("revision"))
+}
+
+/// Adds a custom access profile that allows publishing, since built-in profiles are immutable.
+async fn insert_publish_profile(pool: &sqlx::SqlitePool) {
+    sqlx::query(
+        "INSERT INTO chat_access_profiles
+            (id, display_name, current_revision_id, current_maximum_folder_capability,
+             created_at, updated_at)
+         VALUES ('access-profile:custom-publish', 'Release',
+                 'access-profile-revision:custom-publish:1', 'publish', ?, ?)",
+    )
+    .bind(NOW)
+    .bind(NOW)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chat_access_profile_revisions
+            (id, access_profile_id, default_read_history, default_participate,
+             default_history_boundary, maximum_folder_capability, created_at)
+         VALUES ('access-profile-revision:custom-publish:1', 'access-profile:custom-publish',
+                 1, 1, 'entire', 'publish', ?)",
+    )
+    .bind(NOW)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[test]
+fn push_approvals_are_made_only_by_people_outside_the_sync_applier() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        sqlx::query(
+            "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
+             VALUES ('participant-person', 'human', 'Ana', ?, ?)",
+        )
+        .bind(NOW)
+        .bind(NOW)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let refused = "Push approvals are made by people";
+
+        for approver in [
+            Some("participant-teammate"),
+            None,
+            Some("participant-missing"),
+        ] {
+            let error = insert_push_approval(&pool, "main", approver)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(refused), "{approver:?}: {error}");
+        }
+        insert_push_approval(&pool, "main", Some("participant:local-owner"))
+            .await
+            .unwrap();
+        insert_push_approval(&pool, "release", Some("participant-person"))
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE chat_push_approvals SET approved_by_participant_id = NULL
+             WHERE destination_branch = 'release'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for update in [
+            "UPDATE chat_push_approvals SET approved_by_participant_id = 'participant-teammate'
+             WHERE destination_branch = 'main'",
+            "UPDATE chat_push_approvals SET approved_by_participant_id = NULL,
+                 runtime_approval_policy = 'unattended' WHERE destination_branch = 'main'",
+            "UPDATE chat_push_approvals SET safety_mode = 'full_access'
+             WHERE destination_branch = 'release' AND approved_by_participant_id IS NULL",
+        ] {
+            let error = sqlx::query(update)
+                .execute(&pool)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(refused), "{error}");
+        }
+
+        set_sync_applying(&pool, true).await;
+        insert_push_approval(&pool, "applied", Some("participant-teammate"))
+            .await
+            .unwrap();
+        set_sync_applying(&pool, false).await;
+
+        insert_push_approval(&pool, "person", Some("participant-person"))
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM chat_participants WHERE id = 'participant-person'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let kept: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM chat_push_approvals WHERE revoked_at IS NULL")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(kept, 4, "removing the approver keeps the approvals");
+    });
+}
+
+#[test]
+fn push_approvals_are_revoked_when_the_teammate_loses_publish_access() {
+    let narrowings: [(&str, &[&str]); 9] = [
+        (
+            "grant narrows",
+            &["UPDATE chat_teammate_working_folder_grants SET capability = 'execute'
+               WHERE sync_key = 'grant-managed'"],
+        ),
+        (
+            "grant revoked",
+            &["UPDATE chat_teammate_working_folder_grants SET revoked_at = '2026-07-20T12:05:00.000Z'
+               WHERE sync_key = 'grant-managed'"],
+        ),
+        (
+            "grant approval override",
+            &["UPDATE chat_teammate_working_folder_grants SET runtime_approval_policy = 'unattended'
+               WHERE sync_key = 'grant-managed'"],
+        ),
+        (
+            "grant deleted",
+            &["DELETE FROM chat_teammate_working_folder_grants WHERE sync_key = 'grant-managed'"],
+        ),
+        (
+            "membership removed",
+            &["UPDATE chat_teammate_channel_memberships SET removed_at = '2026-07-20T12:05:00.000Z'
+               WHERE sync_key = 'channel-membership-teammate'"],
+        ),
+        (
+            "membership profile changed",
+            &["UPDATE chat_teammate_channel_memberships SET access_profile_id = 'access-profile:read-only'
+               WHERE sync_key = 'channel-membership-teammate'"],
+        ),
+        (
+            "profile narrows",
+            &["UPDATE chat_access_profiles SET current_maximum_folder_capability = 'edit'
+               WHERE id = 'access-profile:custom-publish'"],
+        ),
+        (
+            "teammate archived",
+            &["UPDATE chat_participants SET archived_at = '2026-07-20T12:05:00.000Z'
+               WHERE id = 'participant-teammate'"],
+        ),
+        (
+            "safety mode changed",
+            &["UPDATE chat_teammates SET current_policy_revision_id = 'policy-1',
+                   current_policy_safety_mode = 'full_access'
+               WHERE participant_id = 'participant-teammate'"],
+        ),
+    ];
+    super::block_on(async {
+        for (case, statements) in narrowings {
+            let pool = migrated_memory_pool().await;
+            load_project_chat_graph(&pool).await;
+            insert_publish_profile(&pool).await;
+            sqlx::query(
+                "UPDATE chat_teammate_channel_memberships
+                 SET access_profile_id = 'access-profile:custom-publish'
+                 WHERE sync_key = 'channel-membership-teammate'",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "UPDATE chat_teammate_working_folder_grants
+                 SET capability = 'publish', capability_inherits_profile = 0
+                 WHERE sync_key = 'grant-managed'",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            if case == "profile narrows" {
+                sqlx::query(
+                    "UPDATE chat_teammate_working_folder_grants SET capability_inherits_profile = 1
+                     WHERE sync_key = 'grant-managed'",
+                )
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            insert_push_approval(&pool, "main", Some("participant:local-owner"))
+                .await
+                .unwrap();
+            for statement in statements {
+                sqlx::query(AssertSqlSafe(*statement))
+                    .execute(&pool)
+                    .await
+                    .unwrap_or_else(|error| panic!("{case}: {error}"));
+            }
+            let (revoked_at, revision) = push_approval_state(&pool, "main").await;
+            assert!(revoked_at.is_some(), "{case} revokes the approval");
+            assert_eq!(revision, 2, "{case} bumps the revision once");
+        }
+    });
+}
+
+#[test]
+fn push_approvals_survive_unrelated_and_applied_changes() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        insert_publish_profile(&pool).await;
+        sqlx::query(
+            "UPDATE chat_teammate_working_folder_grants SET capability = 'publish'
+             WHERE sync_key = 'grant-managed'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        insert_push_approval(&pool, "main", Some("participant:local-owner"))
+            .await
+            .unwrap();
+        for statement in [
+            "UPDATE chat_teammate_working_folder_grants SET capability = 'none'
+             WHERE sync_key = 'grant-archived'",
+            "UPDATE chat_access_profiles SET current_maximum_folder_capability = 'edit'
+             WHERE id = 'access-profile:custom-publish'",
+            "UPDATE chat_participants SET display_name = 'Renamed' WHERE id = 'participant-teammate'",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        set_sync_applying(&pool, true).await;
+        sqlx::query(
+            "UPDATE chat_teammate_working_folder_grants SET capability = 'edit'
+             WHERE sync_key = 'grant-managed'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        set_sync_applying(&pool, false).await;
+        assert_eq!(push_approval_state(&pool, "main").await, (None, 1));
+
+        sqlx::query("DELETE FROM projects WHERE id = 'project-chat'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let approvals: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_push_approvals")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(approvals, 0, "approvals are deleted with their folder");
     });
 }

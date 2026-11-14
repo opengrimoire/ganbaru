@@ -394,6 +394,7 @@ fn write_marker_hook(path: &Path, marker: &Path, name: &str) {
         .expect("hook should be executable");
 }
 
+#[cfg(unix)]
 fn markers(marker: &Path) -> String {
     fs::read_to_string(marker).unwrap_or_default()
 }

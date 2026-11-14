@@ -538,7 +538,13 @@ fn configured_tool(
         .filter(|key| {
             !matches!(
                 key.as_str(),
-                "cursor" | "limit" | "folders" | "choices" | "recurrence" | "remote"
+                "cursor"
+                    | "limit"
+                    | "folders"
+                    | "choices"
+                    | "recurrence"
+                    | "remote"
+                    | "commitMessage"
             )
         })
         .cloned()

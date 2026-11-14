@@ -1,12 +1,12 @@
 //! The commit a push request asks Ganbaru to make from the folder's working tree when the
 //! person confirms.
 //!
-//! A teammate's sandbox cannot sign commits and often cannot write `.git`, so a push request may
-//! carry a commit message instead of a finished commit. Ganbaru snapshots the working tree into
-//! a private index when the teammate asks, records the tree, the author, whether the person's
-//! configuration signs, and the changed paths, and at confirmation snapshots again and commits
-//! that exact tree on the recorded parent with the person's identity and signing. Every run is a
-//! confirmed teammate request (see [`crate::git::hardened::GitOrigin::Requested`]), so no hook,
+//! A teammate's sandbox has neither the person's Git identity nor their signing keys, so a push
+//! request may carry a commit message instead of a finished commit. Ganbaru snapshots the working
+//! tree into a private index when the teammate asks, records the tree, the author, whether the
+//! person's configuration signs, and the changed paths, and at confirmation snapshots again and
+//! commits that exact tree on the recorded parent with the person's identity and signing. Every
+//! run is a confirmed teammate request (see [`crate::git::hardened::GitOrigin::Requested`]), so no hook,
 //! filter, or signing program from the repository's own configuration runs.
 
 use super::super::{

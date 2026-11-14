@@ -12,6 +12,7 @@ import type {
   PostChatMessageResult,
 } from "$lib/chat/contracts";
 import * as chatApi from "$lib/api/chat";
+import { chatPaneEvents } from "$lib/chat/pane-events";
 import { getChat } from "$lib/stores/chat.svelte";
 import ChatMessageComposer from "./ChatMessageComposer.svelte";
 import { openSlashMenu } from "./composer-test-store";
@@ -199,7 +200,7 @@ describe("ChatMessageComposer", () => {
     await tick();
   }
 
-  it("stops active work from its own control and keeps Send for replies", async () => {
+  it("stops active work from the pane shortcut without a stop button of its own and keeps Send for replies", async () => {
     vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([]);
     const page = workingReplyThread();
     const cancel = vi.spyOn(chat, "cancelAssignment").mockResolvedValue();
@@ -207,7 +208,8 @@ describe("ChatMessageComposer", () => {
     const root = mountActiveWork(page);
     await tick();
 
-    root.querySelector<HTMLButtonElement>('.stop-button[data-action="stop"]')?.click();
+    expect(root.querySelector('[data-action="stop"]')).toBeNull();
+    chatPaneEvents("primary").dispatchEvent(new Event("ganbaru:chat-stop-requested"));
     await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith(page.assignment?.id));
     expect(post).not.toHaveBeenCalled();
 
@@ -232,9 +234,13 @@ describe("ChatMessageComposer", () => {
     await vi.waitFor(() => expect(root.textContent).toContain("Queued, because the teammate was not in the middle of a turn"));
     expect(post.mock.calls[0]?.[1]).toMatchObject({ followupRouting: "steer" });
 
-    const destination = post.mock.calls[0]?.[0];
-    if (!destination) throw new Error("The post named no destination");
-    chat.setOrganizationalFollowupRouting(destination, "queue");
+    const toggle = () => root.querySelector<HTMLButtonElement>("button[data-chat-followup-routing]");
+    expect(toggle()?.dataset.chatFollowupRouting).toBe("steer");
+    expect(toggle()?.getAttribute("aria-label")).toBe("Replies steer the current turn, so click to queue them instead");
+    toggle()?.click();
+    await tick();
+    expect(toggle()?.dataset.chatFollowupRouting).toBe("queue");
+    expect(toggle()?.title).toBe("Replies wait in the queue, so click to steer the current turn instead");
     await typeReply(root, "And the changelog");
     root.querySelector<HTMLButtonElement>(".send-button")?.click();
     await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(2));

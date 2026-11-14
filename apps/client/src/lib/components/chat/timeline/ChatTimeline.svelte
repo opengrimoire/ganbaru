@@ -1026,8 +1026,8 @@
               {@const identity = modelIdentityForRow(row)}
               {@const actionMessage = row.turnId ? assistantActionMessages.get(row.turnId) : undefined}
               <div class="chat-participant-row">
-                <ChatIdentityButton participant={teammate} model={identity.model} presentation="avatar" size={embedded ? 34 : 36} currentResponseSettings={embedded} />
-                <div class="chat-participant-content"><div class="chat-participant-header"><strong><ChatIdentityButton participant={teammate} model={identity.model} presentation="name" triggerLabel={teammate?.displayName ?? identity.model.displayName} currentResponseSettings={embedded} /></strong><span>{timestampLabel(row.createdAt)}</span></div>{#if actionMessage}<ChatMessageActionToolbar target={executionMessageActionTarget(actionMessage)} visible={hoveredActionTurnId === row.turnId || heldMessageActionsKey() === touchActionsKey(row)} onError={reportError} />{/if}{@render modelRowContent(row)}</div>
+                <ChatIdentityButton participant={teammate} model={identity.model} presentation="avatar" size={embedded ? 34 : 36} currentResponseSettings={embedded} usageThreadId={embedded ? selectedThread?.id ?? null : null} />
+                <div class="chat-participant-content"><div class="chat-participant-header"><strong><ChatIdentityButton participant={teammate} model={identity.model} presentation="name" triggerLabel={teammate?.displayName ?? identity.model.displayName} currentResponseSettings={embedded} usageThreadId={embedded ? selectedThread?.id ?? null : null} /></strong><span>{timestampLabel(row.createdAt)}</span></div>{#if actionMessage}<ChatMessageActionToolbar target={executionMessageActionTarget(actionMessage)} visible={hoveredActionTurnId === row.turnId || heldMessageActionsKey() === touchActionsKey(row)} onError={reportError} />{/if}{@render modelRowContent(row)}</div>
               </div>
             {:else}
               <div class="chat-participant-followup">{@render modelRowContent(row)}</div>
@@ -1037,8 +1037,8 @@
               {@const identity = modelIdentityForRow(row)}
               {@const actionMessage = row.turnId ? assistantActionMessages.get(row.turnId) : undefined}
               <div class="chat-participant-row">
-                <ChatIdentityButton participant={teammate} model={identity.model} presentation="avatar" size={embedded ? 34 : 36} currentResponseSettings={embedded} />
-                <div class="chat-participant-content"><div class="chat-participant-header"><strong><ChatIdentityButton participant={teammate} model={identity.model} presentation="name" triggerLabel={teammate?.displayName ?? identity.model.displayName} currentResponseSettings={embedded} /></strong><span>{timestampLabel(row.createdAt)}</span></div>{#if actionMessage}<ChatMessageActionToolbar target={executionMessageActionTarget(actionMessage)} visible={hoveredActionTurnId === row.turnId || heldMessageActionsKey() === touchActionsKey(row)} onError={reportError} />{/if}{@render modelRowContent(row)}</div>
+                <ChatIdentityButton participant={teammate} model={identity.model} presentation="avatar" size={embedded ? 34 : 36} currentResponseSettings={embedded} usageThreadId={embedded ? selectedThread?.id ?? null : null} />
+                <div class="chat-participant-content"><div class="chat-participant-header"><strong><ChatIdentityButton participant={teammate} model={identity.model} presentation="name" triggerLabel={teammate?.displayName ?? identity.model.displayName} currentResponseSettings={embedded} usageThreadId={embedded ? selectedThread?.id ?? null : null} /></strong><span>{timestampLabel(row.createdAt)}</span></div>{#if actionMessage}<ChatMessageActionToolbar target={executionMessageActionTarget(actionMessage)} visible={hoveredActionTurnId === row.turnId || heldMessageActionsKey() === touchActionsKey(row)} onError={reportError} />{/if}{@render modelRowContent(row)}</div>
               </div>
             {:else}
               <div class="chat-participant-followup">{@render modelRowContent(row)}</div>

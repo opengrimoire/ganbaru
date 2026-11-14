@@ -473,6 +473,44 @@ describe("ChatReplyThreadPanel", () => {
     expect(target.querySelectorAll(".chat-execution-timeline")).toHaveLength(1);
   });
 
+  it("closes a working run with a Stop working control that cancels only its assignment", async () => {
+    const startingRun: ChatAgentRunRead = {
+      ...run,
+      id: "run:starting",
+      assignmentId: "assignment:starting",
+      providerExecutionThreadId: null,
+      providerExecutionTurnId: "turn:starting",
+      state: "starting",
+    };
+    const workingPage: ChatReplyThreadPageRead = { ...page, replies: [], agentRuns: [startingRun] };
+    chat.openReplyThreadId = workingPage.thread.id;
+    chat.replyThread = workingPage;
+    chat.replyThreadPages = [workingPage];
+    chat.selectedExecutionRunId = null;
+    chat.selectedThreadId = null;
+    vi.spyOn(chat, "selectAssignmentExecution").mockResolvedValue();
+    vi.spyOn(chatApi, "readChatThreadShell").mockImplementation(async (threadId) => threadShell(threadId));
+    vi.spyOn(chat, "listScheduledOrganizationalMessages").mockResolvedValue([]);
+    const cancel = vi.spyOn(chat, "cancelAssignment").mockResolvedValue();
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatReplyThreadPanel, {
+      target,
+      props: { onClose: vi.fn() },
+    });
+
+    await vi.waitFor(() => {
+      expect(target?.querySelector('[data-action="stop-run"]')).not.toBeNull();
+    });
+    const stop = target.querySelector<HTMLButtonElement>('[data-action="stop-run"]');
+    expect(stop?.textContent).toBe(en.chat.runs.stopWorking);
+    expect(stop?.title).toContain("Atlas");
+    stop?.click();
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith("assignment:starting"));
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(target.querySelector("[data-run-outcome]")).toBeNull();
+  });
+
   it("exposes private scratch only when the reply thread has a scratch run", async () => {
     const scratchThreadId = "provider-thread:scratch";
     const scratchRun = {

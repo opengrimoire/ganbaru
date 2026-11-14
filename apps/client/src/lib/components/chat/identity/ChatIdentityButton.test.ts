@@ -12,7 +12,8 @@ import type { ChatModelParticipant } from "$lib/chat/teammates/participant-ident
 import { getChat } from "$lib/stores/chat.svelte";
 import { getPreferences } from "$lib/stores/preferences.svelte";
 import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
-import { modelSettings } from "$lib/components/chat/composer/composer-test-store";
+import * as chatApi from "$lib/api/chat";
+import { interactionState, modelSettings } from "$lib/components/chat/composer/composer-test-store";
 import ChatIdentityButton from "./ChatIdentityButton.svelte";
 
 const localParticipant: ChatParticipantRead = {
@@ -127,6 +128,7 @@ describe("ChatIdentityButton", () => {
     chat.activeChannels = originalActiveChannels;
     chat.selectedChannelId = originalSelectedChannelId;
     settings.close();
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
 
@@ -183,6 +185,45 @@ describe("ChatIdentityButton", () => {
     expect(card?.querySelector("dl")).toBeNull();
     expect(card?.textContent).not.toContain("gpt-5.6-sol");
     expect(card?.textContent).not.toContain("Available");
+  });
+
+  it("shows the context usage of its provider thread only once the card opens", async () => {
+    const read = vi.spyOn(chatApi, "readChatInteractionState").mockResolvedValue(interactionState());
+    chat.teammates = [teammate];
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatIdentityButton, {
+      target,
+      props: { participant: teammateParticipant, presentation: "name", usageThreadId: "thread:atlas" },
+    });
+    await tick();
+    expect(read).not.toHaveBeenCalled();
+
+    target.querySelector<HTMLButtonElement>(".identity-trigger")?.click();
+    await vi.waitFor(() => expect(document.body.querySelector("[data-identity-context]")).not.toBeNull());
+    expect(read).toHaveBeenCalledWith("thread:atlas");
+    const context = document.body.querySelector<HTMLElement>("[data-identity-context]");
+    expect(context?.textContent).toContain("Context window");
+    expect(context?.textContent).toContain("39% used (61% left)");
+    expect(context?.textContent).toContain("100,000 of 258,000 context tokens used");
+    expect(context?.querySelector<HTMLElement>(".identity-context-meter")?.style.getPropertyValue("--identity-context-used")).not.toBe("");
+  });
+
+  it("keeps the card without context usage when the usage read fails", async () => {
+    const read = vi.spyOn(chatApi, "readChatInteractionState").mockRejectedValue(new Error("offline"));
+    chat.teammates = [teammate];
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatIdentityButton, {
+      target,
+      props: { participant: teammateParticipant, presentation: "name", usageThreadId: "thread:atlas" },
+    });
+
+    target.querySelector<HTMLButtonElement>(".identity-trigger")?.click();
+    await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
+    await tick();
+    expect(document.body.querySelector(".identity-card")).not.toBeNull();
+    expect(document.body.querySelector("[data-identity-context]")).toBeNull();
   });
 
   it("omits the fast icon for standard speed", async () => {

@@ -3,7 +3,10 @@
   import LockKeyhole from "@lucide/svelte/icons/lock-keyhole";
   import Settings from "@lucide/svelte/icons/settings";
   import Zap from "@lucide/svelte/icons/zap";
-  import type { ChatParticipantRead, ChatRuntimeApprovalPolicy } from "$lib/chat/contracts";
+  import * as chatApi from "$lib/api/chat";
+  import type { ChatInteractionStateRead, ChatParticipantRead, ChatRuntimeApprovalPolicy, ChatThreadId } from "$lib/chat/contracts";
+  import { composerMeterRead } from "$lib/chat/composer/composer-meter";
+  import { formatNumber } from "$lib/i18n/formatters";
   import { chatParticipantDisplayName } from "$lib/chat/teammates/participant-display";
   import type { ChatModelParticipant } from "$lib/chat/teammates/participant-identity";
   import { compactModelName, compactModelOptionLabel } from "$lib/chat/composer/model-picker-model";
@@ -28,6 +31,7 @@
     currentResponseSettings = false,
     size = 34,
     shape = "default",
+    usageThreadId = null,
   }: {
     participant?: ChatParticipantRead | null;
     model?: ChatModelParticipant | null;
@@ -36,9 +40,12 @@
     currentResponseSettings?: boolean;
     size?: number;
     shape?: "default" | "compact";
+    /** Provider thread whose context usage the card shows while open, or `null` to show no usage. */
+    usageThreadId?: ChatThreadId | null;
   } = $props();
 
-  const { t } = getLocalization();
+  const localization = getLocalization();
+  const { t } = localization;
   const chat = useChat();
   const preferences = getPreferences();
   const settings = getSettingsLauncher();
@@ -103,6 +110,23 @@
       ))?.aiAccess?.runtimeApprovalOverride ?? null
     : null);
   const approvalLabel = $derived(approvalPolicy ? approvalPolicyLabel(approvalPolicy) : null);
+  let usageState = $state<ChatInteractionStateRead | null>(null);
+  let usageRequest = 0;
+  const usageMeter = $derived(usageState ? composerMeterRead(usageState.usage, usageState.rateLimitStatus).meter : null);
+
+  $effect(() => {
+    const threadId = open ? usageThreadId : null;
+    const request = ++usageRequest;
+    if (!threadId) {
+      usageState = null;
+      return;
+    }
+    chatApi.readChatInteractionState(threadId)
+      .then((read) => { if (request === usageRequest) usageState = read; })
+      .catch(() => {
+        // Context usage is advisory, so a failed read leaves the card without it.
+      });
+  });
 
   onDestroy(() => {
     cancelPreview();
@@ -247,6 +271,18 @@
     return optionDefinition.options.find((option) => option.value === value)?.label ?? value;
   }
 
+  function contextUsageLabel(): string {
+    if (!usageMeter) return t("chat.composer.contextUnavailable");
+    const used = formatNumber(localization.locale, usageMeter.usedTokens);
+    return usageMeter.maximumTokens === null
+      ? t("chat.composer.contextUnknown", used)
+      : t("chat.composer.contextUsed", used, formatNumber(localization.locale, usageMeter.maximumTokens));
+  }
+
+  function contextPercentage(value: number): string {
+    return formatNumber(localization.locale, value * 100, { maximumFractionDigits: 0 });
+  }
+
   function openIdentitySettings(): void {
     closeCard();
     if (participant?.kind === "local_user") {
@@ -332,6 +368,17 @@
       {:else}
         <p class="identity-description">{t("chat.organization.collaboratorIdentity")}</p>
       {/if}
+      {#if usageState}
+        <div class="identity-context" data-identity-context>
+          <span class="identity-settings-label">{t("chat.composer.contextWindow")}</span>
+          {#if usageMeter && usageMeter.ratio !== null}
+            <span>{t("chat.composer.contextPercentage", contextPercentage(usageMeter.ratio), contextPercentage(1 - usageMeter.ratio))}</span>
+            <span class="identity-context-meter" style={`--identity-context-used:${Math.min(1, Math.max(0, usageMeter.ratio))}`}><span></span></span>
+          {/if}
+          <small>{contextUsageLabel()}</small>
+          {#if usageState.automaticCompactionReported || usageMeter?.warning}<small>{t("chat.composer.contextCompaction")}</small>{/if}
+        </div>
+      {/if}
     </div>
 
     {#if participant?.kind === "local_user" || participant?.kind === "ai_teammate"}
@@ -368,6 +415,10 @@
   .identity-effort-name { flex:0 0 auto; }
   .identity-model-divider { flex:0 0 auto; color:var(--muted-foreground); }
   .identity-approval { overflow:hidden; min-width:0; color:var(--foreground); text-overflow:ellipsis; white-space:nowrap; }
+  .identity-context { display:grid; min-width:0; gap:0.22rem; font-size:var(--panel-font-size); }
+  .identity-context small { color:var(--muted-foreground); font-size:var(--panel-detail-font-size); }
+  .identity-context-meter { display:block; width:100%; height:0.38rem; overflow:hidden; border-radius:999px; background:color-mix(in srgb,var(--muted-foreground) 18%,transparent); }
+  .identity-context-meter > span { display:block; width:calc(var(--identity-context-used) * 100%); height:100%; border-radius:inherit; background:color-mix(in srgb,var(--foreground) 72%,var(--muted-foreground)); }
   .privacy-note { display:grid; grid-template-columns:1rem minmax(0,1fr); gap:0.55rem; align-items:start; color:var(--muted-foreground); }
   .privacy-note :global(svg) { margin-top:0.1rem; color:color-mix(in srgb,var(--primary) 70%,var(--foreground)); }
   .privacy-note span { font-size:var(--panel-detail-font-size); line-height:1rem; }

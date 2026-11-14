@@ -14,7 +14,8 @@
   import MessageSquareShare from "@lucide/svelte/icons/message-square-share";
   import Plus from "@lucide/svelte/icons/plus";
   import AtSign from "@lucide/svelte/icons/at-sign";
-  import Square from "@lucide/svelte/icons/square";
+  import CornerDownRight from "@lucide/svelte/icons/corner-down-right";
+  import ListEnd from "@lucide/svelte/icons/list-end";
   import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
   import type {
@@ -74,7 +75,6 @@
   import { formatDateTime, formatList } from "$lib/i18n/formatters";
   import { budgetStoppedAt, providerLimitNotice } from "$lib/chat/budgets/budget-model";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { formatShortcut } from "$lib/keyboard-shortcuts";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
   import { useChat, type ChatOrganizationalDraft } from "$lib/stores/chat.svelte";
   import { useProjects } from "$lib/stores/projects.svelte";
@@ -90,7 +90,6 @@
   import ChatComposerSuggestionMenu from "./ChatComposerSuggestionMenu.svelte";
   import ChatPendingInputs from "./ChatPendingInputs.svelte";
   import ChatTaskProgressCard from "./ChatTaskProgressCard.svelte";
-  import Select from "$lib/components/ui/Select.svelte";
   import { isAppFloatingSurfaceTarget } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import { chatReferencePickerPosition } from "./reference-picker-position";
@@ -339,7 +338,6 @@
   const nextScheduledDelivery = $derived(nextScheduledMessage
     ? nextScheduledMessage.recurrence?.deferredUntil ?? nextScheduledMessage.recurrence?.nextOccurrenceAt ?? nextScheduledMessage.scheduledFor
     : null);
-  const stopShortcut = formatShortcut("Mod + .");
   const threadAssignment = $derived(threadComposer ? chat.replyThread?.assignment ?? null : null);
   /** The teammate a post starts or continues work for: the mentioned one, else the thread's. */
   const targetTeammateId = $derived(mentionedTeammateId ?? threadAssignment?.teammate.id ?? null);
@@ -369,21 +367,18 @@
     targetTeammate?.latestPolicy?.providerInstanceId ?? "",
     threadAssignment?.latestRunProviderThreadId ?? "",
   ].join("\u0000"));
-  const showMeter = $derived(threadAssignment !== null);
+  /** Whether the thread has work whose provider session /status can describe. */
+  const statusAvailable = $derived(threadAssignment !== null);
   const meterRead = $derived(composerMeterRead(
     interactionState?.usage ?? null,
     interactionState?.rateLimitStatus ?? null,
   ));
-  const meterNote = $derived(threadAssignment && !threadAssignment.latestRunProviderThreadId
-    ? t("chat.composer.usageOnRunningDevice")
-    : null);
   const followupRouting = $derived(activeAssignment
     ? defaultFollowupRouting(chat.organizationalFollowupRouting(destination), activeAssignment.state)
     : null);
-  const routingOptions = $derived([
-    { value: "steer", label: t("chat.composer.routing.steer") },
-    { value: "queue", label: t("chat.composer.routing.queue") },
-  ]);
+  const routingLabel = $derived(followupRouting === "queue"
+    ? t("chat.composer.routing.queueMode")
+    : t("chat.composer.routing.steerMode"));
   /** The limit a failed assignment of this thread stopped at, when its budget stopped it. */
   const budgetStop = $derived(threadAssignment ? budgetStoppedAt(threadAssignment, chat.replyThread?.replies ?? []) : null);
   /** The provider limit that stopped or holds the work of this thread, with its reset time when known. */
@@ -1067,7 +1062,7 @@
       ...(activeAssignment
         ? [appCommand("/stop", t("chat.composer.teammateCommands.stop"), t("chat.composer.teammateCommands.stopDescription"))]
         : []),
-      ...(showMeter
+      ...(statusAvailable
         ? [appCommand("/status", t("chat.composer.teammateCommands.status"), t("chat.composer.teammateCommands.statusDescription"))]
         : []),
     ];
@@ -1992,10 +1987,7 @@
       activeOptionId={pickerOpen
         ? pickerEntries[pickerIndex] ? `chat-reference-${pickerIndex}` : undefined
         : promptMenuEntries[promptMenuIndex] ? `chat-composer-option-${promptMenuIndex}` : undefined}
-      {showMeter}
-      meter={meterRead.meter}
-      compactionReported={interactionState?.automaticCompactionReported ?? false}
-      {meterNote}
+      showMeter={false}
       onKeydown={handleKeydown}
       onFiles={(files) => { void importFiles(files); }}
       onLargeText={(text) => { void importLargeText(text); }}
@@ -2074,15 +2066,11 @@
       {/snippet}
       {#snippet trailing()}
         {#if followupRouting && !scheduledFor && !editingInput}
-          <span class="routing-select" data-chat-followup-routing>
-            <Select inline appearance="quiet" class="routing-select-control" ariaLabel={t("chat.composer.routing.label")} value={followupRouting} options={routingOptions} onChange={(value) => { if (value === "steer" || value === "queue") chat.setOrganizationalFollowupRouting(destination, value); }} />
-          </span>
+          {@const routing = followupRouting}
+          <button type="button" class="tool-button" data-chat-followup-routing={routing} aria-label={routingLabel} title={routingLabel} onclick={() => { chat.setOrganizationalFollowupRouting(destination, routing === "steer" ? "queue" : "steer"); }}>{#if routing === "queue"}<ListEnd size={15} />{:else}<CornerDownRight size={15} />{/if}</button>
         {/if}
       {/snippet}
       {#snippet actions()}
-        {#if activeAssignment}
-          <button type="button" class="stop-button" data-action="stop" disabled={stopping} aria-label={t("chat.organization.stopWorkShortcut", stopShortcut)} aria-busy={stopping || undefined} title={t("chat.organization.stopWorkShortcut", stopShortcut)} onclick={() => { void stopAssignment(); }}><Square size={13} /></button>
-        {/if}
         <button type="button" class="send-button" data-action={editingInput ? "save" : "send"} disabled={sending || inputBusyId !== null || !hasMessageContent} aria-disabled={sendBlocked} aria-label={editingInput ? t("chat.composer.pendingInputs.save") : scheduledFor ? t("chat.organization.scheduleMessage") : t("chat.composer.send")} onclick={() => { void post(); }}><ArrowUp size={16} /></button>
       {/snippet}
       {#snippet below()}
@@ -2124,12 +2112,10 @@
   .mention-suggestion { display:flex; width:fit-content; align-items:center; gap:0.1rem; margin-top:0.45rem; border-radius:999px; background:color-mix(in srgb,var(--primary) 10%,transparent); padding:0.1rem 0.15rem 0.1rem 0.45rem; color:color-mix(in srgb,var(--primary) 78%,var(--foreground)); font-size:calc(0.68rem * var(--type-scale)); }.mention-suggestion-action { display:flex; align-items:center; gap:0.25rem; }.mention-suggestion-dismiss { display:grid; width:1.25rem; height:1.25rem; place-items:center; border-radius:999px; color:var(--muted-foreground); }.mention-suggestion-dismiss:hover { background:var(--accent); color:var(--foreground); }
   .tool-button { display:grid; width:var(--composer-button-size); height:var(--composer-button-size); place-items:center; border-radius:0.5rem; color:var(--muted-foreground); }.tool-button:hover:not(:disabled),.tool-button.active { background:var(--accent); color:var(--foreground); }.tool-button:disabled { opacity:0.45; }
   .send-button { display:grid; width:var(--composer-button-size); height:var(--composer-button-size); flex:0 0 auto; place-items:center; border-radius:999px; background:color-mix(in srgb,var(--primary) 92%,transparent); color:var(--primary-foreground); box-shadow:0 2px 7px color-mix(in srgb,var(--primary) 22%,transparent); transition:transform 120ms ease,filter 120ms ease; }.send-button:hover:not(:disabled) { filter:brightness(1.04); transform:scale(1.04); }.send-button:disabled,.send-button[aria-disabled="true"] { opacity:0.45; }
-  .stop-button { display:grid; width:var(--composer-button-size); height:var(--composer-button-size); flex:0 0 auto; place-items:center; border-radius:999px; background:var(--accent); color:var(--foreground); }.stop-button:hover:not(:disabled) { background:color-mix(in srgb,var(--destructive) 14%,var(--accent)); color:var(--destructive); }.stop-button:disabled { opacity:0.45; }
-  .routing-select { display:inline-flex; min-width:0; }.routing-select :global(.routing-select-control) { width:auto; max-width:8rem; }
   .composer-menu { position:absolute; z-index:110; max-width:calc(100vw - 1rem); }.schedule-loading { bottom:calc(100% + 0.35rem); left:0; }.schedule-loading.align-right { right:0; left:auto; }
   .composer-blocker { display:flex; gap:0.45rem; margin:0 0.65rem 0.5rem; border-radius:0.5rem; background:color-mix(in srgb,var(--destructive) 8%,transparent); padding:0.45rem 0.55rem; color:var(--destructive); outline:none; }.composer-blocker:focus-visible { outline:2px solid var(--ring); }.composer-blocker > div { display:grid; gap:0.2rem; }.composer-blocker p { font-size:calc(0.68rem * var(--type-scale)); }.composer-blocker span { display:flex; flex-wrap:wrap; gap:0.25rem; }.composer-blocker button { min-height:1.75rem; border-radius:0.35rem; padding:0.2rem 0.4rem; font-size:calc(0.62rem * var(--type-scale)); font-weight:600; }.composer-blocker button:hover { background:color-mix(in srgb,var(--destructive) 10%,transparent); }
   .composer-stack :global(.composer-error) { padding:0 0.5rem 0.5rem; font-size:calc(0.7rem * var(--type-scale)); }
   .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; }
-  @media (pointer:coarse) { .tool-button,.send-button,.stop-button { min-width:2.75rem; min-height:2.75rem; } }
+  @media (pointer:coarse) { .tool-button,.send-button { min-width:2.75rem; min-height:2.75rem; } }
   @media (prefers-reduced-motion:reduce) { .send-button { transition:none; } }
 </style>

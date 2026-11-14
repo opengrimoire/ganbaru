@@ -401,7 +401,6 @@ export const chat = {
     openWaitingWork: "Abrir",
     startHere: "Iniciar aquí",
     cancelWork: "Cancelar trabajo",
-    stopWorkShortcut: (shortcut: string) => `Detener trabajo (${shortcut})`,
     reviewReady: "Este trabajo está listo para tu revisión.",
     reviewAccept: "Aceptar",
     reviewRequestChanges: "Pedir cambios",
@@ -745,7 +744,6 @@ export const chat = {
     account: "Cuenta",
     automaticCompactionReported: "El proveedor compactó automáticamente el contexto anterior.",
     cost: (amount: string, currency: string) => `${amount} ${currency}, informado por el proveedor`,
-    usageOnRunningDevice: "El uso se muestra en el dispositivo que ejecuta este trabajo",
     teammateCommands: {
       schedule: "Programar",
       scheduleDescription: "Elige cuándo se publica este mensaje",
@@ -757,9 +755,8 @@ export const chat = {
       statusDescription: "Muestra el uso del contexto y los límites del proveedor",
     },
     routing: {
-      label: "Cómo llega la respuesta al trabajo",
-      steer: "Redirigir ahora",
-      queue: "Poner en cola",
+      steerMode: "Las respuestas redirigen el turno actual, así que haz clic para ponerlas en cola",
+      queueMode: "Las respuestas esperan en la cola, así que haz clic para redirigir el turno actual",
       downgraded: "Se puso en cola porque el compañero no estaba a mitad de un turno",
     },
     budget: {
@@ -1321,6 +1318,8 @@ export const chat = {
       handoff: "Se inició una sesión nueva",
       retry: "Se reintentó en una sesión nueva",
     },
+    stopWorking: "Detener trabajo",
+    stopWorkingShortcut: (teammate: string, shortcut: string) => `Detener el trabajo de ${teammate} (${shortcut})`,
     outcome: {
       failedBeforeOutput: (teammate: string) => `${teammate} no pudo empezar:`,
       failedAfterOutput: (teammate: string) => `${teammate} se detuvo por un error:`,

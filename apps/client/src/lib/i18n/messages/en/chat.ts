@@ -398,7 +398,6 @@ export const chat = {
     openWaitingWork: "Open",
     startHere: "Start here",
     cancelWork: "Cancel work",
-    stopWorkShortcut: (shortcut: string) => `Stop work (${shortcut})`,
     reviewReady: "This work is ready for your review.",
     reviewAccept: "Accept",
     reviewRequestChanges: "Request changes",
@@ -742,7 +741,6 @@ export const chat = {
     account: "Account",
     automaticCompactionReported: "The provider compacted earlier context automatically.",
     cost: (amount: string, currency: string) => `${amount} ${currency}, reported by provider`,
-    usageOnRunningDevice: "Usage shows on the device that runs this work",
     teammateCommands: {
       schedule: "Schedule",
       scheduleDescription: "Choose when this message posts",
@@ -754,9 +752,8 @@ export const chat = {
       statusDescription: "Show context usage and provider limits",
     },
     routing: {
-      label: "How the reply reaches the work",
-      steer: "Steer now",
-      queue: "Queue",
+      steerMode: "Replies steer the current turn, so click to queue them instead",
+      queueMode: "Replies wait in the queue, so click to steer the current turn instead",
       downgraded: "Queued, because the teammate was not in the middle of a turn",
     },
     budget: {
@@ -1318,6 +1315,8 @@ export const chat = {
       handoff: "Started a new session",
       retry: "Retried in a new session",
     },
+    stopWorking: "Stop working",
+    stopWorkingShortcut: (teammate: string, shortcut: string) => `Stop ${teammate} from working (${shortcut})`,
     outcome: {
       failedBeforeOutput: (teammate: string) => `${teammate} could not start:`,
       failedAfterOutput: (teammate: string) => `${teammate} stopped because of an error:`,

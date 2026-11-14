@@ -480,6 +480,7 @@
             timelinePage={exactExecution?.timelinePage ?? null}
             replies={page.replies}
             fallbackDetail={entry.run.id === page.agentRuns.at(-1)?.id ? assignment?.stateReason ?? null : null}
+            onActionError={reportMessageActionError}
           />
         {/if}
       {/each}

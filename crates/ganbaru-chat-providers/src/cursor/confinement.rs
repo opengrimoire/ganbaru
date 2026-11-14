@@ -14,9 +14,11 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use super::git_guard::GitMetadataGuard;
+use toolchains::{ToolchainGrants, resolve_existing, toolchain_grants};
 
 #[cfg(test)]
 mod tests;
+mod toolchains;
 
 /// System trees a confined Grok process reads: programs, libraries, configuration such as TLS
 /// roots and name resolution, and the kernel views a runtime inspects.
@@ -350,8 +352,6 @@ const TERMINAL_KEPT_ENVIRONMENT: &[&str] = &["LANG", "LANGUAGE", "LC_ALL", "LC_C
 const TERMINAL_DEFAULT_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
 /// The `env` program that applies requested variables inside the sandbox.
 const CONFINED_ENV: &str = "/usr/bin/env";
-/// Rust toolchain folder in the home directory, executed in place by the Cargo proxies.
-const RUSTUP_FOLDER: &str = ".rustup";
 
 /// What the client callbacks of one organizational Grok session may do.
 pub(super) struct AcpCallbackConfinement {
@@ -442,8 +442,8 @@ impl AcpCallbackConfinement {
 }
 
 /// The sandbox that confines the commands one Grok session asks Ganbaru to run: they write the
-/// working folder and a private temporary directory, execute system programs, the folder, and
-/// the toolchains on `PATH`, and have no network.
+/// working folder and a private temporary directory, execute system programs, the folder, the
+/// toolchains on `PATH`, and the toolchain homes such as Cargo's, and have no network.
 pub(super) struct TerminalSandbox {
     helper: &'static SandboxHelper,
     policy: SandboxPolicy,
@@ -461,12 +461,8 @@ impl TerminalSandbox {
             .map(PathBuf::from)
             .filter(|home| home.is_absolute())
             .and_then(|home| std::fs::canonicalize(home).ok());
-        let rustup = home
-            .as_deref()
-            .map(|home| home.join(RUSTUP_FOLDER))
-            .filter(|rustup| rustup.is_dir());
         let search_path = std::env::var_os("PATH");
-        let mut toolchains = toolchain_directories(
+        let toolchains = toolchain_directories(
             search_path
                 .as_deref()
                 .map(std::env::split_paths)
@@ -480,8 +476,15 @@ impl TerminalSandbox {
                     .filter(|path| path.is_dir())
             },
         );
-        toolchains.extend(rustup.clone());
-        let policy = terminal_policy(workspace, &temporary, &toolchains, |path| path.exists())?;
+        let homes = toolchain_grants(
+            |name| std::env::var_os(name),
+            home.as_deref(),
+            workspace,
+            resolve_existing,
+        );
+        let policy = terminal_policy(workspace, &temporary, &toolchains, &homes, |path| {
+            path.exists()
+        })?;
         let guard = GitMetadataGuard::watch(workspace)?;
         let mut environment = vec![
             (
@@ -496,8 +499,7 @@ impl TerminalSandbox {
                 std::env::var_os(name).map(|value| ((*name).to_string(), value))
             }),
         );
-        environment
-            .extend(rustup.map(|rustup| ("RUSTUP_HOME".to_string(), rustup.into_os_string())));
+        environment.extend(homes.environment);
         Ok(Self {
             helper,
             policy,
@@ -595,18 +597,26 @@ pub(super) fn terminal_policy(
     workspace: &Path,
     temporary: &Path,
     toolchains: &[PathBuf],
+    homes: &ToolchainGrants,
     exists: impl Fn(&Path) -> bool,
 ) -> ChatResult<SandboxPolicy> {
     let mut execute = existing_paths(TERMINAL_SYSTEM_EXECUTE, &exists);
     execute.push(workspace.to_path_buf());
-    execute.extend(toolchains.iter().cloned());
+    for path in toolchains.iter().chain(&homes.execute) {
+        if !execute.contains(path) {
+            execute.push(path.clone());
+        }
+    }
     let mut write = vec![workspace.to_path_buf(), temporary.to_path_buf()];
     write.extend(existing_paths(DEVICE_WRITE, &exists));
+    write.extend(homes.write.iter().cloned());
     if temporary.starts_with(workspace) || workspace.starts_with(temporary) {
         return Err(sandbox_policy_error());
     }
+    let mut read = existing_paths(TERMINAL_SYSTEM_READ, &exists);
+    read.extend(homes.read.iter().cloned());
     Ok(SandboxPolicy {
-        read: existing_paths(TERMINAL_SYSTEM_READ, &exists),
+        read,
         execute,
         write,
         network: NetworkAccess::Denied,

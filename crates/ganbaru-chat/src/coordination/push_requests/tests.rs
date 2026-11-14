@@ -125,6 +125,10 @@ async fn a_push_request_is_a_question_that_waits_for_the_person() {
     assert_eq!(stored.state, PushRequestState::Pending);
     assert_eq!(stored.reply_thread_id, THREAD);
     assert_eq!(stored.assignment_id, ASSIGNMENT);
+    assert_eq!(
+        stored.authorization_revision_id.as_deref(),
+        Some("authorization:reports")
+    );
     assert_eq!(stored.teammate_name.as_deref(), Some("Helper"));
 
     let mut connection = pool.acquire().await.unwrap();
@@ -256,4 +260,51 @@ async fn an_ordinary_question_or_a_tampered_payload_is_not_a_push_request() {
         read(&pool, &item_id).await.unwrap_err().code,
         ChatErrorCode::Validation
     );
+}
+
+#[tokio::test]
+async fn the_state_read_follows_the_run_and_marks_a_confirmed_request_pushed() {
+    let pool = migrated_pool().await;
+    seed(&pool, "working", "working").await;
+    ask_push(&pool, "request-1").await.unwrap();
+    let item_id = item_id("request-1");
+    let state = |item_id: String| {
+        let pool = pool.clone();
+        async move {
+            let mut connection = pool.acquire().await.unwrap();
+            read_push_request_state(&mut connection, &item_id)
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(state(item_id.clone()).await, ChatPushRequestState::Waiting);
+    set_run_state(&pool, "completed").await;
+    assert_eq!(state(item_id.clone()).await, ChatPushRequestState::Open);
+    assert_eq!(
+        state("item:unknown".to_string()).await,
+        ChatPushRequestState::Closed
+    );
+
+    let reference_id = push_confirmation_id(PUSH_CONFIRMATION_REFERENCE_PREFIX, &item_id).unwrap();
+    assert_eq!(
+        reference_id,
+        push_confirmation_id(PUSH_CONFIRMATION_REFERENCE_PREFIX, &item_id).unwrap()
+    );
+    assert_ne!(
+        reference_id,
+        push_confirmation_id(PUSH_CONFIRMATION_REFERENCE_PREFIX, "item:other").unwrap()
+    );
+    applied(
+        &pool,
+        &format!(
+            "INSERT INTO chat_message_references
+               (id, message_revision_id, reference_kind, label_snapshot, plain_text_projection,
+                start_offset, end_offset, ordinal, created_at)
+             VALUES ('{reference_id}', 'revision:confirmation', 'participant', 'Helper',
+                     '@Helper', 0, 7, 0, '{NOW}')"
+        ),
+    )
+    .await;
+    post_input(&pool, "item:answer", OWNER, "queued_continuation").await;
+    assert_eq!(state(item_id).await, ChatPushRequestState::Pushed);
 }

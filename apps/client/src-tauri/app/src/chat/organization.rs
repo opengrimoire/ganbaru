@@ -44,6 +44,8 @@ mod dispatch;
 mod inputs;
 #[cfg(desktop)]
 mod primary_folder;
+#[cfg(desktop)]
+mod push_requests;
 mod reads;
 pub(crate) mod review_queue;
 mod scheduling;
@@ -929,6 +931,29 @@ pub async fn chat_read_schedule_proposal_states(
     proposal_item_ids: Vec<ChatConversationItemId>,
 ) -> ChatResult<Vec<ChatScheduleProposalStateRead>> {
     scheduling::read_schedule_proposal_states(app, db_url, proposal_item_ids).await
+}
+
+/// Pushes the commit a teammate's open push request names, after checking that the folder
+/// still names it, and answers the request.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn chat_confirm_push_request(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: ConfirmPushRequestCommand,
+) -> ChatResult<PostChatMessageResult> {
+    push_requests::confirm_push_request(app, db_url, request).await
+}
+
+/// Reads whether each push request is waiting, open, pushed, or closed.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn chat_read_push_request_states(
+    app: tauri::AppHandle,
+    db_url: String,
+    request_item_ids: Vec<ChatConversationItemId>,
+) -> ChatResult<Vec<ChatPushRequestStateRead>> {
+    push_requests::read_push_request_states(app, db_url, request_item_ids).await
 }
 
 /// Lists the live notes of a channel the local person belongs to, newest updated first.

@@ -433,6 +433,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::organization::chat_confirm_schedule_proposal,
             chat::organization::chat_dismiss_schedule_proposal,
             chat::organization::chat_read_schedule_proposal_states,
+            chat::organization::chat_confirm_push_request,
+            chat::organization::chat_read_push_request_states,
             chat::organization::chat_list_channel_notes,
             chat::organization::chat_create_channel_note,
             chat::organization::chat_update_channel_note,

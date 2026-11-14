@@ -354,6 +354,40 @@ pub struct ChatScheduleProposalStateRead {
     pub state: ChatScheduleProposalState,
 }
 
+/// A person's confirmation of a teammate's push request. After the push, the confirmation posts
+/// `normalized_markdown` after a mention of the asking teammate in the request's reply thread,
+/// which answers the request.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfirmPushRequestCommand {
+    /// The conversation item that carries the push request.
+    pub request_item_id: ChatConversationItemId,
+    /// The reply text without the teammate mention the confirmation adds.
+    pub normalized_markdown: String,
+}
+
+/// Where a push request stands.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatPushRequestState {
+    /// The asking run is still working, so nobody can confirm it yet.
+    Waiting,
+    /// A person can confirm it.
+    Open,
+    /// A person confirmed it on some device and the push succeeded.
+    Pushed,
+    /// It was answered, superseded, or its run did not complete.
+    Closed,
+}
+
+/// The state of one push request.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatPushRequestStateRead {
+    pub request_item_id: ChatConversationItemId,
+    pub state: ChatPushRequestState,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PostChatMessageResult {

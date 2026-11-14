@@ -7,10 +7,12 @@
 //! confirms the request pushes, and only while a fresh read still names the same target, so a
 //! teammate cannot change what reaches the remote after the person looked.
 
+use super::contracts::ChatPushRequestState;
 use super::reports::{
     HOST_TOOL_SOURCE, HostCall, HostCallOutcome, HostUpdateIds, record_question_update,
 };
 use crate::git::{GitPushTarget, is_object_id, is_supported_push_url, validate_branch_name};
+use crate::ids::derived_id;
 use crate::models::{ChatError, ChatErrorCode, ChatResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -22,6 +24,11 @@ pub const MAX_PUSH_SUMMARY_CHARS: usize = 1_000;
 const MAX_PUSH_FIELD_BYTES: usize = 1_024;
 /// Id part of a push request update derived from its host call.
 const PUSH_REQUEST_ID_PART: &str = "push-request";
+/// Id part every id a confirmation derives starts with, followed by the request item id.
+const PUSH_CONFIRMATION_ID_PART: &str = "push-confirmation";
+/// Prefix of the id of the teammate mention a confirmation reply carries; its presence marks
+/// the request pushed.
+pub const PUSH_CONFIRMATION_REFERENCE_PREFIX: &str = "message-reference";
 
 /// What a teammate asks to push, as Ganbaru read it from the folder.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -206,6 +213,9 @@ pub struct StoredPushRequest {
     pub summary: String,
     pub state: PushRequestState,
     pub assignment_id: String,
+    /// The authorization revision of the asking run, whose folder grant a confirmation checks;
+    /// `None` when the run is gone.
+    pub authorization_revision_id: Option<String>,
     pub channel_id: String,
     pub reply_thread_id: String,
     pub teammate_id: String,
@@ -220,6 +230,7 @@ struct PushRequestRow {
     assignment_id: String,
     assignment_state: String,
     run_state: Option<String>,
+    authorization_revision_id: Option<String>,
     run_is_latest: bool,
     is_newest_question: bool,
     person_replied_after: bool,
@@ -243,6 +254,7 @@ pub async fn read_push_request(
     let row: Option<PushRequestRow> = sqlx::query_as(
         "SELECT semantic.payload_data, semantic.assignment_id,
                 assignment.state AS assignment_state, run.state AS run_state,
+                run.authorization_revision_id,
                 coalesce(run.run_ordinal = (
                   SELECT max(latest.run_ordinal) FROM chat_agent_runs latest
                   WHERE latest.assignment_id = semantic.assignment_id
@@ -311,6 +323,7 @@ pub async fn read_push_request(
         summary,
         state,
         assignment_id: row.assignment_id,
+        authorization_revision_id: row.authorization_revision_id,
         channel_id: row.channel_id,
         reply_thread_id,
         teammate_id: row.teammate_id,
@@ -318,6 +331,55 @@ pub async fn read_push_request(
             .teammate_name
             .filter(|_| row.teammate_kind.as_deref() == Some("ai_teammate")),
     })
+}
+
+/// The id with `prefix` that the confirmation of the push request `item_id` derives, so
+/// confirming one request on two devices posts one reply.
+///
+/// # Errors
+///
+/// Returns a validation error for an unusable prefix or item id.
+pub fn push_confirmation_id(prefix: &str, item_id: &str) -> ChatResult<String> {
+    derived_id(prefix, &[PUSH_CONFIRMATION_ID_PART, item_id])
+}
+
+/// Reads where the push request `item_id` stands: pushed when its confirmation reply exists,
+/// else open, waiting, or closed from [`read_push_request`]. An unknown or malformed request is
+/// closed.
+///
+/// # Errors
+///
+/// Returns a persistence error when a read fails.
+pub async fn read_push_request_state(
+    connection: &mut SqliteConnection,
+    item_id: &str,
+) -> ChatResult<ChatPushRequestState> {
+    let reference_id = push_confirmation_id(PUSH_CONFIRMATION_REFERENCE_PREFIX, item_id)?;
+    let pushed: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_message_references WHERE id = ?)")
+            .bind(&reference_id)
+            .fetch_one(&mut *connection)
+            .await
+            .map_err(persistence_error)?;
+    if pushed {
+        return Ok(ChatPushRequestState::Pushed);
+    }
+    match read_push_request(connection, item_id).await {
+        Ok(stored) => Ok(match stored.state {
+            PushRequestState::Open => ChatPushRequestState::Open,
+            PushRequestState::Pending => ChatPushRequestState::Waiting,
+            PushRequestState::Closed => ChatPushRequestState::Closed,
+        }),
+        Err(error)
+            if matches!(
+                error.code,
+                ChatErrorCode::NotFound | ChatErrorCode::Validation
+            ) =>
+        {
+            Ok(ChatPushRequestState::Closed)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn parse_stored_payload(payload_data: &str) -> ChatResult<(String, PushRequest)> {

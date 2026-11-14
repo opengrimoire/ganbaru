@@ -28,7 +28,9 @@ use audit::{
     complete_audit_allowed, complete_audit_denied, denial_category, reserve_audit,
     returned_message_revisions,
 };
-pub(crate) use authorization::{verify_publication_scope, verify_scope};
+pub(crate) use authorization::{
+    verify_authorized_folder_source, verify_publication_scope, verify_scope,
+};
 use channels::{channel_messages, list_referenced_channels};
 use registry::{HostTool, HostToolClass};
 use workspace::{

@@ -19,7 +19,8 @@ export type ProviderTargetAuthorityBlocker =
  *
  * Commands are confined when the provider confines them itself, or when it sends every
  * command to the person and the target's effective approval is Ask under a non-custom
- * teammate policy. Publish stays refused until the provider classifies publication.
+ * teammate policy. Publish also needs the provider to classify publication through the push
+ * request host tool.
  *
  * @param authority - Authority support from the teammate provider's last probe.
  * @param target - The selected assignment target.

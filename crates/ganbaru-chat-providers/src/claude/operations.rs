@@ -50,7 +50,8 @@ impl ProviderDriver for ClaudeProviderDriver {
     /// the working directory, deny the network tools, and send every shell command to Ganbaru
     /// as a permission request. Where the Ganbaru sandbox is present, the commands run under
     /// it as the CLI's shell prefix, and a launch on a CLI too old for that is refused unless
-    /// the person approves each command. Claude cannot classify publication.
+    /// the person approves each command. Publication goes through the push request host tool,
+    /// which a person confirms.
     fn authority_support(&self) -> ProviderAuthoritySupport {
         ProviderAuthoritySupport {
             isolated_conversation: true,
@@ -60,7 +61,7 @@ impl ProviderDriver for ClaudeProviderDriver {
             writable_root: true,
             confined_commands: crate::confinement::sandbox_helper().is_some(),
             network_boundary: true,
-            classified_publish: false,
+            classified_publish: true,
             person_approved_commands: true,
         }
     }

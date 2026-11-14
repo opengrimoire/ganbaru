@@ -596,7 +596,7 @@ fn only_owned_local_servers_report_folder_authority() {
     assert!(support.isolated_conversation && support.internal_host_tools);
     assert!(support.deny_shell && support.read_only_root && support.writable_root);
     assert!(support.person_approved_commands && support.network_boundary);
-    assert!(!support.confined_commands && !support.classified_publish);
+    assert!(!support.confined_commands && support.classified_publish);
     let external = OpenCodeProviderDriver::new(configuration(json!({
         "mode": "external",
         "serverUrl": "http://127.0.0.1:4096",

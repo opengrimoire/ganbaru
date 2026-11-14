@@ -858,8 +858,8 @@ fn organizational_scope(
 ///
 /// Commands are confined when the provider confines them itself, or when every command reaches
 /// the person for approval and the run's effective approval policy is Ask, so each approval is
-/// the boundary for that command. Publish stays refused until a host tool classifies
-/// publication.
+/// the boundary for that command. Publish also needs the provider to classify publication: a
+/// teammate reaches a remote only through the push request host tool, which a person confirms.
 pub(super) fn provider_enforces_scope(
     support: ProviderAuthoritySupport,
     scope: ProviderOrganizationalScope,

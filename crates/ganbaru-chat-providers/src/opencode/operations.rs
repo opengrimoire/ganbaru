@@ -49,7 +49,8 @@ impl ProviderDriver for OpenCodeProviderDriver {
     /// language servers off. Reads and edits stay in the working directory, web tools, subagents,
     /// and other MCP servers are denied, and the shell is denied or runs every command through the
     /// sandbox helper when the device has one, and otherwise asks the person for every command,
-    /// which then runs unconfined. An external server's configuration is outside Ganbaru's
+    /// which then runs unconfined. Publication goes through the push request host tool, which a
+    /// person confirms. An external server's configuration is outside Ganbaru's
     /// control, so it supports nothing.
     fn authority_support(&self) -> ProviderAuthoritySupport {
         if self.settings.is_external() {
@@ -63,7 +64,7 @@ impl ProviderDriver for OpenCodeProviderDriver {
             writable_root: true,
             confined_commands: self.commands_confined(),
             network_boundary: true,
-            classified_publish: false,
+            classified_publish: true,
             person_approved_commands: true,
         }
     }

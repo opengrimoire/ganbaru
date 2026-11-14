@@ -165,7 +165,8 @@ pub(super) struct PermissionProfileSummary {
 /// approval reaches a person or the automatic reviewer: Ganbaru declines every native approval
 /// request, and approve-for-me runs use the `never` policy, so a write or command the sandbox
 /// refuses fails instead of retrying outside it. Commands therefore never count as person
-/// approved.
+/// approved. With the network off, publication goes only through the push request host tool, which
+/// a person confirms.
 pub(super) fn organizational_authority_support() -> ProviderAuthoritySupport {
     ProviderAuthoritySupport {
         isolated_conversation: true,
@@ -175,7 +176,7 @@ pub(super) fn organizational_authority_support() -> ProviderAuthoritySupport {
         writable_root: true,
         confined_commands: true,
         network_boundary: true,
-        classified_publish: false,
+        classified_publish: true,
         person_approved_commands: false,
     }
 }

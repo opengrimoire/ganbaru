@@ -498,8 +498,12 @@ fn claude_support_relays_commands_to_the_person_without_confining_them() {
     assert!(support.deny_shell && support.read_only_root && support.writable_root);
     assert!(support.network_boundary && support.person_approved_commands);
     assert!(
-        !support.confined_commands && !support.classified_publish,
-        "the shell is unconfined once approved, and publication is unclassified"
+        !support.confined_commands,
+        "the shell is unconfined once approved"
+    );
+    assert!(
+        support.classified_publish,
+        "publication goes through the push request host tool"
     );
 }
 

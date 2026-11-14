@@ -1267,7 +1267,6 @@ const CONFINING_SUPPORT: ProviderAuthoritySupport = ProviderAuthoritySupport {
 /// declares it.
 const APPROVING_SUPPORT: ProviderAuthoritySupport = ProviderAuthoritySupport {
     confined_commands: false,
-    classified_publish: false,
     person_approved_commands: true,
     ..CONFINING_SUPPORT
 };
@@ -1360,14 +1359,15 @@ fn person_approved_commands_confine_commands_only_under_ask() {
         }
     }
     let publish = folder(ProviderFolderCapability::Publish);
-    assert!(!provider_enforces_scope(APPROVING_SUPPORT, publish, true));
+    assert!(provider_enforces_scope(APPROVING_SUPPORT, publish, true));
+    assert!(!provider_enforces_scope(APPROVING_SUPPORT, publish, false));
     assert!(!provider_enforces_scope(
         ProviderAuthoritySupport {
-            classified_publish: true,
+            classified_publish: false,
             ..APPROVING_SUPPORT
         },
         publish,
-        false
+        true
     ));
     let without_approval = ProviderAuthoritySupport {
         person_approved_commands: false,

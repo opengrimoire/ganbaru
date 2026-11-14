@@ -533,7 +533,7 @@ fn organizational_authority_support_claims_only_enforced_boundaries() {
     assert!(support.confined_commands);
     assert!(support.network_boundary);
     assert!(!support.person_approved_commands);
-    assert!(!support.classified_publish);
+    assert!(support.classified_publish);
 }
 
 #[test]

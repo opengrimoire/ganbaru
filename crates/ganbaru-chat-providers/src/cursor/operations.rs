@@ -174,11 +174,15 @@ impl ProviderDriver for CursorProviderDriver {
                     };
                     let capabilities =
                         negotiated_capabilities_for(self.flavor, &initialize, None, self.observed);
+                    // Publication is classified only by the push request host tool, which needs
+                    // the internal MCP endpoint.
+                    let accepts_http_mcp =
+                        initialize.agent_capabilities.accepts_http_mcp(self.flavor);
+                    let base = self.authority_support();
                     let authority_support = ProviderAuthoritySupport {
-                        internal_host_tools: initialize
-                            .agent_capabilities
-                            .accepts_http_mcp(self.flavor),
-                        ..self.authority_support()
+                        internal_host_tools: accepts_http_mcp,
+                        classified_publish: base.classified_publish && accepts_http_mcp,
+                        ..base
                     };
                     Ok(ProviderProbeResult {
                         instance_id: self.configuration.instance_id.clone(),

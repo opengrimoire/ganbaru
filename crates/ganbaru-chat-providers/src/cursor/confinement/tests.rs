@@ -112,7 +112,7 @@ fn grok_claims_folder_boundaries_only_when_confined() {
     let confined = grok_authority_support(true);
     assert!(confined.deny_shell && confined.read_only_root && confined.writable_root);
     assert!(confined.confined_commands && confined.network_boundary);
-    assert!(!confined.classified_publish);
+    assert!(confined.classified_publish);
     assert!(!confined.person_approved_commands);
 }
 

@@ -120,7 +120,8 @@ impl AcpFolderAccess {
 /// files directly, `agent stdio` ignores the tool deny, removal, and subagent switches, and a
 /// trusted folder starts hooks outside the client callbacks. Under the sandbox those writes and
 /// processes fail in the kernel, every command reaches `terminal/create`, and the network is
-/// limited to the provider API and the internal MCP endpoint. Publishing stays unclaimed. The
+/// limited to the provider API and the internal MCP endpoint, so publication goes only through
+/// the push request host tool, which a person confirms. The
 /// command boundary is the sandbox, so person approval is not claimed as one, although every
 /// safety mode but full access still holds each confined command until the person allows it.
 pub(super) fn grok_authority_support(confined: bool) -> ProviderAuthoritySupport {
@@ -132,7 +133,7 @@ pub(super) fn grok_authority_support(confined: bool) -> ProviderAuthoritySupport
         writable_root: confined,
         confined_commands: confined,
         network_boundary: confined,
-        classified_publish: false,
+        classified_publish: confined,
         person_approved_commands: false,
     }
 }

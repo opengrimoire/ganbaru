@@ -1,6 +1,6 @@
 use super::callbacks::{
-    TerminalInvocation, create_acp_terminal, plan_write_refusal, terminal_invocation,
-    validate_terminal_command, windows_command_shell,
+    TerminalInvocation, create_acp_terminal, plan_write_refusal, refuse_git_metadata_write,
+    terminal_invocation, validate_terminal_command, windows_command_shell,
 };
 use super::{
     AcpTerminalCallbacks, AcpTerminalState, TerminalStreamDecoder, append_terminal_bytes,
@@ -550,4 +550,118 @@ fn process_exists(process_id: u32) -> bool {
         .stderr(std::process::Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
+}
+
+#[test]
+fn file_writes_never_reach_git_metadata() {
+    let workspace = PathBuf::from("/workspace");
+    for refused in [
+        "/workspace/.git/config",
+        "/workspace/.git/hooks/pre-commit",
+        "/workspace/vendor/lib/.git/config",
+        "/workspace/.GIT/config",
+        "/workspace/.git",
+    ] {
+        let error = refuse_git_metadata_write(&workspace, &PathBuf::from(refused)).unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Permission, "{refused}");
+    }
+    for allowed in [
+        "/workspace/.gitignore",
+        "/workspace/src/git/main.rs",
+        "/workspace/.github/ci.yml",
+    ] {
+        refuse_git_metadata_write(&workspace, &PathBuf::from(allowed)).unwrap();
+    }
+}
+
+fn grok_folder_callbacks(
+    workspace: &TestDirectory,
+    capability: crate::models::ProviderFolderCapability,
+) -> AcpTerminalCallbacks {
+    let helper: &'static ganbaru_sandbox::SandboxHelper = Box::leak(Box::new(
+        ganbaru_sandbox::SandboxHelper::at("/usr/lib/ganbaru/ganbaru-sandbox"),
+    ));
+    let internal_mcp = crate::models::ProviderInternalMcpConfig {
+        name: "ganbaru".to_string(),
+        url: "http://127.0.0.1:41234/mcp".to_string(),
+        bearer_token: "token".to_string(),
+        organizational_authority: true,
+        pre_approved_tools: Vec::new(),
+        organizational_scope: Some(crate::models::ProviderOrganizationalScope::Folder {
+            capability,
+        }),
+    };
+    let confinement = super::super::confinement::AcpCallbackConfinement::with_helper(
+        super::super::driver::AcpProviderFlavor::Grok,
+        Some(&internal_mcp),
+        &workspace.0,
+        Some(helper),
+    )
+    .unwrap();
+    assert!(confinement.is_some());
+    AcpTerminalCallbacks::new(workspace.0.clone(), "session-a".into()).with_confinement(confinement)
+}
+
+#[test]
+fn teammates_without_command_access_never_start_or_hold_terminals() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new();
+        for capability in [
+            crate::models::ProviderFolderCapability::Read,
+            crate::models::ProviderFolderCapability::Edit,
+        ] {
+            let callbacks = grok_folder_callbacks(&workspace, capability);
+            let refused = callbacks.verify_runs_commands().unwrap_err();
+            assert!(refused.message.starts_with("acp_command_outside_scope"));
+            let refused = create_acp_terminal(&callbacks, terminal_request("true", &[], &[]))
+                .await
+                .unwrap_err();
+            assert!(refused.message.starts_with("acp_command_outside_scope"));
+            assert!(callbacks.terminals.lock().unwrap().is_empty());
+        }
+    });
+}
+
+#[test]
+fn held_terminal_commands_run_only_on_a_single_allow() {
+    use super::super::interactions::{
+        TERMINAL_DECLINE_OPTION, TERMINAL_RUN_OPTION, terminal_approval_decisions,
+        terminal_approval_runs,
+    };
+    use crate::models::{ApprovalDecision, ApprovalDecisionKind};
+    let decision = |kind, option: Option<&str>| ApprovalDecision {
+        kind,
+        provider_option_id: option.map(str::to_string),
+        updated_tool_input: None,
+    };
+    assert!(
+        terminal_approval_decisions()
+            .iter()
+            .all(|option| option.decision_kind != ApprovalDecisionKind::AllowSession)
+    );
+    assert!(terminal_approval_runs(&decision(ApprovalDecisionKind::AllowOnce, None)).unwrap());
+    assert!(
+        terminal_approval_runs(&decision(
+            ApprovalDecisionKind::AllowOnce,
+            Some(TERMINAL_RUN_OPTION)
+        ))
+        .unwrap()
+    );
+    for declined in [
+        decision(ApprovalDecisionKind::Deny, None),
+        decision(ApprovalDecisionKind::Deny, Some(TERMINAL_DECLINE_OPTION)),
+        decision(ApprovalDecisionKind::Cancel, None),
+    ] {
+        assert!(!terminal_approval_runs(&declined).unwrap());
+    }
+    for refused in [
+        decision(ApprovalDecisionKind::AllowSession, None),
+        decision(
+            ApprovalDecisionKind::AllowOnce,
+            Some(TERMINAL_DECLINE_OPTION),
+        ),
+        decision(ApprovalDecisionKind::Deny, Some(TERMINAL_RUN_OPTION)),
+    ] {
+        assert!(terminal_approval_runs(&refused).is_err());
+    }
 }

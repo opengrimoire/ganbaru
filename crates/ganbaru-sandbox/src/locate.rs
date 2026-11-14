@@ -75,14 +75,27 @@ impl SandboxHelper {
         program: impl Into<OsString>,
         arguments: impl IntoIterator<Item = impl Into<OsString>>,
     ) -> Result<Command, SandboxError> {
+        let mut command = Command::new(&self.path);
+        command.args(self.arguments(policy, program, arguments)?);
+        Ok(command)
+    }
+
+    /// The helper arguments that run `program` with `arguments` under `policy`, for callers
+    /// that build their own command from [`Self::path`].
+    ///
+    /// The helper is refused when a writable policy path contains it, as in [`Self::command`].
+    pub fn arguments(
+        &self,
+        policy: &SandboxPolicy,
+        program: impl Into<OsString>,
+        arguments: impl IntoIterator<Item = impl Into<OsString>>,
+    ) -> Result<Vec<OsString>, SandboxError> {
         if policy.write.iter().any(|path| self.is_inside(path)) {
             return Err(SandboxError::HelperUnavailable(
                 "the helper lies inside a writable sandbox path".to_string(),
             ));
         }
-        let mut command = Command::new(&self.path);
-        command.args(encode_invocation(policy, program, arguments)?);
-        Ok(command)
+        encode_invocation(policy, program, arguments)
     }
 }
 

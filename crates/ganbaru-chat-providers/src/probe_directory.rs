@@ -18,15 +18,18 @@ pub struct ProbeDirectory {
 impl ProbeDirectory {
     /// Creates a fresh directory under the system temporary directory.
     pub fn create() -> ChatResult<Self> {
-        Self::create_in(&std::env::temp_dir())
+        Self::create_with_prefix(PROBE_DIRECTORY_PREFIX)
     }
 
-    fn create_in(parent: &Path) -> ChatResult<Self> {
-        let created = ganbaru_atomic_files::create_private_temporary_directory(
-            parent,
-            PROBE_DIRECTORY_PREFIX,
-        )
-        .map_err(|_| probe_directory_error())?;
+    /// Creates a fresh directory named with `prefix` under the system temporary directory, for
+    /// other private scratch uses such as the temporary directory of a confined process.
+    pub fn create_with_prefix(prefix: &str) -> ChatResult<Self> {
+        Self::create_in(&std::env::temp_dir(), prefix)
+    }
+
+    fn create_in(parent: &Path, prefix: &str) -> ChatResult<Self> {
+        let created = ganbaru_atomic_files::create_private_temporary_directory(parent, prefix)
+            .map_err(|_| probe_directory_error())?;
         match std::fs::canonicalize(&created) {
             Ok(path) => Ok(Self { path }),
             Err(_) => {

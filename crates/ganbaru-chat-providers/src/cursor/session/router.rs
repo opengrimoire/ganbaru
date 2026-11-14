@@ -8,7 +8,18 @@ pub fn spawn_cursor_router(resources: CursorRouterResources) -> JoinHandle<()> {
 }
 
 async fn route_inbound(mut resources: CursorRouterResources) {
-    while let Some(message) = resources.inbound.recv().await {
+    let git_metadata_tripped = resources.terminal_callbacks.git_metadata_tripped();
+    let mut ended_by_guard = false;
+    loop {
+        let message = tokio::select! {
+            message = resources.inbound.recv() => message,
+            () = wait_for_trip(git_metadata_tripped.as_deref()) => {
+                end_after_git_metadata_change(&resources).await;
+                ended_by_guard = true;
+                break;
+            }
+        };
+        let Some(message) = message else { break };
         let result = match message {
             AcpInboundMessage::Notification { method, params } => {
                 handle_notification(&resources, &method, params).await
@@ -27,7 +38,7 @@ async fn route_inbound(mut resources: CursorRouterResources) {
         }
     }
     resources.terminal_callbacks.shutdown();
-    if !resources.expected_shutdown.load(Ordering::Acquire) {
+    if !ended_by_guard && !resources.expected_shutdown.load(Ordering::Acquire) {
         if reached_memory_limit(resources.memory_limit.as_ref()).await {
             let warning = resources
                 .route
@@ -66,6 +77,48 @@ async fn route_inbound(mut resources: CursorRouterResources) {
             ),
         );
     }
+}
+
+/// Waits until a confined command changes the Git metadata of the folder; never returns for a
+/// session without the guard.
+async fn wait_for_trip(tripped: Option<&Notify>) {
+    match tripped {
+        Some(tripped) => tripped.notified().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Ends the session after a confined command changed Git metadata: the turn is interrupted with
+/// the reason, a warning records the change, and later operations fail with the same error.
+async fn end_after_git_metadata_change(resources: &CursorRouterResources) {
+    let error = super::super::git_guard::changed_error();
+    set_terminal_error(&resources.terminal_error, error.clone());
+    let events = resources
+        .route
+        .lock()
+        .map_err(|_| driver_state_error())
+        .and_then(|mut state| {
+            let warning = resources.normalizer.external_event(
+                &state,
+                "session/git_metadata_changed",
+                None,
+                CanonicalEvent::RuntimeWarning(NotificationEvent {
+                    code: "acp_git_metadata_changed".to_string(),
+                    title: "A teammate command changed this folder's Git hooks or configuration"
+                        .to_string(),
+                    detail: Some(error.message.clone()),
+                }),
+            )?;
+            let mut events = vec![warning];
+            events.extend(
+                resources
+                    .normalizer
+                    .interrupted(&mut state, &error.message)?,
+            );
+            Ok(events)
+        })
+        .unwrap_or_default();
+    emit_all(&resources.sink, events).await;
 }
 
 async fn handle_notification(
@@ -173,6 +226,9 @@ async fn handle_request(
         "session/request_permission" => handle_permission(resources, rpc_id, params).await,
         "fs/read_text_file" => handle_read_text_file(resources, rpc_id, params).await,
         "fs/write_text_file" => handle_write_text_file(resources, rpc_id, params).await,
+        "terminal/create" if holds_terminals_for_the_person(resources)? => {
+            hold_terminal_create(resources, rpc_id, params).await
+        }
         "terminal/create" => handle_terminal_create(resources, rpc_id, params).await,
         "terminal/output" => handle_terminal_output(resources, rpc_id, params).await,
         "terminal/wait_for_exit" => handle_terminal_wait(resources, rpc_id, params).await,
@@ -338,6 +394,83 @@ async fn handle_permission(
             rpc_id,
             kind: PendingCursorRequestKind::Approval {
                 options: parsed.options,
+            },
+        },
+    )
+}
+
+/// Whether a confined terminal command waits for the person: in every safety mode but full
+/// access, so the approval does not depend on the agent asking first.
+fn holds_terminals_for_the_person(resources: &CursorRouterResources) -> ChatResult<bool> {
+    if resources.terminal_callbacks.confinement.is_none() {
+        return Ok(false);
+    }
+    let safety_mode = resources
+        .route
+        .lock()
+        .map_err(|_| driver_state_error())?
+        .modes
+        .safety_mode;
+    Ok(safety_mode != SafetyMode::FullAccess)
+}
+
+/// Opens an approval for a confined terminal command and holds the request until the person
+/// decides; a command the session may not run is refused without asking.
+async fn hold_terminal_create(
+    resources: &CursorRouterResources,
+    rpc_id: Value,
+    params: Value,
+) -> ChatResult<()> {
+    let safe_payload = safe_shape(&params);
+    let request: CreateTerminalRequest = match serde_json::from_value(params) {
+        Ok(request) => request,
+        Err(_) => {
+            return reject_callback(resources, rpc_id, "Invalid terminal create request").await;
+        }
+    };
+    let admitted = resources
+        .terminal_callbacks
+        .verify_session(&request.session_id.to_string())
+        .and_then(|()| validate_terminal_command(&request))
+        .and_then(|()| resources.terminal_callbacks.verify_runs_commands());
+    if let Err(error) = admitted {
+        return reject_callback(resources, rpc_id, &error.message).await;
+    }
+    let request_id = ProviderRequestId::new(format!(
+        "ganbaru-terminal-{}",
+        NEXT_ACP_TERMINAL_APPROVAL.fetch_add(1, Ordering::Relaxed)
+    ))
+    .map_err(|_| protocol_error("terminal approval request ID"))?;
+    let command_line = std::iter::once(request.command.as_str())
+        .chain(request.args.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let opened = {
+        let state = resources.route.lock().map_err(|_| driver_state_error())?;
+        resources.normalizer.external_event(
+            &state,
+            "terminal/create",
+            Some(request_id.clone()),
+            CanonicalEvent::RequestOpened(RequestOpenedEvent {
+                request_id: request_id.clone(),
+                kind: CanonicalRequestKind::CommandExecution,
+                title: "Run a command in the working folder".to_string(),
+                detail: Some(bounded_text(&command_line, MAX_PROTOCOL_TEXT_BYTES)),
+                allowed_decisions: terminal_approval_decisions(),
+                safe_payload,
+                subject: None,
+                session_grants: Vec::new(),
+            }),
+        )?
+    };
+    resources.sink.emit(opened).await?;
+    insert_pending(
+        &resources.pending,
+        request_id,
+        PendingCursorRequest {
+            rpc_id,
+            kind: PendingCursorRequestKind::Terminal {
+                request: Box::new(request),
             },
         },
     )

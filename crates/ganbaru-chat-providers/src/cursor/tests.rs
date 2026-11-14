@@ -1312,10 +1312,10 @@ fn cursor_and_grok_read_their_verified_configuration_paths() {
 }
 
 /// Cursor writes files and, under a permissive project allowlist, runs the shell without asking
-/// the client, and Grok subagents write files directly, so no ACP flavor may claim a folder
-/// boundary and the coordinator refuses every folder scope for them.
+/// the client, so Cursor and generic agents claim no folder boundary. Grok claims them only when
+/// the sandbox confines its process on this device.
 #[test]
-fn acp_flavors_hold_conversation_boundaries_only() {
+fn acp_flavors_hold_conversation_boundaries_unless_grok_is_confined() {
     use crate::ProviderDriver;
 
     let home = TestDirectory::new("authority-support");
@@ -1326,7 +1326,7 @@ fn acp_flavors_hold_conversation_boundaries_only() {
     let generic =
         CursorProviderDriver::new_generic(generic_configuration(home.path(), None)).unwrap();
 
-    for driver in [&cursor, &grok, &generic] {
+    for driver in [&cursor, &generic] {
         let name = driver.metadata().display_name;
         let support = driver.authority_support();
         assert!(support.isolated_conversation, "{name}");
@@ -1343,6 +1343,10 @@ fn acp_flavors_hold_conversation_boundaries_only() {
             assert!(!held, "{name} must not claim {flag}");
         }
     }
+    assert_eq!(
+        grok.authority_support(),
+        super::confinement::grok_authority_support(super::confinement::sandbox_helper().is_some())
+    );
 }
 
 #[test]

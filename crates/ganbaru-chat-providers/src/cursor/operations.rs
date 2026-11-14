@@ -4,6 +4,7 @@ use super::driver::*;
 use super::executable::{CursorVersion, acp_continuation_group};
 use super::interactions::{
     PendingCursorRequestKind, resolve_approval_result, resolve_question_result,
+    terminal_approval_runs,
 };
 use super::protocol::*;
 use super::session::*;
@@ -93,14 +94,17 @@ impl ProviderDriver for CursorProviderDriver {
     /// Boundaries any ACP agent of this flavor can hold; a probe narrows `internal_host_tools` to
     /// the agent's HTTP MCP support.
     ///
-    /// No flavor holds a folder boundary. Cursor writes files itself without a permission
-    /// request or a client file callback, in every mode and with `--sandbox`, and a project
-    /// `.cursor/cli.json` allowlist runs the shell unasked. Grok routes its own shell and writes
-    /// through the client callbacks, but its subagents and workflows write files directly, and
-    /// `agent stdio` ignores the tool deny, removal, and subagent switches. A trusted Grok
-    /// folder also starts project hooks and MCP servers outside the callbacks. A generic agent
-    /// documents nothing.
+    /// Cursor and generic agents hold no folder boundary. Cursor writes files itself without a
+    /// permission request or a client file callback, in every mode and with `--sandbox`, and a
+    /// project `.cursor/cli.json` allowlist runs the shell unasked. A generic agent documents
+    /// nothing. Grok holds folder boundaries exactly when the sandbox helper confines its
+    /// process on this device; see [`super::confinement::grok_authority_support`].
     fn authority_support(&self) -> ProviderAuthoritySupport {
+        if self.flavor == AcpProviderFlavor::Grok {
+            return super::confinement::grok_authority_support(
+                super::confinement::sandbox_helper().is_some(),
+            );
+        }
         ProviderAuthoritySupport {
             isolated_conversation: true,
             internal_host_tools: true,
@@ -551,6 +555,39 @@ impl ProviderDriver for CursorProviderDriver {
             let provider_name = self.flavor.display_name();
             let live = self.live_mut(&request.session_id)?;
             let pending = take_pending(&live.pending, &request.provider_request_id)?;
+            if let PendingCursorRequestKind::Terminal { request: terminal } = &pending.kind {
+                let runs = match terminal_approval_runs(&request.decision) {
+                    Ok(runs) => runs,
+                    Err(error) => {
+                        restore_pending(
+                            &live.pending,
+                            request.provider_request_id.clone(),
+                            pending,
+                        );
+                        return Err(error);
+                    }
+                };
+                answer_held_terminal(live, pending.rpc_id.clone(), (**terminal).clone(), runs)
+                    .await?;
+                let event = {
+                    let state = live.route.lock().map_err(|_| driver_state_error())?;
+                    live.normalizer.external_event(
+                        &state,
+                        "terminal/create/resolved",
+                        Some(request.provider_request_id.clone()),
+                        CanonicalEvent::RequestResolved(RequestResolvedEvent {
+                            request_id: request.provider_request_id.clone(),
+                            state: RequestResolutionState::Resolved,
+                            decision: Some(request.decision.clone()),
+                        }),
+                    )?
+                };
+                live.sink.emit(event).await?;
+                return Ok(operation_receipt(
+                    request.command.client_command_id.as_str(),
+                    &format!("{provider_name} command approval accepted"),
+                ));
+            }
             if !matches!(&pending.kind, PendingCursorRequestKind::Approval { .. }) {
                 restore_pending(&live.pending, request.provider_request_id.clone(), pending);
                 return Err(ChatError::new(
@@ -991,6 +1028,41 @@ async fn image_content(
         "data": general_purpose::STANDARD.encode(bytes),
         "mimeType": mime,
     }))
+}
+
+/// Answers a held `terminal/create`: starts the command on an allow and reports its terminal,
+/// or refuses it when the person declined or the command could not start. A terminal whose
+/// answer never reached the agent is stopped.
+async fn answer_held_terminal(
+    live: &CursorLiveSession,
+    rpc_id: Value,
+    terminal: agent_client_protocol::schema::v1::CreateTerminalRequest,
+    runs: bool,
+) -> ChatResult<()> {
+    let client = live.connection.client();
+    if !runs {
+        return client
+            .respond_error(
+                rpc_id,
+                -32602,
+                "acp_command_declined: the person declined this command",
+            )
+            .await
+            .map_err(|error| error.to_chat_error("terminal decline response"));
+    }
+    match live.terminal_callbacks.create_approved(terminal).await {
+        Ok(response) => {
+            if let Err(error) = client.respond(rpc_id, response.clone()).await {
+                live.terminal_callbacks.discard(&response);
+                return Err(error.to_chat_error("terminal create response"));
+            }
+            Ok(())
+        }
+        Err(error) => client
+            .respond_error(rpc_id, -32602, &error.message)
+            .await
+            .map_err(|error| error.to_chat_error("terminal create rejection")),
+    }
 }
 
 async fn cancel_pending(live: &CursorLiveSession) {

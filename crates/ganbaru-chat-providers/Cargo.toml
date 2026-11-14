@@ -19,6 +19,7 @@ base64 = { workspace = true }
 chrono = { workspace = true }
 ganbaru-atomic-files = { workspace = true }
 ganbaru-chat-contracts = { workspace = true }
+ganbaru-sandbox = { workspace = true }
 reqwest = { workspace = true }
 rustls = { workspace = true }
 serde = { workspace = true }

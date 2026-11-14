@@ -37,9 +37,66 @@ pub struct XaiQuestion {
 
 #[derive(Clone, Debug)]
 pub enum PendingCursorRequestKind {
-    Approval { options: Vec<AcpPermissionOption> },
-    UserInput { questions: Vec<CursorQuestion> },
-    XaiUserInput { questions: Vec<XaiQuestion> },
+    Approval {
+        options: Vec<AcpPermissionOption>,
+    },
+    UserInput {
+        questions: Vec<CursorQuestion>,
+    },
+    XaiUserInput {
+        questions: Vec<XaiQuestion>,
+    },
+    /// A confined terminal command Ganbaru holds until the person decides; it starts only on
+    /// an allow.
+    Terminal {
+        request: Box<agent_client_protocol::schema::v1::CreateTerminalRequest>,
+    },
+}
+
+/// Option the person picks to run a held terminal command once.
+pub const TERMINAL_RUN_OPTION: &str = "ganbaru_run_once";
+/// Option the person picks to decline a held terminal command.
+pub const TERMINAL_DECLINE_OPTION: &str = "ganbaru_decline";
+
+/// The decisions Ganbaru offers for a held terminal command: run it once or decline it. A
+/// session-wide allow is not offered, since each command is its own approval.
+pub fn terminal_approval_decisions() -> Vec<ApprovalDecisionOption> {
+    vec![
+        ApprovalDecisionOption {
+            id: TERMINAL_RUN_OPTION.to_string(),
+            label: "Run once".to_string(),
+            decision_kind: ApprovalDecisionKind::AllowOnce,
+            description: None,
+        },
+        ApprovalDecisionOption {
+            id: TERMINAL_DECLINE_OPTION.to_string(),
+            label: "Decline".to_string(),
+            decision_kind: ApprovalDecisionKind::Deny,
+            description: None,
+        },
+    ]
+}
+
+/// Whether the person's decision on a held terminal command starts it.
+pub fn terminal_approval_runs(decision: &ApprovalDecision) -> ChatResult<bool> {
+    let (runs, option) = match decision.kind {
+        ApprovalDecisionKind::AllowOnce => (true, TERMINAL_RUN_OPTION),
+        ApprovalDecisionKind::Deny => (false, TERMINAL_DECLINE_OPTION),
+        ApprovalDecisionKind::Cancel => return Ok(false),
+        ApprovalDecisionKind::AllowSession => {
+            return Err(ChatError::validation(
+                "decision.kind",
+                "A terminal command is approved once at a time",
+            ));
+        }
+    };
+    match decision.provider_option_id.as_deref() {
+        Some(selected) if selected != option => Err(ChatError::validation(
+            "decision.providerOptionId",
+            "Approval decision was not one of the offered options",
+        )),
+        _ => Ok(runs),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -404,7 +461,7 @@ pub fn resolve_question_result(
         PendingCursorRequestKind::XaiUserInput { questions } => {
             return resolve_xai_question_result(questions, answers);
         }
-        PendingCursorRequestKind::Approval { .. } => {
+        PendingCursorRequestKind::Approval { .. } | PendingCursorRequestKind::Terminal { .. } => {
             return Err(ChatError::new(
                 ChatErrorCode::Conflict,
                 "ACP request is not structured input",

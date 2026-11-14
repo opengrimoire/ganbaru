@@ -17,6 +17,9 @@ pub struct AcpSessionInitialization<'a> {
     pub resume_session_id: Option<&'a str>,
     pub requested: AcpRequestedConfiguration<'a>,
     pub internal_mcp: Option<&'a ProviderInternalMcpConfig>,
+    /// Whether the client offers `terminal/create`; a session whose folder access runs no
+    /// commands leaves it out.
+    pub offers_terminal: bool,
     pub context: &'a DriverOperationContext,
 }
 
@@ -45,6 +48,7 @@ pub async fn initialize_session(
             model_options,
         },
         internal_mcp: None,
+        offers_terminal: true,
         context,
     })
     .await
@@ -62,11 +66,12 @@ pub async fn initialize_provider_session(
         resume_session_id,
         requested,
         internal_mcp,
+        offers_terminal,
         context,
     } = initialization;
     let client = connection.client();
     let provider_name = flavor.display_name();
-    let initialize = negotiate_initialize(flavor, &client, context).await?;
+    let initialize = negotiate_initialize(flavor, &client, offers_terminal, context).await?;
     if let Some(method) = select_auth_method(provider_name, auth, &initialize)? {
         client
             .request("authenticate", json!({ "methodId": method }), context)
@@ -137,20 +142,22 @@ pub async fn initialize_provider_session(
     })
 }
 
-/// Sends `initialize` and checks the negotiated ACP protocol version.
+/// Sends `initialize`, offering `terminal/create` when `terminal` is set, and checks the
+/// negotiated ACP protocol version.
 ///
 /// This is the whole exchange an `initialize`-only probe makes: no authentication, session, or
 /// extension request follows it.
 pub async fn negotiate_initialize(
     flavor: AcpProviderFlavor,
     client: &AcpRpcClient,
+    terminal: bool,
     context: &DriverOperationContext,
 ) -> ChatResult<AcpInitializeResponse> {
     let provider_name = flavor.display_name();
     let filesystem = FileSystemCapabilities::new()
         .read_text_file(true)
         .write_text_file(true);
-    let capabilities = ClientCapabilities::new().fs(filesystem).terminal(true);
+    let capabilities = ClientCapabilities::new().fs(filesystem).terminal(terminal);
     // The parameterized model picker is a vendor extension; a generic agent gets the base
     // capabilities only.
     let capabilities = if flavor.offers_structured_extensions() {

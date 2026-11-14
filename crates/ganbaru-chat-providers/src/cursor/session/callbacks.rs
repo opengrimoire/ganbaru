@@ -62,6 +62,10 @@ pub(super) async fn handle_write_text_file(
         let (workspace, session_id) = route_workspace(resources)?;
         require_acp_session(&request.session_id.to_string(), &session_id)?;
         refuse_write_in_plan(resources)?;
+        if let Some(confinement) = resources.terminal_callbacks.confinement.as_deref() {
+            confinement.verify_write()?;
+        }
+        refuse_git_metadata_write(&workspace, &request.path)?;
         if request.content.len() as u64 > MAX_ACP_FILE_BYTES || request.content.contains('\0') {
             return Err(ChatError::validation(
                 "content",
@@ -70,6 +74,9 @@ pub(super) async fn handle_write_text_file(
         }
         let path = verified_write_path(&workspace, &request.path)?;
         atomic_write_text(&path, request.content.as_bytes())?;
+        if let Some(confinement) = resources.terminal_callbacks.confinement.as_deref() {
+            confinement.verify_git_metadata()?;
+        }
         serde_json::to_value(WriteTextFileResponse::new())
             .map_err(|_| protocol_error("ACP file write response"))
     })();
@@ -260,12 +267,27 @@ pub(super) async fn create_acp_terminal(
         .and_then(|limit| usize::try_from(limit).ok())
         .unwrap_or(DEFAULT_ACP_TERMINAL_OUTPUT_BYTES)
         .clamp(1, MAX_ACP_TERMINAL_OUTPUT_BYTES);
-    let mut command = terminal_command(&request)?;
+    let confinement = callbacks.confinement.clone();
+    let environment = request
+        .env
+        .iter()
+        .map(|value| (value.name.as_str(), value.value.as_str()))
+        .chain(TERMINAL_NONINTERACTIVE_ENVIRONMENT.iter().copied());
+    let mut command = match confinement.as_deref() {
+        None => {
+            let mut command = terminal_command(&request)?;
+            command.envs(environment);
+            command
+        }
+        Some(confinement) => {
+            let (program, arguments) = confined_invocation(&request);
+            confinement
+                .terminal_sandbox()?
+                .command(&program, &arguments, environment)?
+        }
+    };
     command
         .current_dir(cwd)
-        .envs(request.env.iter().map(|value| (&value.name, &value.value)))
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GCM_INTERACTIVE", "never")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -320,6 +342,7 @@ pub(super) async fn create_acp_terminal(
         output_tasks,
         state,
         completed,
+        confinement,
     ));
     Ok(terminal_id)
 }
@@ -363,7 +386,7 @@ fn terminal_command(request: &CreateTerminalRequest) -> ChatResult<Command> {
 /// Runs `line` through `/bin/sh -c`, the shell POSIX guarantees.
 #[cfg(unix)]
 fn shell_command(line: &str) -> ChatResult<Command> {
-    let mut command = Command::new("/bin/sh");
+    let mut command = Command::new(POSIX_SHELL);
     command.arg("-c").arg(line);
     Ok(command)
 }
@@ -427,6 +450,7 @@ async fn supervise_terminal(
     output_tasks: [JoinHandle<()>; 2],
     state: Arc<Mutex<AcpTerminalState>>,
     completed: Arc<Notify>,
+    confinement: Option<Arc<AcpCallbackConfinement>>,
 ) {
     let (exit_code, kill_requested) =
         wait_terminal_exit(&mut command.child, &command.tree, &mut kill).await;
@@ -444,6 +468,14 @@ async fn supervise_terminal(
             None => TerminalExitStatus::new().signal("terminated".to_string()),
         });
     }
+    // A changed Git metadata digest trips the guard, which ends the session; the error itself
+    // is reported by the router.
+    let verify_git_metadata = || {
+        if let Some(confinement) = confinement.as_deref() {
+            let _ = confinement.verify_git_metadata();
+        }
+    };
+    verify_git_metadata();
     completed.notify_waiters();
     if !kill_requested {
         let _ = kill.recv().await;
@@ -451,6 +483,39 @@ async fn supervise_terminal(
     command.tree.terminate();
     command.tree.retire();
     let _ = command.child.wait().await;
+    // Background descendants may write after the command itself exited.
+    verify_git_metadata();
+}
+
+/// The program and arguments of a confined terminal request: exec requests as sent, and command
+/// lines through the POSIX shell, which the sandbox executes from the system.
+fn confined_invocation(request: &CreateTerminalRequest) -> (String, Vec<String>) {
+    match terminal_invocation(request) {
+        TerminalInvocation::Exec(program, arguments) => (program.to_string(), arguments.to_vec()),
+        TerminalInvocation::Shell(line) => (
+            POSIX_SHELL.to_string(),
+            vec!["-c".to_string(), line.to_string()],
+        ),
+    }
+}
+
+/// Refuses a file write whose path names a Git directory or gitfile, because Git metadata can
+/// name commands that later Git processes run.
+pub(super) fn refuse_git_metadata_write(workspace: &Path, requested: &Path) -> ChatResult<()> {
+    let relative = verified_relative_path(workspace, requested)?;
+    let names_git_metadata = relative.components().any(|component| {
+        ganbaru_chat_contracts::protected_paths::component_is_git_metadata(
+            &component.as_os_str().to_string_lossy(),
+        )
+    });
+    if names_git_metadata {
+        return Err(ChatError::new(
+            ChatErrorCode::Permission,
+            "acp_git_metadata_write_refused: teammates may not write Git metadata",
+            true,
+        ));
+    }
+    Ok(())
 }
 
 /// A terminal command and its process tree.

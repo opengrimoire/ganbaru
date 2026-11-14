@@ -1867,6 +1867,7 @@ dependencies = [
  "chrono",
  "ganbaru-atomic-files",
  "ganbaru-chat-contracts",
+ "ganbaru-sandbox",
  "libc",
  "reqwest",
  "rustls",

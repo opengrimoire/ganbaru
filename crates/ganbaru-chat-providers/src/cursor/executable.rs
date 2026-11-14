@@ -379,20 +379,7 @@ pub fn spawn_acp_connection_process(
             spawn_connection_process(configuration, settings, working_directory)
         }
         super::driver::AcpProviderFlavor::Grok => {
-            let mut environment = process_environment_for(configuration, "Grok")?;
-            environment.insert("GROK_OAUTH2_REFERRER".to_string(), "ganbaru".to_string());
-            let executable = resolve_executable(&configuration.executable, &environment)
-                .map_err(|_| grok_executable_missing_error())?;
-            let arguments = grok_launch_arguments(&configuration.launch_arguments)?;
-            spawn_provider_process(ProviderProcessConfig {
-                executable,
-                arguments,
-                working_directory: working_directory.to_path_buf(),
-                environment,
-                stderr_limit_bytes: CURSOR_STDERR_LIMIT_BYTES,
-                purpose: crate::process::ProviderProcessPurpose::Session,
-                provider_instance_label: Some(configuration.label.clone()),
-            })
+            spawn_grok_connection_process(configuration, working_directory)
         }
         super::driver::AcpProviderFlavor::Generic => {
             let environment = process_environment_for(configuration, flavor.display_name())?;
@@ -411,6 +398,65 @@ pub fn spawn_acp_connection_process(
     }
 }
 
+/// Starts Grok over ACP, under the sandbox helper for an organizational launch when the device
+/// has one; see [`super::confinement`].
+fn spawn_grok_connection_process(
+    configuration: &ProviderInstanceConfig,
+    working_directory: &Path,
+) -> ChatResult<crate::process::ProviderProcessHandle> {
+    use super::confinement::*;
+
+    let access = AcpFolderAccess::for_launch(configuration.internal_mcp.as_ref())?;
+    let helper = grok_confinement(access, sandbox_helper())?;
+    let mut environment = process_environment_for(configuration, "Grok")?;
+    environment.insert("GROK_OAUTH2_REFERRER".to_string(), "ganbaru".to_string());
+    let executable = resolve_executable(&configuration.executable, &environment)
+        .map_err(|_| grok_executable_missing_error())?;
+    let process = |executable, arguments, environment| {
+        spawn_provider_process(ProviderProcessConfig {
+            executable,
+            arguments,
+            working_directory: working_directory.to_path_buf(),
+            environment,
+            stderr_limit_bytes: CURSOR_STDERR_LIMIT_BYTES,
+            purpose: crate::process::ProviderProcessPurpose::Session,
+            provider_instance_label: Some(configuration.label.clone()),
+        })
+    };
+    let Some(helper) = helper else {
+        let arguments = grok_launch_arguments(&configuration.launch_arguments)?;
+        return process(executable, arguments, environment);
+    };
+    let home = grok_home(&environment)?;
+    let workspace = fs::canonicalize(working_directory).map_err(|_| sandbox_unavailable_error())?;
+    let launch = prepare_grok_launch(
+        &GrokPolicyPaths {
+            home: &home,
+            executable: &executable,
+            workspace: &workspace,
+        },
+        configuration.internal_mcp.as_ref(),
+    )?;
+    let mut arguments = grok_launch_arguments(&configuration.launch_arguments)?;
+    // Global switches precede the command, and this one follows the configured arguments so
+    // none of them can turn web search back on.
+    arguments.insert(
+        arguments.len() - GROK_COMMAND_ARGUMENTS.len(),
+        GROK_DISABLE_WEB_SEARCH.to_string(),
+    );
+    for (name, value) in GROK_CONFINED_ENVIRONMENT {
+        environment.insert((*name).to_string(), (*value).to_string());
+    }
+    environment.insert(
+        "TMPDIR".to_string(),
+        launch.temporary.to_string_lossy().into_owned(),
+    );
+    let arguments = helper_arguments(helper, &launch.policy, &executable, &arguments)?;
+    let mut handle = process(helper.path().to_path_buf(), arguments, environment)?;
+    handle.retain_directory(launch.temporary);
+    Ok(handle)
+}
+
 /// Passes the configured arguments of a generic ACP agent through unchanged.
 ///
 /// The agent speaks ACP on standard input and output as launched, so Ganbaru adds no argument;
@@ -425,6 +471,9 @@ pub fn generic_launch_arguments(configured: &[String]) -> ChatResult<Vec<String>
     Ok(configured.to_vec())
 }
 
+/// The Grok command that serves ACP on standard input and output, after any global switch.
+const GROK_COMMAND_ARGUMENTS: [&str; 2] = ["agent", "stdio"];
+
 pub fn grok_launch_arguments(configured: &[String]) -> ChatResult<Vec<String>> {
     if configured.iter().any(|argument| {
         let normalized = argument.trim().to_ascii_lowercase();
@@ -438,7 +487,7 @@ pub fn grok_launch_arguments(configured: &[String]) -> ChatResult<Vec<String>> {
         ));
     }
     let mut arguments = configured.to_vec();
-    arguments.extend(["agent".to_string(), "stdio".to_string()]);
+    arguments.extend(GROK_COMMAND_ARGUMENTS.map(str::to_string));
     Ok(arguments)
 }
 

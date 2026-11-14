@@ -1,5 +1,6 @@
 //! Cursor ACP session startup, configuration, and inbound request routing.
 
+use super::confinement::AcpCallbackConfinement;
 use super::driver::AcpProviderFlavor;
 use super::interactions::*;
 use super::normalizer::{CursorEventNormalizer, CursorRouteState};
@@ -68,8 +69,14 @@ const ACP_TERMINAL_OUTPUT_DRAIN: std::time::Duration = std::time::Duration::from
 const ACP_TERMINAL_ENVIRONMENT_DENYLIST: &[&str] = &["LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH"];
 /// Loader variable prefixes an agent may not set on a terminal.
 const ACP_TERMINAL_ENVIRONMENT_DENYLIST_PREFIXES: &[&str] = &["DYLD_"];
+/// Variables that keep Git and its credential helpers from waiting for terminal input.
+const TERMINAL_NONINTERACTIVE_ENVIRONMENT: &[(&str, &str)] =
+    &[("GIT_TERMINAL_PROMPT", "0"), ("GCM_INTERACTIVE", "never")];
+/// The shell POSIX guarantees, which runs terminal command lines on Unix.
+const POSIX_SHELL: &str = "/bin/sh";
 static NEXT_ACP_FILE_WRITE: AtomicU64 = AtomicU64::new(1);
 static NEXT_ACP_TERMINAL: AtomicU64 = AtomicU64::new(1);
+static NEXT_ACP_TERMINAL_APPROVAL: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug)]
 pub struct AcpStartedSession {
@@ -102,6 +109,9 @@ pub struct AcpTerminalCallbacks {
     workspace: PathBuf,
     session_id: String,
     terminals: Arc<Mutex<HashMap<String, AcpTerminal>>>,
+    /// Folder access and terminal sandbox of an organizational Grok session; `None` keeps the
+    /// plain workspace boundary.
+    confinement: Option<Arc<AcpCallbackConfinement>>,
 }
 
 #[derive(Clone)]
@@ -138,6 +148,52 @@ impl AcpTerminalCallbacks {
             workspace,
             session_id,
             terminals: Arc::new(Mutex::new(HashMap::new())),
+            confinement: None,
+        }
+    }
+
+    /// Applies the folder access and terminal sandbox of an organizational Grok session.
+    pub(super) fn with_confinement(mut self, confinement: Option<AcpCallbackConfinement>) -> Self {
+        self.confinement = confinement.map(Arc::new);
+        self
+    }
+
+    /// Signaled when a confined command changed the Git metadata of the folder.
+    fn git_metadata_tripped(&self) -> Option<Arc<Notify>> {
+        self.confinement
+            .as_deref()
+            .and_then(AcpCallbackConfinement::git_metadata_tripped)
+    }
+
+    /// Refuses a terminal command the session may not run, before the person is asked.
+    fn verify_runs_commands(&self) -> ChatResult<()> {
+        self.confinement.as_deref().map_or(Ok(()), |confinement| {
+            confinement.terminal_sandbox().map(|_| ())
+        })
+    }
+
+    /// Starts a terminal command the person approved.
+    pub(super) async fn create_approved(
+        &self,
+        request: CreateTerminalRequest,
+    ) -> ChatResult<Value> {
+        let terminal_id = callbacks::create_acp_terminal(self, request).await?;
+        serde_json::to_value(CreateTerminalResponse::new(terminal_id))
+            .map_err(|_| protocol_error("ACP terminal create response"))
+    }
+
+    /// Stops and forgets a terminal whose start the agent never learned of.
+    pub(super) fn discard(&self, response: &Value) {
+        let Some(id) = response.get("terminalId").and_then(Value::as_str) else {
+            return;
+        };
+        if let Some(terminal) = self
+            .terminals
+            .lock()
+            .ok()
+            .and_then(|mut terminals| terminals.remove(id))
+        {
+            terminal.terminate();
         }
     }
 

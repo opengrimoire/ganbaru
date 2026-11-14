@@ -65,9 +65,16 @@ pub struct ProviderProcessHandle {
     resource_scope: Option<ResourceScope>,
     /// Reports a memory ceiling kill of a scoped process.
     memory_limit: Option<systemd_scope::MemoryLimitWatch>,
+    /// Private directory the process uses, removed after the process is stopped.
+    retained_directory: Option<crate::probe_directory::ProbeDirectory>,
 }
 
 impl ProviderProcessHandle {
+    /// Keeps `directory` until the handle drops, so it outlives the process that uses it.
+    pub fn retain_directory(&mut self, directory: crate::probe_directory::ProbeDirectory) {
+        self.retained_directory = Some(directory);
+    }
+
     pub fn process_id(&self) -> Option<u32> {
         self.child.id()
     }
@@ -310,6 +317,7 @@ pub fn spawn_provider_process(config: ProviderProcessConfig) -> ChatResult<Provi
         registration,
         resource_scope,
         memory_limit,
+        retained_directory: None,
     })
 }
 

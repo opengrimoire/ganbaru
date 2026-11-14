@@ -1,5 +1,6 @@
 //! Cursor provider driver and live-session ownership.
 
+use super::confinement::AcpCallbackConfinement;
 use super::executable::*;
 use super::interactions::PendingCursorRequests;
 use super::normalizer::{CursorEventNormalizer, CursorRouteState};
@@ -112,6 +113,8 @@ pub(super) struct CursorLiveSession {
     pub sink: Arc<dyn ProviderEventSink>,
     pub expected_shutdown: Arc<AtomicBool>,
     pub terminal_error: Arc<Mutex<Option<ChatError>>>,
+    /// Starts the terminal commands the person approves after the router held them.
+    pub terminal_callbacks: AcpTerminalCallbacks,
     pub session_id: ProviderSessionId,
     /// Instructions this native session holds: accepted in a prompt of this live session, or
     /// reported as delivered when it was loaded for resume. A later turn with the same
@@ -365,6 +368,7 @@ impl CursorProviderDriver {
                 model_options: &[],
             },
             internal_mcp: None,
+            offers_terminal: true,
             context,
         })
         .await;
@@ -394,7 +398,7 @@ impl CursorProviderDriver {
         let (inbound, result) = match connection.take_inbound() {
             Ok(receiver) => (
                 Some(receiver),
-                negotiate_initialize(self.flavor, &connection.client(), context).await,
+                negotiate_initialize(self.flavor, &connection.client(), true, context).await,
             ),
             Err(error) => (None, Err(error)),
         };
@@ -439,6 +443,14 @@ impl CursorProviderDriver {
         }
         let workspace = canonical_verified_workspace(input.workspace())?;
         let cursor = input.resume_cursor()?;
+        let confinement = AcpCallbackConfinement::for_session(
+            self.flavor,
+            self.configuration.internal_mcp.as_ref(),
+            &workspace,
+        )?;
+        let offers_terminal = confinement
+            .as_ref()
+            .is_none_or(AcpCallbackConfinement::offers_terminal);
         let (mut connection, about) = self.open_connection(&workspace).await?;
         let group = acp_continuation_group(
             &self.configuration,
@@ -484,6 +496,7 @@ impl CursorProviderDriver {
                 model_options: input.model_options(),
             },
             internal_mcp: self.configuration.internal_mcp.as_ref(),
+            offers_terminal,
             context,
         })
         .await
@@ -532,7 +545,8 @@ impl CursorProviderDriver {
         let expected_shutdown = Arc::new(AtomicBool::new(false));
         let terminal_error = Arc::new(Mutex::new(None));
         let terminal_callbacks =
-            AcpTerminalCallbacks::new(workspace.clone(), started.session_id.clone());
+            AcpTerminalCallbacks::new(workspace.clone(), started.session_id.clone())
+                .with_confinement(confinement);
         let router_task = spawn_cursor_router(CursorRouterResources {
             client: connection.client(),
             inbound,
@@ -544,7 +558,7 @@ impl CursorProviderDriver {
             terminal_error: Arc::clone(&terminal_error),
             flavor: self.flavor,
             prompt_completions: Arc::clone(&prompt_completions),
-            terminal_callbacks,
+            terminal_callbacks: terminal_callbacks.clone(),
             memory_limit: connection.memory_limit_watch(),
         });
         let state = route.lock().map_err(|_| driver_state_error())?.clone();
@@ -616,6 +630,7 @@ impl CursorProviderDriver {
             sink,
             expected_shutdown,
             terminal_error,
+            terminal_callbacks,
             session_id: local_session_id.clone(),
             delivered_instructions: Arc::new(Mutex::new(input.held_instructions())),
         });

@@ -30,6 +30,7 @@ mod commands;
 mod discovery;
 mod mcp_reload;
 mod rollback;
+mod sandbox_gate;
 mod session_open;
 mod support;
 
@@ -64,6 +65,10 @@ pub struct CodexProviderDriver {
     cached_models: Option<ProviderModelCatalog>,
     #[cfg(test)]
     connection_factory: Option<TestConnectionFactory>,
+    /// Whether the Codex command sandbox starts, as the check reports it for drivers with a test
+    /// connection factory.
+    #[cfg(test)]
+    test_sandbox_starts: bool,
 }
 
 #[cfg(test)]
@@ -124,12 +129,19 @@ impl CodexProviderDriver {
             cached_models: None,
             #[cfg(test)]
             connection_factory: None,
+            #[cfg(test)]
+            test_sandbox_starts: true,
         })
     }
 
     #[cfg(test)]
     pub(super) fn set_connection_factory(&mut self, factory: TestConnectionFactory) {
         self.connection_factory = Some(factory);
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_test_sandbox_starts(&mut self, starts: bool) {
+        self.test_sandbox_starts = starts;
     }
 
     /// Replaces the internal MCP endpoint of a driver whose session is already open, which no
@@ -210,7 +222,7 @@ impl ProviderDriver for CodexProviderDriver {
     }
 
     fn authority_support(&self) -> ProviderAuthoritySupport {
-        organizational_authority_support()
+        self.device_authority_support()
     }
 
     fn cached_model_catalog(&self) -> Option<ProviderModelCatalog> {

@@ -334,6 +334,93 @@ fn organizational_session_without_a_scope_fails_before_launch() {
 }
 
 #[test]
+fn a_device_without_the_codex_sandbox_refuses_folder_and_scratch_scopes_before_launch() {
+    crate::test_block_on(async {
+        for scope in [
+            ProviderOrganizationalScope::Folder {
+                capability: ProviderFolderCapability::Read,
+            },
+            ProviderOrganizationalScope::Folder {
+                capability: ProviderFolderCapability::Edit,
+            },
+            ProviderOrganizationalScope::Folder {
+                capability: ProviderFolderCapability::Execute,
+            },
+            ProviderOrganizationalScope::Scratch,
+        ] {
+            let workspace = TestDirectory::new("driver-organizational-no-sandbox");
+            let (mut driver, fixture) = organizational_scope_driver(workspace.path(), Some(scope));
+            driver.set_test_sandbox_starts(false);
+            let sink: Arc<dyn ProviderEventSink> = Arc::new(RecordingSink::default());
+            let error = driver
+                .start_session(
+                    start_request(workspace.path()),
+                    sink,
+                    &context("organizational-no-sandbox-start"),
+                )
+                .await
+                .unwrap_err();
+
+            assert_eq!(error.code, ChatErrorCode::Permission, "{scope:?}");
+            assert!(error.message.contains("command sandbox"), "{scope:?}");
+            assert_eq!(fixture.connections.load(Ordering::Acquire), 0, "{scope:?}");
+        }
+    });
+}
+
+#[test]
+fn a_device_without_the_codex_sandbox_still_opens_conversations() {
+    crate::test_block_on(async {
+        let workspace = TestDirectory::new("driver-organizational-conversation-no-sandbox");
+        let (mut driver, _fixture) = organizational_scope_driver(
+            workspace.path(),
+            Some(ProviderOrganizationalScope::Conversation),
+        );
+        driver.set_test_sandbox_starts(false);
+        let sink: Arc<dyn ProviderEventSink> = Arc::new(RecordingSink::default());
+        let snapshot = driver
+            .start_session(
+                start_request(workspace.path()),
+                sink,
+                &context("organizational-conversation-no-sandbox-start"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            driver.authority_support(),
+            organizational_conversation_support()
+        );
+        driver
+            .stop_session(
+                StopSessionRequest {
+                    session_id: snapshot.session_id,
+                    force: true,
+                },
+                &context("organizational-conversation-no-sandbox-stop"),
+            )
+            .await
+            .unwrap();
+    });
+}
+
+#[test]
+fn authority_support_follows_the_codex_sandbox_check() {
+    let workspace = TestDirectory::new("driver-authority-sandbox");
+    let (mut driver, _fixture) = fixture_driver(workspace.path(), FixtureScenario::Healthy);
+    assert_eq!(
+        driver.authority_support(),
+        organizational_authority_support()
+    );
+    driver.set_test_sandbox_starts(false);
+    let support = driver.authority_support();
+    assert_eq!(support, organizational_conversation_support());
+    assert!(support.isolated_conversation && support.internal_host_tools);
+    assert!(!support.read_only_root && !support.writable_root && !support.deny_shell);
+    assert!(!support.confined_commands && !support.network_boundary);
+}
+
+#[test]
 fn organizational_session_rejects_a_profile_wider_than_the_scope() {
     crate::test_block_on(async {
         let workspace = TestDirectory::new("driver-organizational-mismatch");

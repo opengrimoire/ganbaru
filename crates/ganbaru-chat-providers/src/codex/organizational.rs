@@ -180,6 +180,37 @@ pub(super) fn organizational_authority_support() -> ProviderAuthoritySupport {
     }
 }
 
+/// The boundaries an organizational Codex launch proves when the Codex command sandbox cannot
+/// start on this device: a conversation from a neutral directory with the internal host tools,
+/// and no folder or scratch access, because every folder scope depends on that sandbox.
+pub(super) fn organizational_conversation_support() -> ProviderAuthoritySupport {
+    ProviderAuthoritySupport {
+        isolated_conversation: true,
+        internal_host_tools: true,
+        ..ProviderAuthoritySupport::default()
+    }
+}
+
+/// Whether an organizational launch under `internal_mcp` reaches a folder or scratch scope, and
+/// so needs the Codex command sandbox to start on this device.
+pub(super) fn organizational_scope_needs_sandbox(
+    internal_mcp: Option<&ProviderInternalMcpConfig>,
+) -> bool {
+    internal_mcp.is_some_and(|server| {
+        server.organizational_authority
+            && server.organizational_scope != Some(ProviderOrganizationalScope::Conversation)
+    })
+}
+
+/// The refusal of a folder or scratch launch on a device where the Codex sandbox cannot start.
+pub(super) fn sandbox_unavailable_error() -> ChatError {
+    ChatError::new(
+        ChatErrorCode::Permission,
+        "Codex cannot start its command sandbox on this device, so it cannot take folder or scratch access",
+        false,
+    )
+}
+
 pub(super) fn append_organizational_base_arguments(
     arguments: &mut Vec<String>,
     access: CodexOrganizationalAccess,

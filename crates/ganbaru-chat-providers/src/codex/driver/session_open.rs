@@ -220,6 +220,11 @@ impl CodexProviderDriver {
         let project_configuration = input.workspace().project_configuration;
         let organizational =
             CodexOrganizationalAccess::for_launch(self.configuration.internal_mcp.as_ref())?;
+        if organizational_scope_needs_sandbox(self.configuration.internal_mcp.as_ref())
+            && !self.command_sandbox_starts().await
+        {
+            return Err(sandbox_unavailable_error());
+        }
         let (mut connection, layout) = if let Some(access) = organizational {
             self.open_organizational_connection(&workspace, project_configuration, access, context)
                 .await?

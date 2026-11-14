@@ -61,6 +61,7 @@ impl CodexProviderDriver {
 
     /// Proves every organizational launch shape against this Codex before any support is
     /// reported, so a version that rejects one shape reports no organizational support at all.
+    /// A device where the Codex command sandbox cannot start reports conversation support only.
     async fn probe_organizational_authority(
         &self,
         working_directory: &Path,
@@ -88,6 +89,9 @@ impl CodexProviderDriver {
                 context,
             )
             .await?;
+        }
+        if !self.command_sandbox_starts().await {
+            return Ok(organizational_conversation_support());
         }
         Ok(organizational_authority_support())
     }

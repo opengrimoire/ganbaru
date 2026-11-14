@@ -6,6 +6,7 @@ mod home;
 mod normalizer;
 mod organizational;
 mod protocol;
+mod sandbox_check;
 mod session;
 mod transport;
 

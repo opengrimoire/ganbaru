@@ -1,12 +1,13 @@
 import {
   CHAT_WORK_ASSIGNMENT_STATES,
   type ChatMessageRead,
+  type ChatPushRequest,
   type ChatScheduleProposal,
   type ChatWorkAssignmentRead,
   type ChatWorkAssignmentState,
   type VersionedJson,
 } from "$lib/chat/contracts";
-import { parseChatScheduleProposal } from "$lib/chat/validation";
+import { parseChatPushRequest, parseChatScheduleProposal } from "$lib/chat/validation";
 import { compareOrderKeyThenId } from "$lib/utils/order-key";
 
 /** Payload source a host tool call writes on the agent updates it posts. */
@@ -21,6 +22,7 @@ export type HostReportKind = (typeof HOST_REPORT_KINDS)[number];
 /** What an agent update message carries, as far as the reply thread presents it. */
 export type ChatAgentUpdatePresentation =
   | { kind: "host_question"; assignmentId: string; choices: string[] }
+  | { kind: "push_request"; assignmentId: string; push: ChatPushRequest }
   | { kind: "host_report"; assignmentId: string; reportKind: HostReportKind }
   | { kind: "schedule_proposal"; assignmentId: string; proposal: ChatScheduleProposal }
   | { kind: "note_proposal"; assignmentId: string }
@@ -46,6 +48,10 @@ export function chatAgentUpdatePresentation(richContent: VersionedJson): ChatAge
   const assignmentId = nonEmptyString(value.assignmentId);
   if (assignmentId === null || payload.source !== HOST_TOOL_UPDATE_SOURCE) return null;
   if (updateKind === "question") {
+    if (payload.push !== undefined) {
+      const push = pushRequest(payload.push);
+      return push ? { kind: "push_request", assignmentId, push } : null;
+    }
     return { kind: "host_question", assignmentId, choices: questionChoices(payload.choices) };
   }
   if (updateKind === "note_proposal") {
@@ -86,6 +92,15 @@ function scheduleProposal(payload: Record<string, unknown>): ChatScheduleProposa
   }
 }
 
+/** Reads a push target another device wrote, or `null` when any field is malformed. */
+function pushRequest(value: unknown): ChatPushRequest | null {
+  try {
+    return parseChatPushRequest(value);
+  } catch {
+    return null;
+  }
+}
+
 /** Keeps the distinct, nonblank text choices, in order. */
 function questionChoices(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -117,7 +132,7 @@ type QuestionReply = Pick<ChatMessageRead, "itemId" | "orderKey" | "richContent"
 
 /**
  * Returns the newest host question of the thread's work while that work waits for an answer, when it
- * offers choices and no person replied after it. Answered questions get no chips.
+ * offers choices and no person replied after it. Answered questions and newer push requests get no chips.
  */
 export function answerableHostQuestion(
   replies: readonly QuestionReply[],
@@ -134,6 +149,7 @@ export function answerableHostQuestion(
     if (presentation?.kind === "host_question" && presentation.assignmentId === assignment.id) {
       return presentation.choices.length > 0 ? { messageItemId: reply.itemId, choices: presentation.choices } : null;
     }
+    if (presentation?.kind === "push_request" && presentation.assignmentId === assignment.id) return null;
     if (reply.author && reply.author.kind !== "ai_teammate") return null;
   }
   return null;

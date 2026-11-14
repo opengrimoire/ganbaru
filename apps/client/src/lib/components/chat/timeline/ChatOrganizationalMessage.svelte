@@ -214,6 +214,12 @@
         <module.default proposalItemId={message.itemId} {proposal} />
       {/await}
     {/if}
+    {#if agentUpdate?.kind === "push_request"}
+      {@const push = agentUpdate.push}
+      {#await import("./ChatPushRequestCard.svelte") then module}
+        <module.default requestItemId={message.itemId} {push} />
+      {/await}
+    {/if}
     {#if agentUpdate?.kind === "note_proposal"}
       {#await import("./ChatNoteProposalCard.svelte") then module}
         <module.default proposalItemId={message.itemId} body={message.normalizedMarkdown} />

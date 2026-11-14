@@ -8,6 +8,8 @@ import {
   parseChatChannelNote,
   parseChatChannelNotes,
   parseChatNoteProposalStates,
+  parseChatPushRequest,
+  parseChatPushRequestStates,
   parsePostChatMessageResult,
   parseChatMessageSearchResults,
   parseChatScheduledMessage,
@@ -1165,6 +1167,43 @@ describe("chat scheduling contracts", () => {
     const states = [{ proposalItemId: "item:a", state: "pending" }, { proposalItemId: "item:b", state: "dismissed" }];
     expect(parseChatScheduleProposalStates(states)).toEqual(states);
     expect(() => parseChatScheduleProposalStates([{ proposalItemId: "item:a", state: "expired" }])).toThrow("state");
+  });
+});
+
+describe("chat push request contracts", () => {
+  const push = {
+    workingFolderId: "folder:1",
+    executionEnvironmentId: "environment:1",
+    localBranch: "topic",
+    remote: "origin",
+    destinationBranch: "topic",
+    pushUrl: "git@example.invalid:org/repo.git",
+    objectId: "a".repeat(64),
+    gitConfigDigest: "b".repeat(64),
+  };
+
+  it("parses a push target and accepts a user name without a password", () => {
+    expect(parseChatPushRequest(push)).toEqual(push);
+    for (const pushUrl of ["ssh://git@example.invalid/r", "https://example.invalid/r?a=b@c:d", "/srv/repo.git"]) {
+      expect(parseChatPushRequest({ ...push, pushUrl }).pushUrl).toBe(pushUrl);
+    }
+  });
+
+  it("refuses passwords, unprintable URLs, and malformed ids", () => {
+    for (const pushUrl of ["https://me:secret@example.invalid/r", "ssh://a:b@c@example.invalid/r", "", "a b", "a\u0007", "x".repeat(2_049)]) {
+      expect(() => parseChatPushRequest({ ...push, pushUrl }), pushUrl).toThrow("pushUrl");
+    }
+    expect(() => parseChatPushRequest({ ...push, objectId: "a".repeat(41) })).toThrow("objectId");
+    expect(() => parseChatPushRequest({ ...push, objectId: "A".repeat(40) })).toThrow("objectId");
+    expect(() => parseChatPushRequest({ ...push, gitConfigDigest: "b".repeat(40) })).toThrow("gitConfigDigest");
+    expect(() => parseChatPushRequest({ ...push, remote: "" })).toThrow("remote");
+    expect(() => parseChatPushRequest({ ...push, executionEnvironmentId: undefined })).toThrow("executionEnvironmentId");
+  });
+
+  it("parses push request states", () => {
+    const states = [{ requestItemId: "item:a", state: "waiting" }, { requestItemId: "item:b", state: "pushed" }];
+    expect(parseChatPushRequestStates(states)).toEqual(states);
+    expect(() => parseChatPushRequestStates([{ requestItemId: "item:a", state: "pending" }])).toThrow("state");
   });
 });
 

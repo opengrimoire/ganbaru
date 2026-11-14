@@ -16,6 +16,27 @@ function hostQuestion(choices: JsonValue, assignmentId = "assignment:1"): ChatMe
   });
 }
 
+const pushTarget = {
+  workingFolderId: "folder:1",
+  executionEnvironmentId: null,
+  localBranch: "topic",
+  remote: "origin",
+  destinationBranch: "topic",
+  pushUrl: "ssh://git@example.invalid/org/repo.git",
+  objectId: "a".repeat(40),
+  gitConfigDigest: "b".repeat(64),
+};
+
+function pushRequest(push: JsonValue, assignmentId = "assignment:1"): ChatMessageRead["richContent"] {
+  return content({
+    type: "agent_update",
+    updateKind: "question",
+    assignmentId,
+    agentRunId: "run:1",
+    payload: { question: "Push the fix", choices: [], source: "host_tool", push },
+  });
+}
+
 const person: ChatParticipantRead = {
   id: "participant:local",
   kind: "local_user",
@@ -163,6 +184,20 @@ describe("chatAgentUpdatePresentation", () => {
     }))).toBeNull();
   });
 
+  it("reads a host push request and refuses a malformed or credential-bearing target", () => {
+    expect(chatAgentUpdatePresentation(pushRequest(pushTarget))).toEqual({
+      kind: "push_request",
+      assignmentId: "assignment:1",
+      push: pushTarget,
+    });
+    expect(chatAgentUpdatePresentation(pushRequest({ ...pushTarget, objectId: "HEAD" }))).toBeNull();
+    expect(chatAgentUpdatePresentation(pushRequest({ ...pushTarget, pushUrl: "https://me:secret@example.invalid/r" }))).toBeNull();
+    expect(chatAgentUpdatePresentation(pushRequest({ ...pushTarget, gitConfigDigest: "B".repeat(64) }))).toBeNull();
+    expect(chatAgentUpdatePresentation(pushRequest(null))).toBeNull();
+    const { executionEnvironmentId: _omitted, ...withoutEnvironment } = pushTarget;
+    expect(chatAgentUpdatePresentation(pushRequest(withoutEnvironment))).toBeNull();
+  });
+
   it("returns null for plain messages and malformed rich content", () => {
     expect(chatAgentUpdatePresentation(content({}))).toBeNull();
     expect(chatAgentUpdatePresentation(content([]))).toBeNull();
@@ -199,6 +234,17 @@ describe("answerableHostQuestion", () => {
     expect(answerableHostQuestion([
       reply("item:question", "a", hostQuestion(["Yes"])),
       reply("item:update", "b", content({}), teammate),
+    ], waiting)).toEqual({ messageItemId: "item:question", choices: ["Yes"] });
+  });
+
+  it("offers nothing after a newer push request for the same work", () => {
+    expect(answerableHostQuestion([
+      reply("item:question", "a", hostQuestion(["Yes"])),
+      reply("item:push", "b", pushRequest(pushTarget)),
+    ], waiting)).toBeNull();
+    expect(answerableHostQuestion([
+      reply("item:question", "a", hostQuestion(["Yes"])),
+      reply("item:push", "b", pushRequest(pushTarget, "assignment:2")),
     ], waiting)).toEqual({ messageItemId: "item:question", choices: ["Yes"] });
   });
 

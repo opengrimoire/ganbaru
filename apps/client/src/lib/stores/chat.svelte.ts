@@ -833,6 +833,17 @@ export class ChatStore {
     return scheduled;
   }
 
+  /** Pushes the commit of a teammate's push request in `workingFolderId` and posts the confirming reply. */
+  async confirmPushRequest(
+    request: import("$lib/chat/contracts").ConfirmPushRequestRequest,
+    workingFolderId: string,
+  ): Promise<import("$lib/chat/contracts").PostChatMessageResult> {
+    const channelId = this.selectedChannelId;
+    const result = await this.organizationalController.confirmPushRequest(request, workingFolderId);
+    this.publishChannelChange(channelId);
+    return result;
+  }
+
   async sendScheduledOrganizationalMessageNow(
     id: ChatScheduledMessageId,
   ): Promise<import("$lib/chat/contracts").PostChatMessageResult> {

@@ -13,6 +13,7 @@ import type {
   UtcTimestamp,
   VersionedJson,
 } from "$lib/chat/contracts";
+import { withWorkingFolderTrust } from "$lib/api/working-folder-trust";
 import { cloneData } from "$lib/utils/clone";
 
 export interface ChatOrganizationalDraft {
@@ -157,6 +158,25 @@ export class ChatOrganizationalController {
     const scheduled = await chatApi.confirmChatScheduleProposal(request);
     this.scheduledMessagesVersion += 1;
     return scheduled;
+  }
+
+  /**
+   * Pushes the commit of a teammate's push request in `workingFolderId`, asking for a trust decision
+   * about the folder's Git configuration when this device has none, then rereads the open thread so
+   * the confirming reply shows.
+   */
+  async confirmPushRequest(
+    request: import("$lib/chat/contracts").ConfirmPushRequestRequest,
+    workingFolderId: string,
+  ): Promise<PostChatMessageResult> {
+    const result = await withWorkingFolderTrust(workingFolderId, () => chatApi.confirmChatPushRequest(request));
+    const channelId = this.options.selectedChannelId();
+    if (channelId) await this.options.loadChannelMessages(channelId, true);
+    const replyThreadId = this.options.openReplyThreadId();
+    if (replyThreadId && replyThreadId === result.replyThreadId) {
+      await this.options.loadReplyThread(replyThreadId, true);
+    }
+    return result;
   }
 
   async retryScheduled(id: ChatScheduledMessageId): Promise<ChatScheduledMessageRead> {

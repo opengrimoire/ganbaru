@@ -1,0 +1,68 @@
+import {
+  CHAT_PUSH_REQUEST_STATES,
+  type ChatPushRequest,
+  type ChatPushRequestStateRead,
+} from "../contracts";
+import { readArray, readEnum, readIdentifier, readNullable, readRecord, readString } from "./readers";
+
+/** Longest push URL Ganbaru records, in UTF-8 bytes. */
+const MAX_PUSH_URL_BYTES = 2_048;
+const OBJECT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
+const UNSAFE_URL_CHARACTER_PATTERN = /[\p{Cc}\s]/u;
+
+/**
+ * Reads the push target of a teammate's push request. Requests replicate from other devices, so every
+ * field is checked against the shape Ganbaru writes, and a push URL that carries a password is refused.
+ */
+export function parseChatPushRequest(value: unknown, label = "Chat push request"): ChatPushRequest {
+  const record = readRecord(value, label);
+  return {
+    workingFolderId: readIdentifier(record.workingFolderId, `${label}.workingFolderId`),
+    executionEnvironmentId: readNullable(record.executionEnvironmentId, `${label}.executionEnvironmentId`, readIdentifier),
+    localBranch: readIdentifier(record.localBranch, `${label}.localBranch`),
+    remote: readIdentifier(record.remote, `${label}.remote`),
+    destinationBranch: readIdentifier(record.destinationBranch, `${label}.destinationBranch`),
+    pushUrl: readPushUrl(record.pushUrl, `${label}.pushUrl`),
+    objectId: readPattern(record.objectId, OBJECT_ID_PATTERN, `${label}.objectId`),
+    gitConfigDigest: readPattern(record.gitConfigDigest, DIGEST_PATTERN, `${label}.gitConfigDigest`),
+  };
+}
+
+/** Reads where each named push request stands. */
+export function parseChatPushRequestStates(
+  value: unknown,
+  label = "Chat push request states",
+): ChatPushRequestStateRead[] {
+  return readArray(value, label, (entry, path) => {
+    const record = readRecord(entry, path);
+    return {
+      requestItemId: readIdentifier(record.requestItemId, `${path}.requestItemId`),
+      state: readEnum(record.state, CHAT_PUSH_REQUEST_STATES, `${path}.state`),
+    };
+  });
+}
+
+function readPattern(value: unknown, pattern: RegExp, label: string): string {
+  const text = readString(value, label);
+  if (!pattern.test(text)) throw new Error(`${label} is malformed`);
+  return text;
+}
+
+/** A bounded, printable URL whose user information, when present, names no password. */
+function readPushUrl(value: unknown, label: string): string {
+  const url = readString(value, label);
+  if (!url || new TextEncoder().encode(url).byteLength > MAX_PUSH_URL_BYTES || UNSAFE_URL_CHARACTER_PATTERN.test(url)) {
+    throw new Error(`${label} is malformed`);
+  }
+  const schemeEnd = url.indexOf("://");
+  if (schemeEnd === -1) return url;
+  const afterScheme = url.slice(schemeEnd + 3);
+  const authorityEnd = afterScheme.search(/[/?#]/);
+  const authority = authorityEnd === -1 ? afterScheme : afterScheme.slice(0, authorityEnd);
+  const userInfoEnd = authority.lastIndexOf("@");
+  if (userInfoEnd !== -1 && authority.slice(0, userInfoEnd).includes(":")) {
+    throw new Error(`${label} must not carry a password`);
+  }
+  return url;
+}

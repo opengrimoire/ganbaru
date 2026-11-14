@@ -8,17 +8,21 @@
 //! confines again with write access to the folder and no network. When the helper is missing or
 //! the kernel cannot enforce a policy, folder and scratch launches are refused.
 
+use crate::confinement::{
+    DEVICE_WRITE, GitMetadataGuard, PROVIDER_API_PORT, TerminalSandbox, existing_paths,
+    resolver_configuration, scope_refusal,
+};
 use crate::models::*;
 use ganbaru_sandbox::{NetworkAccess, SandboxHelper, SandboxPolicy};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 
-use super::git_guard::GitMetadataGuard;
-use toolchains::{ToolchainGrants, resolve_existing, toolchain_grants};
+pub(super) use crate::confinement::{CONFINED_TEMPORARY_PREFIX, sandbox_helper};
 
 #[cfg(test)]
 mod tests;
-mod toolchains;
+
+/// Teammate provider named in confinement refusals.
+const PROVIDER: &str = "Grok";
 
 /// System trees a confined Grok process reads: programs, libraries, configuration such as TLS
 /// roots and name resolution, and the kernel views a runtime inspects.
@@ -31,21 +35,15 @@ const GROK_SYSTEM_READ: &[&str] = &[
     "/sys",
     "/dev/urandom",
 ];
-/// Files every confined process may write without reaching user data.
-const DEVICE_WRITE: &[&str] = &["/dev/null"];
 /// Grok home folders a confined Grok process writes: its session store and its logs.
 const GROK_HOME_WRITABLE_FOLDERS: &[&str] = &["sessions", "logs"];
 /// Grok home files a confined Grok process writes when they already exist.
 const GROK_HOME_WRITABLE_FILES: &[&str] = &["managed_config.lock"];
-/// Port of the provider API, reached over TLS.
-const PROVIDER_API_PORT: u16 = 443;
 /// Grok global switch that removes its web search tool; it must precede the `agent` command.
 pub(super) const GROK_DISABLE_WEB_SEARCH: &str = "--disable-web-search";
 /// Grok environment that turns off fetching web pages and sending telemetry.
 pub(super) const GROK_CONFINED_ENVIRONMENT: &[(&str, &str)] =
     &[("GROK_WEB_FETCH", "0"), ("GROK_TELEMETRY_ENABLED", "0")];
-/// Prefix of the private temporary directory of one confined process.
-pub(super) const CONFINED_TEMPORARY_PREFIX: &str = "ganbaru-confined-";
 
 /// Folder access of one Grok launch, derived from its organizational scope.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -106,27 +104,6 @@ impl AcpFolderAccess {
     fn runs_unconfined(self) -> bool {
         self == Self::Conversation
     }
-}
-
-/// The sandbox helper of this installation, when it is present and the kernel enforces a
-/// policy; checked once per app run.
-///
-/// Off Linux there is no helper, so this is always `None`.
-pub(super) fn sandbox_helper() -> Option<&'static SandboxHelper> {
-    static HELPER: OnceLock<Option<SandboxHelper>> = OnceLock::new();
-    HELPER.get_or_init(locate_enforcing_helper).as_ref()
-}
-
-#[cfg(target_os = "linux")]
-fn locate_enforcing_helper() -> Option<SandboxHelper> {
-    let helper = SandboxHelper::locate().ok()?;
-    ganbaru_sandbox::probe(&helper).ok()?;
-    Some(helper)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn locate_enforcing_helper() -> Option<SandboxHelper> {
-    None
 }
 
 /// Boundaries a Grok teammate holds, given whether the sandbox confines its process.
@@ -272,32 +249,7 @@ pub(super) fn grok_home(
 
 /// The loopback port of the internal MCP endpoint.
 pub(super) fn internal_mcp_port(url: &str) -> ChatResult<u16> {
-    let parsed = reqwest::Url::parse(url).map_err(|_| sandbox_policy_error())?;
-    let loopback = parsed.host_str().is_some_and(|host| {
-        host.eq_ignore_ascii_case("localhost")
-            || host
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .parse::<std::net::IpAddr>()
-                .is_ok_and(|address| address.is_loopback())
-    });
-    parsed
-        .port_or_known_default()
-        .filter(|port| loopback && *port != 0)
-        .ok_or_else(sandbox_policy_error)
-}
-
-/// The file `/etc/resolv.conf` points to, which name resolution reads.
-fn resolver_configuration() -> Option<PathBuf> {
-    std::fs::canonicalize("/etc/resolv.conf").ok()
-}
-
-fn existing_paths(paths: &[&str], exists: &impl Fn(&Path) -> bool) -> Vec<PathBuf> {
-    paths
-        .iter()
-        .map(PathBuf::from)
-        .filter(|path| exists(path))
-        .collect()
+    crate::confinement::internal_mcp_port(url, PROVIDER)
 }
 
 /// Helper arguments as provider process arguments; a path that is not valid Unicode is refused.
@@ -307,28 +259,15 @@ pub(super) fn helper_arguments(
     program: &Path,
     arguments: &[String],
 ) -> ChatResult<Vec<String>> {
-    helper
-        .arguments(policy, program, arguments)
-        .map_err(|_| sandbox_unavailable_error())?
-        .into_iter()
-        .map(|argument| argument.into_string().map_err(|_| sandbox_policy_error()))
-        .collect()
+    crate::confinement::helper_arguments(helper, policy, program, arguments, PROVIDER)
 }
 
 pub(super) fn sandbox_unavailable_error() -> ChatError {
-    ChatError::new(
-        ChatErrorCode::Permission,
-        "Grok needs the Ganbaru sandbox to work in a folder, and it is unavailable on this device",
-        false,
-    )
+    crate::confinement::sandbox_unavailable_error(PROVIDER)
 }
 
 fn sandbox_policy_error() -> ChatError {
-    ChatError::new(
-        ChatErrorCode::Permission,
-        "Ganbaru could not prepare the sandbox for this Grok session",
-        false,
-    )
+    crate::confinement::sandbox_policy_error(PROVIDER)
 }
 
 fn organizational_permission_error() -> ChatError {
@@ -338,20 +277,6 @@ fn organizational_permission_error() -> ChatError {
         false,
     )
 }
-
-/// System trees a confined terminal command reads.
-const TERMINAL_SYSTEM_READ: &[&str] =
-    &["/etc", "/proc", "/dev/urandom", "/dev/random", "/dev/zero"];
-/// System trees a confined terminal command executes from, the dynamic loader among them.
-const TERMINAL_SYSTEM_EXECUTE: &[&str] = &[
-    "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/opt",
-];
-/// App environment variables a confined terminal command keeps, apart from `PATH`.
-const TERMINAL_KEPT_ENVIRONMENT: &[&str] = &["LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TERM"];
-/// `PATH` of a confined terminal command when the app has none.
-const TERMINAL_DEFAULT_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
-/// The `env` program that applies requested variables inside the sandbox.
-const CONFINED_ENV: &str = "/usr/bin/env";
 
 /// What the client callbacks of one organizational Grok session may do.
 pub(super) struct AcpCallbackConfinement {
@@ -389,7 +314,7 @@ impl AcpCallbackConfinement {
             return Ok(None);
         };
         let terminals = if access.runs_commands() {
-            Some(TerminalSandbox::prepare(helper, workspace)?)
+            Some(TerminalSandbox::prepare(helper, workspace, PROVIDER)?)
         } else {
             None
         };
@@ -427,7 +352,7 @@ impl AcpCallbackConfinement {
             .terminals
             .as_ref()
             .ok_or_else(sandbox_unavailable_error)?;
-        sandbox.guard.verify()?;
+        sandbox.guard().verify()?;
         Ok(sandbox)
     }
 
@@ -437,192 +362,6 @@ impl AcpCallbackConfinement {
     }
 
     fn guard(&self) -> Option<&GitMetadataGuard> {
-        self.terminals.as_ref().map(|sandbox| &sandbox.guard)
+        self.terminals.as_ref().map(TerminalSandbox::guard)
     }
-}
-
-/// The sandbox that confines the commands one Grok session asks Ganbaru to run: they write the
-/// working folder and a private temporary directory, execute system programs, the folder, the
-/// toolchains on `PATH`, and the toolchain homes such as Cargo's, and have no network.
-pub(super) struct TerminalSandbox {
-    helper: &'static SandboxHelper,
-    policy: SandboxPolicy,
-    environment: Vec<(String, std::ffi::OsString)>,
-    guard: GitMetadataGuard,
-    /// Private temporary and home directory of the commands, removed with the session.
-    _temporary: crate::probe_directory::ProbeDirectory,
-}
-
-impl TerminalSandbox {
-    fn prepare(helper: &'static SandboxHelper, workspace: &Path) -> ChatResult<Self> {
-        let temporary =
-            crate::probe_directory::ProbeDirectory::create_with_prefix(CONFINED_TEMPORARY_PREFIX)?;
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .filter(|home| home.is_absolute())
-            .and_then(|home| std::fs::canonicalize(home).ok());
-        let search_path = std::env::var_os("PATH");
-        let toolchains = toolchain_directories(
-            search_path
-                .as_deref()
-                .map(std::env::split_paths)
-                .into_iter()
-                .flatten(),
-            home.as_deref(),
-            workspace,
-            |path| {
-                std::fs::canonicalize(path)
-                    .ok()
-                    .filter(|path| path.is_dir())
-            },
-        );
-        let homes = toolchain_grants(
-            |name| std::env::var_os(name),
-            home.as_deref(),
-            workspace,
-            resolve_existing,
-        );
-        let policy = terminal_policy(workspace, &temporary, &toolchains, &homes, |path| {
-            path.exists()
-        })?;
-        let guard = GitMetadataGuard::watch(workspace)?;
-        let mut environment = vec![
-            (
-                "PATH".to_string(),
-                search_path.unwrap_or_else(|| TERMINAL_DEFAULT_PATH.into()),
-            ),
-            ("HOME".to_string(), temporary.as_os_str().to_owned()),
-            ("TMPDIR".to_string(), temporary.as_os_str().to_owned()),
-        ];
-        environment.extend(
-            TERMINAL_KEPT_ENVIRONMENT.iter().filter_map(|name| {
-                std::env::var_os(name).map(|value| ((*name).to_string(), value))
-            }),
-        );
-        environment.extend(homes.environment);
-        Ok(Self {
-            helper,
-            policy,
-            environment,
-            guard,
-            _temporary: temporary,
-        })
-    }
-
-    /// A command that runs `program` with `arguments` under the terminal policy, with the
-    /// confined environment in place of the app environment.
-    ///
-    /// The requested `environment` is applied by `env` inside the sandbox, never to the helper
-    /// itself, so loader variables such as `LD_DEBUG_OUTPUT` cannot act before the policy holds.
-    /// A program name with `=` is refused, because `env` would read it as a variable.
-    pub(super) fn command<'a>(
-        &self,
-        program: &str,
-        arguments: &[String],
-        environment: impl IntoIterator<Item = (&'a str, &'a str)>,
-    ) -> ChatResult<tokio::process::Command> {
-        let confined_arguments = confined_env_arguments(program, arguments, environment)?;
-        let mut command = tokio::process::Command::new(self.helper.path());
-        command
-            .args(
-                self.helper
-                    .arguments(&self.policy, CONFINED_ENV, confined_arguments)
-                    .map_err(|_| sandbox_unavailable_error())?,
-            )
-            .env_clear()
-            .envs(self.environment.iter().map(|(name, value)| (name, value)));
-        Ok(command)
-    }
-}
-
-/// The `env` arguments that set `environment` and then run `program` with `arguments`.
-pub(super) fn confined_env_arguments<'a>(
-    program: &str,
-    arguments: &[String],
-    environment: impl IntoIterator<Item = (&'a str, &'a str)>,
-) -> ChatResult<Vec<String>> {
-    if program.contains('=') {
-        return Err(ChatError::validation(
-            "command",
-            "ACP terminal program names cannot contain =",
-        ));
-    }
-    let mut confined = vec!["--".to_string()];
-    for (name, value) in environment {
-        // `env` splits each assignment at its first `=`, so a name holding one would set
-        // another variable.
-        if name.is_empty() || name.contains('=') {
-            return Err(ChatError::validation(
-                "env",
-                "ACP terminal variable names cannot be empty or contain =",
-            ));
-        }
-        confined.push(format!("{name}={value}"));
-    }
-    confined.push(program.to_string());
-    confined.extend(arguments.iter().cloned());
-    Ok(confined)
-}
-
-/// The toolchain folders on `PATH` a confined command may execute from.
-///
-/// Relative entries, folders that do not resolve, and folders that contain the home directory or
-/// the working folder are left out, so a broad entry such as `/` or the home directory never
-/// opens the user's files.
-pub(super) fn toolchain_directories(
-    entries: impl IntoIterator<Item = PathBuf>,
-    home: Option<&Path>,
-    workspace: &Path,
-    resolve: impl Fn(&Path) -> Option<PathBuf>,
-) -> Vec<PathBuf> {
-    let mut directories: Vec<PathBuf> = Vec::new();
-    for entry in entries {
-        if !entry.is_absolute() {
-            continue;
-        }
-        let Some(directory) = resolve(&entry) else {
-            continue;
-        };
-        let opens_user_files = home.is_some_and(|home| home.starts_with(&directory))
-            || workspace.starts_with(&directory);
-        if !opens_user_files && !directories.contains(&directory) {
-            directories.push(directory);
-        }
-    }
-    directories
-}
-
-/// The policy of one confined terminal command.
-pub(super) fn terminal_policy(
-    workspace: &Path,
-    temporary: &Path,
-    toolchains: &[PathBuf],
-    homes: &ToolchainGrants,
-    exists: impl Fn(&Path) -> bool,
-) -> ChatResult<SandboxPolicy> {
-    let mut execute = existing_paths(TERMINAL_SYSTEM_EXECUTE, &exists);
-    execute.push(workspace.to_path_buf());
-    for path in toolchains.iter().chain(&homes.execute) {
-        if !execute.contains(path) {
-            execute.push(path.clone());
-        }
-    }
-    let mut write = vec![workspace.to_path_buf(), temporary.to_path_buf()];
-    write.extend(existing_paths(DEVICE_WRITE, &exists));
-    write.extend(homes.write.iter().cloned());
-    if temporary.starts_with(workspace) || workspace.starts_with(temporary) {
-        return Err(sandbox_policy_error());
-    }
-    let mut read = existing_paths(TERMINAL_SYSTEM_READ, &exists);
-    read.extend(homes.read.iter().cloned());
-    Ok(SandboxPolicy {
-        read,
-        execute,
-        write,
-        network: NetworkAccess::Denied,
-    })
-}
-
-fn scope_refusal(message: &str) -> ChatError {
-    ChatError::new(ChatErrorCode::Permission, message, true)
 }

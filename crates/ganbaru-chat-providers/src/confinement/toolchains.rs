@@ -69,7 +69,7 @@ const PROTECTED_HOME_FOLDERS: &[&str] = &[".ssh", ".gnupg"];
 
 /// Access and environment a confined command receives for the toolchain homes it uses.
 #[derive(Debug, Default, PartialEq, Eq)]
-pub(in crate::cursor) struct ToolchainGrants {
+pub(crate) struct ToolchainGrants {
     /// Folders read and executed in place.
     pub execute: Vec<PathBuf>,
     /// Folders and files only read.
@@ -82,7 +82,7 @@ pub(in crate::cursor) struct ToolchainGrants {
 
 /// A path that exists, after resolving symbolic links.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(in crate::cursor) struct ResolvedPath {
+pub(crate) struct ResolvedPath {
     pub path: PathBuf,
     pub is_file: bool,
 }
@@ -93,7 +93,7 @@ pub(in crate::cursor) struct ResolvedPath {
 /// supply both. A home named by a relative variable falls back to its default place. A home
 /// that is, holds, or lies inside the home directory, the working folder, or a protected
 /// folder such as `~/.ssh` is left out, as is any part that resolves outside its home.
-pub(in crate::cursor) fn toolchain_grants(
+pub(crate) fn toolchain_grants(
     variable: impl Fn(&str) -> Option<OsString>,
     home: Option<&Path>,
     workspace: &Path,
@@ -161,7 +161,7 @@ pub(in crate::cursor) fn toolchain_grants(
 }
 
 /// Resolves `path` on this device's file system.
-pub(in crate::cursor) fn resolve_existing(path: &Path) -> Option<ResolvedPath> {
+pub(crate) fn resolve_existing(path: &Path) -> Option<ResolvedPath> {
     let path = std::fs::canonicalize(path).ok()?;
     let metadata = std::fs::metadata(&path).ok()?;
     Some(ResolvedPath {

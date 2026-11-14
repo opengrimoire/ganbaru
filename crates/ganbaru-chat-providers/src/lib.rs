@@ -11,6 +11,7 @@ pub mod process;
 
 mod claude;
 mod codex;
+mod confinement;
 mod cursor;
 mod driver;
 mod opencode;

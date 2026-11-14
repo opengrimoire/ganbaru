@@ -38,7 +38,7 @@ const MAX_DIGESTED_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_DEPTH: usize = 16;
 
 /// Watches the command-bearing Git metadata at the root of one working folder.
-pub(super) struct GitMetadataGuard {
+pub(crate) struct GitMetadataGuard {
     workspace: PathBuf,
     state: Mutex<GuardState>,
     tripped: Arc<Notify>,
@@ -54,7 +54,7 @@ enum GuardState {
 impl GitMetadataGuard {
     /// Records the current metadata of `workspace`; a folder whose metadata cannot be digested
     /// within the bounds runs no confined commands.
-    pub(super) fn watch(workspace: &Path) -> ChatResult<Self> {
+    pub(crate) fn watch(workspace: &Path) -> ChatResult<Self> {
         let digest = git_metadata_digest(workspace).map_err(|_| unwatchable_error())?;
         Ok(Self {
             workspace: workspace.to_path_buf(),
@@ -65,7 +65,7 @@ impl GitMetadataGuard {
 
     /// Refuses when the metadata changed since the session started, tripping the guard on the
     /// first change it sees.
-    pub(super) fn verify(&self) -> ChatResult<()> {
+    pub(crate) fn verify(&self) -> ChatResult<()> {
         let Ok(mut state) = self.state.lock() else {
             return Err(changed_error());
         };
@@ -84,12 +84,11 @@ impl GitMetadataGuard {
     }
 
     /// Signaled once when the guard trips, so the session router can end the session.
-    pub(super) fn tripped(&self) -> Arc<Notify> {
+    pub(crate) fn tripped(&self) -> Arc<Notify> {
         Arc::clone(&self.tripped)
     }
 }
 
-/// The error a session ends with after its confined commands changed Git metadata.
 /// Whether `path` holds a Git directory's `HEAD` and one of its watched marker files.
 fn is_git_directory(path: &Path) -> bool {
     let is_file = |name: &str| {
@@ -98,7 +97,8 @@ fn is_git_directory(path: &Path) -> bool {
     is_file(GIT_DIRECTORY_HEAD) && GIT_DIRECTORY_MARKERS.iter().any(|name| is_file(name))
 }
 
-pub(super) fn changed_error() -> ChatError {
+/// The error a session ends with after its confined commands changed Git metadata.
+pub(crate) fn changed_error() -> ChatError {
     ChatError::new(
         ChatErrorCode::Permission,
         "acp_git_metadata_changed: a confined command changed the Git hooks or configuration \
@@ -117,7 +117,7 @@ fn unwatchable_error() -> ChatError {
 
 /// Why a digest could not be taken.
 #[derive(Debug, Eq, PartialEq)]
-pub(super) enum DigestError {
+pub(crate) enum DigestError {
     /// The metadata exceeds the entry, byte, or depth bounds.
     Unbounded,
     /// An entry could not be read.
@@ -131,7 +131,7 @@ pub(super) enum DigestError {
 /// the files named in [`COMMAND_BEARING_FILES`] and everything under [`COMMAND_BEARING_FOLDERS`],
 /// with their types, permission bits, link targets, and bytes. History, refs, and the index are
 /// left out, so commits, checkouts, and fetches do not change it.
-pub(super) fn git_metadata_digest(workspace: &Path) -> Result<[u8; 32], DigestError> {
+pub(crate) fn git_metadata_digest(workspace: &Path) -> Result<[u8; 32], DigestError> {
     let mut digest = MetadataDigest::default();
     digest.entry(
         &workspace.join(GIT_METADATA_NAME),

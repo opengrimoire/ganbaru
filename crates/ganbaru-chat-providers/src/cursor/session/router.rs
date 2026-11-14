@@ -91,7 +91,7 @@ async fn wait_for_trip(tripped: Option<&Notify>) {
 /// Ends the session after a confined command changed Git metadata: the turn is interrupted with
 /// the reason, a warning records the change, and later operations fail with the same error.
 async fn end_after_git_metadata_change(resources: &CursorRouterResources) {
-    let error = super::super::git_guard::changed_error();
+    let error = crate::confinement::git_metadata_changed_error();
     set_terminal_error(&resources.terminal_error, error.clone());
     let events = resources
         .route

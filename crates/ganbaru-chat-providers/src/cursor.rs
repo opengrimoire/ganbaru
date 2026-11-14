@@ -3,7 +3,6 @@
 mod confinement;
 mod driver;
 mod executable;
-mod git_guard;
 mod interactions;
 mod normalizer;
 mod operations;

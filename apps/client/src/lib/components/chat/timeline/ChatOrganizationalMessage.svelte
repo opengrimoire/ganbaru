@@ -305,6 +305,8 @@
   .message-copy { overflow-wrap:anywhere; color:var(--foreground); font-size:var(--chat-organizational-font-size,calc(0.875rem * var(--type-scale))); line-height:var(--chat-organizational-line-height,calc(1.3125rem * var(--type-scale))); }
   .message-copy :global(.inline-reference) { display:inline; border-radius:0.25rem; background:color-mix(in srgb,var(--primary) 10%,transparent); padding-inline:0.1rem; color:color-mix(in srgb,var(--primary) 76%,var(--foreground)); font:inherit; }
   .message-copy :global(.inline-reference:hover),.message-copy :global(.inline-reference:focus-visible) { text-decoration:underline; }
+  .message-failure { font-size:var(--chat-organizational-font-size,calc(0.875rem * var(--type-scale))); }
+  .message-failure :global(.notice) { line-height:var(--chat-organizational-line-height,calc(1.3125rem * var(--type-scale))); }
   .message-elision { margin-top:0.2rem; color:var(--muted-foreground); font-size:var(--chat-organizational-time-font-size,calc(0.6875rem * var(--type-scale))); font-style:italic; }
   .message-context { display:flex; flex-wrap:wrap; gap:0.3rem; margin-top:0.3rem; }
   .message-context span { border-radius:999px; background:var(--accent); padding:0.15rem 0.4rem; color:var(--muted-foreground); font-size: calc(0.65rem * var(--type-scale)); }

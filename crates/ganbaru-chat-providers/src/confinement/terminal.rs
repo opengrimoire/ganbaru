@@ -21,7 +21,7 @@ const TERMINAL_KEPT_ENVIRONMENT: &[&str] = &["LANG", "LANGUAGE", "LC_ALL", "LC_C
 /// `PATH` of a confined terminal command when the app has none.
 const TERMINAL_DEFAULT_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
 /// The `env` program that applies requested variables inside the sandbox.
-const CONFINED_ENV: &str = "/usr/bin/env";
+pub(super) const CONFINED_ENV: &str = "/usr/bin/env";
 
 /// The sandbox that confines the commands one teammate session asks Ganbaru to run: they write
 /// the working folder and a private temporary directory, execute system programs, the folder,

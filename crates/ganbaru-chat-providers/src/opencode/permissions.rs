@@ -56,19 +56,24 @@ const ORGANIZATIONAL_DENIED_PERMISSIONS: &[&str] = &[
 /// configuration rules so the last match here decides.
 ///
 /// Every permission starts denied. Reads stay inside the working directory, edits ask inside
-/// it in Build in a scope that edits, repository metadata edits are denied, and the shell asks
-/// in a scope that runs commands, which requires AskForApproval. Internal host tools ask unless
-/// the launch pre-approves them; OpenCode names an MCP tool `<server>_<tool>`.
+/// it in Build in a scope that edits, repository metadata edits are denied, and the shell acts
+/// as [`organizational_shell_action`] decides in a scope that runs commands. Internal host tools
+/// ask unless the launch pre-approves them; OpenCode names an MCP tool `<server>_<tool>`.
 pub fn organizational_rules(
     scope: ProviderOrganizationalScope,
     modes: TurnModeSnapshot,
     internal_server: &str,
     pre_approved_tools: &[String],
+    commands_confined: bool,
 ) -> ChatResult<Vec<OpenCodePermissionRule>> {
-    let runs_commands = organizational_runs_commands(scope);
-    if runs_commands && modes.safety_mode != SafetyMode::AskForApproval {
-        return Err(organizational_permission_error());
-    }
+    let shell_action = if organizational_runs_commands(scope) {
+        Some(organizational_shell_action(
+            modes.safety_mode,
+            commands_confined,
+        )?)
+    } else {
+        None
+    };
     let mut rules = vec![rule("*", OpenCodePermissionAction::Deny)];
     rules.extend(
         ORGANIZATIONAL_READ_PERMISSIONS
@@ -85,8 +90,8 @@ pub fn organizational_rules(
             }
         }));
     }
-    if runs_commands {
-        rules.push(rule("bash", OpenCodePermissionAction::Ask));
+    if let Some(action) = shell_action {
+        rules.push(rule("bash", action));
     }
     let server = opencode_tool_key_part(internal_server);
     rules.push(rule(&format!("{server}_*"), OpenCodePermissionAction::Ask));
@@ -111,7 +116,26 @@ pub fn organizational_rules(
     Ok(rules)
 }
 
-/// Whether the scope loads the shell, whose every command the person approves.
+/// How the shell of a scope that runs commands acts under `safety_mode`.
+///
+/// Every command asks the person in AskForApproval and ApproveForMe. When the sandbox helper
+/// confines every command, FullAccess runs them without asking, since that mode already lets
+/// a teammate run unattended. Unconfined commands need AskForApproval, where each approval is
+/// the boundary, and a Custom mode is never proven.
+pub fn organizational_shell_action(
+    safety_mode: SafetyMode,
+    commands_confined: bool,
+) -> ChatResult<OpenCodePermissionAction> {
+    match (safety_mode, commands_confined) {
+        (SafetyMode::AskForApproval, _) | (SafetyMode::ApproveForMe, true) => {
+            Ok(OpenCodePermissionAction::Ask)
+        }
+        (SafetyMode::FullAccess, true) => Ok(OpenCodePermissionAction::Allow),
+        _ => Err(organizational_permission_error()),
+    }
+}
+
+/// Whether the scope loads the shell.
 pub fn organizational_runs_commands(scope: ProviderOrganizationalScope) -> bool {
     matches!(
         scope,

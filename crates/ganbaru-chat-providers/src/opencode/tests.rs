@@ -236,14 +236,15 @@ fn process_environment_uses_the_configured_opencode_directory() {
 #[test]
 fn restricted_server_environment_disables_project_configuration() {
     let provider = configuration(json!({ "mode": "local" }));
-    let restricted = server_environment(&provider, ProjectConfigurationAccess::Restricted).unwrap();
+    let restricted =
+        server_environment(&provider, ProjectConfigurationAccess::Restricted, None).unwrap();
     assert_eq!(
         restricted
             .get(OPENCODE_DISABLE_PROJECT_CONFIG_ENVIRONMENT)
             .map(String::as_str),
         Some("1")
     );
-    let trusted = server_environment(&provider, ProjectConfigurationAccess::Trusted).unwrap();
+    let trusted = server_environment(&provider, ProjectConfigurationAccess::Trusted, None).unwrap();
     assert!(!trusted.contains_key(OPENCODE_DISABLE_PROJECT_CONFIG_ENVIRONMENT));
 }
 

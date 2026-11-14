@@ -90,6 +90,7 @@ pub fn process_environment(
             || name.contains(['=', '\0'])
             || value.contains('\0')
             || matches!(name.to_ascii_uppercase().as_str(), "HOME" | "USERPROFILE")
+            || name == ganbaru_sandbox::POLICY_FILE_VARIABLE
         {
             return Err(ChatError::validation(
                 "environment",
@@ -126,10 +127,12 @@ pub fn process_environment(
 /// out, whatever the folder's trust, and turns off formatters and language
 /// servers, which run project programs after an edit without a permission
 /// request. Both are verified with OpenCode 1.19.5 and override any configured
-/// value.
+/// value. With `shell`, the organizational server runs every command through the
+/// confined shell of the session.
 pub fn server_environment(
     configuration: &ProviderInstanceConfig,
     project_configuration: ProjectConfigurationAccess,
+    shell: Option<&crate::confinement::ShellSandbox>,
 ) -> ChatResult<BTreeMap<String, String>> {
     let mut environment = process_environment(configuration)?;
     let organizational = configuration
@@ -145,16 +148,32 @@ pub fn server_environment(
     if organizational {
         environment.insert(
             OPENCODE_CONFIG_CONTENT_ENVIRONMENT.to_string(),
-            ORGANIZATIONAL_CONFIG_CONTENT.to_string(),
+            organizational_config_content(shell.map(crate::confinement::ShellSandbox::shell)),
         );
+        if let Some(shell) = shell {
+            let (name, value) = shell.policy_variable(OPENCODE_PROVIDER_NAME)?;
+            environment.insert(name, value);
+        }
     }
     Ok(environment)
 }
 
 /// Environment variable whose JSON OpenCode merges into its configuration last.
 pub const OPENCODE_CONFIG_CONTENT_ENVIRONMENT: &str = "OPENCODE_CONFIG_CONTENT";
-/// Configuration an organizational server merges last: no formatters and no language servers.
-pub const ORGANIZATIONAL_CONFIG_CONTENT: &str = r#"{"formatter":false,"lsp":false}"#;
+/// Provider name in sandbox refusals.
+pub const OPENCODE_PROVIDER_NAME: &str = "OpenCode";
+
+/// Configuration an organizational server merges last: no formatters and no language servers,
+/// and `shell` as the program that runs every command when the session confines them.
+pub fn organizational_config_content(shell: Option<&str>) -> String {
+    let mut content = Map::new();
+    content.insert("formatter".to_string(), Value::Bool(false));
+    content.insert("lsp".to_string(), Value::Bool(false));
+    if let Some(shell) = shell {
+        content.insert("shell".to_string(), Value::String(shell.to_string()));
+    }
+    Value::Object(content).to_string()
+}
 
 /// The oldest OpenCode whose session rules, project configuration switch, and configuration
 /// merge were verified to hold an organizational run inside its scope.

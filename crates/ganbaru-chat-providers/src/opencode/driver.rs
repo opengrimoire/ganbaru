@@ -31,6 +31,9 @@ const MAX_RECONNECT_ATTEMPTS: usize = 6;
 pub(super) const OPENCODE_BUSY_STREAM_TIMEOUT: Duration = Duration::from_secs(180);
 const MAX_RECONCILIATION_PAGES: usize = 100;
 const MAX_RECONCILIATION_MESSAGES: usize = 10_000;
+/// Code of the warning and error a session ends with after its confined commands changed the
+/// Git metadata of the folder, shared with the ACP providers.
+const GIT_METADATA_CHANGED_CODE: &str = "acp_git_metadata_changed";
 
 pub struct OpenCodeProviderDriver {
     pub(super) configuration: ProviderInstanceConfig,
@@ -482,6 +485,9 @@ impl OpenCodeProviderDriver {
             terminal_error: Arc::clone(&terminal_error),
             session_id: provider_thread_id.clone(),
             busy_stream_timeout: self.busy_stream_timeout,
+            shell: owned_server
+                .as_ref()
+                .and_then(OwnedOpenCodeServer::shell_sandbox),
         });
         self.live = Some(OpenCodeLiveSession {
             client,
@@ -602,7 +608,21 @@ impl OpenCodeProviderDriver {
             .internal_mcp
             .as_ref()
             .ok_or_else(organizational_permission_error)?;
-        organizational_rules(scope, modes, &server.name, &server.pre_approved_tools)
+        organizational_rules(
+            scope,
+            modes,
+            &server.name,
+            &server.pre_approved_tools,
+            self.commands_confined(),
+        )
+    }
+
+    /// Whether the sandbox helper confines every command of an organizational session: an
+    /// owned server whose scope runs commands starts with the confined shell, or not at all, on
+    /// a device with an enforcing helper.
+    pub(super) fn commands_confined(&self) -> bool {
+        matches!(self.settings.connection, OpenCodeConnectionMode::Local)
+            && crate::confinement::sandbox_helper().is_some()
     }
 
     fn require_external_workspace_confirmation(&self) -> ChatResult<()> {
@@ -669,6 +689,8 @@ struct EventPumpResources {
     terminal_error: Arc<Mutex<Option<ChatError>>>,
     session_id: String,
     busy_stream_timeout: Duration,
+    /// The confined shell whose Git metadata guard is checked after each command and turn.
+    shell: Option<Arc<crate::confinement::ShellSandbox>>,
 }
 
 /// Why the event pump left a stream to reconnect.
@@ -755,6 +777,9 @@ fn spawn_event_pump(mut resources: EventPumpResources) -> JoinHandle<()> {
                         }
                         Err(error) => Err(error),
                     };
+                    let guard_check = events
+                        .as_ref()
+                        .is_ok_and(|events| ends_confined_work(events));
                     if emit_events(&resources.sink, events).await.is_err() {
                         settle_event_failure(
                             &resources,
@@ -762,6 +787,9 @@ fn spawn_event_pump(mut resources: EventPumpResources) -> JoinHandle<()> {
                             "OpenCode event normalization or persistence failed",
                         )
                         .await;
+                        return;
+                    }
+                    if guard_check && end_after_git_metadata_change(&resources).await {
                         return;
                     }
                 }
@@ -1000,6 +1028,67 @@ async fn settle_event_failure(resources: &EventPumpResources, code: &str, messag
         let _ = resources.sink.emit(event).await;
         let _ = resources.sink.flush().await;
     }
+}
+
+/// Whether `events` finish a command or a turn, after which the Git metadata guard of a confined
+/// session is checked.
+fn ends_confined_work(events: &[CanonicalRuntimeEvent]) -> bool {
+    events.iter().any(|event| match &event.event {
+        CanonicalEvent::ItemCompleted(item) => item.kind == CanonicalItemKind::CommandExecution,
+        CanonicalEvent::TurnCompleted(_) | CanonicalEvent::TurnAborted(_) => true,
+        _ => false,
+    })
+}
+
+/// Checks the Git metadata of a confined session and, when its commands changed it, aborts the
+/// run, fails the session with the reason, and reports that it ended. A session without the
+/// confined shell is never ended here.
+async fn end_after_git_metadata_change(resources: &EventPumpResources) -> bool {
+    let Some(shell) = resources.shell.as_ref() else {
+        return false;
+    };
+    let Err(error) = shell.guard().verify() else {
+        return false;
+    };
+    resources.expected_shutdown.store(true, Ordering::Release);
+    if let Ok(mut terminal) = resources.terminal_error.lock() {
+        *terminal = Some(error.clone());
+    }
+    let _ = resources.client.abort(&resources.session_id).await;
+    let events = resources
+        .route
+        .lock()
+        .map_err(|_| driver_state_error())
+        .and_then(|mut state| {
+            state.session_state = ProviderSessionState::Failed;
+            let warning = resources.normalizer.external_event(
+                &state,
+                "session/git_metadata_changed",
+                CanonicalEvent::RuntimeWarning(NotificationEvent {
+                    code: GIT_METADATA_CHANGED_CODE.to_string(),
+                    title: "A teammate changed this folder's Git configuration".to_string(),
+                    detail: Some(error.message.clone()),
+                }),
+            )?;
+            let failure = resources.normalizer.external_event(
+                &state,
+                "session/git_metadata_changed",
+                CanonicalEvent::RuntimeError(RuntimeErrorEvent {
+                    code: GIT_METADATA_CHANGED_CODE.to_string(),
+                    message: error.message.clone(),
+                    recoverable: false,
+                    safe_details: None,
+                }),
+            )?;
+            Ok(vec![warning, failure])
+        });
+    if let Ok(events) = events {
+        for event in events {
+            let _ = resources.sink.emit(event).await;
+        }
+        let _ = resources.sink.flush().await;
+    }
+    true
 }
 
 fn reconnect_delay(attempt: usize) -> Duration {

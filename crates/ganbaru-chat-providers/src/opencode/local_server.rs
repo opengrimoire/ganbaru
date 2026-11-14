@@ -1,14 +1,17 @@
 //! Owned loopback OpenCode server lifecycle.
 
-use super::cli::{resolve_executable, server_environment};
+use super::cli::{OPENCODE_PROVIDER_NAME, resolve_executable, server_environment};
 use super::config::{OPENCODE_PASSWORD_ENVIRONMENT, OpenCodeSecret};
 use super::http_client::OpenCodeHttpClient;
+use super::permissions::organizational_runs_commands;
+use crate::confinement::ShellSandbox;
 use crate::models::{
     ChatError, ChatErrorCode, ChatResult, ProjectConfigurationAccess, ProviderInstanceConfig,
 };
 use crate::process::{ProviderProcessConfig, ProviderProcessHandle, spawn_provider_process};
 use reqwest::Url;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::oneshot;
@@ -28,6 +31,9 @@ pub struct OwnedOpenCodeServer {
     password: OpenCodeSecret,
     process: ProviderProcessHandle,
     stdout_task: JoinHandle<()>,
+    /// The confined shell of an organizational server whose scope runs commands, kept for the
+    /// server's lifetime.
+    shell: Option<Arc<ShellSandbox>>,
 }
 
 impl OwnedOpenCodeServer {
@@ -53,7 +59,9 @@ impl OwnedOpenCodeServer {
         startup_timeout: Duration,
     ) -> ChatResult<Self> {
         let password = OpenCodeSecret::generate()?;
-        let mut environment = server_environment(configuration, project_configuration)?;
+        let shell = organizational_shell(configuration, workspace)?.map(Arc::new);
+        let mut environment =
+            server_environment(configuration, project_configuration, shell.as_deref())?;
         environment.insert(
             OPENCODE_PASSWORD_ENVIRONMENT.to_string(),
             password.expose().to_string(),
@@ -109,6 +117,7 @@ impl OwnedOpenCodeServer {
             password,
             process,
             stdout_task,
+            shell,
         };
         let probe = async {
             OpenCodeHttpClient::new(&server.origin, workspace, None)?
@@ -121,6 +130,11 @@ impl OwnedOpenCodeServer {
             return Err(error);
         }
         Ok(server)
+    }
+
+    /// The confined shell every command of the server runs through, when it has one.
+    pub(crate) fn shell_sandbox(&self) -> Option<Arc<ShellSandbox>> {
+        self.shell.clone()
     }
 
     /// Password that clients of this server send with basic authentication.
@@ -291,4 +305,24 @@ fn startup_error(message: &str) -> ChatError {
         message.to_string(),
         true,
     )
+}
+
+/// The confined shell of an organizational server whose scope runs commands, when the device
+/// has an enforcing sandbox helper. A server that should confine its commands and cannot
+/// prepare the shell is refused.
+fn organizational_shell(
+    configuration: &ProviderInstanceConfig,
+    workspace: &Path,
+) -> ChatResult<Option<ShellSandbox>> {
+    let scope = configuration
+        .internal_mcp
+        .as_ref()
+        .filter(|server| server.organizational_authority)
+        .and_then(|server| server.organizational_scope);
+    match (scope, crate::confinement::sandbox_helper()) {
+        (Some(scope), Some(helper)) if organizational_runs_commands(scope) => {
+            ShellSandbox::prepare(helper, workspace, &[], OPENCODE_PROVIDER_NAME).map(Some)
+        }
+        _ => Ok(None),
+    }
 }

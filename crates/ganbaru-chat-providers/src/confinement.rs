@@ -12,12 +12,14 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 mod git_guard;
+mod shell;
 mod terminal;
 #[cfg(test)]
 mod tests;
 mod toolchains;
 
 pub(crate) use git_guard::{GitMetadataGuard, changed_error as git_metadata_changed_error};
+pub(crate) use shell::ShellSandbox;
 pub(crate) use terminal::TerminalSandbox;
 
 /// Files every confined process may write without reaching user data.

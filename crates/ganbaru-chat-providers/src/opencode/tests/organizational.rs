@@ -47,7 +47,7 @@ fn rules(
     scope: ProviderOrganizationalScope,
     modes: TurnModeSnapshot,
 ) -> Vec<OpenCodePermissionRule> {
-    organizational_rules(scope, modes, SERVER, &[]).unwrap()
+    organizational_rules(scope, modes, SERVER, &[], false).unwrap()
 }
 
 /// The action OpenCode applies: the last rule whose permission and pattern both match, or ask
@@ -247,6 +247,7 @@ fn command_scopes_ask_for_every_command_and_require_ask_for_approval() {
                 modes(safety_mode, InteractionMode::Build),
                 SERVER,
                 &[],
+                false,
             )
             .unwrap_err();
             assert_eq!(
@@ -265,8 +266,9 @@ fn internal_tools_ask_unless_pre_approved_and_other_mcp_tools_stay_denied() {
         "mcp__other__post".to_string(),
         format!("mcp__{SERVER}__"),
     ];
-    let rules =
-        with_configuration(organizational_rules(EDIT, build(), SERVER, &pre_approved).unwrap());
+    let rules = with_configuration(
+        organizational_rules(EDIT, build(), SERVER, &pre_approved, false).unwrap(),
+    );
     assert_eq!(
         decide(&rules, "ganbaru-chat_list_referenced_channels", "*"),
         OpenCodePermissionAction::Allow
@@ -428,7 +430,7 @@ fn organizational_server_environment_skips_project_configuration_whatever_the_tr
         OPENCODE_CONFIG_CONTENT_ENVIRONMENT.to_string(),
         r#"{"formatter":true}"#.to_string(),
     );
-    let direct = server_environment(&provider, ProjectConfigurationAccess::Trusted).unwrap();
+    let direct = server_environment(&provider, ProjectConfigurationAccess::Trusted, None).unwrap();
     assert_eq!(
         direct
             .get(OPENCODE_DISABLE_PROJECT_CONFIG_ENVIRONMENT)
@@ -441,7 +443,7 @@ fn organizational_server_environment_skips_project_configuration_whatever_the_tr
         ProjectConfigurationAccess::Trusted,
         ProjectConfigurationAccess::Restricted,
     ] {
-        let environment = server_environment(&provider, access).unwrap();
+        let environment = server_environment(&provider, access, None).unwrap();
         assert_eq!(
             environment
                 .get(OPENCODE_DISABLE_PROJECT_CONFIG_ENVIRONMENT)
@@ -453,12 +455,119 @@ fn organizational_server_environment_skips_project_configuration_whatever_the_tr
             environment
                 .get(OPENCODE_CONFIG_CONTENT_ENVIRONMENT)
                 .map(String::as_str),
-            Some(ORGANIZATIONAL_CONFIG_CONTENT),
+            Some(organizational_config_content(None).as_str()),
+            "{access:?}"
+        );
+        assert!(
+            !environment.contains_key(ganbaru_sandbox::POLICY_FILE_VARIABLE),
             "{access:?}"
         );
     }
-    let content: serde_json::Value = serde_json::from_str(ORGANIZATIONAL_CONFIG_CONTENT).unwrap();
+    let content: serde_json::Value =
+        serde_json::from_str(&organizational_config_content(None)).unwrap();
     assert_eq!(content, json!({ "formatter": false, "lsp": false }));
+}
+
+#[test]
+fn the_confined_shell_is_merged_into_the_organizational_configuration() {
+    let shell = "/usr/lib/ganbaru/ganbaru-sandbox";
+    let content: serde_json::Value =
+        serde_json::from_str(&organizational_config_content(Some(shell))).unwrap();
+    assert_eq!(
+        content,
+        json!({ "formatter": false, "lsp": false, "shell": shell })
+    );
+    let quoted: serde_json::Value =
+        serde_json::from_str(&organizational_config_content(Some("/a\"b\\c"))).unwrap();
+    assert_eq!(quoted["shell"], json!("/a\"b\\c"));
+}
+
+#[test]
+fn the_configured_environment_cannot_name_the_sandbox_policy_file() {
+    let mut provider = configuration(json!({ "mode": "local" }));
+    provider.environment.insert(
+        ganbaru_sandbox::POLICY_FILE_VARIABLE.to_string(),
+        "/tmp/policy".to_string(),
+    );
+    let error =
+        server_environment(&provider, ProjectConfigurationAccess::Trusted, None).unwrap_err();
+    assert_eq!(error.code, ChatErrorCode::Validation);
+}
+
+#[test]
+fn confined_commands_run_unattended_only_in_full_access() {
+    for scope in [
+        EXECUTE,
+        ProviderOrganizationalScope::Folder {
+            capability: ProviderFolderCapability::Publish,
+        },
+        ProviderOrganizationalScope::Scratch,
+    ] {
+        let decide_shell = |safety_mode| {
+            organizational_rules(
+                scope,
+                modes(safety_mode, InteractionMode::Build),
+                SERVER,
+                &[],
+                true,
+            )
+            .map(|rules| decide(&with_configuration(rules), "bash", "rm -rf build"))
+        };
+        assert_eq!(
+            decide_shell(SafetyMode::AskForApproval).unwrap(),
+            OpenCodePermissionAction::Ask
+        );
+        assert_eq!(
+            decide_shell(SafetyMode::ApproveForMe).unwrap(),
+            OpenCodePermissionAction::Ask
+        );
+        assert_eq!(
+            decide_shell(SafetyMode::FullAccess).unwrap(),
+            OpenCodePermissionAction::Allow
+        );
+        assert_eq!(
+            decide_shell(SafetyMode::Custom).unwrap_err().code,
+            ChatErrorCode::Permission
+        );
+        let full = with_configuration(
+            organizational_rules(
+                scope,
+                modes(SafetyMode::FullAccess, InteractionMode::Build),
+                SERVER,
+                &[],
+                true,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            decide(&full, "edit", "src/main.rs"),
+            OpenCodePermissionAction::Ask,
+            "edits keep asking"
+        );
+        for permission in ["external_directory", "webfetch", "task"] {
+            assert_eq!(
+                decide(&full, permission, "*"),
+                OpenCodePermissionAction::Deny
+            );
+        }
+    }
+    for scope in [READ, EDIT, ProviderOrganizationalScope::Conversation] {
+        let rules = with_configuration(
+            organizational_rules(
+                scope,
+                modes(SafetyMode::FullAccess, InteractionMode::Build),
+                SERVER,
+                &[],
+                true,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            decide(&rules, "bash", "ls"),
+            OpenCodePermissionAction::Deny,
+            "{scope:?}"
+        );
+    }
 }
 
 #[test]

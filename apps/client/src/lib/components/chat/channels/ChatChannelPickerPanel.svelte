@@ -265,7 +265,7 @@
   <div class="relative flex min-h-0 flex-auto flex-col">
     <div bind:this={scrollElement} use:scrollEdgeFadeAction class={cn("hide-scrollbar min-h-0 flex-auto overflow-y-auto", mobileLayout ? "overscroll-contain px-2 py-2" : "surface-floating-body")}>
       {#if archivedError}
-        <Notice class="px-3 py-2" message={t("chat.channels.archivedLoadFailed", archivedError)} copy={archivedError} />
+        <Notice class="px-3 py-2" message={archivedError} />
       {/if}
       {#if rowCount === 0}
         <p class="px-3 py-2 text-panel-detail text-popover-foreground/60">

@@ -24,7 +24,7 @@
   import Trash2 from "@lucide/svelte/icons/trash";
   import X from "@lucide/svelte/icons/x";
   import type { ChatChannelRead, ChatMessageSearchResultRead } from "$lib/chat/contracts";
-  import { channelAttentionMarker } from "$lib/chat/review-queue/model";
+  import { channelAttentionMarker, channelUnreadBadge, reviewQueueCount } from "$lib/chat/review-queue/model";
   import { chatParticipantDisplayName } from "$lib/chat/teammates/participant-display";
   import {
     moveChatChannelToSection,
@@ -143,6 +143,9 @@
   let newSectionName = $state("");
   let creatingSection = $state(false);
   let channelsCollapsed = $state(false);
+  let reviewQueueCollapsed = $state(false);
+  /** Answers, approvals, and reviews waiting across every project; failures are marked on channels instead. */
+  const reviewQueueTotal = $derived(reviewQueueCount(chat.reviewQueue));
   let archiveCandidate = $state<ChatChannelRead | null>(null);
   let deleteSectionCandidate = $state<ChatSidebarSection | null>(null);
   let railError = $state<string | null>(null);
@@ -924,7 +927,19 @@
             {#if !messageSearchLoading && messageSearchResults.length === 0}<p class="px-2 py-1 text-xs text-muted-foreground">{t("chat.organization.noMessageSearchResults")}</p>{/if}
           </section>
         {:else}
-          <ChatReviewQueueSection {panel} onOpened={() => { if (panel) onCollapse(); }} />
+          {#if reviewQueueTotal > 0}
+            <section class="channel-section" aria-label={t("chat.reviewQueue.label", reviewQueueTotal)} data-chat-review-queue>
+              <div class="section-heading">
+                <button type="button" class="section-toggle" class:collapsed={reviewQueueCollapsed} aria-label={sectionToggleLabel(t("chat.reviewQueue.heading"), reviewQueueCollapsed)} aria-expanded={!reviewQueueCollapsed} onclick={() => { reviewQueueCollapsed = !reviewQueueCollapsed; }}>
+                  <span use:overflowTooltip={t("chat.reviewQueue.heading")}>{t("chat.reviewQueue.heading")}</span>
+                  {#if reviewQueueCollapsed}<ChevronRight class="section-chevron" size={13} />{:else}<ChevronDown class="section-chevron" size={13} />{/if}
+                </button>
+              </div>
+              {#if !reviewQueueCollapsed}
+                <ChatReviewQueueSection {panel} onOpened={() => { if (panel) onCollapse(); }} />
+              {/if}
+            </section>
+          {/if}
         {/if}
         <section class="channel-section" role="group" data-chat-section-drop="" class:rail-drop-section={touchDropSectionId === null} ondragover={handleSectionDragOver} ondrop={(event) => handleDrop(event, null)}>
           <div class="section-heading">
@@ -1116,11 +1131,14 @@
 
 {#snippet ChannelRow({ channel }: { channel: ChatChannelRead })}
   {@const attention = channelAttentionMarker(channel.attentionState)}
+  {@const unread = channelUnreadBadge(channel)}
   <div class="channel-row-group explorer-row" class:explorer-selected={chat.selectedChannelId === channel.id && !chat.channelArchiveOpen} role="group" aria-label={channel.name} data-chat-channel-id={channel.id} class:rail-touch-dragged={draggedChannelId === channel.id && channelTouchPress !== null} onpointerdown={(event) => handleChannelPointerDown(event, channel.id)} class:rail-reorder-before={reorderLine(channel.id, "before")} class:rail-reorder-after={reorderLine(channel.id, "after")} draggable="true" ondragstart={(event) => beginDrag(event, channel.id)} ondragend={clearRailDrag} ondragover={(event) => handleChannelDragOver(event, channel.id)} ondrop={(event) => handleChannelDrop(event, channel.id)}>
     <button type="button" class="channel-row explorer-row-label" class:selected={chat.selectedChannelId === channel.id && !chat.channelArchiveOpen} aria-current={chat.selectedChannelId === channel.id && !chat.channelArchiveOpen ? "page" : undefined} onmousedown={preventMiddleClickAutoscroll} onclick={(event) => handleChannelRowClick(event, channel)} onauxclick={(event) => handleChannelRowClick(event, channel)} oncontextmenu={(event) => void openChannelContextMenu(event, channel)}>
       <Hash size={COMPACT_IDENTITY_ICON_SIZE} strokeWidth={COMPACT_IDENTITY_ICON_STROKE_WIDTH} class="explorer-row-icon" />
       <span class="min-w-0 flex-1 truncate" use:overflowTooltip={channel.name}>{channel.name}</span>
       {#if attention}<span class="attention-marker" role="img" data-attention={attention} aria-label={t(`chat.reviewQueue.attention.${attention}`)}></span>{/if}
+      {#if unread.count > 0}<span class="unread-count" aria-label={t("chat.channels.unreadCount", unread.count)}>{unread.count}</span>{/if}
+      {#if unread.failure}<span class="failure-marker" role="img" aria-label={t("chat.channels.unseenFailure")} data-chat-unseen-failure></span>{/if}
     </button>
     <span class="explorer-row-trailing">
       {#if chatSidebarOrder.isChannelStarred(channel.id)}<ExplorerRowStar />{/if}
@@ -1194,5 +1212,6 @@
   .explorer-touch .channel-section > .section-heading > .explorer-row-action { margin-inline-end: var(--explorer-row-action-end-inset); }
   .channel-loading { padding-right: 0.55rem; opacity: 0.72; }
   .attention-marker { flex: 0 0 auto; width: 0.45rem; height: 0.45rem; border-radius: 999px; background: var(--primary); }
-  .attention-marker[data-attention="failed"] { background: var(--destructive); }
+  .unread-count { flex: 0 0 auto; color: var(--muted-foreground); font-size: calc(0.68rem * var(--type-scale)); font-variant-numeric: tabular-nums; }
+  .failure-marker { flex: 0 0 auto; width: 0.45rem; height: 0.45rem; border-radius: 999px; background: var(--destructive); }
 </style>

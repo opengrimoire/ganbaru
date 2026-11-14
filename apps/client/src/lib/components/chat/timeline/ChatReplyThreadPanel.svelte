@@ -13,9 +13,11 @@
     exactExecutionReadKey,
     exactExecutionRuns,
     exactRunPresentationsReady,
+    failureShownByReply,
     latestRenderableAgentRun,
     planExactExecutionReads,
     replyThreadRenderEntries,
+    retryableFailureEntryKey,
     shouldGroupReplyMessages,
     type CachedExactExecution,
   } from "$lib/chat/timeline/reply-thread-model";
@@ -122,6 +124,8 @@
     page?.agentRuns ?? [],
     loadedExecutionRunIds,
   ));
+  /** The one failure in the thread that offers Retry, while the thread's work is still failed. */
+  const retryableFailureKey = $derived(retryableFailureEntryKey(renderEntries, assignment));
   const destination = $derived(chat.openReplyThreadId
     ? `reply-thread:${chat.openReplyThreadId}`
     : "reply-thread:none");
@@ -216,6 +220,21 @@
 
   function reportMessageActionError(error: unknown): void {
     messageActionError = chatErrorMessage(error);
+  }
+
+  /** Retries the thread's failed work; a rejection reports itself and marks the Retry button as failed. */
+  async function retryFailedWork(): Promise<boolean> {
+    const failed = assignment;
+    if (failed?.state !== "failed") return false;
+    messageActionError = null;
+    try {
+      await chat.retryAssignment(failed.id);
+      scrollToBottomForUserAction();
+      return true;
+    } catch (cause: unknown) {
+      messageActionError = chatErrorMessage(cause, t("chatErrors.actions.workAction"));
+      return false;
+    }
   }
 
   async function openScratchManager(): Promise<void> {
@@ -459,6 +478,7 @@
             onActionError={reportMessageActionError}
             answerChoices={answerableQuestion?.messageItemId === entry.message.itemId ? answerableQuestion.choices : []}
             onChooseAnswer={answerableQuestion?.messageItemId === entry.message.itemId ? chooseAnswer : undefined}
+            onRetryFailure={retryableFailureKey === entry.key ? retryFailedWork : undefined}
           />
         {:else}
           {@const exactExecution = exactExecutions[entry.run.id]}
@@ -480,6 +500,8 @@
             timelinePage={exactExecution?.timelinePage ?? null}
             replies={page.replies}
             fallbackDetail={entry.run.id === page.agentRuns.at(-1)?.id ? assignment?.stateReason ?? null : null}
+            failureShownElsewhere={failureShownByReply(renderEntries, entry.run)}
+            onRetryFailure={retryableFailureKey === entry.key ? retryFailedWork : undefined}
             onActionError={reportMessageActionError}
           />
         {/if}

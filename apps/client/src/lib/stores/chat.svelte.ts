@@ -75,7 +75,7 @@ import {
 } from "$lib/stores/chat/organizational-controller.svelte";
 import { ChatCommunicationController } from "$lib/stores/chat/communication-controller.svelte";
 import { ChatReviewQueueController } from "$lib/stores/chat/review-queue-controller.svelte";
-import type { ChatBatchAcceptSummary } from "$lib/chat/review-queue/model";
+import { channelNeedsVisit, type ChatBatchAcceptSummary } from "$lib/chat/review-queue/model";
 import { ChatTimelineController } from "$lib/stores/chat/timeline-controller.svelte";
 import {
   fullNativeChange,
@@ -703,12 +703,12 @@ export class ChatStore {
     await this.loadChannelMessages(channel.id);
     if (request !== this.channelSelectionRequest) return;
     this.interaction = null;
-    if (channel.unreadCount > 0) void this.markSelectedChannelRead();
+    if (channelNeedsVisit(channel)) void this.markSelectedChannelRead();
   }
 
   async markSelectedChannelRead(): Promise<void> {
     const channel = this.selectedChannel;
-    if (!channel || channel.unreadCount === 0) return;
+    if (!channel || !channelNeedsVisit(channel)) return;
     if (this.channelReadPromise?.channelId === channel.id) return this.channelReadPromise.promise;
     const vaultGeneration = this.vaultGeneration;
     const promise = chatApi.setChatChannelRead(channel.id, true)
@@ -1037,15 +1037,6 @@ export class ChatStore {
    */
   async acceptReviewItems(assignmentIds: readonly ChatWorkAssignmentId[]): Promise<ChatBatchAcceptSummary> {
     return shared.reviewQueue.acceptReviewItems(assignmentIds);
-  }
-
-  /** Retries failed work from the queue on the device that ran it, against the revision the queue showed. */
-  async retryReviewItem(item: ChatReviewQueueItemRead): Promise<void> {
-    if (item.kind !== "failure" || !item.executedHere) throw new Error("Only failed work that ran here can be retried");
-    await chatApi.retryChatAssignment(item.assignmentId, item.revision);
-    this.publishChannelChange(item.channelId);
-    this.refreshReviewQueue();
-    if (this.openReplyThreadId === item.replyThreadId) await this.loadReplyThread(item.replyThreadId, true);
   }
 
   /** Rereads the vault-wide review queue and resolves once the read settled; a failure sets `reviewQueueError`. */
@@ -1541,7 +1532,26 @@ export class ChatStore {
   }
 
   async loadReplyThread(replyThreadId: ChatReplyThreadId, force = false): Promise<void> {
-    return this.communicationController.loadReplyThread(replyThreadId, force);
+    await this.communicationController.loadReplyThread(replyThreadId, force);
+    void this.refreshSelectedChannelAfterThreadRead();
+  }
+
+  /**
+   * Rereads the selected channel after a reply thread was read, when its row still counts new replies or marks an
+   * unseen failure, since reading the thread may have cleared them.
+   */
+  private async refreshSelectedChannelAfterThreadRead(): Promise<void> {
+    const channel = this.selectedChannel;
+    if (!channel || (channel.unreadReplyCount === 0 && !channel.unseenFailure)) return;
+    const vaultGeneration = this.vaultGeneration;
+    try {
+      const updated = await chatApi.readChatChannel(channel.id);
+      if (this.vaultGeneration !== vaultGeneration) return;
+      this.channelNavigationController.upsert(updated);
+      this.publishChanges({ channelIds: [updated.id] });
+    } catch (error: unknown) {
+      console.error(`Could not refresh #${channel.name} after reading a reply thread`, error);
+    }
   }
 
   async loadOlderReplyThreadMessages(): Promise<void> {

@@ -185,4 +185,72 @@ describe("ChatOrganizationalMessage", () => {
     expect(target.querySelector("[data-answer-choices]")).toBeNull();
     expect(target.querySelector("[data-delegation-outcome]")?.textContent).toBe("Completed");
   });
+
+  it("marks a reply strip whose thread holds an unseen failure", async () => {
+    const thread = {
+      id: "reply-thread:failed",
+      replyCount: 1,
+      lastActivityAt: "2026-08-12T20:05:00.000Z",
+      participants: [],
+      unread: false,
+      unseenFailure: true,
+      workState: null,
+    } satisfies ChatMessageRead["replyThread"];
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatOrganizationalMessage, {
+      target,
+      props: { message: { ...message, references: [], normalizedMarkdown: "Fix it", replyThread: thread } },
+    });
+    await tick();
+
+    expect(target.querySelector(".reply-strip [data-chat-thread-failure]")?.getAttribute("aria-label"))
+      .toBe("An agent run failed");
+    await unmount(component);
+
+    component = mount(ChatOrganizationalMessage, {
+      target,
+      props: {
+        message: { ...message, references: [], normalizedMarkdown: "Fix it", replyThread: { ...thread, unseenFailure: false } },
+      },
+    });
+    await tick();
+
+    expect(target.querySelector(".reply-strip")).not.toBeNull();
+    expect(target.querySelector("[data-chat-thread-failure]")).toBeNull();
+  });
+
+  it("explains a launch failure in localized text without its raw reason or a Retry it was not given", async () => {
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatOrganizationalMessage, {
+      target,
+      props: {
+        message: {
+          ...message,
+          references: [],
+          normalizedMarkdown: "spawn codex ENOENT",
+          richContent: {
+            schemaVersion: 1,
+            value: {
+              type: "agent_update",
+              updateKind: "failure",
+              assignmentId: "assignment:launch",
+              agentRunId: null,
+              payload: { launchFailure: true },
+            },
+          },
+        },
+      },
+    });
+    await tick();
+
+    const failure = target.querySelector("[data-chat-failure]");
+    expect(failure?.querySelector(".notice-message")?.textContent)
+      .toBe("You could not start: Chat could not finish that action, so try again.");
+    expect(target.textContent).not.toContain("spawn codex ENOENT");
+    expect(target.querySelector(".message-copy")).toBeNull();
+    expect(failure?.querySelector("[data-notice-retry]")).toBeNull();
+    expect(failure?.querySelector("[data-notice-copy]")).not.toBeNull();
+  });
 });

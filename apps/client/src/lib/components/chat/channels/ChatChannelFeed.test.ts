@@ -40,6 +40,8 @@ function archivedChannel(id: string): ChatChannelRead {
     memberships: [],
     messageCount: 1,
     unreadCount: 0,
+    unreadReplyCount: 0,
+    unseenFailure: false,
     latestPreview: null,
     lastActivityAt: message.createdAt,
     attentionState: null,

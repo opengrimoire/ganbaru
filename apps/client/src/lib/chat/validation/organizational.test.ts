@@ -157,6 +157,7 @@ describe("delegated work reads", () => {
         lastActivityAt: TIMESTAMP,
         participants: [participant],
         unread: false,
+        unseenFailure: false,
         workState: "working",
       },
       rootMessage: message,
@@ -241,27 +242,31 @@ describe("parseChatReviewQueue", () => {
 
   it("reads every kind and a truncated queue whose total counts past the cap", () => {
     const items = ["answer", "approval", "review", "failure"].map((kind) => ({ ...review, assignmentId: `assignment:${kind}`, kind }));
-    expect(parseChatReviewQueue({ items, total: 4, truncated: false }).items.map((entry) => entry.kind))
+    expect(parseChatReviewQueue({ items, total: 4, failureCount: 0, truncated: false }).items.map((entry) => entry.kind))
       .toEqual(["answer", "approval", "review", "failure"]);
-    expect(parseChatReviewQueue({ items: [review, failure], total: 201, truncated: true })).toEqual({
+    expect(parseChatReviewQueue({ items: [review, failure], total: 201, failureCount: 7, truncated: true })).toEqual({
       items: [review, failure],
       total: 201,
+      failureCount: 7,
       truncated: true,
     });
   });
 
   it("refuses unknown kinds, negative counts, and missing ids", () => {
-    expect(() => parseChatReviewQueue({ items: [{ ...review, kind: "working" }], total: 1, truncated: false })).toThrow();
-    expect(() => parseChatReviewQueue({ items: [], total: -1, truncated: false })).toThrow();
-    expect(() => parseChatReviewQueue({ items: [{ ...review, changedFileCount: -1 }], total: 1, truncated: false })).toThrow();
-    expect(() => parseChatReviewQueue({ items: [{ ...review, assignmentId: undefined }], total: 1, truncated: false })).toThrow();
-    expect(() => parseChatReviewQueue({ items: [{ ...review, replyThreadId: "" }], total: 1, truncated: false })).toThrow();
+    expect(() => parseChatReviewQueue({ items: [{ ...review, kind: "working" }], total: 1, failureCount: 0, truncated: false })).toThrow();
+    expect(() => parseChatReviewQueue({ items: [], total: -1, failureCount: 0, truncated: false })).toThrow();
+    expect(() => parseChatReviewQueue({ items: [{ ...review, changedFileCount: -1 }], total: 1, failureCount: 0, truncated: false })).toThrow();
+    expect(() => parseChatReviewQueue({ items: [{ ...review, assignmentId: undefined }], total: 1, failureCount: 0, truncated: false })).toThrow();
+    expect(() => parseChatReviewQueue({ items: [{ ...review, replyThreadId: "" }], total: 1, failureCount: 0, truncated: false })).toThrow();
   });
 
   it("refuses a total below the item count or a truncated flag that disagrees with it", () => {
-    expect(() => parseChatReviewQueue({ items: [review, failure], total: 1, truncated: false })).toThrow();
-    expect(() => parseChatReviewQueue({ items: [review], total: 1, truncated: true })).toThrow();
-    expect(() => parseChatReviewQueue({ items: [review], total: 5, truncated: false })).toThrow();
+    expect(() => parseChatReviewQueue({ items: [review, failure], total: 1, failureCount: 0, truncated: false })).toThrow();
+    expect(() => parseChatReviewQueue({ items: [review], total: 1, failureCount: 0, truncated: true })).toThrow();
+    expect(() => parseChatReviewQueue({ items: [review], total: 5, failureCount: 0, truncated: false })).toThrow();
     expect(() => parseChatReviewQueue({ items: [review], total: 1 })).toThrow();
+    expect(() => parseChatReviewQueue({ items: [review], total: 1, truncated: false })).toThrow("failureCount");
+    expect(() => parseChatReviewQueue({ items: [review], total: 1, failureCount: 2, truncated: false }))
+      .toThrow("failureCount exceeds the total");
   });
 });

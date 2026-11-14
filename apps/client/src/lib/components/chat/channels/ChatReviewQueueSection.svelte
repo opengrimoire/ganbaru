@@ -1,7 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
   import FileDiff from "@lucide/svelte/icons/file-diff";
-  import RotateCw from "@lucide/svelte/icons/rotate-cw";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { requestConfirmation } from "$lib/components/ui/confirmation.svelte";
@@ -12,6 +11,7 @@
     batchAcceptCandidates,
     reviewQueueCount,
     reviewQueueSections,
+    sidebarReviewQueueItems,
     type ChatBatchAcceptSummary,
   } from "$lib/chat/review-queue/model";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -19,8 +19,9 @@
   import { useChat } from "$lib/stores/chat.svelte";
 
   /**
-   * The rail's list of work that waits for the person across every project: answers, approvals, reviews, and
-   * failures. Recording outcomes needs local execution, so other builds and the phone panel list the work without
+   * The rows of the rail's list of work that waits for the person across every project: answers, approvals, and
+   * reviews. The rail owns the section heading. Failures stay out of the list: the channel row and the reply thread
+   * mark them. Recording outcomes needs local execution, so other builds and the phone panel list the work without
    * selection or Accept.
    */
   let {
@@ -45,9 +46,10 @@
 
   const queue = $derived(chat.reviewQueue);
   const total = $derived(reviewQueueCount(queue));
-  const items = $derived(queue?.items ?? []);
+  /** Listed items; failures stay out, marked on their channel and reply thread instead. */
+  const items = $derived(sidebarReviewQueueItems(queue?.items ?? []));
   const sections = $derived(reviewQueueSections(items));
-  const hiddenCount = $derived(queue?.truncated ? total - items.length : 0);
+  const hiddenCount = $derived(queue?.truncated ? Math.max(0, total - items.length) : 0);
   const canSelect = $derived(localExecutionAvailable && !panel);
   const hasReviews = $derived(items.some((item) => item.kind === "review"));
   /** Selected reviews still in the queue; ids of work that left the queue drop out. */
@@ -83,16 +85,6 @@
     }
   }
 
-  async function retry(item: ChatReviewQueueItemRead): Promise<void> {
-    actionError = null;
-    try {
-      await chat.retryReviewItem(item);
-    } catch (error: unknown) {
-      console.error("Chat work could not be retried", error);
-      actionError = t("chat.reviewQueue.retryFailed");
-    }
-  }
-
   async function acceptSelected(): Promise<void> {
     const count = candidates.length;
     if (count === 0 || accepting) return;
@@ -116,11 +108,7 @@
 </script>
 
 {#if total > 0}
-  <section class="review-queue" aria-label={t("chat.reviewQueue.label", total)} data-chat-review-queue>
-    <div class="queue-heading">
-      <span class="min-w-0 flex-1 truncate">{t("chat.reviewQueue.heading")}</span>
-      <span class="queue-count" aria-hidden="true">{total}</span>
-    </div>
+  <div class="review-queue">
     {#each sections as section (section.kind)}
       {#each section.items as item (item.assignmentId)}
         <div class="queue-row explorer-row" role="group" aria-label={t("chat.reviewQueue.open", item.teammateDisplayName, item.channelName)} data-review-kind={item.kind}>
@@ -144,9 +132,6 @@
           {#if localExecutionAvailable && item.kind === "review"}
             <button type="button" class="explorer-icon" aria-label={t("chat.reviewQueue.reviewChanges")} data-app-tooltip={t("chat.reviewQueue.reviewChanges")} onclick={() => void reviewChanges(item)}><FileDiff size={14} /></button>
           {/if}
-          {#if localExecutionAvailable && item.kind === "failure" && item.executedHere}
-            <button type="button" class="explorer-icon" aria-label={t("chat.reviewQueue.retry")} data-app-tooltip={t("chat.reviewQueue.retry")} onclick={() => void retry(item)}><RotateCw size={14} /></button>
-          {/if}
         </div>
       {/each}
     {/each}
@@ -167,13 +152,11 @@
     {#if actionError}
       <Notice class="queue-notice" message={actionError} onDismiss={() => { actionError = null; }} />
     {/if}
-  </section>
+  </div>
 {/if}
 
 <style>
-  .review-queue { display: grid; gap: 0.1rem; margin-bottom: 0.5rem; border-bottom: 1px solid var(--border); padding-bottom: 0.45rem; }
-  .queue-heading { display: flex; min-height: var(--explorer-row-height); align-items: center; gap: 0.35rem; padding-inline: 0.5rem; color: var(--muted-foreground); }
-  .queue-count { flex: 0 0 auto; border-radius: 999px; background: var(--primary); padding-inline: 0.4rem; color: var(--primary-foreground); font-size: calc(0.62rem * var(--type-scale)); font-variant-numeric: tabular-nums; line-height: calc(1rem * var(--type-scale)); }
+  .review-queue { display: grid; gap: 0.1rem; }
   .queue-row { display: flex; min-width: 0; align-items: center; gap: 0.25rem; padding-inline-start: 0.5rem; }
   .queue-row :global(.queue-check) { flex: 0 0 auto; }
   .queue-open { display: grid; min-width: 0; flex: 1; gap: 0.1rem; border-radius: 0.35rem; padding: var(--explorer-row-padding) 0.25rem; color: var(--foreground); text-align: left; }
@@ -182,7 +165,6 @@
   .queue-primary > strong { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
   .queue-primary > span { min-width: 0; overflow: hidden; color: var(--muted-foreground); text-overflow: ellipsis; }
   .queue-secondary { color: var(--muted-foreground); font-size: calc(0.62rem * var(--type-scale)); }
-  .queue-kind[data-kind="failure"] { color: var(--destructive); }
   .queue-accept { margin-inline: 0.5rem; justify-self: start; border-radius: 0.35rem; padding: 0.2rem 0.4rem; color: var(--primary); }
   .queue-accept:disabled { color: var(--muted-foreground); }
   @media (hover: hover) {

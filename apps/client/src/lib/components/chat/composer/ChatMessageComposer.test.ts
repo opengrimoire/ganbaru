@@ -35,6 +35,7 @@ function workingReplyThread(): ChatReplyThreadPageRead {
       lastActivityAt: timestamp,
       participants: [teammate],
       unread: false,
+      unseenFailure: false,
       workState: "working",
     },
     rootMessage: {

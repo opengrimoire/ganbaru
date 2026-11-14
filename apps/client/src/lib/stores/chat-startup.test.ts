@@ -51,7 +51,7 @@ function settings(sendKey: "enter" | "mod_enter" = "enter"): ChatSettingsRead {
 function channel(id = "general"): ChatChannelRead {
   return {
     id, conversationId: `conversation-${id}`, projectId: "project", name: id, topic: "",
-    isDefault: id === "general", memberships: [], messageCount: 0, unreadCount: 0,
+    isDefault: id === "general", memberships: [], messageCount: 0, unreadCount: 0, unreadReplyCount: 0, unseenFailure: false,
     latestPreview: null, lastActivityAt: "2026-09-22T12:00:00Z", attentionState: null,
     revision: 1, archivedAt: null, createdAt: "2026-09-22T12:00:00Z", updatedAt: "2026-09-22T12:00:00Z",
   };
@@ -85,7 +85,7 @@ beforeEach(() => {
   vi.spyOn(chatApi, "listChatNavigationChannels").mockResolvedValue([channel(), channel("other")]);
   vi.spyOn(chatApi, "listChatTeammates").mockResolvedValue([]);
   vi.spyOn(chatApi, "listChatWaitingAssignments").mockResolvedValue({ items: [], total: 0 });
-  vi.spyOn(chatApi, "listChatReviewQueue").mockResolvedValue({ items: [], total: 0, truncated: false });
+  vi.spyOn(chatApi, "listChatReviewQueue").mockResolvedValue({ items: [], total: 0, failureCount: 0, truncated: false });
   vi.spyOn(chatApi, "readChatProjectPrimaryWorkingFolder").mockRejectedValue(new Error("no working folder"));
   vi.spyOn(chatApi, "readChatChannelPage").mockImplementation(async (channelId) => ({
     channelId, messages: [message(channelId)], previousCursor: null, revision: 1,

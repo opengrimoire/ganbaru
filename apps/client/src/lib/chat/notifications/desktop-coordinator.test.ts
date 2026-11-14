@@ -35,7 +35,7 @@ function item(id: string, kind: ChatReviewQueueKind): ChatReviewQueueItemRead {
 }
 
 function queueOf(items: ChatReviewQueueItemRead[]): ChatReviewQueueRead {
-  return { items, total: items.length, truncated: false };
+  return { items, total: items.length, failureCount: 0, truncated: false };
 }
 
 /**

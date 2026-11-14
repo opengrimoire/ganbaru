@@ -84,6 +84,8 @@ use dispatch::{deliver_assignment_input, dispatch_assignment_job};
 #[cfg(desktop)]
 pub(crate) use push_requests::push_standing_requests_after_turn;
 pub(crate) use reads::read_memberships_for_conversation;
+#[cfg(test)]
+pub(crate) use reads::read_reply_thread_summary;
 use reads::{
     read_active_or_latest_assignment, read_assignment, read_message, read_reply_thread_page,
     read_teammate,

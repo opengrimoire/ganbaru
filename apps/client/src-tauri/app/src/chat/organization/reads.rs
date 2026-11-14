@@ -11,11 +11,11 @@ use super::{
     LOCAL_PARTICIPANT_ID, identifier_error, now_timestamp, optional_timestamp, persistence_error,
     timestamp, u64_value,
 };
-use crate::chat::channels::sync_key;
+use crate::chat::channels::{sync_key, unseen_thread_failure_sql};
 use ganbaru_chat::conversion::reply_cursor_key;
 use ganbaru_chat::coordination::access::history_boundary_is_expansion;
 use ganbaru_chat_contracts::models::*;
-use sqlx::{Row, SqlitePool};
+use sqlx::{AssertSqlSafe, Row, SqlitePool};
 
 pub(crate) async fn read_memberships_for_conversation(
     pool: &SqlitePool,
@@ -534,7 +534,7 @@ pub(super) async fn read_message(
     })
 }
 
-pub(super) async fn read_reply_thread_summary(
+pub(crate) async fn read_reply_thread_summary(
     pool: &SqlitePool,
     reply_thread_id: &ChatReplyThreadId,
 ) -> ChatResult<ChatReplyThreadSummaryRead> {
@@ -598,12 +598,21 @@ pub(super) async fn read_reply_thread_summary(
     .fetch_one(pool)
     .await
     .map_err(persistence_error)?;
+    let unseen_failure: i64 = sqlx::query_scalar(AssertSqlSafe(format!(
+        "SELECT {} FROM chat_reply_threads thread WHERE thread.id = ?",
+        unseen_thread_failure_sql("")
+    )))
+    .bind(reply_thread_id.as_str())
+    .fetch_one(pool)
+    .await
+    .map_err(persistence_error)?;
     Ok(ChatReplyThreadSummaryRead {
         id: reply_thread_id.clone(),
         reply_count,
         last_activity_at: timestamp(row.try_get("last_activity_at").map_err(persistence_error)?)?,
         participants: participant_reads,
         unread: unread != 0,
+        unseen_failure: unseen_failure != 0,
         work_state: read_active_or_latest_assignment(pool, reply_thread_id)
             .await?
             .map(|assignment| assignment.state),
@@ -679,6 +688,7 @@ pub(super) async fn read_reply_thread_page(
     Ok(ChatReplyThreadPageRead {
         thread: ChatReplyThreadSummaryRead {
             unread: false,
+            unseen_failure: false,
             ..summary
         },
         root_message: read_message(pool, &root_id).await?,

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { ChatMessageRead, ChatParticipantRead, JsonValue } from "$lib/chat/contracts";
-import { answerableHostQuestion, chatAgentUpdatePresentation, isHostToolUpdate } from "./agent-update";
+import {
+  answerableHostQuestion,
+  chatAgentUpdatePresentation,
+  chatFailureTechnicalDetail,
+  isHostToolUpdate,
+} from "./agent-update";
 
 function content(value: JsonValue): ChatMessageRead["richContent"] {
   return { schemaVersion: 1, value };
@@ -250,5 +255,65 @@ describe("answerableHostQuestion", () => {
 
   it("ignores questions that belong to other work", () => {
     expect(answerableHostQuestion([reply("item:other", "a", hostQuestion(["Yes"], "assignment:2"))], waiting)).toBeNull();
+  });
+});
+
+describe("failure updates", () => {
+  function failure(payload: JsonValue, agentRunId: string | null = "run:1"): ChatMessageRead["richContent"] {
+    return content({ type: "agent_update", updateKind: "failure", assignmentId: "assignment:1", agentRunId, payload });
+  }
+
+  function cause(value: ChatMessageRead["richContent"]) {
+    const presentation = chatAgentUpdatePresentation(value);
+    return presentation?.kind === "failure" ? presentation.cause : null;
+  }
+
+  it("reads a runtime error with its stored code", () => {
+    expect(chatAgentUpdatePresentation(failure({ code: "timeout", safeDetails: null }))).toEqual({
+      kind: "failure",
+      assignmentId: "assignment:1",
+      agentRunId: "run:1",
+      cause: { kind: "error", code: "timeout" },
+      code: "timeout",
+    });
+  });
+
+  it("reads launch failures, provider limits, and budget stops", () => {
+    expect(cause(failure({ launchFailure: true }, null))).toEqual({ kind: "launch" });
+    expect(cause(failure({ code: "provider_usage_limit", resetsAt: null }))).toEqual({ kind: "provider_limit" });
+    expect(cause(failure({ code: "budget_limit_reached", limit: "tokens", used: 10, limitValue: 10 })))
+      .toEqual({ kind: "budget", limit: "tokens" });
+    expect(cause(failure({ code: "budget_limit_reached", limit: "working_time", used: 10, limitValue: 10 })))
+      .toEqual({ kind: "budget", limit: "workingTime" });
+  });
+
+  it("falls back to an unknown cause for codes and payloads this build does not know", () => {
+    expect(chatAgentUpdatePresentation(failure({ code: "from_a_newer_build" })))
+      .toMatchObject({ kind: "failure", cause: { kind: "unknown" }, code: "from_a_newer_build" });
+    expect(chatAgentUpdatePresentation(failure({ recoverable: true })))
+      .toMatchObject({ kind: "failure", cause: { kind: "unknown" }, code: null });
+  });
+
+  it("needs the work the failure belongs to", () => {
+    expect(chatAgentUpdatePresentation(content({
+      type: "agent_update",
+      updateKind: "failure",
+      agentRunId: "run:1",
+      payload: { code: "timeout" },
+    }))).toBeNull();
+  });
+});
+
+describe("chatFailureTechnicalDetail", () => {
+  it("joins the stored code and the diagnostic text", () => {
+    expect(chatFailureTechnicalDetail("timeout", "  Provider turn timed out after 600s\n"))
+      .toBe("timeout: Provider turn timed out after 600s");
+  });
+
+  it("keeps whichever part exists", () => {
+    expect(chatFailureTechnicalDetail("timeout", null)).toBe("timeout");
+    expect(chatFailureTechnicalDetail("timeout", "timeout")).toBe("timeout");
+    expect(chatFailureTechnicalDetail(null, "Process exited with status 1")).toBe("Process exited with status 1");
+    expect(chatFailureTechnicalDetail(null, "   ")).toBeNull();
   });
 });

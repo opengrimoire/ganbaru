@@ -385,9 +385,6 @@
   const providerLimit = $derived(threadComposer
     ? providerLimitNotice(threadAssignment, chat.replyThread?.replies ?? [], interactionState?.rateLimitStatus ?? null)
     : null);
-  const genericFailureNotice = $derived(failedAssignment !== null
-    && !(budgetStop !== null && threadAssignment?.budget)
-    && !(providerLimit !== null && failedAssignment.stateReason === "provider_usage_limit"));
   // A reply that started work which can no longer be stopped is that work's settled trigger, not a waiting reply.
   const pendingRows = $derived(pendingInputRows(assignmentInputs)
     .filter((row) => activeAssignment !== null || !pendingInputStartsWork(row.input)));
@@ -1941,10 +1938,7 @@
     <ChatAssignmentBudgetBar budget={threadAssignment.budget} teammateName={threadAssignment.teammate.displayName} stoppedAt={budgetStop} onSaveLimits={(budget) => saveThreadBudget(budgetedAssignmentId, budget)} onRetry={retryFailedAssignment} />
   {/if}
   {#if providerLimit}
-    <Notice class="assignment-notice" role="status" tone="warning" message={providerLimitMessage(providerLimit.resetsAt)} retryLabel={failedAssignment ? t("chat.organization.retry") : undefined} onRetry={failedAssignment ? retryFailedAssignment : undefined} copy={false} />
-  {/if}
-  {#if genericFailureNotice}
-    <Notice class="assignment-notice" role="status" message={t("chat.organization.workStopped")} retryLabel={t("chat.organization.retry")} onRetry={retryFailedAssignment} copy={false} />
+    <Notice class="assignment-notice" role="status" tone="warning" message={providerLimitMessage(providerLimit.resetsAt)} copy={false} />
   {/if}
   {#if assignmentAwaitingReview}
     <ChatAssignmentReviewCard bind:note={reviewNote} bind:composingNote={reviewNoteOpen} onAccept={acceptReviewedWork} onRequestChanges={requestChangesOnReviewedWork} />

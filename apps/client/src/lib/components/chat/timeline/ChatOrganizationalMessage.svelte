@@ -7,7 +7,9 @@
   import { openChatExternalUrl } from "$lib/api/chat";
   import { ORGANIZATIONAL_REFERENCE_SLOT_ATTRIBUTE, renderOrganizationalMarkdown, type RenderedOrganizationalMarkdown } from "$lib/chat/timeline/organizational-markdown";
   import { isTruncatedChatMessage } from "$lib/chat/timeline/organizational-message-model";
-  import { chatAgentUpdatePresentation } from "$lib/chat/timeline/agent-update";
+  import { chatAgentUpdatePresentation, chatFailureTechnicalDetail, type ChatAgentFailureCause } from "$lib/chat/timeline/agent-update";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { formatDateTime } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
@@ -29,6 +31,7 @@
     onActionError,
     answerChoices = [],
     onChooseAnswer,
+    onRetryFailure,
   }: {
     message: ChatMessageRead;
     grouped?: boolean;
@@ -41,6 +44,8 @@
     answerChoices?: readonly string[];
     /** Puts the chosen answer in the composer. */
     onChooseAnswer?: (choice: string) => void;
+    /** Retries the failed work, offered on the failure message that still stands for it. */
+    onRetryFailure?: () => unknown;
   } = $props();
 
   const localization = getLocalization();
@@ -57,7 +62,29 @@
   ) : ""));
   const actionTarget = $derived(organizationalMessageActionTarget(message));
   const agentUpdate = $derived(chatAgentUpdatePresentation(message.richContent));
+  const failure = $derived(agentUpdate?.kind === "failure" ? agentUpdate : null);
   const contexts = getAllContexts();
+
+  /** The localized explanation of a failure; the stored provider text is only reachable through copy. */
+  function failureMessage(cause: ChatAgentFailureCause): string {
+    switch (cause.kind) {
+      case "error": return chatErrorMessage({ code: cause.code });
+      case "provider_limit": return t("chat.composer.budget.providerLimitUntimed");
+      case "budget": return cause.limit === "tokens"
+        ? t("chat.composer.budget.tokenReached", authorDisplayName)
+        : t("chat.composer.budget.workingTimeReached", authorDisplayName);
+      case "launch":
+      case "unknown": return t("chatErrors.generic");
+    }
+  }
+
+  /** The lead-in naming the teammate, left out when the message already names it. */
+  function failureTitle(cause: ChatAgentFailureCause): string | undefined {
+    if (cause.kind === "budget") return undefined;
+    return cause.kind === "launch"
+      ? t("chat.runs.outcome.failedBeforeOutput", authorDisplayName)
+      : t("chat.runs.outcome.failedAfterOutput", authorDisplayName);
+  }
   let copy: HTMLDivElement | undefined = $state();
   let previousRender: { key: string; value: RenderedOrganizationalMarkdown } | undefined;
   /** Reuses the previous render while the text and references are unchanged, so a refresh keeps mounted references. */
@@ -198,7 +225,20 @@
         <time datetime={message.createdAt}>{formatDateTime(localization.locale, Date.parse(message.createdAt), { timeStyle: "short" })}</time>
       </header>
     {/if}
-    <div bind:this={copy} class="message-copy chat-markdown" data-selectable-content>{@html renderedCopy.html}</div>
+    {#if failure}
+      <div class="message-failure" data-chat-failure>
+        <Notice
+          title={failureTitle(failure.cause)}
+          message={failureMessage(failure.cause)}
+          copy={chatFailureTechnicalDetail(failure.code, message.normalizedMarkdown) ?? false}
+          onRetry={onRetryFailure}
+          retryLabel={onRetryFailure ? t("chat.organization.retry") : undefined}
+          role="status"
+        />
+      </div>
+    {:else}
+      <div bind:this={copy} class="message-copy chat-markdown" data-selectable-content>{@html renderedCopy.html}</div>
+    {/if}
     {#if truncated}<p class="message-elision">{t("chat.organization.truncatedMessage")}</p>{/if}
     {#if message.attachmentIds.length > 0}
       <div class="message-context">
@@ -240,6 +280,7 @@
         <MessageCircle size={13} />
         <span>{t("chat.organization.replies", message.replyThread.replyCount)}</span>
         {#if message.replyThread.unread}<span class="unread-dot" aria-label={t("chat.status.unread")}></span>{/if}
+        {#if message.replyThread.unseenFailure}<span class="unread-dot failure-dot" role="img" aria-label={t("chat.channels.unseenFailure")} data-chat-thread-failure></span>{/if}
       </button>
     {/if}
     <ChatMessageReactionList target={actionTarget} />
@@ -271,6 +312,7 @@
   .reply-strip:hover,.reply-strip:focus-visible { background:color-mix(in srgb,var(--accent) 45%,transparent); }
   .reply-avatars { display:flex; align-items:center; gap:0.25rem; padding-left:0.2rem; }
   .unread-dot { width:0.42rem; height:0.42rem; flex:0 0 auto; border-radius:999px; background:var(--primary); }
+  .failure-dot { background:var(--destructive); }
   .answer-choices { display:flex; flex-wrap:wrap; gap:0.3rem; margin-top:0.4rem; }
   .answer-choice { min-height:1.75rem; max-width:100%; overflow:hidden; border:1px solid var(--border); border-radius:999px; padding:0.15rem 0.6rem; color:var(--foreground); font-size: calc(0.72rem * var(--type-scale)); text-overflow:ellipsis; white-space:nowrap; }
   .answer-choice:hover,.answer-choice:focus-visible { background:var(--accent); }

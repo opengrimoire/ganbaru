@@ -15,6 +15,8 @@ function channel(id: string, projectId: string, name: string, archivedAt: string
     memberships: [],
     messageCount: 0,
     unreadCount: 0,
+    unreadReplyCount: 0,
+    unseenFailure: false,
     latestPreview: null,
     lastActivityAt: "2026-01-01T00:00:00Z",
     attentionState: null,

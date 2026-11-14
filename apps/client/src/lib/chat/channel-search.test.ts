@@ -14,6 +14,8 @@ function channel(id: string, projectId: string, name: string, topic = ""): ChatC
     memberships: [],
     messageCount: 0,
     unreadCount: 0,
+    unreadReplyCount: 0,
+    unseenFailure: false,
     latestPreview: null,
     lastActivityAt: timestamp,
     attentionState: null,

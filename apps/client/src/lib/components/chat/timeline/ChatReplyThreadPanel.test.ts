@@ -16,6 +16,9 @@ import type {
 import { getChat } from "$lib/stores/chat.svelte";
 import ChatReplyThreadPanel from "./ChatReplyThreadPanel.svelte";
 
+const writeTextToClipboard = vi.hoisted(() => vi.fn<(value: string) => Promise<void>>());
+vi.mock("$lib/utils/clipboard", () => ({ writeTextToClipboard }));
+
 class ResizeObserverMock implements ResizeObserver {
   constructor(_callback: ResizeObserverCallback) {}
 
@@ -172,6 +175,7 @@ const page: ChatReplyThreadPageRead = {
     lastActivityAt: "2026-08-04T17:01:00.000Z",
     participants: [agentParticipant],
     unread: false,
+    unseenFailure: false,
     workState: "ready_for_review",
   },
   rootMessage: message("root:test", localParticipant, "Original request", 0),
@@ -471,6 +475,79 @@ describe("ChatReplyThreadPanel", () => {
     expect(target.querySelector('[data-run-outcome="stopped"]')?.textContent)
       .toBe(en.chat.runs.outcome.stoppedBeforeOutput("Atlas"));
     expect(target.querySelectorAll(".chat-execution-timeline")).toHaveLength(1);
+  });
+
+  it("shows a failure at the bottom of the teammate's message with Retry and the technical detail behind copy", async () => {
+    const diagnostic = "Provider turn timed out after 600 seconds";
+    const failedRun: ChatAgentRunRead = { ...run, providerExecutionThreadId: null, state: "failed" };
+    const assignment = {
+      id: run.assignmentId,
+      replyThreadId: page.thread.id,
+      teammate: agentParticipant,
+      triggeringMessageItemId: "root:test",
+      previousAssignmentId: null,
+      state: "failed",
+      stateReason: "timeout",
+      revision: 3,
+      settledAt: "2026-08-04T17:02:00.000Z",
+      createdAt: "2026-08-04T17:00:00.000Z",
+      updatedAt: "2026-08-04T17:02:00.000Z",
+      review: null,
+      localAcceptance: null,
+      latestRunProviderThreadId: null,
+      budget: null,
+      delegation: null,
+    } satisfies ChatReplyThreadPageRead["assignment"];
+    const failureMessage: ChatMessageRead = {
+      ...message("failure:test", agentParticipant, diagnostic, 2),
+      richContent: {
+        schemaVersion: 1,
+        value: {
+          type: "agent_update",
+          updateKind: "failure",
+          assignmentId: assignment.id,
+          agentRunId: failedRun.id,
+          payload: { code: "timeout", safeDetails: null },
+        },
+      },
+    };
+    const failedPage: ChatReplyThreadPageRead = {
+      ...page,
+      replies: [message("progress:test", agentParticipant, "Looking at the build", 1), failureMessage],
+      assignment,
+      agentRuns: [failedRun],
+    };
+    chat.openReplyThreadId = failedPage.thread.id;
+    chat.replyThread = failedPage;
+    chat.replyThreadPages = [failedPage];
+    chat.selectedExecutionRunId = null;
+    chat.selectedThreadId = null;
+    vi.spyOn(chat, "selectAssignmentExecution").mockResolvedValue();
+    vi.spyOn(chat, "listScheduledOrganizationalMessages").mockResolvedValue([]);
+    const retry = vi.spyOn(chat, "retryAssignment").mockResolvedValue();
+    writeTextToClipboard.mockResolvedValue();
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatReplyThreadPanel, {
+      target,
+      props: { onClose: vi.fn() },
+    });
+
+    await vi.waitFor(() => expect(target?.querySelector("[data-chat-failure]")).not.toBeNull());
+    const failure = target.querySelector<HTMLElement>("[data-chat-failure]");
+    const failureEntry = failure?.closest<HTMLElement>("[data-message-item-id]");
+    expect(failureEntry?.dataset.messageItemId).toBe("failure:test");
+    expect(failure?.querySelector(".notice-message")?.textContent)
+      .toBe(`${en.chat.runs.outcome.failedAfterOutput("Atlas")} ${en.chatErrors.codes.timeout}`);
+    expect(target.textContent).not.toContain(diagnostic);
+    expect(target.textContent).not.toContain("The agent stopped because of an error.");
+    expect(target.querySelector('[data-run-outcome="failed"]')).toBeNull();
+    expect(target.querySelectorAll("[data-notice-retry]")).toHaveLength(1);
+
+    failure?.querySelector<HTMLButtonElement>("[data-notice-copy]")?.click();
+    await vi.waitFor(() => expect(writeTextToClipboard).toHaveBeenCalledWith(`timeout: ${diagnostic}`));
+    failure?.querySelector<HTMLButtonElement>("[data-notice-retry]")?.click();
+    await vi.waitFor(() => expect(retry).toHaveBeenCalledWith(assignment.id));
   });
 
   it("closes a working run with a Stop working control that cancels only its assignment", async () => {

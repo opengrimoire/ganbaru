@@ -64,8 +64,9 @@ pub(crate) async fn read_review_queue(
     failure_window_start: &str,
 ) -> ChatResult<ChatReviewQueueRead> {
     let from = review_queue_from_sql();
-    let count_sql = format!("SELECT count(*) {from}");
-    let total: i64 = sqlx::query_scalar(AssertSqlSafe(count_sql))
+    let count_sql =
+        format!("SELECT count(*), coalesce(sum(assignment.state = 'failed'), 0) {from}");
+    let (total, failure_count): (i64, i64) = sqlx::query_as(AssertSqlSafe(count_sql))
         .bind(failure_window_start)
         .bind(project_id)
         .bind(project_id)
@@ -106,6 +107,7 @@ pub(crate) async fn read_review_queue(
     Ok(ChatReviewQueueRead {
         items,
         total,
+        failure_count: u32::try_from(failure_count).unwrap_or(u32::MAX),
         truncated: total > read,
     })
 }

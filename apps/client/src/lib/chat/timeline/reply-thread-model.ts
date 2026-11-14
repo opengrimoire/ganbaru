@@ -5,11 +5,12 @@ import type {
   ChatTeammateChannelAccess,
   ChatTimelinePageRead,
   ChatTimelineTurnRead,
+  ChatWorkAssignmentRead,
   ProjectWorkingFolder,
   VersionedJson,
 } from "$lib/chat/contracts";
 import { compareOrderKeyThenId } from "$lib/utils/order-key";
-import { isHostToolUpdate } from "./agent-update";
+import { chatAgentUpdatePresentation, isHostToolUpdate } from "./agent-update";
 import { projectTimelineReadModel } from "./projection";
 
 interface RichReply {
@@ -200,6 +201,56 @@ export function replyThreadRenderEntries(
   return positioned
     .sort((left, right) => left.position - right.position || left.entry.key.localeCompare(right.entry.key))
     .map(({ entry }) => entry);
+}
+
+/**
+ * Returns whether a visible failure reply already explains how `run` failed: its own failure message, or a launch
+ * failure of the same work posted after the run started. The run's status line then leaves the failure to that reply.
+ *
+ * @param entries Render entries of the thread, see {@link replyThreadRenderEntries}.
+ * @param run The run whose status line would show the failure.
+ */
+export function failureShownByReply(
+  entries: readonly ReplyThreadRenderEntry[],
+  run: Pick<ChatAgentRunRead, "id" | "assignmentId" | "createdAt">,
+): boolean {
+  return entries.some((entry) => {
+    if (entry.kind !== "message") return false;
+    const presentation = chatAgentUpdatePresentation(entry.message.richContent);
+    if (presentation?.kind !== "failure") return false;
+    if (presentation.agentRunId !== null) return presentation.agentRunId === run.id;
+    return presentation.assignmentId === run.assignmentId && entry.message.createdAt >= run.createdAt;
+  });
+}
+
+/**
+ * Returns the key of the render entry that offers Retry: the last entry that shows a failure of the thread's work
+ * while that work is still failed. Earlier failures and failures of earlier work show no Retry, so the thread offers
+ * one at most.
+ *
+ * @param entries Render entries of the thread, see {@link replyThreadRenderEntries}.
+ * @param assignment The thread's current work, or `null` without work.
+ */
+export function retryableFailureEntryKey(
+  entries: readonly ReplyThreadRenderEntry[],
+  assignment: Pick<ChatWorkAssignmentRead, "id" | "state"> | null,
+): string | null {
+  if (assignment?.state !== "failed") return null;
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (!entry) continue;
+    if (entry.kind === "message") {
+      const presentation = chatAgentUpdatePresentation(entry.message.richContent);
+      if (presentation?.kind === "failure" && presentation.assignmentId === assignment.id) return entry.key;
+    } else if (
+      entry.run.assignmentId === assignment.id
+      && entry.run.state === "failed"
+      && !failureShownByReply(entries, entry.run)
+    ) {
+      return entry.key;
+    }
+  }
+  return null;
 }
 
 /** Places a run without projected replies after the last reply created before it. */

@@ -290,3 +290,98 @@ pub(crate) async fn seed_review_update(
     .await
     .unwrap();
 }
+
+/// Writes a reply `item_id` by `author_id` in `reply_thread_id` at `order_key`, created at
+/// `created_at`.
+pub(crate) async fn seed_reply(
+    pool: &sqlx::SqlitePool,
+    reply_thread_id: &str,
+    item_id: &str,
+    author_id: &str,
+    order_key: &str,
+    created_at: &str,
+) {
+    sqlx::query(
+        "INSERT INTO chat_conversation_items
+            (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
+         SELECT ?, conversation_id, id, 'message', ?, ?
+         FROM chat_reply_threads WHERE id = ?",
+    )
+    .bind(item_id)
+    .bind(order_key)
+    .bind(created_at)
+    .bind(reply_thread_id)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chat_communication_messages (item_id, author_participant_id, created_at)
+         VALUES (?, ?, ?)",
+    )
+    .bind(item_id)
+    .bind(author_id)
+    .bind(created_at)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Writes the failure message `item_id` of `assignment_id` as a reply by `teammate_id`, the way
+/// a failed run posts it.
+pub(crate) async fn seed_failure_update(
+    pool: &sqlx::SqlitePool,
+    reply_thread_id: &str,
+    assignment_id: &str,
+    teammate_id: &str,
+    item_id: &str,
+    order_key: &str,
+    created_at: &str,
+) {
+    seed_reply(
+        pool,
+        reply_thread_id,
+        item_id,
+        teammate_id,
+        order_key,
+        created_at,
+    )
+    .await;
+    sqlx::query(
+        "INSERT INTO chat_work_semantic_updates
+            (item_id, assignment_id, update_kind, payload_data, created_at)
+         VALUES (?, ?, 'failure', ?, ?)",
+    )
+    .bind(item_id)
+    .bind(assignment_id)
+    .bind(serde_json::json!({ "code": "timeout" }).to_string())
+    .bind(created_at)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Moves the local read cursor of `reply_thread_id` to `order_key` and `item_id`.
+pub(crate) async fn seed_reply_thread_cursor(
+    pool: &sqlx::SqlitePool,
+    reply_thread_id: &str,
+    order_key: &str,
+    item_id: &str,
+) {
+    sqlx::query(
+        "INSERT INTO chat_reply_thread_read_cursors
+            (reply_thread_id, participant_id, sync_key, last_read_order_key,
+             last_read_item_id, updated_at)
+         VALUES (?, 'participant:local-owner', ?, ?, ?, ?)
+         ON CONFLICT (reply_thread_id, participant_id) DO UPDATE SET
+            last_read_order_key = excluded.last_read_order_key,
+            last_read_item_id = excluded.last_read_item_id",
+    )
+    .bind(reply_thread_id)
+    .bind(format!("cursor:{reply_thread_id}"))
+    .bind(order_key)
+    .bind(item_id)
+    .bind(SEEDED_AT)
+    .execute(pool)
+    .await
+    .unwrap();
+}

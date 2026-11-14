@@ -703,17 +703,22 @@ describe("ChatChannelRail", () => {
     }
 
     it("is hidden while no work waits", async () => {
-      getChat().reviewQueue = { items: [], total: 0, truncated: false };
+      getChat().reviewQueue = { items: [], total: 0, failureCount: 0, truncated: false };
       mountRail();
       await tick();
 
       expect(document.querySelector("[data-chat-review-queue]")).toBeNull();
     });
 
-    it("counts the total and says how many items the cap leaves out", async () => {
+    it("counts the total without failures and says how many items the cap leaves out", async () => {
       getChat().reviewQueue = {
-        items: [queueItem("assignment-answer", "answer"), queueItem("assignment-review", "review")],
-        total: 205,
+        items: [
+          queueItem("assignment-answer", "answer"),
+          queueItem("assignment-failure", "failure"),
+          queueItem("assignment-review", "review"),
+        ],
+        total: 206,
+        failureCount: 1,
         truncated: true,
       };
       mountRail();
@@ -721,16 +726,53 @@ describe("ChatChannelRail", () => {
 
       const queue = document.querySelector<HTMLElement>("[data-chat-review-queue]");
       expect(queue?.getAttribute("aria-label")).toBe("Needs you, 205 items");
-      expect(queue?.querySelector(".queue-count")?.textContent?.trim()).toBe("205");
       expect([...queue?.querySelectorAll<HTMLElement>("[data-review-kind]") ?? []].map((row) => row.dataset.reviewKind))
         .toEqual(["answer", "review"]);
       expect(queue?.textContent).toContain("203 more items are not shown");
+    });
+
+    it("uses the same heading as the other sections and collapses the queue", async () => {
+      getChat().reviewQueue = { items: [queueItem("assignment-answer", "answer")], total: 1, failureCount: 0, truncated: false };
+      mountRail();
+      await tick();
+
+      const queue = document.querySelector<HTMLElement>("[data-chat-review-queue]");
+      const toggle = queue?.querySelector<HTMLButtonElement>(".section-heading .section-toggle");
+      expect(toggle?.textContent?.trim()).toBe("Needs you");
+      expect(toggle?.getAttribute("aria-expanded")).toBe("true");
+      toggle?.click();
+      await tick();
+      expect(queue?.querySelectorAll("[data-review-kind]")).toHaveLength(0);
+    });
+
+    it("stays hidden while only failures are queued, and marks the channel instead", async () => {
+      const chat = getChat();
+      chat.reviewQueue = { items: [queueItem("assignment-failure", "failure")], total: 1, failureCount: 1, truncated: false };
+      chat.activeChannels = [
+        { ...channel("channel-general", "general"), unreadCount: 2, unreadReplyCount: 1, unseenFailure: true },
+        { ...channel("channel-design", "design"), unseenFailure: true },
+        { ...channel("channel-quiet", "quiet"), unreadCount: 3 },
+      ];
+      mountRail();
+      await tick();
+
+      expect(document.querySelector("[data-chat-review-queue]")).toBeNull();
+      const row = (id: string) => document.querySelector<HTMLElement>(`[data-chat-channel-id="${id}"]`);
+      expect(row("channel-general")?.querySelector(".unread-count")?.textContent).toBe("3");
+      expect(row("channel-general")?.querySelector(".unread-count")?.getAttribute("aria-label")).toBe("3 new messages");
+      expect(row("channel-general")?.querySelector("[data-chat-unseen-failure]")?.getAttribute("aria-label"))
+        .toBe("An agent run failed");
+      expect(row("channel-design")?.querySelector(".unread-count")).toBeNull();
+      expect(row("channel-design")?.querySelector("[data-chat-unseen-failure]")).not.toBeNull();
+      expect(row("channel-quiet")?.querySelector(".unread-count")?.textContent).toBe("3");
+      expect(row("channel-quiet")?.querySelector("[data-chat-unseen-failure]")).toBeNull();
     });
 
     it("offers selection for reviews in the docked rail and leaves it out of the phone panel", async () => {
       getChat().reviewQueue = {
         items: [queueItem("assignment-review", "review"), queueItem("assignment-failure", "failure")],
         total: 2,
+        failureCount: 1,
         truncated: false,
       };
       mountRail();
@@ -780,6 +822,8 @@ function channel(id: string, name: string): ChatChannelRead {
     memberships: [],
     messageCount: 0,
     unreadCount: 0,
+    unreadReplyCount: 0,
+    unseenFailure: false,
     latestPreview: null,
     lastActivityAt: timestamp,
     attentionState: null,

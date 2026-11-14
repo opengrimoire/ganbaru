@@ -65,6 +65,7 @@ function replyPage(previousCursor: string | null, replyPosition: number): ChatRe
       lastActivityAt: "2026-08-04T17:02:00.000Z",
       participants: [author],
       unread: false,
+      unseenFailure: false,
       workState: "ready_for_review",
     },
     rootMessage: message("root:test", 0),

@@ -994,6 +994,9 @@ pub struct ChatReplyThreadSummaryRead {
     pub last_activity_at: UtcTimestamp,
     pub participants: Vec<ChatParticipantRead>,
     pub unread: bool,
+    /// Whether the thread's current work failed and the local person has not read the failure
+    /// in the thread.
+    pub unseen_failure: bool,
     pub work_state: Option<ChatWorkAssignmentState>,
 }
 
@@ -1212,6 +1215,9 @@ pub struct ChatReviewQueueItemRead {
 pub struct ChatReviewQueueRead {
     pub items: Vec<ChatReviewQueueItemRead>,
     pub total: u32,
+    /// How many of `total` are failures. Notifications announce them, while the sidebar leaves
+    /// them to the channel and thread markers.
+    pub failure_count: u32,
     /// Whether `total` exceeds the items read.
     pub truncated: bool,
 }

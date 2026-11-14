@@ -704,6 +704,8 @@ export interface ChatReplyThreadSummaryRead {
   lastActivityAt: UtcTimestamp;
   participants: ChatParticipantRead[];
   unread: boolean;
+  /** Whether a failed run in the thread has not been read in the thread yet. */
+  unseenFailure: boolean;
   workState: ChatWorkAssignmentState | null;
 }
 
@@ -859,6 +861,8 @@ export interface ChatReviewQueueRead {
   items: ChatReviewQueueItemRead[];
   /** Every matching item, including those past the cap. */
   total: number;
+  /** How many of `total` are failures. Notifications announce them, while the sidebar leaves them to the channel and thread markers. */
+  failureCount: number;
   /** Whether `total` exceeds the items read. */
   truncated: boolean;
 }

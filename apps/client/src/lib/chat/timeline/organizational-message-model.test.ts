@@ -62,6 +62,7 @@ describe("organizational unread messages", () => {
       lastActivityAt: "2026-08-04T12:00:00.000Z",
       participants: [],
       unread: true,
+      unseenFailure: false,
       workState: null,
     };
     root.replyThread = summary;

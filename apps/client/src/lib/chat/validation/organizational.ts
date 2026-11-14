@@ -935,6 +935,7 @@ export function parseChatReplyThreadSummary(
     lastActivityAt: readUtcTimestamp(record.lastActivityAt, `${label}.lastActivityAt`),
     participants: readArray(record.participants, `${label}.participants`, parseChatParticipant),
     unread: readBoolean(record.unread, `${label}.unread`),
+    unseenFailure: readBoolean(record.unseenFailure, `${label}.unseenFailure`),
     workState: readNullable(
       record.workState,
       `${label}.workState`,
@@ -1181,10 +1182,12 @@ export function parseChatReviewQueue(value: unknown, label = "Chat review queue"
   const record = readRecord(value, label);
   const items = readArray(record.items, `${label}.items`, parseReviewQueueItem);
   const total = readNonNegativeSafeInteger(record.total, `${label}.total`);
+  const failureCount = readNonNegativeSafeInteger(record.failureCount, `${label}.failureCount`);
   const truncated = readBoolean(record.truncated, `${label}.truncated`);
   if (total < items.length) throw new Error(`${label}.total is below the item count`);
   if (truncated !== total > items.length) throw new Error(`${label}.truncated disagrees with the total`);
-  return { items, total, truncated };
+  if (failureCount > total) throw new Error(`${label}.failureCount exceeds the total`);
+  return { items, total, failureCount, truncated };
 }
 
 /** Validates one assignment input read. */

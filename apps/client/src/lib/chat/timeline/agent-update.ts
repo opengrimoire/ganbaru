@@ -1,5 +1,7 @@
 import {
+  CHAT_ERROR_CODES,
   CHAT_WORK_ASSIGNMENT_STATES,
+  type ChatErrorCode,
   type ChatMessageRead,
   type ChatPushRequest,
   type ChatScheduleProposal,
@@ -31,7 +33,24 @@ export type ChatAgentUpdatePresentation =
     parentAssignmentId: string;
     childAssignmentId: string;
     state: ChatWorkAssignmentState;
+  }
+  | {
+    kind: "failure";
+    assignmentId: string;
+    /** The run that failed, or `null` when the work failed before a run started. */
+    agentRunId: string | null;
+    cause: ChatAgentFailureCause;
+    /** The stored code, such as `timeout` or `budget_limit_reached`, for the technical detail only. */
+    code: string | null;
   };
+
+/** Why work failed, as far as the reply thread explains it in localized text. */
+export type ChatAgentFailureCause =
+  | { kind: "error"; code: ChatErrorCode }
+  | { kind: "provider_limit" }
+  | { kind: "budget"; limit: "tokens" | "workingTime" }
+  | { kind: "launch" }
+  | { kind: "unknown" };
 
 /**
  * Reads the presentation of an agent update from a message's replicated rich content. Rich content
@@ -46,6 +65,9 @@ export function chatAgentUpdatePresentation(richContent: VersionedJson): ChatAge
   const updateKind = value.updateKind;
   if (updateKind === "delegation") return delegationOutcome(payload);
   const assignmentId = nonEmptyString(value.assignmentId);
+  if (updateKind === "failure") {
+    return assignmentId === null ? null : failure(assignmentId, nonEmptyString(value.agentRunId), payload);
+  }
   if (assignmentId === null || payload.source !== HOST_TOOL_UPDATE_SOURCE) return null;
   if (updateKind === "question") {
     if (payload.push !== undefined) {
@@ -81,6 +103,41 @@ function delegationOutcome(payload: Record<string, unknown>): ChatAgentUpdatePre
     return null;
   }
   return { kind: "delegation_outcome", parentAssignmentId, childAssignmentId, state };
+}
+
+function failure(
+  assignmentId: string,
+  agentRunId: string | null,
+  payload: Record<string, unknown>,
+): ChatAgentUpdatePresentation {
+  const code = nonEmptyString(payload.code);
+  return { kind: "failure", assignmentId, agentRunId, cause: failureCause(code, payload), code };
+}
+
+function failureCause(code: string | null, payload: Record<string, unknown>): ChatAgentFailureCause {
+  if (payload.launchFailure === true) return { kind: "launch" };
+  if (code === "provider_usage_limit") return { kind: "provider_limit" };
+  if (code === "budget_limit_reached") {
+    if (payload.limit === "tokens") return { kind: "budget", limit: "tokens" };
+    if (payload.limit === "working_time") return { kind: "budget", limit: "workingTime" };
+    return { kind: "unknown" };
+  }
+  const errorCode = CHAT_ERROR_CODES.find((candidate) => candidate === code);
+  return errorCode ? { kind: "error", code: errorCode } : { kind: "unknown" };
+}
+
+/**
+ * The technical detail of a failure for the copy button: the stored code, when there is one, then the diagnostic
+ * text. The diagnostic text is untranslated provider or runtime output, so it is never the visible message.
+ *
+ * @param code The stored error code, such as `timeout`.
+ * @param detail The diagnostic text, such as a failure message's body or a turn's stop reason.
+ * @returns The detail to copy, or `null` when there is neither a code nor text.
+ */
+export function chatFailureTechnicalDetail(code: string | null, detail: string | null): string | null {
+  const text = detail?.trim() ?? "";
+  if (code && text && text !== code) return `${code}: ${text}`;
+  return code ?? (text || null);
 }
 
 /** Reads a proposal payload another device wrote, or `null` when any field is malformed. */

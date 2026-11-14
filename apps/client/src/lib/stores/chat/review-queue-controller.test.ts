@@ -42,7 +42,7 @@ function item(id: string, kind: ChatReviewQueueKind, channelId = "channel:one"):
 }
 
 function queueOf(items: ChatReviewQueueItemRead[]): ChatReviewQueueRead {
-  return { items, total: items.length, truncated: false };
+  return { items, total: items.length, failureCount: 0, truncated: false };
 }
 
 /** A promise with its resolver exposed, so a test controls when a read finishes. */

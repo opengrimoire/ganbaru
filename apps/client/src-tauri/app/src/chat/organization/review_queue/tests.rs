@@ -84,6 +84,7 @@ async fn review_queue_orders_by_kind_then_recency() {
         ]
     );
     assert_eq!(queue.total, 5);
+    assert_eq!(queue.failure_count, 1);
     assert!(!queue.truncated);
     let answer = &queue.items[0];
     assert_eq!(answer.project_id, "project-chat");

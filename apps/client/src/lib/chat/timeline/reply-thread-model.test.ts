@@ -19,10 +19,12 @@ import {
   exactExecutionReadKey,
   exactExecutionRuns,
   exactRunPresentationsReady,
+  failureShownByReply,
   latestRenderableAgentRun,
   planExactExecutionReads,
   replyThreadRenderEntries,
   repliesWithoutRenderedRunProjection,
+  retryableFailureEntryKey,
   shouldGroupReplyMessages,
 } from "./reply-thread-model";
 
@@ -239,6 +241,101 @@ describe("reply thread run status lines", () => {
     const [entry] = replyThreadRenderEntries([], [run], new Set([run.id]));
 
     expect(entry).toEqual({ kind: "execution", key: "execution:run-1", run, loaded: true });
+  });
+});
+
+describe("reply thread failures", () => {
+  function failureReply(
+    itemId: string,
+    agentRunId: string | null,
+    createdAt: string,
+    position: number,
+    assignmentId = "assignment-1",
+  ): ChatMessageRead {
+    return message(itemId, "teammate-1", createdAt, {
+      type: "agent_update",
+      updateKind: "failure",
+      assignmentId,
+      agentRunId,
+      payload: agentRunId === null ? { launchFailure: true } : { code: "timeout", safeDetails: null },
+    }, position);
+  }
+
+  function failedRun(id: string, providerExecutionThreadId: string | null = null): ChatAgentRunRead {
+    return { ...agentRun(id, providerExecutionThreadId), state: "failed" };
+  }
+
+  const request = message("request", "local-user", "2026-08-02T07:59:00Z", { type: "doc" }, 1);
+
+  it("leaves a failed run's status line to its own visible failure message", () => {
+    const run = failedRun("run-1");
+    const entries = replyThreadRenderEntries(
+      [request, failureReply("failure", "run-1", "2026-08-02T08:01:00Z", 2)],
+      [run],
+      new Set(),
+    );
+
+    expect(failureShownByReply(entries, run)).toBe(true);
+    expect(failureShownByReply(entries, failedRun("run-2"))).toBe(false);
+  });
+
+  it("covers a run with a launch failure of the same work posted after the run started", () => {
+    const run = failedRun("run-1");
+    const later = replyThreadRenderEntries(
+      [request, failureReply("launch", null, "2026-08-02T08:01:00Z", 2)],
+      [run],
+      new Set(),
+    );
+    const earlier = replyThreadRenderEntries(
+      [request, failureReply("launch", null, "2026-08-02T07:59:30Z", 2)],
+      [run],
+      new Set(),
+    );
+    const otherWork = replyThreadRenderEntries(
+      [request, failureReply("launch", null, "2026-08-02T08:01:00Z", 2, "assignment-2")],
+      [run],
+      new Set(),
+    );
+
+    expect(failureShownByReply(later, run)).toBe(true);
+    expect(failureShownByReply(earlier, run)).toBe(false);
+    expect(failureShownByReply(otherWork, run)).toBe(false);
+  });
+
+  it("offers Retry only on the newest failure while the work is still failed", () => {
+    const entries = replyThreadRenderEntries(
+      [
+        request,
+        failureReply("first", "run-1", "2026-08-02T08:01:00Z", 2),
+        failureReply("second", "run-2", "2026-08-02T08:03:00Z", 3),
+      ],
+      [],
+      new Set(),
+    );
+
+    expect(retryableFailureEntryKey(entries, { id: "assignment-1", state: "failed" })).toBe("second");
+    expect(retryableFailureEntryKey(entries, { id: "assignment-1", state: "working" })).toBeNull();
+    expect(retryableFailureEntryKey(entries, { id: "assignment-2", state: "failed" })).toBeNull();
+    expect(retryableFailureEntryKey(entries, null)).toBeNull();
+  });
+
+  it("offers Retry on a failed run's status line when no message explains the failure", () => {
+    const run = failedRun("run-1", "thread-1");
+    const entries = replyThreadRenderEntries([request], [run], new Set([run.id]));
+
+    expect(retryableFailureEntryKey(entries, { id: "assignment-1", state: "failed" })).toBe("execution:run-1");
+  });
+
+  it("offers Retry on the failure message rather than the status line it covers", () => {
+    const run = failedRun("run-1");
+    const entries = replyThreadRenderEntries(
+      [request, failureReply("failure", "run-1", "2026-08-02T08:01:00Z", 2)],
+      [run],
+      new Set(),
+    );
+
+    expect(entries.map((entry) => entry.key)).toEqual(["request", "failure", "execution:run-1"]);
+    expect(retryableFailureEntryKey(entries, { id: "assignment-1", state: "failed" })).toBe("failure");
   });
 });
 

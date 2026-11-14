@@ -96,6 +96,8 @@ describe("Chat provider contracts", () => {
       memberships: [],
       messageCount: 18,
       unreadCount: 2,
+      unreadReplyCount: 1,
+      unseenFailure: true,
       latestPreview: "Review is ready",
       lastActivityAt: timestamp,
       attentionState: "ready_for_review",
@@ -107,8 +109,11 @@ describe("Chat provider contracts", () => {
 
     expect(channel.conversationId).toBe("conversation:general");
     expect(channel.attentionState).toBe("ready_for_review");
+    expect(channel.unreadReplyCount).toBe(1);
+    expect(channel.unseenFailure).toBe(true);
     expect(() => parseChatChannel({ ...channel, unreadCount: -1 }))
       .toThrow("unreadCount must not be negative");
+    expect(() => parseChatChannel({ ...channel, unseenFailure: "yes" })).toThrow("unseenFailure");
   });
 
   it("removes absolute duplicate file summaries from stored timeline turns", () => {

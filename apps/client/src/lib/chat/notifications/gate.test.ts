@@ -342,7 +342,7 @@ describe("attentionSignals", () => {
       updatedAt: "2026-11-12T10:00:00Z",
     };
 
-    expect(attentionSignals({ items: [item], total: 2, truncated: true })).toEqual({
+    expect(attentionSignals({ items: [item], total: 2, failureCount: 0, truncated: true })).toEqual({
       truncated: true,
       signals: [signal("a", { revision: 3, kind: "failure", executedHere: false, stateReason: "Provider exited" })],
     });

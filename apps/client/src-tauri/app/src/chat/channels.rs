@@ -60,6 +60,61 @@ pub(crate) const ASSIGNMENT_ATTENTION_PRIORITY_SQL: &str = "CASE assignment.stat
         ELSE 6
     END";
 
+/// States of an assignment that a channel row marks with its attention state. Failures are not
+/// among them: a channel marks a failure only until it is seen, through `unseen_failure`.
+const CHANNEL_ATTENTION_STATES_SQL: &str =
+    "'queued', 'working', 'waiting_for_answer', 'waiting_for_approval', 'ready_for_review'";
+
+/// Whether the reply thread aliased `thread` ends in a failure the local person has not read in
+/// that thread: its current assignment failed, nothing continues it, delegated work's open parent
+/// is not deciding what follows, and the failure message, aliased `failure_item`, lies after the
+/// thread's read cursor. `seen_elsewhere` adds further conditions on `failure_item`, starting
+/// with `AND`, or is empty.
+pub(crate) fn unseen_thread_failure_sql(seen_elsewhere: &str) -> String {
+    format!(
+        "EXISTS (
+            SELECT 1 FROM chat_work_assignments assignment
+            JOIN chat_work_semantic_updates failure
+              ON failure.assignment_id = assignment.id AND failure.update_kind = 'failure'
+            JOIN chat_conversation_items failure_item ON failure_item.id = failure.item_id
+            WHERE assignment.reply_thread_id = thread.id
+              AND assignment.state = 'failed'
+              AND NOT EXISTS (
+                  SELECT 1 FROM chat_work_assignments successor
+                  WHERE successor.previous_assignment_id = assignment.id
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM chat_work_assignments parent
+                  WHERE parent.id = assignment.parent_assignment_id
+                    AND parent.state IN (
+                        'queued', 'working', 'waiting_for_answer', 'waiting_for_approval'
+                    )
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM chat_reply_thread_read_cursors thread_cursor
+                  WHERE thread_cursor.reply_thread_id = thread.id
+                    AND thread_cursor.participant_id = '{LOCAL_PARTICIPANT_ID}'
+                    AND (thread_cursor.last_read_order_key, thread_cursor.last_read_item_id)
+                        >= (failure_item.order_key, failure_item.id)
+              )
+              {seen_elsewhere}
+        )"
+    )
+}
+
+/// The time the local person last opened the conversation aliased `channel`, or an empty string
+/// when they never did. Opening a channel stamps its read cursor even when no top-level message
+/// arrived, so replies and failures posted before then count as seen.
+fn channel_seen_at_sql() -> String {
+    format!(
+        "coalesce((
+            SELECT seen.updated_at FROM chat_conversation_read_cursors seen
+            WHERE seen.conversation_id = channel.conversation_id
+              AND seen.participant_id = '{LOCAL_PARTICIPANT_ID}'
+        ), '')"
+    )
+}
+
 /// The earliest settle time at which a failure still asks for attention at `now`, in the stored
 /// timestamp format so it compares as text.
 pub(crate) fn failure_window_start(now: DateTime<Utc>) -> String {
@@ -262,10 +317,12 @@ pub async fn chat_set_channel_read(
     read_channel(&pool, &channel_id).await
 }
 
-/// Advances a participant's read cursor of a conversation to its last root item.
+/// Advances a participant's read cursor of a conversation to its last root item and stamps it
+/// with `now`, the time the conversation was last seen.
 ///
-/// The cursor never moves backward and the row is not rewritten when the position does not
-/// grow, because sync merges read cursors as a maximum.
+/// The cursor never moves backward, because sync merges read cursors as a maximum. The row is
+/// rewritten only when the position grows or a reply arrived after the last stamp, so opening a
+/// quiet channel writes nothing.
 pub(crate) async fn mark_conversation_read(
     pool: &SqlitePool,
     conversation_id: &ChatConversationId,
@@ -290,11 +347,23 @@ pub(crate) async fn mark_conversation_read(
              last_read_item_id, updated_at)
          VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(conversation_id, participant_id) DO UPDATE SET
-            last_read_order_key = excluded.last_read_order_key,
-            last_read_item_id = excluded.last_read_item_id,
-            updated_at = excluded.updated_at
+            last_read_order_key = CASE
+                WHEN (excluded.last_read_order_key, excluded.last_read_item_id)
+                    > (last_read_order_key, last_read_item_id)
+                THEN excluded.last_read_order_key ELSE last_read_order_key END,
+            last_read_item_id = CASE
+                WHEN (excluded.last_read_order_key, excluded.last_read_item_id)
+                    > (last_read_order_key, last_read_item_id)
+                THEN excluded.last_read_item_id ELSE last_read_item_id END,
+            updated_at = max(updated_at, excluded.updated_at)
          WHERE (excluded.last_read_order_key, excluded.last_read_item_id)
-             > (last_read_order_key, last_read_item_id)",
+             > (last_read_order_key, last_read_item_id)
+            OR EXISTS (
+                SELECT 1 FROM chat_conversation_items reply
+                WHERE reply.conversation_id = excluded.conversation_id
+                  AND reply.reply_thread_id IS NOT NULL
+                  AND reply.created_at > chat_conversation_read_cursors.updated_at
+            )",
     )
     .bind(conversation_id.as_str())
     .bind(participant_id)
@@ -401,6 +470,9 @@ async fn read_channels(
 }
 
 fn channel_read_query(predicate: &str, order: Option<&str>) -> String {
+    let seen_at = channel_seen_at_sql();
+    let unseen_failure =
+        unseen_thread_failure_sql(&format!("AND failure_item.created_at > {seen_at}"));
     format!(
         "{}
          SELECT
@@ -437,6 +509,32 @@ fn channel_read_query(predicate: &str, order: Option<&str>) -> String {
                       AND (cursor.last_read_order_key, cursor.last_read_item_id)
                           >= (item.order_key, item.id)
                )) AS unread_count,
+            (SELECT count(*) FROM chat_conversation_items item
+             JOIN chat_communication_messages message ON message.item_id = item.id
+             JOIN chat_reply_threads thread ON thread.id = item.reply_thread_id
+             WHERE item.conversation_id = channel.conversation_id
+               AND item.item_kind = 'message'
+               AND message.deleted_at IS NULL
+               AND message.author_participant_id IS NOT '{LOCAL_PARTICIPANT_ID}'
+               AND item.created_at > {seen_at}
+               AND NOT EXISTS (
+                    SELECT 1 FROM chat_reply_thread_read_cursors thread_cursor
+                    WHERE thread_cursor.reply_thread_id = thread.id
+                      AND thread_cursor.participant_id = '{LOCAL_PARTICIPANT_ID}'
+                      AND (thread_cursor.last_read_order_key, thread_cursor.last_read_item_id)
+                          >= (item.order_key, item.id)
+               )
+               AND EXISTS (
+                    SELECT 1 FROM chat_conversation_items own
+                    JOIN chat_communication_messages own_message ON own_message.item_id = own.id
+                    WHERE (own.id = thread.root_item_id OR own.reply_thread_id = thread.id)
+                      AND own_message.author_participant_id = '{LOCAL_PARTICIPANT_ID}'
+               )) AS unread_reply_count,
+            EXISTS (
+                SELECT 1 FROM chat_reply_threads thread
+                WHERE thread.conversation_id = channel.conversation_id
+                  AND {unseen_failure}
+            ) AS unseen_failure,
             (SELECT revision.normalized_markdown
              FROM chat_conversation_items item
              JOIN chat_communication_messages message ON message.item_id = item.id
@@ -475,7 +573,7 @@ fn open_assignment_attention_cte() -> String {
                        assignment.id, {ASSIGNMENT_ATTENTION_PRIORITY_SQL} AS priority
                 FROM chat_work_assignments assignment
                 JOIN chat_reply_threads thread ON thread.id = assignment.reply_thread_id
-                WHERE assignment.state IN ('queued', 'working', {PERSON_ATTENTION_STATES_SQL})
+                WHERE assignment.state IN ({CHANNEL_ATTENTION_STATES_SQL})
                   AND {ASSIGNMENT_ATTENTION_PREDICATE_SQL}
             )
          )"
@@ -515,6 +613,14 @@ async fn channel_from_row(
         .await?,
         message_count: u64_value(row.try_get("message_count").map_err(persistence_error)?)?,
         unread_count: u64_value(row.try_get("unread_count").map_err(persistence_error)?)?,
+        unread_reply_count: u64_value(
+            row.try_get("unread_reply_count")
+                .map_err(persistence_error)?,
+        )?,
+        unseen_failure: row
+            .try_get::<i64, _>("unseen_failure")
+            .map_err(persistence_error)?
+            != 0,
         latest_preview: row.try_get("latest_preview").map_err(persistence_error)?,
         last_activity_at: timestamp(row.try_get("last_activity_at").map_err(persistence_error)?)?,
         attention_state,
@@ -1017,14 +1123,73 @@ mod tests {
     }
 
     mod attention {
-        use super::super::{read_channel, read_channels};
+        use super::super::{
+            LOCAL_PARTICIPANT_ID, mark_conversation_read, read_channel, read_channels, timestamp,
+        };
         use crate::chat::tests::attention::{
-            SeedAssignment, days_ago, seed_assignment, seed_channel, seed_reply_thread,
+            SeedAssignment, days_ago, minutes_after_seed, seed_assignment, seed_channel,
+            seed_failure_update, seed_reply, seed_reply_thread, seed_reply_thread_cursor,
             seed_teammate,
         };
-        use ganbaru_chat_contracts::models::{ChatChannelId, ChatWorkAssignmentState};
+        use ganbaru_chat_contracts::models::{
+            ChatChannelId, ChatConversationId, ChatReplyThreadId, ChatReplyThreadSummaryRead,
+            ChatWorkAssignmentState,
+        };
 
         const TEAMMATE: &str = "participant:attention-agent";
+
+        /// Opens the channel `channel_id` at `minutes` after the seed time.
+        async fn open_channel_at(
+            pool: &sqlx::SqlitePool,
+            channel_id: &ChatChannelId,
+            minutes: i64,
+        ) {
+            let conversation_id = read_channel(pool, channel_id)
+                .await
+                .unwrap()
+                .conversation_id;
+            mark_conversation_read(
+                pool,
+                &conversation_id,
+                LOCAL_PARTICIPANT_ID,
+                &timestamp(minutes_after_seed(minutes)).unwrap(),
+            )
+            .await
+            .unwrap();
+        }
+
+        async fn unseen_failure_of(pool: &sqlx::SqlitePool, channel_id: &ChatChannelId) -> bool {
+            read_channel(pool, channel_id).await.unwrap().unseen_failure
+        }
+
+        async fn unread_replies_of(pool: &sqlx::SqlitePool, channel_id: &ChatChannelId) -> u64 {
+            read_channel(pool, channel_id)
+                .await
+                .unwrap()
+                .unread_reply_count
+        }
+
+        /// A failed assignment in `thread` with its failure message `item_id`, posted
+        /// `minutes` after the seed time.
+        async fn seed_failure(
+            pool: &sqlx::SqlitePool,
+            assignment: &SeedAssignment<'_>,
+            item_id: &str,
+            order_key: &str,
+            minutes: i64,
+        ) {
+            seed_assignment(pool, assignment).await;
+            seed_failure_update(
+                pool,
+                assignment.reply_thread_id,
+                assignment.id,
+                TEAMMATE,
+                item_id,
+                order_key,
+                &minutes_after_seed(minutes),
+            )
+            .await;
+        }
 
         /// A channel of the seeded project with `threads` reply threads and a teammate.
         async fn channel_with_threads(
@@ -1050,8 +1215,36 @@ mod tests {
                 .attention_state
         }
 
+        async fn thread_summary(
+            pool: &sqlx::SqlitePool,
+            reply_thread_id: &str,
+        ) -> ChatReplyThreadSummaryRead {
+            crate::chat::organization::read_reply_thread_summary(
+                pool,
+                &ChatReplyThreadId::new(reply_thread_id).unwrap(),
+            )
+            .await
+            .unwrap()
+        }
+
+        /// The time the local read cursor of `conversation_id` was last stamped.
+        async fn cursor_stamp(
+            pool: &sqlx::SqlitePool,
+            conversation_id: &ChatConversationId,
+        ) -> String {
+            sqlx::query_scalar(
+                "SELECT updated_at FROM chat_conversation_read_cursors
+                 WHERE conversation_id = ? AND participant_id = ?",
+            )
+            .bind(conversation_id.as_str())
+            .bind(LOCAL_PARTICIPANT_ID)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+        }
+
         #[tokio::test]
-        async fn attention_prefers_answer_over_approval_over_review_over_failure() {
+        async fn attention_prefers_answer_over_approval_over_review_and_leaves_out_failures() {
             let pool = crate::chat::tests::repository::pool_with_thread().await;
             seed_teammate(&pool, TEAMMATE, "Attention agent").await;
             let channel = channel_with_threads(
@@ -1063,11 +1256,9 @@ mod tests {
             let mut failed =
                 SeedAssignment::new("assignment:d", "thread:d", TEAMMATE, "failed", 40);
             failed.settled_at = Some(days_ago(1));
-            seed_assignment(&pool, &failed).await;
-            assert_eq!(
-                attention_of(&pool, &channel).await,
-                Some(ChatWorkAssignmentState::Failed)
-            );
+            seed_failure(&pool, &failed, "item:failure:d", "a1", 40).await;
+            assert_eq!(attention_of(&pool, &channel).await, None);
+            assert!(unseen_failure_of(&pool, &channel).await);
 
             let expected = [
                 (
@@ -1096,42 +1287,82 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn a_failure_continued_by_a_later_assignment_asks_for_nothing() {
+        async fn a_failure_continued_by_a_later_assignment_is_not_marked() {
             let pool = crate::chat::tests::repository::pool_with_thread().await;
             seed_teammate(&pool, TEAMMATE, "Attention agent").await;
             let channel = channel_with_threads(&pool, "channel:successor", &["thread:a"]).await;
-            let mut failed =
+            let failed =
                 SeedAssignment::new("assignment:failed", "thread:a", TEAMMATE, "failed", 1);
-            failed.settled_at = Some(days_ago(1));
-            seed_assignment(&pool, &failed).await;
+            seed_failure(&pool, &failed, "item:failure", "a1", 1).await;
+            assert!(unseen_failure_of(&pool, &channel).await);
+
             let mut successor =
                 SeedAssignment::new("assignment:successor", "thread:a", TEAMMATE, "completed", 2);
             successor.previous_assignment_id = Some("assignment:failed");
             seed_assignment(&pool, &successor).await;
 
-            assert_eq!(attention_of(&pool, &channel).await, None);
+            assert!(!unseen_failure_of(&pool, &channel).await);
         }
 
         #[tokio::test]
-        async fn a_failure_stops_asking_for_attention_after_the_window() {
+        async fn a_retried_failure_is_not_marked() {
             let pool = crate::chat::tests::repository::pool_with_thread().await;
             seed_teammate(&pool, TEAMMATE, "Attention agent").await;
-            let old = channel_with_threads(&pool, "channel:old", &["thread:old"]).await;
-            let recent = channel_with_threads(&pool, "channel:recent", &["thread:recent"]).await;
-            let mut eight_days =
-                SeedAssignment::new("assignment:old", "thread:old", TEAMMATE, "failed", 1);
-            eight_days.settled_at = Some(days_ago(8));
-            seed_assignment(&pool, &eight_days).await;
-            let mut six_days =
-                SeedAssignment::new("assignment:recent", "thread:recent", TEAMMATE, "failed", 1);
-            six_days.settled_at = Some(days_ago(6));
-            seed_assignment(&pool, &six_days).await;
+            let channel = channel_with_threads(&pool, "channel:retried", &["thread:a"]).await;
+            let failed = SeedAssignment::new("assignment:a", "thread:a", TEAMMATE, "failed", 1);
+            seed_failure(&pool, &failed, "item:failure", "a1", 1).await;
 
-            assert_eq!(attention_of(&pool, &old).await, None);
+            sqlx::query(
+                "UPDATE chat_work_assignments SET state = 'queued', settled_at = NULL
+                 WHERE id = 'assignment:a'",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            assert!(!unseen_failure_of(&pool, &channel).await);
             assert_eq!(
-                attention_of(&pool, &recent).await,
-                Some(ChatWorkAssignmentState::Failed)
+                attention_of(&pool, &channel).await,
+                Some(ChatWorkAssignmentState::Queued)
             );
+        }
+
+        #[tokio::test]
+        async fn an_unseen_failure_clears_when_the_channel_is_opened_after_it() {
+            let pool = crate::chat::tests::repository::pool_with_thread().await;
+            seed_teammate(&pool, TEAMMATE, "Attention agent").await;
+            let channel = channel_with_threads(&pool, "channel:opened", &["thread:a"]).await;
+            open_channel_at(&pool, &channel, 1).await;
+            let failed = SeedAssignment::new("assignment:a", "thread:a", TEAMMATE, "failed", 5);
+            seed_failure(&pool, &failed, "item:failure", "a1", 5).await;
+            assert!(
+                unseen_failure_of(&pool, &channel).await,
+                "a failure after the last visit is unseen"
+            );
+
+            open_channel_at(&pool, &channel, 10).await;
+
+            assert!(!unseen_failure_of(&pool, &channel).await);
+            let thread = thread_summary(&pool, "thread:a").await;
+            assert!(
+                thread.unseen_failure,
+                "the thread keeps its marker until the thread itself is read"
+            );
+        }
+
+        #[tokio::test]
+        async fn an_unseen_failure_clears_when_its_thread_is_read() {
+            let pool = crate::chat::tests::repository::pool_with_thread().await;
+            seed_teammate(&pool, TEAMMATE, "Attention agent").await;
+            let channel = channel_with_threads(&pool, "channel:thread-read", &["thread:a"]).await;
+            let failed = SeedAssignment::new("assignment:a", "thread:a", TEAMMATE, "failed", 5);
+            seed_failure(&pool, &failed, "item:failure", "a1", 5).await;
+
+            seed_reply_thread_cursor(&pool, "thread:a", "a1", "item:failure").await;
+
+            assert!(!unseen_failure_of(&pool, &channel).await);
+            let thread = thread_summary(&pool, "thread:a").await;
+            assert!(!thread.unseen_failure);
         }
 
         #[tokio::test]
@@ -1149,17 +1380,15 @@ mod tests {
             .await;
             let mut child =
                 SeedAssignment::new("assignment:child", "thread:child", TEAMMATE, "failed", 2);
-            child.settled_at = Some(days_ago(1));
             child.parent_assignment_id = Some("assignment:parent");
-            seed_assignment(&pool, &child).await;
+            seed_failure(&pool, &child, "item:failure:child", "a1", 2).await;
 
             assert_eq!(
                 attention_of(&pool, &parent_channel).await,
                 Some(ChatWorkAssignmentState::Working)
             );
-            assert_eq!(
-                attention_of(&pool, &child_channel).await,
-                None,
+            assert!(
+                !unseen_failure_of(&pool, &child_channel).await,
                 "the parent receives the failure as its outcome"
             );
 
@@ -1171,10 +1400,121 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-            assert_eq!(
-                attention_of(&pool, &child_channel).await,
-                Some(ChatWorkAssignmentState::Failed),
+            assert!(
+                unseen_failure_of(&pool, &child_channel).await,
                 "a settled parent no longer handles the failure"
+            );
+        }
+
+        #[tokio::test]
+        async fn unread_replies_count_only_threads_the_person_took_part_in() {
+            let pool = crate::chat::tests::repository::pool_with_thread().await;
+            seed_teammate(&pool, TEAMMATE, "Attention agent").await;
+            let channel = channel_with_threads(
+                &pool,
+                "channel:replies",
+                &["thread:own", "thread:joined", "thread:other"],
+            )
+            .await;
+            // `thread:joined` and `thread:other` start from a teammate's message.
+            sqlx::query(
+                "UPDATE chat_communication_messages SET author_participant_id = ?
+                 WHERE item_id IN ('item:root:thread:joined', 'item:root:thread:other')",
+            )
+            .bind(TEAMMATE)
+            .execute(&pool)
+            .await
+            .unwrap();
+            let unread_roots = read_channel(&pool, &channel).await.unwrap().unread_count;
+            let at = minutes_after_seed(5);
+            seed_reply(&pool, "thread:own", "item:own:1", TEAMMATE, "a1", &at).await;
+            seed_reply(&pool, "thread:own", "item:own:2", TEAMMATE, "a2", &at).await;
+            seed_reply(
+                &pool,
+                "thread:own",
+                "item:own:mine",
+                LOCAL_PARTICIPANT_ID,
+                "a3",
+                &at,
+            )
+            .await;
+            seed_reply(
+                &pool,
+                "thread:joined",
+                "item:joined:mine",
+                LOCAL_PARTICIPANT_ID,
+                "a1",
+                &at,
+            )
+            .await;
+            seed_reply(&pool, "thread:joined", "item:joined:1", TEAMMATE, "a2", &at).await;
+            seed_reply(&pool, "thread:other", "item:other:1", TEAMMATE, "a1", &at).await;
+
+            assert_eq!(unread_replies_of(&pool, &channel).await, 3);
+            assert_eq!(
+                read_channel(&pool, &channel).await.unwrap().unread_count,
+                unread_roots,
+                "replies never count as top-level messages"
+            );
+
+            seed_reply_thread_cursor(&pool, "thread:own", "a1", "item:own:1").await;
+            assert_eq!(
+                unread_replies_of(&pool, &channel).await,
+                2,
+                "a reply read in its thread no longer counts"
+            );
+
+            open_channel_at(&pool, &channel, 10).await;
+            assert_eq!(unread_replies_of(&pool, &channel).await, 0);
+
+            seed_reply(
+                &pool,
+                "thread:joined",
+                "item:joined:2",
+                TEAMMATE,
+                "a3",
+                &minutes_after_seed(20),
+            )
+            .await;
+            assert_eq!(
+                unread_replies_of(&pool, &channel).await,
+                1,
+                "a reply after the visit counts again"
+            );
+        }
+
+        #[tokio::test]
+        async fn opening_a_channel_stamps_its_cursor_only_when_replies_arrived() {
+            let pool = crate::chat::tests::repository::pool_with_thread().await;
+            seed_teammate(&pool, TEAMMATE, "Attention agent").await;
+            let channel = channel_with_threads(&pool, "channel:stamp", &["thread:a"]).await;
+            open_channel_at(&pool, &channel, 1).await;
+            let conversation_id = read_channel(&pool, &channel).await.unwrap().conversation_id;
+            assert_eq!(
+                cursor_stamp(&pool, &conversation_id).await,
+                minutes_after_seed(1)
+            );
+
+            open_channel_at(&pool, &channel, 2).await;
+            assert_eq!(
+                cursor_stamp(&pool, &conversation_id).await,
+                minutes_after_seed(1),
+                "a quiet channel writes nothing"
+            );
+
+            seed_reply(
+                &pool,
+                "thread:a",
+                "item:reply",
+                TEAMMATE,
+                "a1",
+                &minutes_after_seed(3),
+            )
+            .await;
+            open_channel_at(&pool, &channel, 4).await;
+            assert_eq!(
+                cursor_stamp(&pool, &conversation_id).await,
+                minutes_after_seed(4)
             );
         }
 

@@ -2,6 +2,7 @@
   import Square from "@lucide/svelte/icons/square";
   import type { ChatAgentRunRead, ChatMessageRead, ChatTimelinePageRead } from "$lib/chat/contracts";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
+  import { chatFailureTechnicalDetail } from "$lib/chat/timeline/agent-update";
   import { agentRunIsActive, agentRunOutcome, agentRunShowedOutput } from "$lib/chat/timeline/reply-thread-model";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { formatShortcut } from "$lib/keyboard-shortcuts";
@@ -19,6 +20,8 @@
     timelinePage,
     replies,
     fallbackDetail = null,
+    failureShownElsewhere = false,
+    onRetryFailure,
     onActionError,
   }: {
     run: ChatAgentRunRead;
@@ -29,6 +32,10 @@
     replies: readonly ChatMessageRead[];
     /** Diagnostic text to offer when the run's turn has none, such as the assignment's state reason. */
     fallbackDetail?: string | null;
+    /** Whether a visible failure message of the teammate already explains how the run failed. */
+    failureShownElsewhere?: boolean;
+    /** Retries the failed work, offered on the status line that still stands for it. */
+    onRetryFailure?: () => unknown;
     /** Reports a failed stop request. */
     onActionError: (error: unknown) => void;
   } = $props();
@@ -70,12 +77,14 @@
       onclick={() => { void stop(); }}
     ><Square size={12} aria-hidden="true" />{t("chat.runs.stopWorking")}</button>
   </div>
-{:else if outcome?.kind === "failed"}
+{:else if outcome?.kind === "failed" && !failureShownElsewhere}
   <div class="run-outcome" data-run-outcome="failed">
     <Notice
       title={outcome.beforeOutput ? t("chat.runs.outcome.failedBeforeOutput", name) : t("chat.runs.outcome.failedAfterOutput", name)}
       message={outcome.errorCode ? chatErrorMessage({ code: outcome.errorCode }) : t("chatErrors.generic")}
-      copy={outcome.detail ?? undefined}
+      copy={chatFailureTechnicalDetail(outcome.errorCode, outcome.detail) ?? false}
+      onRetry={onRetryFailure}
+      retryLabel={onRetryFailure ? t("chat.organization.retry") : undefined}
       role="status"
     />
   </div>

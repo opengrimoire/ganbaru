@@ -93,6 +93,8 @@ function channel(runtimeApprovalOverride: ChatRuntimeApprovalPolicy): ChatChanne
     }],
     messageCount: 0,
     unreadCount: 0,
+    unreadReplyCount: 0,
+    unseenFailure: false,
     latestPreview: null,
     lastActivityAt: "2026-08-16T12:00:00.000Z",
     attentionState: null,

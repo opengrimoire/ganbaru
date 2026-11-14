@@ -39,6 +39,8 @@ const channel: ChatChannelRead = {
   memberships: [],
   messageCount: 0,
   unreadCount: 0,
+  unreadReplyCount: 0,
+  unseenFailure: false,
   latestPreview: null,
   lastActivityAt: timestamp,
   attentionState: null,

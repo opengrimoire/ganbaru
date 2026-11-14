@@ -17,6 +17,7 @@ use crate::{SandboxError, SandboxInvocation, SandboxPolicy, decode_invocation, e
 /// Environment variable that names the policy file and puts the helper in shell mode.
 pub const POLICY_FILE_VARIABLE: &str = "GANBARU_SANDBOX_POLICY_FILE";
 /// Largest policy file the helper reads.
+#[cfg(unix)]
 const MAX_POLICY_FILE_BYTES: u64 = 64 * 1024;
 /// Shell switch that introduces the command, as in `sh -c COMMAND`.
 const COMMAND_SWITCH: &str = "-c";

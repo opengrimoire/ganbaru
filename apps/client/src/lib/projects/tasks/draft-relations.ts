@@ -228,8 +228,8 @@ function errorMessage(error: unknown): string {
 
 /**
  * Writes every draft relation against the created task. Each write is
- * independent, so one failure does not stop the rest; the error messages of
- * failed writes are returned for the caller to report.
+ * independent, so one failure does not stop the rest; the diagnostic messages of
+ * failed writes are returned for the caller to log.
  */
 export async function applyProjectTaskDraftRelations(input: {
   task: ProjectTask;

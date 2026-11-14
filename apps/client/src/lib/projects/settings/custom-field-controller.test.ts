@@ -61,7 +61,7 @@ describe("project settings custom field controller", () => {
     controller.requestDeleteOption(option);
     await controller.removeOption();
     expect(session.state.customFieldOptionNameDrafts[option.id]).toBe("Renamed");
-    expect(session.state.projectSettingsError).toContain("option is used by tasks");
+    expect(session.state.projectSettingsError).toBe("projects.customFields.optionDeleteFailed");
   });
 
   it("cleans every field-scoped draft when deletion is staged", async () => {

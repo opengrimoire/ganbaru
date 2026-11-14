@@ -1074,7 +1074,7 @@
         {#if projects.loading && !projects.loaded}
           <Loading layout="rows" rows={3} label={t("projects.loading")} />
         {:else if projects.loadError}
-          <Notice class="px-3 py-2" message={t("projects.loadFailed", projects.loadError)} onRetry={() => projects.load()} />
+          <Notice class="px-3 py-2" message={t("projects.loadFailed")} copy={projects.loadError ?? false} onRetry={() => projects.load()} />
         {:else if searchActive && searchResults}
           {@render searchResults()}
         {:else if searchActive && searchResultLists.length === 0}

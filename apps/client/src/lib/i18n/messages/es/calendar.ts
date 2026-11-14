@@ -253,6 +253,7 @@ export const calendar = {
     taskLinksRecurring: "Los vínculos de tareas están disponibles para eventos individuales.",
     music: "Música",
     musicPlaylist: "Playlist",
+    musicLoadFailed: "No se pudo cargar la configuración de música.",
     musicSound: "Sonido ambiental",
     musicPhasePlaylist: (phase: string) => `Playlist (${phase})`,
     musicPhaseSound: (phase: string) => `Sonido ambiental (${phase})`,
@@ -339,7 +340,7 @@ export const calendar = {
     saveUncertain: "No se pudo confirmar el guardado. Reintenta para comprobar el resultado.",
     deleteUncertain: "No se pudo confirmar la eliminación o su reversión. Reintenta para comprobar la operación original.",
     deleteRefreshPending: "La operación se guardó. Reintenta para actualizar el calendario.",
-    deleteFailed: (message: string) => `Error al eliminar o deshacer: ${message}`,
+    deleteFailed: "No se pudo eliminar ni deshacer el cambio.",
     previewFailed: "No se pudo previsualizar este cambio",
     historyUnavailable: "No se pudo cargar la línea de tiempo de Focus. Prueba con un intervalo más corto del calendario o reintenta.",
     eventsUnreadable: (count: number) =>
@@ -352,8 +353,7 @@ export const calendar = {
         : `${count} eventos de este intervalo no se muestran porque el intervalo contiene más de lo que el calendario puede mostrar.`,
     eventsLoadFailed: "No se pudieron cargar los eventos del calendario.",
     saved: "Guardado",
-    unknownSaveError: "Error desconocido al guardar",
-    saveFailed: (message: string) => `No se pudo guardar: ${message}`,
+    saveFailed: "No se pudo guardar el cambio.",
     tooManyChangedOccurrences:
       "Este evento tiene demasiadas ocurrencias modificadas. Quita algunos cambios de las repeticiones e inténtalo de nuevo.",
     valueTooLarge:

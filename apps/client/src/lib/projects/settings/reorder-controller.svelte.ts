@@ -7,6 +7,7 @@ import {
   projectSettingsStartDrag,
   type ProjectSettingsDropPosition,
 } from "./reorder";
+import { userErrorMessage } from "$lib/i18n/user-errors";
 
 type ReorderEntry = { id: string };
 
@@ -17,7 +18,8 @@ export interface ProjectSettingsMoveControllerOptions<T extends ReorderEntry> {
   moveEntry: (entry: T, direction: -1 | 1) => Promise<void>;
   setError: (error: string | null) => void;
   reorderFailedMessage: () => string;
-  saveFailedMessage: (message: string) => string;
+  /** Localized message for a failed move; localized text the failure carries takes its place. */
+  saveFailedMessage: () => string;
 }
 
 export interface ProjectSettingsReorderControllerOptions<T extends ReorderEntry>
@@ -58,7 +60,7 @@ export function createProjectSettingsMoveController<T extends ReorderEntry>(
       if (!moved) options.setError(options.reorderFailedMessage());
     } catch (error) {
       options.setError(
-        options.saveFailedMessage(error instanceof Error ? error.message : String(error)),
+        userErrorMessage(error, options.saveFailedMessage()),
       );
     } finally {
       pending = false;

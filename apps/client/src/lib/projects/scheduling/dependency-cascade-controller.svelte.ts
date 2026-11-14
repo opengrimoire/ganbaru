@@ -1,11 +1,18 @@
 import { previewProjectDependencyCascade, type ProjectDependencyCascadePreview } from "$lib/api/project-cascade";
+import { technicalErrorDetail } from "$lib/i18n/user-errors";
+
+/** The cascade step that failed, with its diagnostic text for secondary display only. */
+export interface ProjectDependencyCascadeFailure {
+  action: "review" | "apply" | "open";
+  detail: string | null;
+}
 
 /** Keep native review results scoped to the selected project and the latest explicit refresh. */
 export class ProjectDependencyCascadeController {
   open = $state(false);
   loading = $state(false);
   applying = $state(false);
-  error = $state<string | null>(null);
+  error = $state<ProjectDependencyCascadeFailure | null>(null);
   preview = $state<ProjectDependencyCascadePreview | null>(null);
   private generation = 0;
 
@@ -36,7 +43,7 @@ export class ProjectDependencyCascadeController {
       const preview = await this.loadPreview(projectId);
       if (this.generation === generation && this.readProjectId() === projectId) this.preview = preview;
     } catch (error) {
-      if (this.generation === generation && this.readProjectId() === projectId) this.error = error instanceof Error ? error.message : String(error);
+      if (this.generation === generation && this.readProjectId() === projectId) this.error = { action: "review", detail: technicalErrorDetail(error) };
     } finally {
       if (this.generation === generation) this.loading = false;
     }
@@ -53,7 +60,7 @@ export class ProjectDependencyCascadeController {
       await this.applyPreview(preview);
       if (this.generation === generation) this.reset();
     } catch (error) {
-      if (this.generation === generation) this.error = error instanceof Error ? error.message : String(error);
+      if (this.generation === generation) this.error = { action: "apply", detail: technicalErrorDetail(error) };
     } finally {
       if (this.generation === generation) this.applying = false;
     }

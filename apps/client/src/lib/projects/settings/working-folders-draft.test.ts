@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ProjectWorkingFolderRead } from "$lib/chat/contracts";
 import {
   createProjectSettingsWorkingFoldersDraft,
+  DuplicateWorkingFolderSelectionError,
   type ProjectSettingsWorkingFoldersPorts,
   type WorkingFolderSelection,
 } from "./working-folders-draft.svelte";
@@ -90,6 +91,14 @@ describe("Project settings working-folder drafts", () => {
     expect(draft.folders).toHaveLength(3);
     expect(draft.dirty).toBe(false);
     expect(ports.add).not.toHaveBeenCalled();
+  });
+
+  it("rejects a selection that another folder of the project already uses with a typed error", async () => {
+    const { draft, ports } = setup();
+    ports.pick.mockResolvedValue({ selectionId: "native-selection", canonicalPath: "/folders/other", displayName: "Other" });
+    await expect(draft.choose()).rejects.toBeInstanceOf(DuplicateWorkingFolderSelectionError);
+    expect(draft.folders).toHaveLength(3);
+    expect(draft.dirty).toBe(false);
   });
 
   it("retries a failed Save without creating the folder twice", async () => {

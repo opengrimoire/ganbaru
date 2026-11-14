@@ -13,6 +13,7 @@
     ProjectTask,
   } from "$lib/projects/types";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { LocalizedError, userErrorMessage } from "$lib/i18n/user-errors";
   import { getCalendar } from "$lib/stores/calendar.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { useProjects } from "$lib/stores/projects.svelte";
@@ -89,10 +90,7 @@
       await action();
       selectedTaskIds = [];
     } catch (error) {
-      bulkTaskError = t(
-        "projects.bulk.actionFailed",
-        error instanceof Error ? error.message : String(error),
-      );
+      bulkTaskError = userErrorMessage(error, t("projects.bulk.actionFailed"));
     } finally {
       bulkTaskActionPending = false;
     }
@@ -154,7 +152,7 @@
       const receipt = await scheduling.retry();
       await refreshScheduledTasks(vaultId, receipt.commandId);
     } catch (error) {
-      bulkTaskError = t("projects.bulk.actionFailed", error instanceof Error ? error.message : String(error));
+      bulkTaskError = userErrorMessage(error, t("projects.bulk.actionFailed"));
       throw error;
     } finally {
       scheduleRecovery = scheduling.recoverable;
@@ -187,7 +185,7 @@
       const receipt = await scheduling.schedule({
         kind: "schedule_tasks", projectId: selectedProject.id,
         tasks: selectedSchedulableTasks.map((task) => {
-          if (task.revision === undefined) throw new Error("Refresh the task selection before scheduling");
+          if (task.revision === undefined) throw new LocalizedError(t("projects.bulk.refreshSelection"));
           return { id: task.id, revision: task.revision };
         }),
         startTime: start.toString(), timezone, durationMinutes: duration,
@@ -195,7 +193,7 @@
       }, { windowStartDate: bulkScheduleDate, windowEndDate: bulkScheduleDate, renderZone: timezone, includeTotalEventCount: false });
       await refreshScheduledTasks(vaultId, receipt.commandId);
     } catch (error) {
-      bulkTaskError = t("projects.bulk.actionFailed", error instanceof Error ? error.message : String(error));
+      bulkTaskError = userErrorMessage(error, t("projects.bulk.actionFailed"));
     } finally {
       bulkTaskActionPending = false;
       scheduleRecovery = scheduling.recoverable;

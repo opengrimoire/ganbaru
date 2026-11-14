@@ -39,7 +39,8 @@
     <Notice
       layout="fill"
       icon={FolderX}
-      message={t("projects.loadFailed", projects.loadError)}
+      message={t("projects.loadFailed")}
+      copy={projects.loadError}
       onRetry={() => projects.load()}
     />
   {:else if projects.loaded}

@@ -128,7 +128,7 @@ describe("project settings session", () => {
     expect(updateStatus).toHaveBeenCalledOnce();
     expect(session.state.statusNameDrafts[currentStatus.id]).toBe("In progress");
     expect(session.state.projectSettingsSaving).toBe(false);
-    expect(session.state.projectSettingsError).toContain("status failed");
+    expect(session.state.projectSettingsError).toBe("projects.settings.saveFailed");
   });
 
   it("restores the locked Routine identity while retaining editable defaults", () => {

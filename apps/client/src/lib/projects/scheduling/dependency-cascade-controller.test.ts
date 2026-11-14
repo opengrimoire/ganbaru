@@ -51,7 +51,7 @@ describe("Project dependency review lifetime", () => {
     const controller = new ProjectDependencyCascadeController(() => "project", apply, load);
     await controller.review();
     await controller.apply();
-    expect(controller.error).toBe("lost response");
+    expect(controller.error).toEqual({ action: "apply", detail: "lost response" });
     expect(controller.open).toBe(true);
     expect(controller.preview?.digest).toBe(proposal().digest);
     await controller.apply();

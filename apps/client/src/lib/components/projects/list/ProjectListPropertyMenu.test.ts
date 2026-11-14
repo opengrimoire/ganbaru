@@ -257,7 +257,7 @@ describe("Projects property settings", () => {
     expect(store.removeCustomField).not.toHaveBeenCalled();
     const confirm = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((entry) => entry.textContent?.trim().startsWith("Delete field"));
     confirm!.click();
-    await vi.waitFor(() => expect(instance.taskQuery().propertyError).toBe("Could not delete custom field: Locked"));
+    await vi.waitFor(() => expect(instance.taskQuery().propertyError).toBe("Could not delete custom field."));
     expect(store.removeCustomField).toHaveBeenCalledWith("points");
   });
 

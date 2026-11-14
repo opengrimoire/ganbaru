@@ -55,7 +55,7 @@
   {#if projects.loading && !projects.loaded}
     <Loading layout="rows" rows={2} label={t("projects.loading")} />
   {:else if projects.loadError}
-    <Notice class="px-1 text-[0.8rem]" message={t("projects.loadFailed", projects.loadError)} onRetry={() => projects.ensureLoaded()} />
+    <Notice class="px-1 text-[0.8rem]" message={t("projects.loadFailed")} copy={projects.loadError ?? false} onRetry={() => projects.ensureLoaded()} />
   {:else if rows.length === 0}
     <p class="px-1 text-[0.8rem] text-muted-foreground">{t("settings.projectsInactive.empty")}</p>
   {:else}

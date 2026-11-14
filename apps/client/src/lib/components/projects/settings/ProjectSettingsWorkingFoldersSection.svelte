@@ -15,6 +15,7 @@
   import Notice from "$lib/components/ui/Notice.svelte";
   import { requestConfirmation } from "$lib/components/ui/confirmation.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { LocalizedError, userErrorMessage } from "$lib/i18n/user-errors";
   import type { ProjectWorkingFolderRead } from "$lib/chat/contracts";
   import { providerFamilyDisplayName } from "$lib/chat/provider-setup";
   import { onDestroy, untrack } from "svelte";
@@ -22,7 +23,7 @@
   import * as chatApi from "$lib/api/chat";
   import * as folderApi from "$lib/api/project-working-folders";
   import * as trustApi from "$lib/api/working-folder-trust";
-  import { createProjectSettingsWorkingFoldersDraft } from "$lib/projects/settings/working-folders-draft.svelte";
+  import { createProjectSettingsWorkingFoldersDraft, DuplicateWorkingFolderSelectionError } from "$lib/projects/settings/working-folders-draft.svelte";
   import { orderProjectWorkingFolders } from "$lib/projects/working-folder-order";
   import { cn } from "$lib/utils";
   import CollectionMenu from "$lib/components/collections/CollectionMenu.svelte";
@@ -116,7 +117,7 @@
         const primary = await chatApi.readChatProjectPrimaryWorkingFolder(selectedProjectId);
         if (current) draft.load(selectedProjectId, chat.workingFolders, primary, chat.settings?.configuration.workingFolderProviderPreferences ?? {});
       } catch (reason) {
-        if (current) error = errorMessage(reason);
+        if (current) error = folderErrorMessage(reason, t("projects.settings.workingFolders.loadFailed"));
       } finally {
         if (current) loading = false;
       }
@@ -137,7 +138,7 @@
 
   /** Expose the folder draft to the parent panel's explicit Save boundary. */
   export async function saveDraft(): Promise<void> {
-    if (loading || operationId !== null) throw new Error(t("projects.settings.workingFolders.primaryUnavailable"));
+    if (loading || operationId !== null) throw new LocalizedError(t("projects.settings.workingFolders.primaryUnavailable"));
     await draft.save();
   }
 
@@ -153,7 +154,7 @@
     try {
       await operation();
     } catch (reason) {
-      if (generation === operationGeneration) error = errorMessage(reason);
+      if (generation === operationGeneration) error = folderErrorMessage(reason, t("projects.settings.workingFolders.actionFailed"));
     } finally {
       operationId = null;
     }
@@ -258,9 +259,10 @@
     draft.remove(folder);
   }
 
-  /** Preserve useful error details from native folder operations. */
-  function errorMessage(reason: unknown): string {
-    return reason instanceof Error ? reason.message : String(reason);
+  /** Localize folder failures, naming a duplicate selection and otherwise using the given fallback. */
+  function folderErrorMessage(reason: unknown, fallback: string): string {
+    if (reason instanceof DuplicateWorkingFolderSelectionError) return t("projects.settings.workingFolders.alreadyAssigned");
+    return userErrorMessage(reason, fallback);
   }
 </script>
 

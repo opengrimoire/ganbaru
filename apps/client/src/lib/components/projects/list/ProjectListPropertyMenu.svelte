@@ -25,6 +25,7 @@
   import CollectionPropertyIcon from "$lib/components/collections/CollectionPropertyIcon.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { LocalizedError } from "$lib/i18n/user-errors";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { useProjects } from "$lib/stores/projects.svelte";
   import { projectCustomFieldUsesOptions, uniqueProjectCustomFieldName } from "$lib/projects/custom-fields";
@@ -97,7 +98,7 @@
   async function rename(name: string): Promise<void> {
     if (!field) return;
     const target = field;
-    if (query?.customFields.some((candidate) => candidate.id !== target.id && candidate.name.toLocaleLowerCase() === name.toLocaleLowerCase())) throw new Error(t("projects.columns.nameExists"));
+    if (query?.customFields.some((candidate) => candidate.id !== target.id && candidate.name.toLocaleLowerCase() === name.toLocaleLowerCase())) throw new LocalizedError(t("projects.columns.nameExists"));
     await projects.updateCustomField(target, { name });
   }
 

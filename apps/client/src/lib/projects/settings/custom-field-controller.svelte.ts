@@ -1,4 +1,5 @@
 import type { getLocalization } from "$lib/i18n/translator.svelte";
+import { userErrorMessage } from "$lib/i18n/user-errors";
 import { projectCustomFieldUsesOptions } from "$lib/projects/custom-fields";
 import {
   draftCustomFieldName,
@@ -209,7 +210,7 @@ export function createProjectSettingsCustomFieldController(
     pendingDeleteFieldId = null;
     state.projectSettingsError = null;
     try { collections.removeCustomField(field.id); cleanupField(field.id); }
-    catch (error) { state.projectSettingsError = options.translate("projects.customFields.deleteFailed", error instanceof Error ? error.message : String(error)); }
+    catch (error) { state.projectSettingsError = userErrorMessage(error, options.translate("projects.customFields.deleteFailed")); }
   }
 
   async function removeOption(): Promise<void> {
@@ -218,7 +219,7 @@ export function createProjectSettingsCustomFieldController(
     pendingDeleteOptionId = null;
     state.projectSettingsError = null;
     try { collections.removeCustomFieldOption(option.id); cleanupOption(option.id); }
-    catch (error) { state.projectSettingsError = options.translate("projects.customFields.optionDeleteFailed", error instanceof Error ? error.message : String(error)); }
+    catch (error) { state.projectSettingsError = userErrorMessage(error, options.translate("projects.customFields.optionDeleteFailed")); }
   }
 
   function pendingDeleteField(): ProjectCustomField | undefined {

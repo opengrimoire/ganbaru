@@ -19,6 +19,7 @@
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { technicalErrorDetail, userErrorMessage } from "$lib/i18n/user-errors";
   import { onDestroy, onMount, tick, untrack } from "svelte";
   import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
   import { getWorkspacePaneScope } from "$lib/workspace-tabs/pane-scope";
@@ -441,7 +442,7 @@
     } catch (error) {
       untrack(() => {
         nativeEditor.update(null);
-        nativeEditor.error = saveErrorMessage(error);
+        nativeEditor.error = technicalErrorDetail(error) ?? t("calendar.view.previewFailed");
       });
     }
   });
@@ -457,7 +458,7 @@
       toasts.showSaveSuccessToast(toastId, t("calendar.view.saved"));
     } catch (error) {
       logPanelSaveError("panel-save", error, { ...event, description: event.description ?? "" });
-      toasts.showSaveErrorToast(toastId, t("calendar.view.saveFailed", saveErrorMessage(error)));
+      toasts.showSaveErrorToast(toastId, calendarFailureMessage(error, t("calendar.view.saveFailed")));
     }
   }
 
@@ -492,7 +493,7 @@
       toasts.showSaveSuccessToast(toastId, t("calendar.view.saved"));
     } catch (error) {
       console.error("Calendar Save retry failed", error);
-      toasts.showSaveErrorToast(toastId, t("calendar.view.saveFailed", saveErrorMessage(error)));
+      toasts.showSaveErrorToast(toastId, calendarFailureMessage(error, t("calendar.view.saveFailed")));
     }
   }
 
@@ -540,7 +541,7 @@
     afterRender: tick,
     savePendingLabel: () => t("calendar.view.saving"),
     saveSuccessLabel: () => t("calendar.view.saved"),
-    saveErrorLabel: (error) => t("calendar.view.saveFailed", saveErrorMessage(error)),
+    saveErrorLabel: (error) => calendarFailureMessage(error, t("calendar.view.saveFailed")),
     logError: logPanelSaveError,
   });
   const outsideClose = createCalendarOutsideCloseAction({
@@ -696,12 +697,12 @@
     return activePomodoroSaveWouldStopSession(data);
   }
 
-  function saveErrorMessage(error: unknown): string {
-    const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
-    if (isTimingTooLargeMessage(message)) return t("calendar.view.tooManyChangedOccurrences");
-    if (isValueTooLargeMessage(message)) return t("calendar.view.valueTooLarge");
-    if (message.trim()) return message;
-    return t("calendar.view.unknownSaveError");
+  /** Explain native size limits by their stable codes, and otherwise show localized text or the given fallback. */
+  function calendarFailureMessage(error: unknown, fallback: string): string {
+    const detail = technicalErrorDetail(error) ?? "";
+    if (isTimingTooLargeMessage(detail)) return t("calendar.view.tooManyChangedOccurrences");
+    if (isValueTooLargeMessage(detail)) return t("calendar.view.valueTooLarge");
+    return userErrorMessage(error, fallback);
   }
 
   function logPanelSaveError(
@@ -1258,13 +1259,13 @@
     closeSession,
     pendingLabel: eventDeletePendingLabel,
     outcomeLabel: eventDeleteOutcomeLabel,
-    errorLabel: (error) => t("calendar.view.deleteFailed", saveErrorMessage(error)),
+    errorLabel: (error) => calendarFailureMessage(error, t("calendar.view.deleteFailed")),
   });
   const undoDeletedEvent = (): Promise<void> => deleteController.undoCurrent();
 
 
   function reportDeleteError(error: unknown): void {
-    const label = t("calendar.view.deleteFailed", saveErrorMessage(error));
+    const label = calendarFailureMessage(error, t("calendar.view.deleteFailed"));
     const toastId = toasts.showSavePendingToast(label);
     toasts.showSaveErrorToast(toastId, label);
   }
@@ -1314,7 +1315,7 @@
       const input = currentDeleteDraft();
       untrack(() => deleteEditor.update(input));
     } catch (error) {
-      untrack(() => { deleteEditor.update(null); deleteEditor.error = saveErrorMessage(error); });
+      untrack(() => { deleteEditor.update(null); deleteEditor.error = technicalErrorDetail(error) ?? t("calendar.view.deleteFailed"); });
     }
   });
 

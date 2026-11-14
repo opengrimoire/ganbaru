@@ -18,6 +18,7 @@
   import { getEventColor } from "$lib/calendar/utils";
   import { contrastRatio } from "$lib/color/math";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { LocalizedError, userErrorMessage } from "$lib/i18n/user-errors";
   import {
     inspectManagedImageFile,
     MANAGED_ICON_IMAGE_MAX_BYTES,
@@ -760,34 +761,34 @@
     if (!inspection.ok) {
       const { issue } = inspection;
       if (issue === "unsupported-type") {
-        return Promise.reject(new Error(t("projects.iconPicker.uploadUnsupportedType")));
+        return Promise.reject(new LocalizedError(t("projects.iconPicker.uploadUnsupportedType")));
       }
       if (issue === "too-large") {
-        return Promise.reject(new Error(t(
+        return Promise.reject(new LocalizedError(t(
           "projects.iconPicker.uploadTooLarge",
           MANAGED_ICON_IMAGE_MAX_MEGABYTES,
         )));
       }
       if (issue === "invalid-image") {
-        return Promise.reject(new Error(t("projects.iconPicker.uploadInvalidImage")));
+        return Promise.reject(new LocalizedError(t("projects.iconPicker.uploadInvalidImage")));
       }
       if (issue === "dimensions-too-large") {
-        return Promise.reject(new Error(t(
+        return Promise.reject(new LocalizedError(t(
           "projects.iconPicker.uploadDimensionsTooLarge",
           MANAGED_IMAGE_MAX_DIMENSION_PIXELS,
         )));
       }
       if (issue === "too-many-pixels") {
-        return Promise.reject(new Error(t(
+        return Promise.reject(new LocalizedError(t(
           "projects.iconPicker.uploadPixelCountTooLarge",
           MANAGED_IMAGE_MAX_MEGAPIXELS,
         )));
       }
-      return Promise.reject(new Error(t("projects.iconPicker.uploadFailed")));
+      return Promise.reject(new LocalizedError(t("projects.iconPicker.uploadFailed")));
     }
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
-      reader.onerror = () => reject(new Error(t("projects.iconPicker.uploadFailed")));
+      reader.onerror = () => reject(new LocalizedError(t("projects.iconPicker.uploadFailed")));
       reader.onload = () => {
         if (typeof reader.result === "string") {
           const dataUrl = normalizeManagedImageDataUrl(
@@ -798,9 +799,9 @@
             resolve(dataUrl);
             return;
           }
-          reject(new Error(t("projects.iconPicker.uploadFailed")));
+          reject(new LocalizedError(t("projects.iconPicker.uploadFailed")));
         } else {
-          reject(new Error(t("projects.iconPicker.uploadFailed")));
+          reject(new LocalizedError(t("projects.iconPicker.uploadFailed")));
         }
       };
       reader.readAsDataURL(file);
@@ -837,7 +838,7 @@
         uploadDraft = asset;
       }
     } catch (error) {
-      uploadError = error instanceof Error ? error.message : String(error);
+      uploadError = userErrorMessage(error, t("projects.iconPicker.uploadSaveFailed"));
     } finally {
       uploading = false;
       await refreshPanelPlacement();
@@ -856,7 +857,7 @@
         uploadDraft = asset;
       }
     } catch (error) {
-      uploadError = error instanceof Error ? error.message : String(error);
+      uploadError = userErrorMessage(error, t("projects.iconPicker.uploadSaveFailed"));
     } finally {
       uploading = false;
       await refreshPanelPlacement();
@@ -887,7 +888,7 @@
           : await downloadProjectIconImageUrl(url);
       }
     } catch (error) {
-      uploadError = error instanceof Error ? error.message : String(error);
+      uploadError = userErrorMessage(error, t("projects.iconPicker.downloadFailed"));
     } finally {
       uploading = false;
       await refreshPanelPlacement();
@@ -922,7 +923,7 @@
     try {
       customEmojiDraft = await pickProjectIconImageFile();
     } catch (error) {
-      customEmojiError = error instanceof Error ? error.message : String(error);
+      customEmojiError = userErrorMessage(error, t("projects.iconPicker.uploadSaveFailed"));
     }
   }
 
@@ -931,7 +932,7 @@
     try {
       customEmojiDraft = await saveFileAsProjectIcon(file);
     } catch (error) {
-      customEmojiError = error instanceof Error ? error.message : String(error);
+      customEmojiError = userErrorMessage(error, t("projects.iconPicker.uploadSaveFailed"));
     }
   }
 
@@ -966,7 +967,7 @@
       customEmojiDraft = null;
       customEmojiPanelOpen = false;
     } catch (error) {
-      customEmojiError = error instanceof Error ? error.message : String(error);
+      customEmojiError = userErrorMessage(error, t("projects.iconPicker.customEmojiSaveFailed"));
     } finally {
       customEmojiSaving = false;
     }

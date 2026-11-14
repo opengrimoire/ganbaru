@@ -55,7 +55,7 @@ describe("Projects numeric cell drafts", () => {
     await tick();
     await enter(input, "27.5");
     input.blur();
-    await vi.waitFor(() => expect(document.querySelector('[role="alert"]')?.textContent).toContain("Disk full"));
+    await vi.waitFor(() => expect(document.querySelector('[role="alert"]')?.textContent).toContain("Could not save custom field value."));
     expect(input.value).toBe("27.5");
     input.focus();
     await tick();

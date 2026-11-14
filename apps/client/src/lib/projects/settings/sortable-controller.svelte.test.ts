@@ -74,7 +74,7 @@ function controller(overrides: Partial<Parameters<typeof createProjectSettingsSo
     moveEntry,
     setError: () => undefined,
     reorderFailedMessage: () => "reorder failed",
-    saveFailedMessage: (message) => `save failed: ${message}`,
+    saveFailedMessage: () => "save failed",
     ...overrides,
   });
 }
@@ -188,7 +188,7 @@ describe("project settings sortable controller", () => {
     pointer(window, "pointermove", 60);
     pointer(window, "pointerup", 60);
     await settle();
-    expect(error).toBe("save failed: write failed");
+    expect(error).toBe("save failed");
     expect(sortable.pending).toBe(false);
   });
 

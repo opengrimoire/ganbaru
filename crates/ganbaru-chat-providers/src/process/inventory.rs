@@ -324,6 +324,7 @@ fn bounded(value: &str, maximum_bytes: usize) -> String {
     value[..end].to_string()
 }
 
+#[cfg(target_os = "linux")]
 fn process_not_found() -> ChatError {
     ChatError::new(
         ChatErrorCode::ProcessNotFound,
@@ -332,6 +333,7 @@ fn process_not_found() -> ChatError {
     )
 }
 
+#[cfg(target_os = "linux")]
 fn process_identity_changed() -> ChatError {
     ChatError::new(
         ChatErrorCode::ProcessIdentityChanged,

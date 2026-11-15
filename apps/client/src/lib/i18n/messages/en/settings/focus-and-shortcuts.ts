@@ -76,7 +76,7 @@ export const focusAndShortcuts = {
       focusComposer: "Focus composer",
       previousNextThread: "Previous or next channel",
       toggleThreadRail: "Toggle channel explorer",
-      toggleChatInspector: "Toggle Chat secondary sidebar",
+      toggleChatInspector: "Toggle Chat secondary panel",
       stopActiveTurn: "Stop active turn",
       sendChatMessage: "Send Chat message",
       queueChatReply: "Queue Chat reply while an agent works",

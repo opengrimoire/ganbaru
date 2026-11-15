@@ -86,7 +86,7 @@ export const focusAndShortcuts = {
       focusComposer: "Enfocar editor de mensajes",
       previousNextThread: "Canal anterior o siguiente",
       toggleThreadRail: "Alternar panel de canales",
-      toggleChatInspector: "Alternar barra lateral secundaria de Chat",
+      toggleChatInspector: "Alternar panel secundario de Chat",
       stopActiveTurn: "Detener turno activo",
       sendChatMessage: "Enviar mensaje de Chat",
       queueChatReply: "Poner en cola una respuesta de Chat mientras trabaja un agente",

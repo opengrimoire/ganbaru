@@ -107,7 +107,7 @@ export function tabLauncherDigitsPick(query: string, searchable: boolean): boole
 
 /**
  * The index of the highlighted row. A remembered row keeps the highlight while it is still listed; otherwise the
- * first row is highlighted, which is the "open here" row while the search is empty and the first result while it is
+ * first row is highlighted, which is the "open here" row, when the level has one, while the search is empty and the first result while it is
  * not. Returns -1 when nothing is listed.
  */
 export function tabLauncherHighlightIndex<TRow extends TabLauncherRowShape & { key: string }>(

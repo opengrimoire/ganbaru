@@ -63,9 +63,8 @@
     onClose: () => void;
   } = $props();
 
-  /** What the unnumbered first row of a level opens: the kind where it was left, a project, or a Notes page. */
+  /** What the unnumbered first row of a level opens: a project or a Notes page. */
   type HereTarget =
-    | { type: "continue"; kind: View }
     | { type: "project"; kind: View; projectId: string }
     | { type: "page"; projectId: string; pageId: string };
 
@@ -117,6 +116,7 @@
   const rows = $derived(entries.flatMap((entry) => (entry.type === "row" ? [entry.row] : [])));
   const rowNumbers = $derived(tabLauncherRowNumbers(rows, digitsPick));
   const highlight = $derived(tabLauncherHighlightIndex(rows, highlightKey, query));
+  const levelDrills = $derived(rows.some((value) => value.canDrill));
   const breadcrumb = $derived(path.map((step) => step.label).join(" / "));
   const searchPlaceholder = $derived(
     level.type === "channels"
@@ -175,8 +175,6 @@
 
   function projectEntries(kind: View, groupId: string | null): LauncherEntry[] {
     const list: LauncherEntry[] = [];
-    const here = hereEntry({ type: "continue", kind }, t("titleBar.tab.launcherContinue"));
-    if (here) list.push(here);
     const status = statusEntries();
     if (status) return [...list, ...status];
     if (!projects.loaded) return [...list, { type: "loading", key: "loading" }];
@@ -190,7 +188,7 @@
         list.push(row({ type: "project", key: `project:${project.id}`, numbered: true, canDrill: kind !== "projects", kind, project }));
       }
     }
-    if (list.every((entry) => entry.type !== "row" || entry.row.type === "here")) {
+    if (list.every((entry) => entry.type !== "row")) {
       list.push({ type: "status", key: "status:empty", text: t("calendar.eventPanel.noProjectsFound") });
     }
     return list;
@@ -311,9 +309,7 @@
   }
 
   function openHere(target: HereTarget): void {
-    if (target.type === "continue") {
-      open(() => tabs.openKind(target.kind));
-    } else if (target.type === "project") {
+    if (target.type === "project") {
       open(() => tabs.openLocation("project", { kind: target.kind, projectId: target.projectId, item: null }));
     } else {
       openPage(target.projectId, target.pageId);
@@ -463,7 +459,7 @@
   onkeydown={handleKeydown}
 >
   {#if !atKinds}
-    <div class="flex shrink-0 flex-col gap-1 border-b border-border/60 p-1">
+    <div class="flex shrink-0 flex-col gap-1 p-1">
       <div class="flex min-w-0 items-center gap-1">
         <button
           type="button"
@@ -525,7 +521,7 @@
             aria-checked={item.type === "tab" ? item.tab.id === tabs.activeTabId : undefined}
             aria-keyshortcuts={number === null ? undefined : String(number)}
             tabindex="-1"
-            class="menu-item {item.type === 'page' && item.canDrill ? 'pr-8' : ''}"
+            class="menu-item"
             data-highlighted={index === highlight || undefined}
             onpointermove={() => (highlightKey = item.key)}
             onmousedown={(event) => event.preventDefault()}
@@ -561,13 +557,18 @@
               <ProjectLifecycleIcon status={item.project.status} size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} class="text-popover-foreground/60" />
             {/if}
             {#if number !== null}
-              <span class="shrink-0 text-panel-detail text-muted-foreground">{t("common.pressKey", String(number))}</span>
+              <span class="shrink-0 text-panel-detail text-muted-foreground tabular-nums">{t("common.pressKey", String(number))}</span>
             {/if}
             {#if item.type === "tab" && item.tab.id === tabs.activeTabId}
               <Check class="size-3.5 shrink-0" aria-hidden="true" />
             {/if}
-            {#if item.canDrill && item.type !== "page"}
-              <ChevronRight size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} class="shrink-0 text-popover-foreground/60" aria-hidden="true" />
+            {#if levelDrills}
+              <!-- Every row of a level that has a drillable row keeps the chevron's slot, so number hints line up. -->
+              <span class="flex w-4 shrink-0 justify-center" aria-hidden="true">
+                {#if item.canDrill && item.type !== "page"}
+                  <ChevronRight size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} class="text-popover-foreground/60" />
+                {/if}
+              </span>
             {/if}
           </button>
           {#if item.type === "page" && item.canDrill}

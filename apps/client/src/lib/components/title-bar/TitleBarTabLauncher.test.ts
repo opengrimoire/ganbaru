@@ -104,14 +104,14 @@ describe("Tab launcher", () => {
     document.body.innerHTML = "";
   });
 
-  it("keeps the digit then Enter fast path to continue where the kind was left", async () => {
+  it("lists a kind's projects with the first one highlighted for Enter", async () => {
     press(surface(), "4");
     await tick();
-    expect(surface().textContent).toContain("Continue where you left off");
     await vi.waitFor(() => expect(document.activeElement).toBe(search()));
     press(search(), "Enter");
-    expect(onClose).toHaveBeenCalled();
-    expect(tabs.openKind).toHaveBeenCalledWith("chat");
+    await tick();
+    expect(surface().textContent).toContain("Chat / Work");
+    expect(tabs.openKind).not.toHaveBeenCalled();
   });
 
   it("drills through a group and a project to open a Chat channel by number", async () => {

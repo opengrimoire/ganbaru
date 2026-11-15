@@ -14,7 +14,6 @@ export const titleBar = {
     closeTab: "Cerrar pestaña",
     reopenClosedTab: "Reabrir",
     launcher: "Abrir una pestaña",
-    launcherContinue: "Seguir donde te quedaste",
     launcherOpenProject: "Abrir proyecto",
     launcherOpenPage: "Abrir esta página",
     launcherShowInside: (label: string) => `Mostrar lo que hay dentro de ${label}`,

@@ -104,6 +104,8 @@ const localExecutionAvailable = platformHasCapability(
 );
 export type { ChatComposerSendOptions, ChatThreadTurnRef } from "$lib/stores/chat/composer-runtime-controller.svelte";
 
+/** Channels whose open reply thread is remembered, matching the bound on per-channel panel state. */
+const MAX_REMEMBERED_CHANNEL_REPLY_THREADS = 64;
 const paneStores = new ChatPaneStores<ChatStore>();
 
 /**
@@ -187,6 +189,8 @@ export class ChatStore {
   private projectSelectionProjectId: string | null = null;
   private projectSelectionPromise: Promise<void> | null = null;
   private channelSelectionRequest = 0;
+  /** The reply thread each channel had open when it was left, in memory for this app session. */
+  private readonly openReplyThreadByChannel = new Map<ChatChannelId, ChatReplyThreadId>();
   private channelReadPromise: { channelId: ChatChannelId; promise: Promise<void> } | null = null;
   private sessionMessageReactions = $state<Record<string, ChatMessageReaction[]>>({});
   private loadPromise: Promise<void> | null = null;
@@ -365,6 +369,10 @@ export class ChatStore {
     return this.communicationController.channelMessagesChannelId;
   }
 
+  set channelMessagesChannelId(channelId: ChatChannelId | null) {
+    this.communicationController.channelMessagesChannelId = channelId;
+  }
+
   get channelMessagesLoading(): boolean {
     return this.communicationController.channelLoading;
   }
@@ -513,6 +521,7 @@ export class ChatStore {
     this.sessionMessageReactions = {};
     this.selectedChannelId = null;
     this.openReplyThreadId = null;
+    this.openReplyThreadByChannel.clear();
     this.selectedExecutionRunId = null;
     this.messageAnchorId = null;
     this.selectedWorkingFolderId = null;
@@ -698,13 +707,15 @@ export class ChatStore {
     this.channelNavigationController.upsert(channel);
     const changedChannel = this.selectedChannelId !== channelId;
     this.selectedChannelId = channelId;
-    // A cached history appears with the channel instead of after the project and folder reads below.
-    if (changedChannel) this.communicationController.showCachedChannel(channelId);
+    // A cached history and the channel's open reply thread appear with the channel instead of after the reads below.
+    if (changedChannel) {
+      this.communicationController.showCachedChannel(channelId);
+      this.restoreChannelReplyThread(channelId);
+    }
     if (this.owner) saveLastChatChannelId(channel.projectId, channelId);
     this.channelArchiveOpen = false;
     await this.projects.selectProject(channel.projectId);
     if (request !== this.channelSelectionRequest) return;
-    if (changedChannel) this.closeReplyThread();
     try {
       this.primaryWorkingFolder = await this.configurationController.readPrimaryWorkingFolder(channel.projectId);
     } catch {
@@ -899,6 +910,7 @@ export class ChatStore {
 
   async openReplyThread(replyThreadId: ChatReplyThreadId): Promise<void> {
     this.openReplyThreadId = replyThreadId;
+    this.rememberChannelReplyThread(replyThreadId);
     this.selectedExecutionRunId = null;
     await this.loadReplyThread(replyThreadId, true);
   }
@@ -916,6 +928,7 @@ export class ChatStore {
     await this.selectChannel(result.channelId);
     if (result.replyThreadId) {
       this.openReplyThreadId = result.replyThreadId;
+      this.rememberChannelReplyThread(result.replyThreadId);
       this.selectedExecutionRunId = null;
       await this.communicationController.loadReplyThreadAtCursor(result.replyThreadId, result.anchorCursor);
     } else {
@@ -928,10 +941,48 @@ export class ChatStore {
     if (this.messageAnchorId === messageItemId) this.messageAnchorId = null;
   }
 
+  /** Closes the reply thread a person dismissed, so its channel opens without it next time. */
   closeReplyThread(): void {
+    this.rememberChannelReplyThread(null);
+    this.hideReplyThread();
+  }
+
+  /** Takes the open reply thread off screen while its channel keeps it for the next visit. */
+  private hideReplyThread(): void {
     this.openReplyThreadId = null;
     this.communicationController.clearReplyThread();
     this.selectedExecutionRunId = null;
+  }
+
+  /** Records the reply thread the selected channel shows, or that it shows none. */
+  private rememberChannelReplyThread(replyThreadId: ChatReplyThreadId | null): void {
+    const channelId = this.selectedChannelId;
+    if (!channelId) return;
+    this.openReplyThreadByChannel.delete(channelId);
+    if (!replyThreadId) return;
+    this.openReplyThreadByChannel.set(channelId, replyThreadId);
+    while (this.openReplyThreadByChannel.size > MAX_REMEMBERED_CHANNEL_REPLY_THREADS) {
+      const oldest = this.openReplyThreadByChannel.keys().next().value;
+      if (oldest === undefined) break;
+      this.openReplyThreadByChannel.delete(oldest);
+    }
+  }
+
+  /**
+   * Shows the reply thread a channel had open when it was left, or none. A thread that can no longer be read is
+   * forgotten and stays closed.
+   */
+  private restoreChannelReplyThread(channelId: ChatChannelId): void {
+    const replyThreadId = this.openReplyThreadByChannel.get(channelId) ?? null;
+    if (replyThreadId === this.openReplyThreadId) return;
+    this.hideReplyThread();
+    if (!replyThreadId) return;
+    this.openReplyThreadId = replyThreadId;
+    void this.loadReplyThread(replyThreadId).catch((error: unknown) => {
+      if (this.selectedChannelId !== channelId || this.openReplyThreadId !== replyThreadId) return;
+      console.error("Could not reopen the channel's reply thread", error);
+      this.closeReplyThread();
+    });
   }
 
   async selectAssignmentExecution(runId: string): Promise<void> {

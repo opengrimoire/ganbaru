@@ -448,7 +448,9 @@
   .schedule-time-button:hover,.schedule-time-button[aria-expanded="true"] { background:var(--accent); color:var(--foreground); }
   .schedule-submit { min-height:var(--panel-row-height); border-radius:var(--floating-item-radius); background:var(--primary); color:var(--primary-foreground); font-weight:600; }
   .schedule-submit:disabled { opacity:0.45; }
-  .scheduled-list { max-height:min(28rem,calc(100vh - 7rem)); overflow-y:auto; overscroll-behavior:contain; }
+  /* The hover toolbar rises above its row's header, so the list keeps that rise inside its own scroll viewport for the first row; the header gives up its bottom padding to keep the spacing even. */
+  .manage .schedule-header { padding-bottom:0; }
+  .scheduled-list { max-height:min(28rem,calc(100vh - 7rem)); overflow-y:auto; overscroll-behavior:contain; padding-top:0.6rem; }
   .schedule-menu :global(.schedule-error) { padding:0.4rem 0.35rem 0.2rem; font-size:var(--panel-detail-font-size); }
   :global(.schedule-time-picker .time-picker-scroll) { max-height:var(--chat-schedule-time-picker-max-height,12.5rem); }
 </style>

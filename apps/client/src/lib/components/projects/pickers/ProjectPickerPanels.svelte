@@ -1283,10 +1283,12 @@
                 "menu-item min-w-0 justify-center",
                 mobileLayout && "min-h-12 rounded-xl text-sm",
               )}
+              aria-label={t("calendar.eventPanel.createGroup")}
+              title={mobileLayout ? undefined : t("calendar.eventPanel.createGroup")}
               onclick={openGroupCreator}
             >
               <Plus size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} class="shrink-0" />
-              <span class="truncate">{t("calendar.eventPanel.createGroup")}</span>
+              <span class="truncate">{t(mobileLayout ? "calendar.eventPanel.createGroup" : "calendar.eventPanel.createGroupShort")}</span>
             </button>
             <button
               type="button"
@@ -1295,10 +1297,12 @@
                 "menu-item min-w-0 justify-center",
                 mobileLayout && "min-h-12 rounded-xl text-sm",
               )}
+              aria-label={t("calendar.eventPanel.createProject")}
+              title={mobileLayout ? undefined : t("calendar.eventPanel.createProject")}
               onclick={() => openProjectCreator(UNGROUPED_PROJECT_LIST_KEY)}
             >
               <Plus size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} class="shrink-0" />
-              <span class="truncate">{t("calendar.eventPanel.createProject")}</span>
+              <span class="truncate">{t(mobileLayout ? "calendar.eventPanel.createProject" : "calendar.eventPanel.createProjectShort")}</span>
             </button>
           </div>
         {/if}

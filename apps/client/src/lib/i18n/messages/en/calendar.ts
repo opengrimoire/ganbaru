@@ -252,6 +252,8 @@ export const calendar = {
     searchProjects: "Search projects...",
     createGroup: "Create a group",
     createProject: "Create project",
+    createGroupShort: "Group",
+    createProjectShort: "Project",
     noProjectsFound: "No projects found",
     tasks: "Tasks",
     searchTasks: "Search tasks...",

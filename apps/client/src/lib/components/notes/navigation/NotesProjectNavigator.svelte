@@ -1120,18 +1120,22 @@
             <button
               type="button"
               class="menu-item min-w-0 justify-center text-popover-foreground"
+              aria-label={t("calendar.eventPanel.createGroup")}
+              title={t("calendar.eventPanel.createGroup")}
               onclick={openGroupCreator}
             >
               <Plus size={13} strokeWidth={iconStrokeWidth} class="shrink-0" />
-              <span class="truncate">{t("calendar.eventPanel.createGroup")}</span>
+              <span class="truncate">{t("calendar.eventPanel.createGroupShort")}</span>
             </button>
             <button
               type="button"
               class="menu-item min-w-0 justify-center text-popover-foreground"
+              aria-label={t("calendar.eventPanel.createProject")}
+              title={t("calendar.eventPanel.createProject")}
               onclick={() => openProjectCreator(UNGROUPED_PROJECT_LIST_KEY)}
             >
               <Plus size={13} strokeWidth={iconStrokeWidth} class="shrink-0" />
-              <span class="truncate">{t("calendar.eventPanel.createProject")}</span>
+              <span class="truncate">{t("calendar.eventPanel.createProjectShort")}</span>
             </button>
           </div>
         {/if}

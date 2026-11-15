@@ -8,7 +8,7 @@ A tab is a location, not a fixed app section. Its level says how specific it is:
 
 - Kind: Calendar, Projects, Notes, or Chat, wherever the user last was inside it.
 - Project: one project inside a kind.
-- Item: one project view, note, or Chat channel. Notes folder items are planned.
+- Item: one project view, note, Chat channel, or Chat reply thread. Notes folder items are planned.
 
 Tabs follow navigation: moving around inside a tab updates where it points, and the tab restores that place when it is selected again. Opening something that already has a tab focuses that tab instead of adding a duplicate. A new tab opens only on explicit intent (the + launcher, Ctrl+T, or an "Open in new tab" gesture), so ordinary navigation never multiplies tabs.
 

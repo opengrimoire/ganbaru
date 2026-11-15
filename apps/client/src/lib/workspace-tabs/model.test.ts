@@ -506,6 +506,34 @@ describe("workspace tab persistence", () => {
 });
 
 describe("workspace tab locations", () => {
+  it("keeps a reply thread with its channel and rejects one without a valid channel", () => {
+    const location = { kind: "chat", projectId: "a", item: { type: "chat-reply-thread", id: "r", channelId: "c" } };
+    expect(parseWorkspaceTabLocation(location)).toEqual(location);
+    expect(parseWorkspaceTabLocation({ ...location, item: { type: "chat-reply-thread", id: "r" } })).toBeNull();
+    expect(parseWorkspaceTabLocation({ ...location, item: { type: "chat-reply-thread", id: "r", channelId: "" } }))
+      .toBeNull();
+    expect(parseWorkspaceTabLocation({ ...location, item: { type: "chat-reply-thread", id: "", channelId: "c" } }))
+      .toBeNull();
+    expect(parseWorkspaceTabLocation({ ...location, kind: "notes" })).toBeNull();
+  });
+
+  it("round-trips a locked reply thread tab and confines it to that thread", () => {
+    const thread: WorkspaceTabLocation = {
+      kind: "chat",
+      projectId: "a",
+      item: { type: "chat-reply-thread", id: "r", channelId: "c" },
+    };
+    const threadTab = createWorkspaceTab("t", thread, { level: "item", locked: true, title: "Thread", projectTitle: null });
+    const parsed = parseWorkspaceTabsState(JSON.parse(serializeWorkspaceTabsState(state([threadTab]))), ALL_KINDS);
+    expect(parsed?.tabs).toEqual([threadTab]);
+    expect(isWithinTabScope(threadTab, thread)).toBe(true);
+    expect(isWithinTabScope(threadTab, { ...thread, item: { type: "chat-channel", id: "c" } })).toBe(false);
+    expect(isWithinTabScope(threadTab, { ...thread, item: { type: "chat-reply-thread", id: "r", channelId: "d" } }))
+      .toBe(false);
+    expect(isWithinTabScope(threadTab, { ...thread, item: { type: "chat-reply-thread", id: "s", channelId: "c" } }))
+      .toBe(false);
+  });
+
   it("rejects item types that do not belong to the kind", () => {
     expect(parseWorkspaceTabLocation({ kind: "chat", projectId: "a", item: { type: "notes-page", id: "p" } }))
       .toBeNull();

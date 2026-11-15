@@ -59,6 +59,7 @@
   import { isTextEntryElement, OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
   import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
   import { getWorkspacePaneScope } from "$lib/workspace-tabs/pane-scope";
+  import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { createBackgroundAnnouncementTracker } from "$lib/chat/notifications/announcements";
   import { getPomodoro } from "$lib/stores/pomodoro.svelte";
   import { attentionSignals, type ChatAttentionSignal } from "$lib/chat/notifications/gate";
@@ -169,12 +170,16 @@
   const bottomPanelVisible = $derived(
     bottomPanelOpen && layout.variant !== "minimum_recovery",
   );
-  const auxiliaryPairOpen = $derived(chat.openReplyThreadId !== null && chat.inspectorOpen);
-  const timelineDensity = $derived(chat.settings?.configuration.behavior.timelineDensity ?? "comfortable");
   const mobileShell = BUILD_PLATFORM_PROFILE.shell === "mobile";
-  const projectHosted = $derived(projectSidebar !== undefined && !mobileShell);
+  /** A reply thread shown in a workspace tab of its own fills the view, without the rail, channel header, or feed. */
+  const replyThreadTab = $derived(chat.replyThreadTabId !== null && !mobileShell);
+  /** Whether the reply thread shows beside or over the channel feed, which a reply thread tab replaces. */
+  const replyThreadBesideFeed = $derived(chat.openReplyThreadId !== null && !replyThreadTab);
+  const auxiliaryPairOpen = $derived(replyThreadBesideFeed && chat.inspectorOpen);
+  const timelineDensity = $derived(chat.settings?.configuration.behavior.timelineDensity ?? "comfortable");
+  const projectHosted = $derived(projectSidebar !== undefined && !mobileShell && !replyThreadTab);
   const visibleRailOpen = $derived(
-    projectHosted ? false : mobileShell ? mobileRailOpen : auxiliaryPairOpen ? transientRailOpen : chat.railOpen,
+    replyThreadTab ? false : projectHosted ? false : mobileShell ? mobileRailOpen : auxiliaryPairOpen ? transientRailOpen : chat.railOpen,
   );
   const observeRailOpenForHover = suppressHoverOnToggle();
   $effect(() => observeRailOpenForHover(visibleRailOpen));
@@ -182,7 +187,7 @@
   const railUsesMobilePanel = $derived(
     mobileShell && layout.railPresentation === "sheet",
   );
-  const railDocked = $derived(projectHosted || (layout.railPresentation === "column" && !mobileShell));
+  const railDocked = $derived(projectHosted || (layout.railPresentation === "column" && !mobileShell && !replyThreadTab));
   const railIsModal = $derived(
     layout.railPresentation === "sheet" && !railUsesMobilePanel && visibleRailOpen,
   );
@@ -353,6 +358,27 @@
     queueMicrotask(() => target?.isConnected && target.focus());
   }
 
+  /**
+   * Closes the workspace tab that shows the reply thread on its own. When it is this window's only tab, the tab
+   * stops following the thread and shows the channel instead, so closing the thread never closes the window.
+   */
+  function closeReplyThreadTab(): void {
+    const channelId = chat.selectedChannelId;
+    const replyThreadId = chat.replyThreadTabId;
+    const tab = tabs.tabs.find(({ location: { item } }) =>
+      item?.type === "chat-reply-thread" && item.id === replyThreadId && item.channelId === channelId,
+    );
+    if (tab && tabs.tabs.length > 1) {
+      tabs.close(tab.id);
+      return;
+    }
+    if (!channelId) return;
+    if (tab) tabs.setLocked(tab.id, false);
+    void chat.selectChannel(channelId).catch((error: unknown) => {
+      layoutError = chatErrorMessage(error);
+    });
+  }
+
   function openRail(): void {
     if (projectHosted) return;
     if (mobileShell) mobileRailOpen = true;
@@ -467,6 +493,7 @@
   });
 
   // One pane speaks background work, so a split of two Chat tabs announces each change once.
+  const tabs = getWorkspaceTabs();
   const announcesBackgroundWork = getWorkspacePaneScope() === "primary";
   const quietStatus = getChatQuietStatus();
   const pomodoro = getPomodoro();
@@ -541,7 +568,7 @@
       railOpen: projectHosted ? !projects.sidebarCollapsed : visibleRailOpen,
       inspectorOpen: chat.inspectorOpen,
       inspectorWidth: displayedInspectorWidth,
-      replyThreadOpen: chat.openReplyThreadId !== null,
+      replyThreadOpen: replyThreadBesideFeed,
       replyThreadWidth,
       previousVariant: layout.variant,
     });
@@ -1134,7 +1161,7 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div bind:this={rootElement} class="chat-workspace @container/chat-shell relative grid h-full min-h-0 overflow-hidden" class:resizing-panels={resizingInspector || resizingBottomPanel} class:panel-transitions-enabled={panelTransitionsEnabled} data-chat-workspace data-density={timelineDensity} data-layout={layout.variant} data-rail-presentation={layout.railPresentation} data-inspector-presentation={layout.inspectorPresentation} data-reply-thread-presentation={layout.replyThreadPresentation} data-active-surface={layout.activeSurface} data-rail-open={visibleRailOpen} data-rail-docked={railDocked} data-canvas-edge={!mobileShell} data-project-sidebar={projectHosted} style={`container-type:inline-size;container-name:chat-shell;--chat-panel-transition-duration:${PANEL_TRANSITION_MS}ms;--chat-bottom-min-height:${MIN_BOTTOM_PANEL_HEIGHT}px;--chat-inspector-width:${displayedInspectorWidth}px;--chat-reply-thread-width:${replyThreadWidth}px;${canvasEdgeWidth === null ? "" : `--chat-canvas-edge-width:${canvasEdgeWidth}px;`}`}>
+<div bind:this={rootElement} class="chat-workspace @container/chat-shell relative grid h-full min-h-0 overflow-hidden" class:resizing-panels={resizingInspector || resizingBottomPanel} class:panel-transitions-enabled={panelTransitionsEnabled} data-chat-workspace data-density={timelineDensity} data-layout={layout.variant} data-rail-presentation={layout.railPresentation} data-inspector-presentation={layout.inspectorPresentation} data-reply-thread-presentation={layout.replyThreadPresentation} data-active-surface={layout.activeSurface} data-rail-open={visibleRailOpen} data-rail-docked={railDocked} data-canvas-edge={!mobileShell} data-project-sidebar={projectHosted} data-reply-thread-tab={replyThreadTab} style={`container-type:inline-size;container-name:chat-shell;--chat-panel-transition-duration:${PANEL_TRANSITION_MS}ms;--chat-bottom-min-height:${MIN_BOTTOM_PANEL_HEIGHT}px;--chat-inspector-width:${displayedInspectorWidth}px;--chat-reply-thread-width:${replyThreadWidth}px;${canvasEdgeWidth === null ? "" : `--chat-canvas-edge-width:${canvasEdgeWidth}px;`}`}>
   <div class="chat-canvas" aria-hidden="true"></div>
 {#if WorkspaceObserver}<WorkspaceObserver />{/if}
   <div class="sr-only" aria-live="polite" aria-atomic="true">{politeAnnouncement}</div>
@@ -1166,7 +1193,7 @@
     </div>
   {/if}
   <main class="main-shell relative flex min-w-0 flex-col">
-        {#if latestWaitingAssignment}
+        {#if latestWaitingAssignment && !replyThreadTab}
           <Notice class="waiting-work-notice" role="status" message={t("chat.organization.waitingWork", waitingAssignmentCount, latestWaitingAssignment.teammateDisplayName, latestWaitingAssignment.channelName)} copy={false}>
             {#snippet actions()}
               <button type="button" class="notice-action-text" onclick={() => { void chat.openWaitingAssignment(latestWaitingAssignment); }}>{t("chat.organization.openWaitingWork")}</button>
@@ -1178,7 +1205,13 @@
         {:else if chat.channelArchiveOpen}
           <ChatChannelArchive />
         {:else if chat.selectedChannel}
-          {#if threadFullSurface && chat.openReplyThreadId}
+          {#if replyThreadTab}
+            {#if chat.openReplyThreadId}
+              <ChatReplyThreadPanel presentation="main" reserveGlobalActions={!chat.inspectorOpen} onClose={closeReplyThreadTab} />
+            {:else}
+              <Loading layout="fill" class="min-h-0 flex-1" />
+            {/if}
+          {:else if threadFullSurface && chat.openReplyThreadId}
             <ChatReplyThreadPanel presentation="main" onClose={closeReplyThread} />
           {:else}
             <ChatChannelFeed onThreadOpened={threadOpened} />
@@ -1357,6 +1390,10 @@
   .chat-workspace[data-project-sidebar="true"] { --chat-rail-column-width: auto; }
   .chat-workspace[data-project-sidebar="true"] .chat-rail-shell, .chat-workspace[data-project-sidebar="true"] .chat-rail-shell.closed { position: relative; inset: auto; z-index: auto; grid-row: 1 / 5; width: auto; min-width: 0; box-shadow: none; transform: none; }
   .chat-workspace[data-project-sidebar="true"][data-active-surface="rail"] .main-shell { display: flex; }
+  /* A reply thread tab keeps the rail and channel header mounted for its channel's tab but shows only the thread, from the top edge. */
+  .chat-workspace[data-reply-thread-tab="true"] { --chat-rail-column-width: 0px; }
+  .chat-workspace[data-reply-thread-tab="true"] :is(.chat-primary-header, .chat-rail-shell) { display: none; }
+  .chat-workspace[data-reply-thread-tab="true"] .main-shell { grid-row: 1 / 3; display: flex; }
   @media (prefers-reduced-motion: reduce) {
     :global(.chat-workspace *), :global(.chat-workspace *::before), :global(.chat-workspace *::after) {
       scroll-behavior: auto !important;

@@ -2,6 +2,7 @@ import Book from "@lucide/svelte/icons/book";
 import Calendar from "@lucide/svelte/icons/calendar";
 import BriefcaseBusiness from "@lucide/svelte/icons/briefcase-business";
 import MessageSquare from "@lucide/svelte/icons/message-square";
+import MessagesSquare from "@lucide/svelte/icons/messages-square";
 import type { Translate } from "$lib/i18n/translator.svelte";
 import type { View } from "$lib/navigation";
 import type { WorkspaceTab } from "./model";
@@ -18,6 +19,11 @@ const KIND_ICONS: Readonly<Record<View, WorkspaceTabIcon>> = {
 /** Icon shown for a tab kind in the strip, the launcher, and the mobile bar. */
 export function workspaceTabKindIcon(kind: View): WorkspaceTabIcon {
   return KIND_ICONS[kind];
+}
+
+/** Icon shown for one tab: the reply thread icon for a reply thread tab, else the icon of its kind. */
+export function workspaceTabIcon(tab: Pick<WorkspaceTab, "location">): WorkspaceTabIcon {
+  return tab.location.item?.type === "chat-reply-thread" ? MessagesSquare : workspaceTabKindIcon(tab.location.kind);
 }
 
 /** Localized name of a tab kind. */

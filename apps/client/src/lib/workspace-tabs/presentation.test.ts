@@ -1,14 +1,27 @@
+import MessagesSquare from "@lucide/svelte/icons/messages-square";
 import { describe, expect, it } from "vitest";
 import { translate } from "$lib/i18n/translator.svelte";
 import { kindLocation } from "./model";
 import {
   shortWorkspaceTabProject,
   workspaceTabFullLabel,
+  workspaceTabIcon,
+  workspaceTabKindIcon,
   workspaceTabLabel,
   workspaceTabPositionShortcut,
   workspaceTabProject,
   workspaceTabProjectHint,
 } from "./presentation";
+
+describe("workspace tab icons", () => {
+  it("marks reply thread tabs with the thread icon and other tabs with their kind", () => {
+    const thread = { kind: "chat" as const, projectId: "p", item: { type: "chat-reply-thread" as const, id: "r", channelId: "c" } };
+    expect(workspaceTabIcon({ location: thread })).toBe(MessagesSquare);
+    expect(workspaceTabIcon({ location: { ...thread, item: { type: "chat-channel", id: "c" } } }))
+      .toBe(workspaceTabKindIcon("chat"));
+    expect(workspaceTabIcon({ location: kindLocation("notes") })).toBe(workspaceTabKindIcon("notes"));
+  });
+});
 
 describe("workspace tab position shortcuts", () => {
   it("numbers the first eight tabs", () => {

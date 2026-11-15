@@ -5,6 +5,7 @@ import { translate } from "$lib/i18n/translator.svelte";
 import type {
   ChatAttachmentRead,
   ChatChannelId,
+  ChatReplyThreadId,
   ChatCommitDraftContextRead,
   ProjectWorkingFolderDirectoryRead,
   ProjectWorkingFolderFilePreview,
@@ -781,21 +782,32 @@ function externalOpenPrompt() {
   };
 }
 
+/**
+ * Lists the terminals one Chat panel scope owns in a channel working folder.
+ *
+ * @param replyThreadId - The reply thread whose own tab shows the panels, or null for the channel's panels.
+ */
 export async function listChatTerminals(
   channelId: ChatChannelId,
   workingFolderId: ProjectWorkingFolderId,
+  replyThreadId: ChatReplyThreadId | null = null,
 ): Promise<ChatTerminalRead[]> {
   return parseChatTerminals(await invoke<unknown>("chat_list_terminals", {
     dbUrl: await ensureDbUrl(),
     channelId,
     workingFolderId,
+    replyThreadId,
   }));
 }
 
-/** Starts a terminal in the channel's authorized working folder. */
+/**
+ * Starts a terminal in the channel's authorized working folder, owned by the channel's panels or, with a
+ * `replyThreadId`, by the panels of that reply thread's own tab.
+ */
 export async function createChatTerminal(request: {
   terminalId: string;
   channelId: ChatChannelId;
+  replyThreadId?: ChatReplyThreadId | null;
   workingFolderId: ProjectWorkingFolderId;
   columns: number;
   rows: number;

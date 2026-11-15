@@ -389,6 +389,8 @@ export const chat = {
     noMessageSearchResults: "Ningún mensaje coincide con tu búsqueda.",
     messageChannel: "Escribe @ para mencionar y # para canales",
     thread: "Hilo",
+    threadInChannel: (channel: string) => `Hilo en #${channel}`,
+    openThreadInNewTab: "Abrir en una pestaña nueva",
     backToChannel: (name: string) => `Volver a #${name}`,
     closeThread: "Cerrar hilo",
     retry: "Reintentar trabajo",

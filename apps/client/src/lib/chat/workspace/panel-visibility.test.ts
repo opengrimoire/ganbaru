@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ChatPanelVisibilityState } from "./panel-visibility.svelte";
+import { ChatPanelVisibilityState, chatPanelScope } from "./panel-visibility.svelte";
 
 describe("ChatPanelVisibilityState", () => {
   it("starts every channel with both panels closed", () => {
@@ -53,5 +53,19 @@ describe("ChatPanelVisibilityState", () => {
 
     expect(visibility.read("channel-a")).toEqual({ inspector: false, bottom: false });
     expect(visibility.read(null)).toEqual({ inspector: false, bottom: false });
+  });
+
+  it("keeps a reply thread tab's panels apart from its channel's", () => {
+    const visibility = new ChatPanelVisibilityState();
+    const thread = chatPanelScope("channel-a", "reply-1");
+
+    visibility.setOpen(thread, "bottom", true);
+
+    expect(thread).not.toBe("channel-a");
+    expect(chatPanelScope("channel-a", null)).toBe("channel-a");
+    expect(chatPanelScope(null, "reply-1")).toBeNull();
+    expect(chatPanelScope("channel-a", "reply-2")).not.toBe(thread);
+    expect(visibility.isOpen(thread, "bottom")).toBe(true);
+    expect(visibility.isOpen("channel-a", "bottom")).toBe(false);
   });
 });

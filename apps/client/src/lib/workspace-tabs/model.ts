@@ -8,7 +8,9 @@ export type WorkspaceTabItem =
   | { type: "project-view"; id: string }
   | { type: "notes-page"; id: string }
   | { type: "notes-folder"; id: string }
-  | { type: "chat-channel"; id: string };
+  | { type: "chat-channel"; id: string }
+  /** One Chat reply thread shown on its own, with the channel it belongs to. */
+  | { type: "chat-reply-thread"; id: string; channelId: string };
 
 export type WorkspaceTabItemType = WorkspaceTabItem["type"];
 
@@ -82,7 +84,7 @@ const ITEM_TYPES_BY_KIND: Readonly<Record<View, readonly WorkspaceTabItemType[]>
   calendar: [],
   projects: ["project-view"],
   notes: ["notes-page", "notes-folder"],
-  chat: ["chat-channel"],
+  chat: ["chat-channel", "chat-reply-thread"],
 };
 const LEVELS: readonly WorkspaceTabLevel[] = ["kind", "project", "item"];
 
@@ -93,7 +95,8 @@ export function kindLocation(kind: View): WorkspaceTabLocation {
 
 export function sameTabItem(a: WorkspaceTabItem | null, b: WorkspaceTabItem | null): boolean {
   if (!a || !b) return a === b;
-  return a.type === b.type && a.id === b.id;
+  if (a.type !== b.type || a.id !== b.id) return false;
+  return a.type !== "chat-reply-thread" || (b.type === "chat-reply-thread" && a.channelId === b.channelId);
 }
 
 export function sameTabLocation(a: WorkspaceTabLocation, b: WorkspaceTabLocation): boolean {
@@ -541,7 +544,10 @@ function parseTabItem(value: unknown, kind: View): WorkspaceTabItem | null | und
   if (!isRecord(value)) return undefined;
   const id = boundedId(value.id);
   const type = ITEM_TYPES_BY_KIND[kind].find((candidate) => candidate === value.type);
-  return id && type ? { type, id } : undefined;
+  if (!id || !type) return undefined;
+  if (type !== "chat-reply-thread") return { type, id };
+  const channelId = boundedId(value.channelId);
+  return channelId ? { type, id, channelId } : undefined;
 }
 
 /** Validate an untrusted location, rejecting items that do not belong to its kind. */

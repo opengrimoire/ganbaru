@@ -101,4 +101,33 @@ describe("ChatHeaderActions", () => {
     chat.inspectorOpen = false;
     chat.selectedChannelId = previousChannelId;
   });
+
+  it("keeps only the panel toggles in a reply thread shown in its own tab", () => {
+    const chat = getChat();
+    const previousChannelId = chat.selectedChannelId;
+    chat.selectedChannelId = "channel-a";
+    chat.replyThreadTabId = "reply-a";
+    const target = document.createElement("div");
+    document.body.append(target);
+    const component = mount(ChatHeaderActions, {
+      target,
+      props: {
+        bottomPanelOpen: false,
+        projectName: "Ganbaru",
+        projectSettingsOpen: false,
+        onToggleBottomPanel: vi.fn(),
+        onToggleProjectSettings: vi.fn(),
+      },
+    });
+    mounted.push({ target, component });
+
+    expect(target.querySelector("[data-chat-project-settings-trigger]")).toBeNull();
+    expect(target.querySelector("[data-chat-reply-thread-new-tab]")).toBeNull();
+    expect(target.querySelector("[aria-label='Open in a new window']")).toBeNull();
+
+    chat.replyThreadTabId = null;
+    flushSync();
+    expect(target.querySelector("[data-chat-project-settings-trigger]")).not.toBeNull();
+    chat.selectedChannelId = previousChannelId;
+  });
 });

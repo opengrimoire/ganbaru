@@ -765,6 +765,8 @@ function openKind(kind: View): void {
 export interface OpenWorkspaceLocationOptions {
   /** Leave the current tab in front. */
   background?: boolean;
+  /** Keep the new tab on this location, so navigating elsewhere from it opens another tab. */
+  locked?: boolean;
 }
 
 /** Open a project or item in a tab of its own. A tab that already shows it at that level is focused instead. */
@@ -775,7 +777,7 @@ function openLocation(
 ): void {
   const host = connection;
   if (!host) return;
-  const created = createWorkspaceTab(createTabId(), location, { level });
+  const created = createWorkspaceTab(createTabId(), location, { level, locked: options.locked ?? false });
   const tab = { ...created, ...tabNames(host.adapter, created) };
   const existing = tabsState.tabs.find((candidate) => tabMatchesTarget(candidate, tab.level, location));
   if (existing) {

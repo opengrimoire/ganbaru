@@ -29,9 +29,15 @@ export interface WorkspaceLocationNotes {
 /** The Chat store surface a tab location reads and restores. */
 export interface WorkspaceLocationChat {
   readonly selectedChannelId: string | null;
+  /** The reply thread the Chat view shows on its own, or null when it shows a channel. */
+  readonly replyThreadTabId: string | null;
   selectChannel(channelId: string): Promise<void>;
+  /** Show one reply thread of a channel on its own. */
+  showReplyThreadTab(channelId: string, replyThreadId: string): Promise<void>;
   /** Name of a loaded channel, or null when it is not loaded. */
   channelName(projectId: string, channelId: string): string | null;
+  /** Title of a reply thread shown on its own, or null when its channel is not loaded. */
+  replyThreadTitle(projectId: string, channelId: string, replyThreadId: string): string | null;
 }
 
 export interface WorkspaceLocationStores<TView extends { id: string }> {
@@ -53,8 +59,12 @@ function readItem<TView extends { id: string }>(
     return id ? { type: "notes-page", id } : null;
   }
   if (kind === "chat") {
-    const id = stores.chat.selectedChannelId;
-    return id ? { type: "chat-channel", id } : null;
+    const channelId = stores.chat.selectedChannelId;
+    if (!channelId) return null;
+    const replyThreadId = stores.chat.replyThreadTabId;
+    return replyThreadId
+      ? { type: "chat-reply-thread", id: replyThreadId, channelId }
+      : { type: "chat-channel", id: channelId };
   }
   return null;
 }
@@ -69,6 +79,7 @@ function itemTitle<TView extends { id: string }>(
   if (!projectId) return null;
   if (item.type === "project-view") return stores.projects.viewName(projectId, item.id);
   if (item.type === "chat-channel") return stores.chat.channelName(projectId, item.id);
+  if (item.type === "chat-reply-thread") return stores.chat.replyThreadTitle(projectId, item.channelId, item.id);
   return null;
 }
 
@@ -85,7 +96,12 @@ async function applyItem<TView extends { id: string }>(
   } else if (item.type === "notes-page") {
     if (stores.notes.selectedPageId !== item.id) await stores.notes.selectPage(item.id);
   } else if (item.type === "chat-channel") {
-    if (stores.chat.selectedChannelId !== item.id) await stores.chat.selectChannel(item.id);
+    const { chat } = stores;
+    if (chat.selectedChannelId !== item.id || chat.replyThreadTabId !== null) await chat.selectChannel(item.id);
+  } else if (item.type === "chat-reply-thread") {
+    const { chat } = stores;
+    if (chat.selectedChannelId === item.channelId && chat.replyThreadTabId === item.id) return;
+    await chat.showReplyThreadTab(item.channelId, item.id);
   }
 }
 

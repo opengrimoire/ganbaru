@@ -67,7 +67,7 @@ import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/teammates/participant-displ
 import { getProjectsStore, type ProjectsStore } from "$lib/stores/projects.svelte";
 import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
 import { preferredProjectWorkingFolder } from "$lib/chat/workspace/working-folder-selection";
-import { chatPanelVisibility } from "$lib/chat/workspace/panel-visibility.svelte";
+import { chatPanelScope, chatPanelVisibility, type ChatPanelScope } from "$lib/chat/workspace/panel-visibility.svelte";
 import { readLastChatChannelId, saveLastChatChannelId } from "$lib/chat/channel-sections";
 import {
   ChatOrganizationalController,
@@ -151,6 +151,11 @@ export class ChatStore {
   selectedChannelId = $state<ChatChannelId | null>(null);
   teammateIdentities = $derived([...this.teammates, ...this.archivedTeammates]);
   openReplyThreadId = $state<ChatReplyThreadId | null>(null);
+  /**
+   * The reply thread this pane shows on its own, as a workspace tab of its own, or null while it shows a channel.
+   * The thread keeps its channel selected for folders and authority, but has panels of its own.
+   */
+  replyThreadTabId = $state<ChatReplyThreadId | null>(null);
   selectedExecutionRunId = $state<string | null>(null);
   messageAnchorId = $state<string | null>(null);
   loading = $state(false);
@@ -166,22 +171,27 @@ export class ChatStore {
   selectedExecutionEnvironmentId = $state<string | null>(null);
   railOpen = $state(true);
 
-  /** Whether the selected channel shows its secondary panel; each channel keeps its own answer. */
+  /** The owner of the workspace panels shown now: the selected channel, or the reply thread shown on its own. */
+  get panelScope(): ChatPanelScope | null {
+    return chatPanelScope(this.selectedChannelId, this.replyThreadTabId);
+  }
+
+  /** Whether the panel scope shows its secondary panel; each channel and reply thread tab keeps its own answer. */
   get inspectorOpen(): boolean {
-    return chatPanelVisibility.isOpen(this.selectedChannelId, "inspector");
+    return chatPanelVisibility.isOpen(this.panelScope, "inspector");
   }
 
   set inspectorOpen(open: boolean) {
-    chatPanelVisibility.setOpen(this.selectedChannelId, "inspector", open);
+    chatPanelVisibility.setOpen(this.panelScope, "inspector", open);
   }
 
-  /** Whether the selected channel shows its bottom panel; each channel keeps its own answer. */
+  /** Whether the panel scope shows its bottom panel; each channel and reply thread tab keeps its own answer. */
   get bottomPanelOpen(): boolean {
-    return chatPanelVisibility.isOpen(this.selectedChannelId, "bottom");
+    return chatPanelVisibility.isOpen(this.panelScope, "bottom");
   }
 
   set bottomPanelOpen(open: boolean) {
-    chatPanelVisibility.setOpen(this.selectedChannelId, "bottom", open);
+    chatPanelVisibility.setOpen(this.panelScope, "bottom", open);
   }
 
   loaded = $state(false);
@@ -522,6 +532,7 @@ export class ChatStore {
     this.selectedChannelId = null;
     this.openReplyThreadId = null;
     this.openReplyThreadByChannel.clear();
+    this.replyThreadTabId = null;
     this.selectedExecutionRunId = null;
     this.messageAnchorId = null;
     this.selectedWorkingFolderId = null;
@@ -699,19 +710,33 @@ export class ChatStore {
     return this.channelNavigationController.loadProject(projectId);
   }
 
+  /** Shows a channel with its conversation, leaving any reply thread this pane showed on its own. */
   async selectChannel(channelId: ChatChannelId): Promise<void> {
+    return this.showChannel(channelId, null);
+  }
+
+  /**
+   * Shows one reply thread of a channel on its own, as a workspace tab does. The channel stays selected for its
+   * folders and authority, but the thread keeps panels of its own and never becomes the channel's open reply thread.
+   */
+  async showReplyThreadTab(channelId: ChatChannelId, replyThreadId: ChatReplyThreadId): Promise<void> {
+    return this.showChannel(channelId, replyThreadId);
+  }
+
+  private async showChannel(channelId: ChatChannelId, replyThreadTabId: ChatReplyThreadId | null): Promise<void> {
     const request = ++this.channelSelectionRequest;
     const channel = this.channelNavigationController.find(channelId)
       ?? await chatApi.readChatChannel(channelId);
     if (request !== this.channelSelectionRequest) return;
     this.channelNavigationController.upsert(channel);
     const changedChannel = this.selectedChannelId !== channelId;
+    const changedMode = this.replyThreadTabId !== replyThreadTabId;
     this.selectedChannelId = channelId;
-    // A cached history and the channel's open reply thread appear with the channel instead of after the reads below.
-    if (changedChannel) {
-      this.communicationController.showCachedChannel(channelId);
-      this.restoreChannelReplyThread(channelId);
-    }
+    this.replyThreadTabId = replyThreadTabId;
+    // A cached history and the open reply thread appear with the channel instead of after the reads below.
+    if (changedChannel) this.communicationController.showCachedChannel(channelId);
+    if (replyThreadTabId) this.showReplyThreadOfTab(channelId, replyThreadTabId);
+    else if (changedChannel || changedMode) this.restoreChannelReplyThread(channelId);
     if (this.owner) saveLastChatChannelId(channel.projectId, channelId);
     this.channelArchiveOpen = false;
     await this.projects.selectProject(channel.projectId);
@@ -740,7 +765,18 @@ export class ChatStore {
     await this.loadChannelMessages(channel.id);
     if (request !== this.channelSelectionRequest) return;
     this.interaction = null;
-    if (channelNeedsVisit(channel)) void this.markSelectedChannelRead();
+    if (!replyThreadTabId && channelNeedsVisit(channel)) void this.markSelectedChannelRead();
+  }
+
+  /** Shows the reply thread of a thread tab, leaving the channel's remembered reply thread as it was. */
+  private showReplyThreadOfTab(channelId: ChatChannelId, replyThreadId: ChatReplyThreadId): void {
+    if (this.openReplyThreadId === replyThreadId) return;
+    this.hideReplyThread();
+    this.openReplyThreadId = replyThreadId;
+    void this.loadReplyThread(replyThreadId).catch((error: unknown) => {
+      if (this.selectedChannelId !== channelId || this.replyThreadTabId !== replyThreadId) return;
+      console.error("Could not open the reply thread of this tab", error);
+    });
   }
 
   async markSelectedChannelRead(): Promise<void> {
@@ -908,8 +944,10 @@ export class ChatStore {
     return this.organizationalController.dispatchDue();
   }
 
+  /** Opens a reply thread beside its channel, or in place of the thread a reply thread tab shows. */
   async openReplyThread(replyThreadId: ChatReplyThreadId): Promise<void> {
     this.openReplyThreadId = replyThreadId;
+    if (this.replyThreadTabId !== null) this.replyThreadTabId = replyThreadId;
     this.rememberChannelReplyThread(replyThreadId);
     this.selectedExecutionRunId = null;
     await this.loadReplyThread(replyThreadId, true);
@@ -957,7 +995,8 @@ export class ChatStore {
   /** Records the reply thread the selected channel shows, or that it shows none. */
   private rememberChannelReplyThread(replyThreadId: ChatReplyThreadId | null): void {
     const channelId = this.selectedChannelId;
-    if (!channelId) return;
+    // A reply thread tab never changes which reply thread its channel shows.
+    if (!channelId || this.replyThreadTabId !== null) return;
     this.openReplyThreadByChannel.delete(channelId);
     if (!replyThreadId) return;
     this.openReplyThreadByChannel.set(channelId, replyThreadId);

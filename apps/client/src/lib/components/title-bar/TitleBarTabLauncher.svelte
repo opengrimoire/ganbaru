@@ -10,6 +10,7 @@
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import {
     workspaceTabFullLabel,
+    workspaceTabIcon,
     workspaceTabKindIcon,
     workspaceTabKindLabel,
   } from "$lib/workspace-tabs/presentation";
@@ -131,7 +132,7 @@
       <div role="separator" class="menu-separator"></div>
       <p class="menu-label">{t("titleBar.tab.openTabs")}</p>
       {#each tabs.tabs as tab (tab.id)}
-        {@const Icon = workspaceTabKindIcon(tab.location.kind)}
+        {@const Icon = workspaceTabIcon(tab)}
         {@const active = tab.id === tabs.activeTabId}
         <button
           type="button"

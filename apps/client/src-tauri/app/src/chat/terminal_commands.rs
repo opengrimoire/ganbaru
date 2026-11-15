@@ -9,7 +9,8 @@ use super::workspace::{AuthorizedWorkingFolder, WorkingFolderAuthorizationOperat
 use crate::db;
 use chrono::{SecondsFormat, Utc};
 use ganbaru_chat_contracts::models::{
-    ChatChannelId, ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId, UtcTimestamp,
+    ChatChannelId, ChatError, ChatErrorCode, ChatReplyThreadId, ChatResult, ProjectWorkingFolderId,
+    UtcTimestamp,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -22,6 +23,9 @@ use tauri::ipc::Channel;
 pub struct CreateChatTerminalRequest {
     pub terminal_id: ChatTerminalId,
     pub channel_id: ChatChannelId,
+    /// Set when a reply thread tab opens the terminal, so the tab keeps panels of its own.
+    #[serde(default)]
+    pub reply_thread_id: Option<ChatReplyThreadId>,
     pub working_folder_id: ProjectWorkingFolderId,
     pub columns: u16,
     pub rows: u16,
@@ -72,11 +76,15 @@ pub async fn chat_list_terminals(
     db_url: String,
     channel_id: ChatChannelId,
     working_folder_id: ProjectWorkingFolderId,
+    reply_thread_id: Option<ChatReplyThreadId>,
 ) -> ChatResult<Vec<ChatTerminalRead>> {
     let pool = chat_pool(app.clone(), db_url).await?;
     authorize_channel_workspace(&app, &pool, &channel_id, &working_folder_id).await?;
-    app.state::<ChatTerminalRegistry>()
-        .list(&channel_id, &working_folder_id)
+    app.state::<ChatTerminalRegistry>().list_for_panel(
+        &channel_id,
+        &working_folder_id,
+        reply_thread_id.as_ref(),
+    )
 }
 
 #[tauri::command]
@@ -246,6 +254,7 @@ pub async fn chat_terminal_create(
         ChatTerminalCreateInput {
             terminal_id: request.terminal_id.into_inner(),
             channel_id: request.channel_id,
+            reply_thread_id: request.reply_thread_id,
             working_folder_id: request.working_folder_id,
             workspace_path: scope.authorized.canonical_path,
             columns: request.columns,
@@ -589,6 +598,37 @@ mod tests {
         ] {
             assert!(request(invalid).is_err(), "{invalid:?} is rejected");
         }
+    }
+
+    #[test]
+    fn terminal_creation_names_a_reply_thread_only_for_thread_tabs() {
+        let request = |reply_thread_id: Option<&str>| {
+            let mut value = json!({
+                "terminalId": "0f8fad5b-d9cb-469f-a165-70867728950e",
+                "channelId": "channel",
+                "workingFolderId": "folder",
+                "columns": 80,
+                "rows": 24,
+            });
+            if let Some(id) = reply_thread_id {
+                value["replyThreadId"] = json!(id);
+            }
+            serde_json::from_value::<CreateChatTerminalRequest>(value)
+        };
+        let channel_panel = request(None).expect("a channel panel request is valid");
+        assert!(channel_panel.reply_thread_id.is_none());
+        let thread_panel = request(Some("reply")).expect("a thread tab request is valid");
+        assert_eq!(
+            thread_panel
+                .reply_thread_id
+                .as_ref()
+                .map(ChatReplyThreadId::as_str),
+            Some("reply")
+        );
+        assert!(
+            request(Some("")).is_err(),
+            "an empty reply thread ID is rejected"
+        );
     }
 
     #[test]

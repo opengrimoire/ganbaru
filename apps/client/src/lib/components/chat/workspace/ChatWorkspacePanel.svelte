@@ -131,8 +131,13 @@
   let reviewOpenRequest = 0;
   let destroyed = false;
   let isTerminalSplit = $state(false);
-  /** The panel belongs to the selected channel, so its tabs, chosen folder, and terminals follow the channel. */
-  const sessionKey = $derived(chat.selectedChannelId);
+  /**
+   * The panel belongs to the selected channel, or to the reply thread a workspace tab shows on its own, so its tabs,
+   * chosen folder, and terminals follow that scope. Folders and terminal authority always come from the channel.
+   */
+  const sessionKey = $derived(chat.panelScope);
+  const channelId = $derived(chat.selectedChannelId);
+  const replyThreadTabId = $derived(chat.replyThreadTabId);
   const folderChoices = $derived(channelPanelWorkingFolders(chat.workingFolders, chat.selectedChannel?.projectId ?? null));
   const folderOptions = $derived(folderChoices.map((entry) => ({
     value: entry.workingFolder.id,
@@ -323,9 +328,10 @@
 
   $effect(() => {
     const terminalOpen = panelState.openTabs.includes("terminal");
-    const channel = sessionKey;
+    const channel = channelId;
+    const thread = replyThreadTabId;
     const workspace = workingFolderId;
-    const nextKey = scopeKeyFor(channel, workspace);
+    const nextKey = scopeKeyFor(sessionKey, workspace);
     if (!terminalOpen || !channel || !workspace || !nextKey) {
       terminalScopeKey = "";
       terminals = [];
@@ -338,7 +344,7 @@
     }
     if (terminalScopeKey === nextKey && (terminalsLoading || terminals.length > 0 || error)) return;
     terminalScopeKey = nextKey;
-    void loadTerminals(channel, workspace, nextKey);
+    void loadTerminals(channel, thread, workspace, nextKey);
   });
 
   /** Points this panel's Files, Source control, and new terminals at another folder of the channel's project. */
@@ -362,10 +368,11 @@
     if (terminalLayoutSaveTimer !== null) window.clearTimeout(terminalLayoutSaveTimer);
     terminalLayoutSaveTimer = window.setTimeout(() => {
       terminalLayoutSaveTimer = null;
-      const channel = sessionKey;
+      const channel = channelId;
       const workspace = workingFolderId;
-      if (!channel || !workspace || terminalsLoading || terminals.length === 0) return;
-      if (terminalScopeKey !== scopeKeyFor(channel, workspace)) return;
+      // The saved layout belongs to the channel's own panels; a reply thread tab keeps its layout in memory only.
+      if (!channel || !workspace || replyThreadTabId !== null || terminalsLoading || terminals.length === 0) return;
+      if (terminalScopeKey !== scopeKeyFor(sessionKey, workspace)) return;
       const terminalNames = terminals.map((terminal) => workspacePanelTabLabel(terminalWorkspacePanelTabKey(terminal.id)));
       const selectedIndex = selectedTerminalId === null
         ? -1
@@ -460,6 +467,7 @@
 
   async function loadTerminals(
     channel: string,
+    thread: string | null,
     workspace: string,
     scopeKey: string,
   ): Promise<void> {
@@ -469,18 +477,20 @@
     error = null;
     try {
       const loaded = await withTerminalLoadLock(scopeKey, async () => {
-        const [available, layout] = await Promise.all([
-          chatApi.listChatTerminals(channel, workspace),
-          chatApi.readChatTerminalLayout(channel, workspace),
+        const [available, groups] = await Promise.all([
+          chatApi.listChatTerminals(channel, workspace, thread),
+          thread === null
+            ? chatApi.readChatTerminalLayout(channel, workspace).then((layout) => layout.groups)
+            : Promise.resolve([]),
         ]);
         const owned = terminalPanels.claimAvailable(available, placement);
-        if (owned.length > 0) return { terminals: owned, layout };
-        const snapshot = await createTerminal(channel, workspace);
-        return { terminals: [snapshot.terminal], layout };
+        if (owned.length > 0) return { terminals: owned, groups };
+        const snapshot = await createTerminal(channel, thread, workspace);
+        return { terminals: [snapshot.terminal], groups };
       });
       if (destroyed || terminalScopeKey !== scopeKey) return;
       terminals = loaded.terminals;
-      const savedPanel = loaded.layout.groups.find((group) => group.placement === placement);
+      const savedPanel = loaded.groups.find((group) => group.placement === placement);
       if (savedPanel) {
         isTerminalSplit = savedPanel.splitSizes.length > 1;
         const tabNames = { ...panelState.tabNames };
@@ -514,11 +524,13 @@
 
   async function createTerminal(
     channel: string,
+    thread: string | null,
     workspace: string,
   ): ReturnType<typeof chatApi.createChatTerminal> {
     const snapshot = await chatApi.createChatTerminal({
       terminalId: crypto.randomUUID(),
       channelId: channel,
+      replyThreadId: thread,
       workingFolderId: workspace,
       columns: 80,
       rows: 24,
@@ -528,12 +540,13 @@
   }
 
   async function addTerminal(): Promise<void> {
-    const channel = sessionKey;
+    const channel = channelId;
+    const scope = sessionKey;
     const workspace = workingFolderId;
     if (!channel || !workspace) return;
     panelPickerOpen = false;
-    const snapshot = await createTerminal(channel, workspace);
-    if (destroyed || terminalScopeKey !== scopeKeyFor(channel, workspace)) return;
+    const snapshot = await createTerminal(channel, replyThreadTabId, workspace);
+    if (destroyed || terminalScopeKey !== scopeKeyFor(scope, workspace)) return;
     const previousOrder = orderedTabKeys;
     terminals = [...terminals, snapshot.terminal];
     update({
@@ -548,12 +561,12 @@
   }
 
   async function retryTerminalLoad(): Promise<void> {
-    const channel = sessionKey;
+    const channel = channelId;
     const workspace = workingFolderId;
-    const scopeKey = scopeKeyFor(channel, workspace);
+    const scopeKey = scopeKeyFor(sessionKey, workspace);
     if (!channel || !workspace || !scopeKey) throw new Error("Terminal retry needs a channel and a working folder");
     terminalScopeKey = scopeKey;
-    await loadTerminals(channel, workspace, scopeKey);
+    await loadTerminals(channel, replyThreadTabId, workspace, scopeKey);
     if (error) throw new Error(error);
   }
 
@@ -582,9 +595,9 @@
   }
 
   async function closeTerminal(terminal: ChatTerminalRead): Promise<void> {
-    const channel = sessionKey;
+    const channel = channelId;
     const workspace = workingFolderId;
-    const scopeKey = scopeKeyFor(channel, workspace);
+    const scopeKey = scopeKeyFor(sessionKey, workspace);
     if (!channel || !workspace || !scopeKey) return;
     let result = await chatApi.closeChatTerminal(terminal.id, channel, workspace, false);
     if (destroyed || terminalScopeKey !== scopeKey) return;
@@ -1019,7 +1032,7 @@
         onFolderChange={chooseWorkingFolder}
       />
     {:else if panelState.tab === "browser"}
-      <ChatBrowserPanel channelId={sessionKey} {workingFolderId} />
+      <ChatBrowserPanel {channelId} {workingFolderId} />
     {/if}
   </div>
 </section>

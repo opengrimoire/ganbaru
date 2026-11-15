@@ -30,7 +30,7 @@
   import {
     shortWorkspaceTabProject,
     workspaceTabFullLabel,
-    workspaceTabKindIcon,
+    workspaceTabIcon,
     workspaceTabLabel,
     workspaceTabPositionShortcut,
     workspaceTabProjectHint,
@@ -914,7 +914,7 @@
 />
 
 {#snippet tabFace(tab: WorkspaceTab, iconOnly: boolean)}
-  {@const Icon = workspaceTabKindIcon(tab.location.kind)}
+  {@const Icon = workspaceTabIcon(tab)}
   {@const project = workspaceTabProjectHint(tab)}
   <Icon class="shrink-0" size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} />
   {#if !iconOnly}

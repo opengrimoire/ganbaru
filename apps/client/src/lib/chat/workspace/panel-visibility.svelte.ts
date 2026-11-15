@@ -1,10 +1,16 @@
 import { SvelteMap } from "svelte/reactivity";
-import type { ChatChannelId } from "$lib/chat/contracts";
+import type { ChatChannelId, ChatReplyThreadId } from "$lib/chat/contracts";
 
 /** The workspace panels a channel can show beside and below its conversation. */
 export type ChatWorkspacePanelPlacement = "inspector" | "bottom";
 
-/** Which of a channel's workspace panels are open. */
+/**
+ * The owner of one set of Chat workspace panels: a channel, or a reply thread shown in a workspace tab of its own.
+ * Build it with {@link chatPanelScope}.
+ */
+export type ChatPanelScope = string;
+
+/** Which of a panel scope's workspace panels are open. */
 export interface ChatWorkspacePanelVisibility {
   inspector: boolean;
   bottom: boolean;
@@ -12,80 +18,98 @@ export interface ChatWorkspacePanelVisibility {
 
 const CLOSED: ChatWorkspacePanelVisibility = { inspector: false, bottom: false };
 
-/** Channels kept with a panel open, matching the bound on the panels' own per-channel state. */
-const MAX_CHAT_PANEL_VISIBILITY_CHANNELS = 64;
+/** Panel scopes kept with a panel open, matching the bound on the panels' own per-scope state. */
+const MAX_CHAT_PANEL_VISIBILITY_SCOPES = 64;
 
 /**
- * Keeps whether each channel's secondary panel and bottom panel are open, in memory for this app session.
+ * Names the panels a Chat view shows: the channel's own, or those of a reply thread shown in its own tab.
  *
- * A channel never seen, or one evicted from the bound, has both panels closed. Only channels with an open panel are
- * stored, so closing both panels forgets the channel.
+ * A reply thread tab keeps panels apart from its channel's while still resolving folders through that channel. The
+ * separator is a control character, which identifiers never contain, so a thread scope never equals a channel ID.
+ *
+ * @param channelId The selected channel, or `null` when none is selected.
+ * @param replyThreadTabId The reply thread shown on its own, or `null` when the view shows the channel.
+ * @returns The panel scope, or `null` when no channel is selected.
+ */
+export function chatPanelScope(
+  channelId: ChatChannelId | null,
+  replyThreadTabId: ChatReplyThreadId | null,
+): ChatPanelScope | null {
+  if (channelId === null) return null;
+  return replyThreadTabId === null ? channelId : `${channelId}\n${replyThreadTabId}`;
+}
+
+/**
+ * Keeps whether each panel scope's secondary panel and bottom panel are open, in memory for this app session.
+ *
+ * A scope never seen, or one evicted from the bound, has both panels closed. Only scopes with an open panel are
+ * stored, so closing both panels forgets the scope.
  */
 export class ChatPanelVisibilityState {
-  private readonly channels = new SvelteMap<string, ChatWorkspacePanelVisibility>();
+  private readonly scopes = new SvelteMap<string, ChatWorkspacePanelVisibility>();
 
   /**
-   * Reads which panels a channel shows.
+   * Reads which panels a scope shows.
    *
-   * @param channelId The channel, or `null` when no channel is selected.
-   * @returns The channel's panel visibility, closed for a channel without stored state.
+   * @param scope The panel scope, or `null` when no channel is selected.
+   * @returns The scope's panel visibility, closed for a scope without stored state.
    */
-  read(channelId: ChatChannelId | null): ChatWorkspacePanelVisibility {
-    return this.channels.get(channelKey(channelId)) ?? CLOSED;
+  read(scope: ChatPanelScope | null): ChatWorkspacePanelVisibility {
+    return this.scopes.get(scopeKey(scope)) ?? CLOSED;
   }
 
   /**
-   * Reads whether one of a channel's panels is open.
+   * Reads whether one of a scope's panels is open.
    *
-   * @param channelId The channel, or `null` when no channel is selected.
+   * @param scope The panel scope, or `null` when no channel is selected.
    * @param placement The panel to read.
    */
-  isOpen(channelId: ChatChannelId | null, placement: ChatWorkspacePanelPlacement): boolean {
-    return this.read(channelId)[placement];
+  isOpen(scope: ChatPanelScope | null, placement: ChatWorkspacePanelPlacement): boolean {
+    return this.read(scope)[placement];
   }
 
   /**
-   * Opens or closes one of a channel's panels without touching the other.
+   * Opens or closes one of a scope's panels without touching the other.
    *
-   * @param channelId The channel, or `null` when no channel is selected.
+   * @param scope The panel scope, or `null` when no channel is selected.
    * @param placement The panel to change.
    * @param open Whether the panel is open afterwards.
    */
-  setOpen(channelId: ChatChannelId | null, placement: ChatWorkspacePanelPlacement, open: boolean): void {
-    const key = channelKey(channelId);
-    const current = this.channels.get(key) ?? CLOSED;
+  setOpen(scope: ChatPanelScope | null, placement: ChatWorkspacePanelPlacement, open: boolean): void {
+    const key = scopeKey(scope);
+    const current = this.scopes.get(key) ?? CLOSED;
     if (current[placement] === open) return;
     const next = { ...current, [placement]: open };
-    this.channels.delete(key);
+    this.scopes.delete(key);
     if (!next.inspector && !next.bottom) return;
-    this.channels.set(key, next);
-    while (this.channels.size > MAX_CHAT_PANEL_VISIBILITY_CHANNELS) {
-      const oldest = this.channels.keys().next().value;
+    this.scopes.set(key, next);
+    while (this.scopes.size > MAX_CHAT_PANEL_VISIBILITY_SCOPES) {
+      const oldest = this.scopes.keys().next().value;
       if (oldest === undefined) break;
-      this.channels.delete(oldest);
+      this.scopes.delete(oldest);
     }
   }
 
   /**
-   * Flips one of a channel's panels.
+   * Flips one of a scope's panels.
    *
-   * @param channelId The channel, or `null` when no channel is selected.
+   * @param scope The panel scope, or `null` when no channel is selected.
    * @param placement The panel to flip.
    */
-  toggle(channelId: ChatChannelId | null, placement: ChatWorkspacePanelPlacement): void {
-    this.setOpen(channelId, placement, !this.isOpen(channelId, placement));
+  toggle(scope: ChatPanelScope | null, placement: ChatWorkspacePanelPlacement): void {
+    this.setOpen(scope, placement, !this.isOpen(scope, placement));
   }
 
-  /** Closes every channel's panels. */
+  /** Closes every scope's panels. */
   clear(): void {
-    this.channels.clear();
+    this.scopes.clear();
   }
 }
 
 /** The state without a selected channel shares one slot, so the panels still open and close there. */
-function channelKey(channelId: ChatChannelId | null): string {
-  return channelId ?? "";
+function scopeKey(scope: ChatPanelScope | null): string {
+  return scope ?? "";
 }
 
-/** Panel visibility shared by every Chat pane, like the panels' per-channel tabs. */
+/** Panel visibility shared by every Chat pane, like the panels' per-scope tabs. */
 export const chatPanelVisibility = new ChatPanelVisibilityState();

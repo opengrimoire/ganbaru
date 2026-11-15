@@ -3,6 +3,7 @@
 import { flushSync, mount, tick, unmount } from "svelte";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ChatTerminalRead } from "$lib/chat/contracts";
+import * as chatApi from "$lib/api/chat";
 import { chatPanelVisibility } from "$lib/chat/workspace/panel-visibility.svelte";
 import { getChat } from "$lib/stores/chat.svelte";
 import ChatWorkspacePanel from "./ChatWorkspacePanel.svelte";
@@ -104,5 +105,25 @@ describe("ChatWorkspacePanel", () => {
 
     expect(onClose).not.toHaveBeenCalled();
     expect(chat.bottomPanelOpen).toBe(true);
+  });
+
+  it("gives a reply thread tab terminals and panels apart from its channel's", async () => {
+    const chat = getChat();
+    chat.selectedChannelId = "channel-a";
+    chat.selectedWorkingFolderId = "folder-a";
+    chat.replyThreadTabId = "reply-a";
+    chat.bottomPanelOpen = true;
+    vi.mocked(chatApi.listChatTerminals).mockClear();
+    vi.mocked(chatApi.readChatTerminalLayout).mockClear();
+    const target = document.createElement("div");
+    document.body.append(target);
+    const component = mount(ChatWorkspacePanel, { target, props: { placement: "bottom", visible: true, onClose: vi.fn() } });
+    mounted.push({ target, component });
+    await settle();
+
+    expect(chatApi.listChatTerminals).toHaveBeenCalledWith("channel-a", "folder-a", "reply-a");
+    expect(chatApi.readChatTerminalLayout).not.toHaveBeenCalled();
+    chat.replyThreadTabId = null;
+    expect(chat.bottomPanelOpen).toBe(false);
   });
 });

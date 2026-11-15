@@ -32,7 +32,7 @@ Search uses bounded, paginated reads over active or archived conversations accor
 
 Messages are durable participant-authored records. They can include text, validated attachments, references to tasks, projects, folders, and files, replies, mentions, and provenance for generated or transformed content.
 
-Reply threads keep detailed work from overwhelming the main channel. A provider run started from a reply posts concise state and results to the main timeline; detailed execution stays inspectable in the linked run.
+Reply threads keep detailed work from overwhelming the main channel. A provider run started from a reply posts concise state and results to the main timeline; detailed execution stays inspectable in the linked run. On desktop, an open reply thread can move into a locked workspace tab of its own, which shows only the thread header, its timeline, and its composer, with the thread icon and the channel in its title; it detaches into a window and restores like any tab, and closing the thread closes that tab.
 
 Channel notes are short facts a channel keeps about how its work goes, such as a style rule or a decision. Any person in the channel can add, edit, or delete one; AI teammates cannot write notes, but a teammate can suggest up to three per run, which a person saves as suggested, saves with edited text, or dismisses. When one device deletes a note while another edits it, the deletion wins.
 

@@ -6,7 +6,7 @@
 
 use base64::{Engine as _, engine::general_purpose};
 use ganbaru_chat_contracts::models::{
-    ChatChannelId, ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId,
+    ChatChannelId, ChatError, ChatErrorCode, ChatReplyThreadId, ChatResult, ProjectWorkingFolderId,
 };
 use ganbaru_chat_providers::process::inventory as process_inventory;
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -234,6 +234,8 @@ fn is_canonical_uuid(value: &str) -> bool {
 pub(crate) struct ChatTerminalCreateInput {
     pub terminal_id: String,
     pub channel_id: ChatChannelId,
+    /// Separates terminals opened from a reply thread tab from the channel's own panels.
+    pub reply_thread_id: Option<ChatReplyThreadId>,
     pub working_folder_id: ProjectWorkingFolderId,
     pub workspace_path: PathBuf,
     pub columns: u16,
@@ -243,6 +245,7 @@ pub(crate) struct ChatTerminalCreateInput {
 struct TerminalSpawnSpec {
     terminal_id: String,
     channel_id: ChatChannelId,
+    reply_thread_id: Option<ChatReplyThreadId>,
     working_folder_id: ProjectWorkingFolderId,
     workspace_path: PathBuf,
     name: String,
@@ -275,6 +278,8 @@ struct TerminalState {
 struct TerminalSession {
     id: String,
     channel_id: ChatChannelId,
+    /// Panel grouping only; authority always comes from the channel.
+    reply_thread_id: Option<ChatReplyThreadId>,
     working_folder_id: ProjectWorkingFolderId,
     state: Mutex<TerminalState>,
     master: Mutex<Option<Box<dyn MasterPty + Send>>>,
@@ -525,16 +530,41 @@ impl Default for ChatTerminalRegistry {
 }
 
 impl ChatTerminalRegistry {
+    /// Lists every terminal of a channel working folder, whichever panel opened it.
     pub fn list(
         &self,
         channel_id: &ChatChannelId,
         working_folder_id: &ProjectWorkingFolderId,
     ) -> ChatResult<Vec<ChatTerminalRead>> {
+        self.list_matching(channel_id, working_folder_id, |_| true)
+    }
+
+    /// Lists the terminals one panel owns: the channel panels when `reply_thread_id` is `None`, or the
+    /// panels of that reply thread tab otherwise.
+    pub fn list_for_panel(
+        &self,
+        channel_id: &ChatChannelId,
+        working_folder_id: &ProjectWorkingFolderId,
+        reply_thread_id: Option<&ChatReplyThreadId>,
+    ) -> ChatResult<Vec<ChatTerminalRead>> {
+        self.list_matching(channel_id, working_folder_id, |session| {
+            session.reply_thread_id.as_ref() == reply_thread_id
+        })
+    }
+
+    fn list_matching(
+        &self,
+        channel_id: &ChatChannelId,
+        working_folder_id: &ProjectWorkingFolderId,
+        panel: impl Fn(&TerminalSession) -> bool,
+    ) -> ChatResult<Vec<ChatTerminalRead>> {
         let sessions = self.sessions.lock().map_err(|_| terminal_state_error())?;
         let mut result = sessions
             .values()
             .filter(|session| {
-                &session.channel_id == channel_id && &session.working_folder_id == working_folder_id
+                &session.channel_id == channel_id
+                    && &session.working_folder_id == working_folder_id
+                    && panel(session)
             })
             .map(|session| session.read())
             .collect::<ChatResult<Vec<_>>>()?;
@@ -581,6 +611,7 @@ impl ChatTerminalRegistry {
             TerminalSpawnSpec {
                 terminal_id: input.terminal_id,
                 channel_id: input.channel_id,
+                reply_thread_id: input.reply_thread_id,
                 working_folder_id: input.working_folder_id,
                 workspace_path: input.workspace_path,
                 name: terminal_name,
@@ -848,6 +879,7 @@ fn spawn_session(
     let session = Arc::new(TerminalSession {
         id: spec.terminal_id,
         channel_id: spec.channel_id,
+        reply_thread_id: spec.reply_thread_id,
         working_folder_id: spec.working_folder_id,
         state: Mutex::new(TerminalState {
             name: spec.name,
@@ -1360,6 +1392,7 @@ mod tests {
         Arc::new(TerminalSession {
             id: id.to_string(),
             channel_id: ChatChannelId::new(channel_id).expect("channel ID should be valid"),
+            reply_thread_id: None,
             working_folder_id: ProjectWorkingFolderId::new(working_folder_id)
                 .expect("workspace ID should be valid"),
             state: Mutex::new(TerminalState {
@@ -1532,6 +1565,58 @@ mod tests {
                 .expect_err("a terminal must not be reachable from another channel or folder");
             assert_eq!(refused.code, ChatErrorCode::Permission);
         }
+    }
+
+    #[test]
+    fn reply_thread_tabs_list_only_their_own_terminals_of_the_channel() {
+        let thread =
+            |id: &str| ChatReplyThreadId::new(id).expect("reply thread ID should be valid");
+        let in_thread = |id: &str, reply_thread_id: &str| {
+            let mut session = Arc::into_inner(session_at(id, "channel:a", "workspace:root", true))
+                .expect("a fresh session has one owner");
+            session.reply_thread_id = Some(thread(reply_thread_id));
+            Arc::new(session)
+        };
+        let registry = ChatTerminalRegistry::default();
+        let sessions = [
+            session_at("terminal:channel", "channel:a", "workspace:root", true),
+            in_thread("terminal:thread-a", "reply:a"),
+            in_thread("terminal:thread-b", "reply:b"),
+        ];
+        {
+            let mut registered = registry.sessions.lock().expect("registry should lock");
+            for session in &sessions {
+                registered.insert(session.id.clone(), Arc::clone(session));
+            }
+        }
+        let channel = ChatChannelId::new("channel:a").expect("channel ID should be valid");
+        let folder =
+            ProjectWorkingFolderId::new("workspace:root").expect("workspace ID should be valid");
+        let ids = |terminals: Vec<ChatTerminalRead>| {
+            terminals
+                .into_iter()
+                .map(|terminal| terminal.id)
+                .collect::<Vec<_>>()
+        };
+
+        let channel_panel = registry
+            .list_for_panel(&channel, &folder, None)
+            .expect("channel panel list should work");
+        assert_eq!(ids(channel_panel), ["terminal:channel"]);
+        let thread_panel = registry
+            .list_for_panel(&channel, &folder, Some(&thread("reply:a")))
+            .expect("thread panel list should work");
+        assert_eq!(ids(thread_panel), ["terminal:thread-a"]);
+        let every = registry
+            .list(&channel, &folder)
+            .expect("full list should work");
+        assert_eq!(ids(every).len(), 3);
+        assert!(
+            registry
+                .require_scope("terminal:thread-b", &channel, &folder)
+                .is_ok(),
+            "the channel still authorizes terminals opened from its reply threads"
+        );
     }
 
     #[test]

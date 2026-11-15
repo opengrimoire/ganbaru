@@ -2,9 +2,9 @@
 
 use super::terminal::{
     ChatTerminalCloseResult, ChatTerminalCreateInput, ChatTerminalId, ChatTerminalOutputChunk,
-    ChatTerminalRead, ChatTerminalRegistry, ChatTerminalSnapshotRead, default_shell_label,
+    ChatTerminalRead, ChatTerminalRegistry, ChatTerminalSnapshotRead,
 };
-use super::terminal_access::{ChatTerminalAccess, TerminalStartScope, reservation_mismatch_error};
+use super::terminal_access::{ChatTerminalAccess, reservation_mismatch_error};
 use super::workspace::commands::authorize_working_folder;
 use super::workspace::{AuthorizedWorkingFolder, WorkingFolderAuthorizationOperation};
 use crate::db;
@@ -15,13 +15,8 @@ use ganbaru_chat_contracts::models::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::{Row, SqlitePool};
-use std::future::Future;
-use std::path::Path;
 use tauri::Manager;
 use tauri::ipc::Channel;
-use tauri_plugin_dialog::{
-    DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult,
-};
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,18 +26,6 @@ pub struct CreateChatTerminalRequest {
     pub working_folder_id: ProjectWorkingFolderId,
     pub columns: u16,
     pub rows: u16,
-    pub start_prompt: TerminalStartPrompt,
-}
-
-/// Localized text for the native terminal start confirmation. Rust appends the
-/// folder path and shell itself, so the webview cannot hide what is approved.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TerminalStartPrompt {
-    pub title: String,
-    pub message: String,
-    pub allow_label: String,
-    pub cancel_label: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -252,14 +235,6 @@ pub async fn chat_terminal_create(
         ganbaru_chat::repository::workspaces::read_workspace(&pool, &request.working_folder_id)
             .await?;
     validate_terminal_start(scope.thread_archived, folder.archived_at.is_some())?;
-    let shell = default_shell_label();
-    let path = scope.authorized.canonical_path.clone();
-    ensure_start_grant(
-        &app.state::<ChatTerminalAccess>(),
-        scope.start_scope(),
-        || ask_terminal_start(&app, &request.start_prompt, &path, &shell),
-    )
-    .await?;
     let authorized = scope.authorized;
     app.state::<ChatTerminalRegistry>().create(
         app.clone(),
@@ -410,90 +385,11 @@ pub async fn chat_reserve_draft_thread(
     )
 }
 
-/// A thread's authorized terminal workspace and the grant key that covers it.
+/// A thread's authorized terminal workspace and execution environment.
 struct ThreadTerminalScope {
-    vault_id: String,
     environment_id: Option<String>,
     thread_archived: bool,
     authorized: AuthorizedWorkingFolder,
-}
-
-impl ThreadTerminalScope {
-    fn start_scope(&self) -> TerminalStartScope {
-        TerminalStartScope::new(
-            self.vault_id.clone(),
-            self.authorized.working_folder_id.clone(),
-            self.environment_id.as_deref(),
-        )
-    }
-}
-
-/// Runs `ask` only when this launch holds no start grant for `scope`, and
-/// records the grant when the user allows it. The prompt lock keeps concurrent
-/// starts for one folder from showing more than one dialog.
-async fn ensure_start_grant<F, Fut>(
-    access: &ChatTerminalAccess,
-    scope: TerminalStartScope,
-    ask: F,
-) -> ChatResult<()>
-where
-    F: FnOnce() -> Fut,
-    Fut: Future<Output = ChatResult<bool>>,
-{
-    let _prompt = access.lock_prompt().await;
-    if access.is_granted(&scope)? {
-        return Ok(());
-    }
-    if !ask().await? {
-        return Err(ChatError::new(
-            ChatErrorCode::Cancelled,
-            "Terminal start was not allowed",
-            true,
-        ));
-    }
-    access.grant(scope)
-}
-
-/// Shows the native terminal start confirmation naming the folder and shell.
-async fn ask_terminal_start(
-    app: &tauri::AppHandle,
-    prompt: &TerminalStartPrompt,
-    folder: &Path,
-    shell: &str,
-) -> ChatResult<bool> {
-    let allow_label = prompt.allow_label.trim().to_string();
-    let (sender, mut receiver) = tauri::async_runtime::channel(1);
-    app.dialog()
-        .message(format!(
-            "{}\n\n{}\n{}",
-            prompt.message.trim(),
-            folder.to_string_lossy(),
-            shell
-                .chars()
-                .filter(|c| !c.is_control())
-                .collect::<String>(),
-        ))
-        .title(prompt.title.trim())
-        .kind(MessageDialogKind::Warning)
-        .buttons(MessageDialogButtons::OkCancelCustom(
-            allow_label.clone(),
-            prompt.cancel_label.trim().to_string(),
-        ))
-        .show_with_result(move |result| {
-            let allowed = match result {
-                MessageDialogResult::Ok | MessageDialogResult::Yes => true,
-                MessageDialogResult::Custom(label) => label == allow_label,
-                _ => false,
-            };
-            let _ = sender.try_send(allowed);
-        });
-    receiver.recv().await.ok_or_else(|| {
-        ChatError::new(
-            ChatErrorCode::Internal,
-            "Terminal confirmation closed without a result",
-            true,
-        )
-    })
 }
 
 /// Authorizes a persisted or reserved thread in its working folder for terminal access on this device.
@@ -546,7 +442,6 @@ async fn authorize_thread_scope(
     )
     .await?;
     Ok(ThreadTerminalScope {
-        vault_id,
         environment_id,
         thread_archived,
         authorized,
@@ -656,7 +551,6 @@ fn persistence_error<T>(_error: T) -> ChatError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
 
     fn workspace(id: &str) -> ProjectWorkingFolderId {
         ProjectWorkingFolderId::new(id).expect("workspace ID should be valid")
@@ -754,55 +648,6 @@ mod tests {
                 .expect_err("archived scopes must not start terminals");
             assert_eq!(refused.code, ChatErrorCode::InvalidStateTransition);
         }
-    }
-
-    #[test]
-    fn terminal_create_requires_start_grant() {
-        let access = ChatTerminalAccess::default();
-        let scope = TerminalStartScope::new("vault", workspace("workspace:test"), None);
-        let asked = Cell::new(0);
-
-        let declined =
-            tauri::async_runtime::block_on(ensure_start_grant(&access, scope.clone(), || {
-                asked.set(asked.get() + 1);
-                async { Ok(false) }
-            }))
-            .expect_err("a declined confirmation must not start a terminal");
-        assert_eq!(declined.code, ChatErrorCode::Cancelled);
-        assert!(!access.is_granted(&scope).expect("read"));
-
-        for _ in 0..2 {
-            tauri::async_runtime::block_on(ensure_start_grant(&access, scope.clone(), || {
-                asked.set(asked.get() + 1);
-                async { Ok(true) }
-            }))
-            .expect("an allowed or granted folder starts terminals");
-        }
-        assert_eq!(
-            asked.get(),
-            2,
-            "one grant covers later terminals in the folder"
-        );
-
-        let worktree = TerminalStartScope::new("vault", workspace("workspace:test"), Some("tree"));
-        let failed = tauri::async_runtime::block_on(ensure_start_grant(&access, worktree, || {
-            asked.set(asked.get() + 1);
-            async {
-                Err(ChatError::new(
-                    ChatErrorCode::Internal,
-                    "dialog failed",
-                    true,
-                ))
-            }
-        }))
-        .expect_err("another environment asks again and dialog failures propagate");
-        assert_eq!(failed.code, ChatErrorCode::Internal);
-        assert_eq!(asked.get(), 3);
-
-        access
-            .clear_folder(&workspace("workspace:test"))
-            .expect("clear");
-        assert!(!access.is_granted(&scope).expect("read"));
     }
 
     #[test]

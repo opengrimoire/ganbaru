@@ -1,46 +1,16 @@
-//! In-memory terminal start grants and draft thread reservations.
+//! In-memory draft thread reservations for terminals.
 //!
-//! A terminal is a full shell, so Rust starts one only for a working folder
-//! and execution environment the user allowed in a native dialog during this
-//! app launch. Grants are never persisted: a persisted grant would leave the
-//! folder's shell open to a compromised webview on every later launch.
+//! An unsaved draft thread has no folder in SQLite yet, so Rust records the
+//! folder it may open terminals in until the thread is persisted or discarded.
 
 use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ChatThreadId, ProjectWorkingFolderId,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 /// Most unsaved draft threads that may hold a terminal reservation at once.
 pub const MAX_DRAFT_THREAD_RESERVATIONS: usize = 256;
-
-/// Environment key used when a thread runs in the bound folder itself.
-const CURRENT_FOLDER_ENVIRONMENT: &str = "";
-
-/// Identifies one terminal start grant.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct TerminalStartScope {
-    vault_id: String,
-    working_folder_id: ProjectWorkingFolderId,
-    environment_id: String,
-}
-
-impl TerminalStartScope {
-    /// Builds the grant key for a folder and optional worktree environment in a vault.
-    pub fn new(
-        vault_id: impl Into<String>,
-        working_folder_id: ProjectWorkingFolderId,
-        environment_id: Option<&str>,
-    ) -> Self {
-        Self {
-            vault_id: vault_id.into(),
-            working_folder_id,
-            environment_id: environment_id
-                .unwrap_or(CURRENT_FOLDER_ENVIRONMENT)
-                .to_string(),
-        }
-    }
-}
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct DraftReservationKey {
@@ -50,42 +20,19 @@ struct DraftReservationKey {
 
 #[derive(Default)]
 struct TerminalAccessState {
-    grants: BTreeSet<TerminalStartScope>,
     reservations: BTreeMap<DraftReservationKey, ProjectWorkingFolderId>,
 }
 
-/// Managed state holding this launch's terminal start grants and draft reservations.
+/// Managed state holding this launch's draft thread reservations.
 #[derive(Default)]
 pub struct ChatTerminalAccess {
     state: Mutex<TerminalAccessState>,
-    /// Serializes the grant check and dialog so concurrent starts show one dialog.
-    prompt: tokio::sync::Mutex<()>,
 }
 
 impl ChatTerminalAccess {
-    /// Holds the prompt lock while a caller checks, asks, and records a grant.
-    pub async fn lock_prompt(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.prompt.lock().await
-    }
-
-    /// Reports whether the user allowed terminals for `scope` during this launch.
-    pub fn is_granted(&self, scope: &TerminalStartScope) -> ChatResult<bool> {
-        Ok(self.lock()?.grants.contains(scope))
-    }
-
-    /// Records the user's native confirmation for `scope`.
-    pub fn grant(&self, scope: TerminalStartScope) -> ChatResult<()> {
-        self.lock()?.grants.insert(scope);
-        Ok(())
-    }
-
-    /// Drops every grant and reservation for a folder that was unbound, rebound, archived, or removed.
+    /// Drops every reservation for a folder that was unbound, rebound, archived, or removed.
     pub fn clear_folder(&self, working_folder_id: &ProjectWorkingFolderId) -> ChatResult<()> {
-        let mut state = self.lock()?;
-        state
-            .grants
-            .retain(|scope| &scope.working_folder_id != working_folder_id);
-        state
+        self.lock()?
             .reservations
             .retain(|_, folder| folder != working_folder_id);
         Ok(())
@@ -191,35 +138,8 @@ mod tests {
     }
 
     #[test]
-    fn grants_are_scoped_to_vault_folder_and_environment() {
+    fn clearing_a_folder_drops_its_reservations_only() {
         let access = ChatTerminalAccess::default();
-        let granted = TerminalStartScope::new("vault-a", folder("folder-a"), None);
-        access.grant(granted.clone()).expect("grant");
-        assert!(access.is_granted(&granted).expect("read"));
-        for other in [
-            TerminalStartScope::new("vault-b", folder("folder-a"), None),
-            TerminalStartScope::new("vault-a", folder("folder-b"), None),
-            TerminalStartScope::new("vault-a", folder("folder-a"), Some("worktree-1")),
-        ] {
-            assert!(!access.is_granted(&other).expect("read"));
-        }
-    }
-
-    #[test]
-    fn clearing_a_folder_drops_its_grants_and_reservations_only() {
-        let access = ChatTerminalAccess::default();
-        let kept = TerminalStartScope::new("vault", folder("folder-b"), None);
-        access
-            .grant(TerminalStartScope::new("vault", folder("folder-a"), None))
-            .expect("grant");
-        access
-            .grant(TerminalStartScope::new(
-                "vault",
-                folder("folder-a"),
-                Some("worktree"),
-            ))
-            .expect("grant");
-        access.grant(kept.clone()).expect("grant");
         access
             .reserve("vault", &thread("draft-a"), &folder("folder-a"), live)
             .expect("reserve");
@@ -229,12 +149,6 @@ mod tests {
 
         access.clear_folder(&folder("folder-a")).expect("clear");
 
-        assert!(
-            !access
-                .is_granted(&TerminalStartScope::new("vault", folder("folder-a"), None))
-                .expect("read")
-        );
-        assert!(access.is_granted(&kept).expect("read"));
         assert_eq!(
             access
                 .reserved_folder("vault", &thread("draft-a"))

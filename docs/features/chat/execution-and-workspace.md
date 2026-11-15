@@ -46,7 +46,7 @@ A working folder may be a subdirectory of its repository. Review and source cont
 
 Terminals are bound to one authorized execution target and thread. The frontend receives a narrow stream and input boundary, not a generic process API. Closing a terminal view does not necessarily stop its process, and lifecycle and stop controls stay truthful. Output is bounded, untrusted text; escape sequences cannot become application commands or links without validation. Terminals start without the app's inherited multiplexer and development server port variables, replaying a terminal view resets terminal modes such as the alternate screen and hidden cursor, and terminal history is never persisted.
 
-The first terminal for a working folder and execution environment in each app launch asks for a native confirmation that names the folder and shell. Because opening the Terminal panel starts a terminal, this usually appears the first time the panel opens for a folder after Ganbaru starts. Later terminals in that folder start without asking until the app restarts or the folder is unbound, archived, or removed.
+Terminals start without a confirmation, like a terminal opened in any editor: the user's own shell in a folder they bound is not a privilege escalation over their account.
 
 ## Browser preview
 

@@ -210,8 +210,6 @@ pub(crate) trait OrphanedRunHost {
     fn has_runtime_owner(&self, thread_id: &ChatThreadId) -> ChatResult<bool>;
     /// Shuts down the provider runtime of `thread_id`.
     async fn shutdown_thread(&self, thread_id: &ChatThreadId) -> ChatResult<()>;
-    /// Clears terminal access granted in `folder`.
-    fn clear_folder_terminal_access(&self, folder: &ProjectWorkingFolderId) -> ChatResult<()>;
 }
 
 /// [`OrphanedRunHost`] over the running app's registries.
@@ -254,12 +252,6 @@ impl OrphanedRunHost for AppOrphanedRunHost<'_> {
         runtime
             .shutdown_thread_and_remove(thread_id, REVOCATION_STOP_TIMEOUT, &mutations)
             .await
-    }
-
-    fn clear_folder_terminal_access(&self, folder: &ProjectWorkingFolderId) -> ChatResult<()> {
-        self.0
-            .state::<super::terminal_access::ChatTerminalAccess>()
-            .clear_folder(folder)
     }
 }
 
@@ -320,34 +312,8 @@ pub(crate) async fn stop_orphaned_run_scopes(
             continue;
         }
         host.revoke_run_scope(thread_id, scope).await;
-        if let Err(error) = clear_thread_terminal_access(host, pool, thread_id).await {
-            eprintln!(
-                "Chat revocation drain could not clear terminal access of an orphaned run: code \
-                 {:?}",
-                error.code
-            );
-        }
     }
     Ok(left)
-}
-
-/// Clears the terminal access granted in the working folder of `thread_id`, if it has one.
-async fn clear_thread_terminal_access(
-    host: &impl OrphanedRunHost,
-    pool: &SqlitePool,
-    thread_id: &ChatThreadId,
-) -> ChatResult<()> {
-    let folder: Option<String> =
-        sqlx::query_scalar("SELECT working_folder_id FROM chat_threads WHERE id = ?")
-            .bind(thread_id.as_str())
-            .fetch_optional(pool)
-            .await
-            .map_err(persistence_error)?;
-    if let Some(folder) = folder {
-        let folder = ProjectWorkingFolderId::new(folder).map_err(|_| revocation_error())?;
-        host.clear_folder_terminal_access(&folder)?;
-    }
-    Ok(())
 }
 
 /// The ids among `authorization_ids` that name no authorization row.
@@ -589,36 +555,7 @@ async fn drain_claimed_job(
                 .await?;
         }
     }
-    clear_revoked_terminal_grants(app, pool, authorization_revision_id.as_deref()).await?;
     mark_claim_completed(pool, job_id, claim_token).await
-}
-
-/// Drops terminal start grants for the folders a revoked authorization ran in,
-/// so the next terminal there asks again.
-async fn clear_revoked_terminal_grants(
-    app: &tauri::AppHandle,
-    pool: &SqlitePool,
-    authorization_revision_id: Option<&str>,
-) -> ChatResult<()> {
-    let Some(authorization_revision_id) = authorization_revision_id else {
-        return Ok(());
-    };
-    let folders: Vec<String> = sqlx::query_scalar(
-        "SELECT DISTINCT thread.working_folder_id
-         FROM chat_agent_runs run
-         JOIN chat_threads thread ON thread.id = run.provider_thread_id
-         WHERE run.authorization_revision_id = ?",
-    )
-    .bind(authorization_revision_id)
-    .fetch_all(pool)
-    .await
-    .map_err(persistence_error)?;
-    let access = app.state::<super::terminal_access::ChatTerminalAccess>();
-    for folder in folders {
-        let folder = ProjectWorkingFolderId::new(folder).map_err(|_| revocation_error())?;
-        access.clear_folder(&folder)?;
-    }
-    Ok(())
 }
 
 async fn read_revoked_runs(
@@ -1263,10 +1200,6 @@ pub(crate) mod tests {
                 .lock()
                 .unwrap()
                 .push(thread_id.as_str().to_string());
-            Ok(())
-        }
-
-        fn clear_folder_terminal_access(&self, _folder: &ProjectWorkingFolderId) -> ChatResult<()> {
             Ok(())
         }
     }

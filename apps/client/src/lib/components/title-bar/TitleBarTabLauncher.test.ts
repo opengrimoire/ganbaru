@@ -154,6 +154,7 @@ describe("Tab launcher", () => {
     press(search(), "Enter");
     await tick();
     expect(place()).toBe("Work");
+    expect(surface().querySelector("nav")?.textContent?.trim()).toBe("Work");
     expect(tabs.openKind).not.toHaveBeenCalled();
   });
 

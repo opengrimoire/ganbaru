@@ -189,6 +189,8 @@
   const highlight = $derived(tabLauncherHighlightIndex(rows, highlightKey, query));
   const levelDrills = $derived(rows.some((value) => value.canDrill));
   const breadcrumb = $derived(path.map((step) => step.label).join(" / "));
+  /** The steps the header shows: the kind alone at its first step, then the route inside it, so the kind stops taking room. */
+  const shownPath = $derived(path.length > 1 ? path.slice(1) : path);
   const searchPlaceholder = $derived(
     level.type === "channels"
       ? t("chat.channels.search")
@@ -818,9 +820,9 @@
           <ChevronLeft size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
         </button>
         <nav class="min-w-0 flex-1 truncate text-popover-foreground" aria-label={t("titleBar.tab.launcherPath")}>
-          {#each path as step, index (index)}
+          {#each shownPath as step, index (index)}
             {#if index > 0}<span class="px-1 text-muted-foreground" aria-hidden="true">/</span>{/if}
-            {#if index === path.length - 1}
+            {#if index === shownPath.length - 1}
               <span class="font-medium" aria-current="location">{step.label}</span>
             {:else}
               <span>{step.label}</span>

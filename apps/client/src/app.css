@@ -168,8 +168,9 @@
   --selection-background: rgba(37, 99, 235, 0.28);
   /* Matches the Android selection handle drawables in src-tauri/gen/android/app/src/main/res/values/colors.xml. */
   --selection-handle: #3B82F6;
-  --app-scrollbar-thumb: color-mix(in srgb, var(--foreground) 18%, transparent);
-  --app-scrollbar-thumb-hover: color-mix(in srgb, var(--foreground) 36%, transparent);
+  /* Native and hand-drawn scrollbars share the theme-derived Calendar thumb so every scrollbar paints the same color. */
+  --app-scrollbar-thumb: var(--cal-scrollbar-thumb);
+  --app-scrollbar-thumb-hover: var(--cal-scrollbar-thumb-hover);
   --app-scrollbar-native-size: 8px;
   --app-scrollbar-size: var(--app-scrollbar-native-size);
 

@@ -3304,6 +3304,21 @@ fn reply_thread_summaries_count_only_live_reply_messages() {
         let summary = super::reads::read_reply_thread_summary(&pool, &thread_id)
             .await
             .unwrap();
+        assert_eq!(
+            summary.reply_count, 0,
+            "replies waiting for the work are in the queue"
+        );
+        sqlx::raw_sql(
+            "UPDATE chat_work_assignment_inputs
+             SET delivery_state = 'delivered', delivered_at = '2026-08-04T17:02:30.000Z'
+             WHERE assignment_id = 'assignment:review' AND routing_kind <> 'trigger'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let summary = super::reads::read_reply_thread_summary(&pool, &thread_id)
+            .await
+            .unwrap();
         assert_eq!(summary.reply_count, 2);
 
         sqlx::raw_sql(

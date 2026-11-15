@@ -6,6 +6,7 @@ use super::common::{
     parse_review_outcome, parse_runtime_approval_policy, parse_work_state, stored_value_error,
     u32_value,
 };
+use super::inputs::AWAITING_DELIVERY_SQL;
 use super::workflow::{parse_model_selection, read_message_references};
 use super::{
     LOCAL_PARTICIPANT_ID, identifier_error, now_timestamp, optional_timestamp, persistence_error,
@@ -432,8 +433,9 @@ pub(super) async fn read_message(
     pool: &SqlitePool,
     item_id: &ChatConversationItemId,
 ) -> ChatResult<ChatMessageRead> {
-    let row = sqlx::query(
+    let row = sqlx::query(AssertSqlSafe(format!(
         "SELECT item.conversation_id, item.reply_thread_id, item.order_key, item.created_at,
+                {AWAITING_DELIVERY_SQL} AS awaiting_delivery,
                 message.author_participant_id, message.author_label_snapshot,
                 message.current_revision_id,
                 message.edited_at, revision.revision, revision.normalized_markdown,
@@ -442,8 +444,8 @@ pub(super) async fn read_message(
          JOIN chat_communication_messages message ON message.item_id = item.id
          JOIN chat_communication_message_revisions_numbered revision
            ON revision.id = message.current_revision_id
-         WHERE item.id = ?",
-    )
+         WHERE item.id = ?"
+    )))
     .bind(item_id.as_str())
     .fetch_optional(pool)
     .await
@@ -531,6 +533,9 @@ pub(super) async fn read_message(
         order_key: row.try_get("order_key").map_err(persistence_error)?,
         edited_at: optional_timestamp(row.try_get("edited_at").map_err(persistence_error)?)?,
         created_at: timestamp(row.try_get("created_at").map_err(persistence_error)?)?,
+        awaiting_delivery: row
+            .try_get("awaiting_delivery")
+            .map_err(persistence_error)?,
     })
 }
 
@@ -538,16 +543,17 @@ pub(crate) async fn read_reply_thread_summary(
     pool: &SqlitePool,
     reply_thread_id: &ChatReplyThreadId,
 ) -> ChatResult<ChatReplyThreadSummaryRead> {
-    let row = sqlx::query(
+    let row = sqlx::query(AssertSqlSafe(format!(
         "SELECT thread.last_activity_at,
             (SELECT count(*)
              FROM chat_conversation_items item
              JOIN chat_communication_messages message ON message.item_id = item.id
              WHERE item.reply_thread_id = thread.id
                AND item.item_kind = 'message'
-               AND message.deleted_at IS NULL) AS reply_count
-         FROM chat_reply_threads thread WHERE thread.id = ?",
-    )
+               AND message.deleted_at IS NULL
+               AND NOT {AWAITING_DELIVERY_SQL}) AS reply_count
+         FROM chat_reply_threads thread WHERE thread.id = ?"
+    )))
     .bind(reply_thread_id.as_str())
     .fetch_optional(pool)
     .await

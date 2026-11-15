@@ -13,6 +13,7 @@ use super::common::{
 use super::common::{wire_approval_policy, wire_work_state};
 #[cfg(desktop)]
 use super::context::{FreezeOutcome, freeze_context_package};
+use super::inputs::place_delivered_reply;
 #[cfg(desktop)]
 use super::now_timestamp;
 use super::reads::{
@@ -650,6 +651,26 @@ pub(super) async fn create_assignment(
         now,
     )
     .await?;
+    let trigger_input_id = assignment_input_id(assignment.message_item_id.as_str())?;
+    // A reply that waited for the previous turn enters the thread when it starts this work.
+    let trigger_waited: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+            SELECT 1 FROM chat_work_assignment_inputs
+            WHERE id = ? AND routing_kind IN ('steer', 'queued_continuation')
+              AND delivery_state = 'pending')",
+    )
+    .bind(&trigger_input_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    if trigger_waited {
+        place_delivered_reply(
+            transaction,
+            assignment.message_item_id.as_str(),
+            now.as_str(),
+        )
+        .await?;
+    }
     sqlx::query(
         "INSERT INTO chat_work_assignment_inputs
             (id, assignment_id, message_item_id, ordinal, routing_kind, created_at)
@@ -658,7 +679,7 @@ pub(super) async fn create_assignment(
             assignment_id = excluded.assignment_id, ordinal = 1,
             routing_kind = excluded.routing_kind",
     )
-    .bind(assignment_input_id(assignment.message_item_id.as_str())?)
+    .bind(&trigger_input_id)
     .bind(assignment_id.as_str())
     .bind(assignment.message_item_id.as_str())
     .bind(if previous_id.is_some() {

@@ -160,13 +160,15 @@ function runShowsWithoutExecution(run: ChatAgentRunRead, loadedRunIds: ReadonlyS
 
 /**
  * Replaces projected run copies with exact execution turns at the same thread position. Runs that need a status line
- * without a loaded turn get an entry with `loaded: false` and keep their projected replies.
+ * without a loaded turn get an entry with `loaded: false` and keep their projected replies. Replies awaiting delivery
+ * stay out: the queue above the composer lists them until the work receives them and they take their place.
  */
 export function replyThreadRenderEntries(
-  replies: readonly ChatMessageRead[],
+  threadReplies: readonly ChatMessageRead[],
   agentRuns: readonly ChatAgentRunRead[],
   loadedRunIds: ReadonlySet<string>,
 ): ReplyThreadRenderEntry[] {
+  const replies = threadReplies.filter((reply) => !reply.awaitingDelivery);
   const renderedRuns = agentRuns.filter((run) => (
     run.providerExecutionThreadId !== null && loadedRunIds.has(run.id)
   ));

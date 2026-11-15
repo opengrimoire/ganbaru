@@ -726,7 +726,10 @@ export interface ChatMessageRead {
   /** Position within its scope; messages order by `(orderKey, itemId)`. */
   orderKey: string;
   editedAt: UtcTimestamp | null;
+  /** When the message entered its scope: the post time, or for a reply that waited for running work, the time the work received it. */
   createdAt: UtcTimestamp;
+  /** Whether the message is a reply waiting for running work, or one cancelled before it reached a run. The timeline leaves it out, and the queue of its work lists a waiting one. */
+  awaitingDelivery: boolean;
 }
 
 export interface ChatChannelPageRead {

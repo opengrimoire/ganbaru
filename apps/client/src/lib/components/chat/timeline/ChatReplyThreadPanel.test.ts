@@ -71,6 +71,7 @@ function message(
     references: [],
     replyThread: null,
     orderKey: `c${String(position).padStart(3, "0")}`,
+    awaitingDelivery: false,
     editedAt: null,
     createdAt: `2026-08-04T17:0${position}:00.000Z`,
   };

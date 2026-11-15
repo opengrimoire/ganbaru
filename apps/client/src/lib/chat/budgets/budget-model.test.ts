@@ -44,6 +44,7 @@ function reply(itemId: string, value: unknown): ChatMessageRead {
     references: [],
     replyThread: null,
     orderKey: itemId,
+    awaitingDelivery: false,
     editedAt: null,
     createdAt: "2026-11-12T10:00:00.000Z",
   };

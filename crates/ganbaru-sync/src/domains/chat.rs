@@ -811,10 +811,10 @@ fn validate_reply_thread(group: GroupId, fields: &[Field]) -> Result<(), Adapter
 
 fn validate_item(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
     match (group, fields) {
-        (item_group::CREATED, [_conversation, _thread, kind, _order_key, created_at]) => {
-            one_of(kind, &ITEM_KINDS, "chat item kind")?;
-            timestamp(created_at)
+        (item_group::CREATED, [_conversation, _thread, kind]) => {
+            one_of(kind, &ITEM_KINDS, "chat item kind")
         }
+        (item_group::PLACEMENT, [_order_key, created_at]) => timestamp(created_at),
         _ => Err(AdapterError("chat item value")),
     }
 }

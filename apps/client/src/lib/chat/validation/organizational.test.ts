@@ -147,6 +147,7 @@ describe("delegated work reads", () => {
       references: [],
       replyThread: null,
       orderKey: "c001",
+      awaitingDelivery: false,
       editedAt: null,
       createdAt: TIMESTAMP,
     };

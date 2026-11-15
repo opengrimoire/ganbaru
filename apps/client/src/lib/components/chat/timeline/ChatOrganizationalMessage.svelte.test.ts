@@ -39,6 +39,7 @@ const message: ChatMessageRead = {
   }],
   replyThread: null,
   orderKey: "c001",
+  awaitingDelivery: false,
   editedAt: null,
   createdAt: "2026-08-12T20:00:00.000Z",
 };

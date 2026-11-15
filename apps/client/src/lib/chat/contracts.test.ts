@@ -177,6 +177,7 @@ describe("Chat provider contracts", () => {
         references: [],
         replyThread: null,
         orderKey: "c001",
+        awaitingDelivery: false,
         editedAt: null,
         createdAt: timestamp,
       }],

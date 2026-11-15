@@ -214,6 +214,74 @@ fn queued_input_waits_for_turn_end() {
 }
 
 #[test]
+fn a_queued_reply_waits_out_of_the_thread_and_enters_it_after_the_turn_output() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_work_in("working").await;
+        let posted = post_reply(&pool, "command:queue", Some(ChatFollowupRouting::Queue)).await;
+        let (posted_key, posted_at): (String, String) = sqlx::query_as(
+            "SELECT order_key, created_at FROM chat_conversation_items WHERE id = ?",
+        )
+        .bind(posted.item_id.as_str())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let waiting = super::super::reads::read_message(&pool, &posted.item_id)
+            .await
+            .unwrap();
+        assert!(
+            waiting.awaiting_delivery,
+            "a queued reply waits in the queue"
+        );
+        sqlx::query(
+            "INSERT INTO chat_conversation_items
+                (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
+             SELECT 'item:turn-output', conversation_id, reply_thread_id, 'work_update',
+                    order_key || 'm', created_at
+             FROM chat_conversation_items WHERE id = ?",
+        )
+        .bind(posted.item_id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        set_review_state(&pool, "completed").await;
+        assert_eq!(recover_on_desk(&pool).await, 1);
+
+        let (key, created_at): (String, String) = sqlx::query_as(
+            "SELECT order_key, created_at FROM chat_conversation_items WHERE id = ?",
+        )
+        .bind(posted.item_id.as_str())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let output_key: String = sqlx::query_scalar(
+            "SELECT order_key FROM chat_conversation_items WHERE id = 'item:turn-output'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(key > output_key, "the reply follows the turn it waited for");
+        assert_ne!(key, posted_key);
+        assert_eq!(
+            created_at, ROUTING_TIME,
+            "the thread shows when it continued the work"
+        );
+        assert_ne!(created_at, posted_at);
+        let continued = super::super::reads::read_message(&pool, &posted.item_id)
+            .await
+            .unwrap();
+        assert!(
+            !continued.awaiting_delivery,
+            "the follow-up reply is in the thread"
+        );
+        assert_eq!(
+            continued.normalized_markdown, waiting.normalized_markdown,
+            "the reply text is unchanged"
+        );
+    });
+}
+
+#[test]
 fn a_queued_reply_synced_after_the_turn_ended_continues_the_work() {
     tauri::async_runtime::block_on(async {
         for state in ["ready_for_review", "completed"] {

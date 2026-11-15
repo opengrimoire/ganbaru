@@ -967,6 +967,7 @@ export function parseChatMessage(value: unknown, label = "Chat message"): ChatMe
     orderKey: readOrderKey(record.orderKey, `${label}.orderKey`),
     editedAt: readNullable(record.editedAt, `${label}.editedAt`, readUtcTimestamp),
     createdAt: readUtcTimestamp(record.createdAt, `${label}.createdAt`),
+    awaitingDelivery: readBoolean(record.awaitingDelivery, `${label}.awaitingDelivery`),
   };
 }
 

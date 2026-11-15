@@ -872,6 +872,82 @@ fn chat_simulated_delivery_against_input_cancel_keeps_the_delivery() {
     });
 }
 
+/// The executing device delivers a queued reply and places it after the run's output while
+/// another device edits it and a third cancels it; whatever the exchange order, every device
+/// reads the reply at the placement the delivery wrote, with the posting time on its message
+/// and the edit's revision as its content.
+#[test]
+fn chat_simulated_delivery_placement_replays_over_a_concurrent_edit_and_cancel() {
+    block_on(async {
+        for seed in 0..PROGRESS_SEEDS {
+            let mut rng = Rng(seed ^ 0x91ace);
+            let mut replicas = conversation_replicas(3).await;
+            replicas[0]
+                .exec(&format!(
+                    "{}{}{}",
+                    coordination_sql(),
+                    message_sql(
+                        QUEUED_REPLY,
+                        Some(&thread()),
+                        "c003",
+                        "Then update the docs"
+                    ),
+                    input_sql(QUEUED_REPLY, ASSIGNMENT, 2, "queued_continuation"),
+                ))
+                .await;
+            converge(&mut replicas).await;
+            let delivered_at = at(2, rng.below(60));
+            replicas[0]
+                .exec(&format!(
+                    "INSERT INTO chat_conversation_items
+                        (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
+                     VALUES ('item:run-output', {conversation}, {thread}, 'work_update', 'c004',
+                             {created});
+                     {delivery}
+                     UPDATE chat_conversation_items SET order_key = 'c005', created_at = {at}
+                     WHERE id = {reply};",
+                    conversation = quoted(CONVERSATION),
+                    thread = quoted(&thread()),
+                    created = quoted(CREATED),
+                    delivery = delivery_sql(&delivered_at),
+                    at = quoted(&delivered_at),
+                    reply = quoted(QUEUED_REPLY),
+                ))
+                .await;
+            replicas[1]
+                .exec(&edit_sql(
+                    QUEUED_REPLY,
+                    &format!("{QUEUED_REPLY}:1"),
+                    "Then update the docs and the changelog",
+                    &at(1, 0),
+                ))
+                .await;
+            replicas[2].exec(&input_cancel_sql()).await;
+            pull_at_random(&mut replicas, &mut rng).await;
+            converge(&mut replicas).await;
+            assert_converged(&mut replicas).await;
+            for replica in &mut replicas {
+                let placement = replica
+                    .scalar_text(
+                        "SELECT item.order_key || ' ' || item.created_at || ' '
+                                || message.created_at || ' ' || message.current_revision_id
+                         FROM chat_conversation_items item
+                         JOIN chat_communication_messages message ON message.item_id = item.id
+                         WHERE item.id = 'item:queued-reply'",
+                    )
+                    .await
+                    .expect("the reply arrived");
+                assert_eq!(
+                    placement,
+                    format!("c005 {delivered_at} {CREATED} {QUEUED_REPLY}:1"),
+                    "seed {seed} replica {}",
+                    replica.index
+                );
+            }
+        }
+    });
+}
+
 /// Whether [`CHILD`] is settled on `replica`; false while it has not arrived.
 async fn child_settled(replica: &mut Replica) -> bool {
     replica

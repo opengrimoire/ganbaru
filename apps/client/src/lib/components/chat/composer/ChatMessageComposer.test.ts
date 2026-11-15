@@ -52,6 +52,7 @@ function workingReplyThread(): ChatReplyThreadPageRead {
       references: [],
       replyThread: null,
       orderKey: "c001",
+      awaitingDelivery: false,
       editedAt: null,
       createdAt: timestamp,
     },

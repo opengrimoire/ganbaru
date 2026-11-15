@@ -41,6 +41,7 @@ function message(itemId: string, authorId: string | null, createdAt: string): Ch
     references: [],
     replyThread: null,
     orderKey: itemId,
+    awaitingDelivery: false,
     editedAt: null,
     createdAt,
   };

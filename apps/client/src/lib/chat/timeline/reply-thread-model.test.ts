@@ -114,6 +114,7 @@ function message(
     references: [],
     replyThread: null,
     orderKey: `c${String(position).padStart(3, "0")}`,
+    awaitingDelivery: false,
     editedAt: null,
     createdAt,
   };
@@ -224,6 +225,21 @@ describe("reply thread run status lines", () => {
 
     expect(replyThreadRenderEntries([projection, note], [agentRun("run-1", "thread-1")], new Set())
       .map((entry) => entry.key)).toEqual(["progress", "execution:run-1", "note"]);
+  });
+
+  it("leaves replies awaiting delivery to the queue, with or without runs in the thread", () => {
+    const request = message("request", "local-user", "2026-08-02T07:59:00Z", { type: "doc" }, 1);
+    const queued = {
+      ...message("queued", "local-user", "2026-08-02T08:00:00Z", { type: "doc" }, 2),
+      awaitingDelivery: true,
+    };
+    const note = message("note", "local-user", "2026-08-02T08:02:00Z", { type: "doc" }, 3);
+    const run = agentRun("run-1", "thread-1");
+
+    expect(replyThreadRenderEntries([request, queued, note], [], new Set()).map((entry) => entry.key))
+      .toEqual(["request", "note"]);
+    expect(replyThreadRenderEntries([request, queued, note], [run], new Set([run.id])).map((entry) => entry.key))
+      .not.toContain("queued");
   });
 
   it("gives no line to settled runs that are not loaded or ended without trouble", () => {

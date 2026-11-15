@@ -68,7 +68,8 @@ function message(channelId: string): ChatMessageRead {
     },
     authorLabelSnapshot: "User", normalizedMarkdown: "Saved local history",
     richContent: { schemaVersion: 1, value: {} }, attachmentIds: [], references: [],
-    replyThread: null, orderKey: "c001", editedAt: null, createdAt: "2026-09-22T12:00:00Z",
+    replyThread: null, orderKey: "c001", awaitingDelivery: false, editedAt: null,
+    createdAt: "2026-09-22T12:00:00Z",
   };
 }
 

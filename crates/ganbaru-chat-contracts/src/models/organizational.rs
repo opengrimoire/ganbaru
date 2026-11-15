@@ -1019,7 +1019,12 @@ pub struct ChatMessageRead {
     /// Position of the item within its scope; items order by `(order_key, item_id)`.
     pub order_key: String,
     pub edited_at: Option<UtcTimestamp>,
+    /// When the item entered its scope: the post time, or for a reply that waited for running
+    /// work, the time the work received it.
     pub created_at: UtcTimestamp,
+    /// Whether the message is a reply waiting for running work, or one cancelled before it
+    /// reached a run. The timeline leaves it out; the queue of its work lists a waiting one.
+    pub awaiting_delivery: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

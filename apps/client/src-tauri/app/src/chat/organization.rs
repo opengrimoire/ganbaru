@@ -1219,7 +1219,7 @@ async fn search_messages(
     project_id: Option<&str>,
     limit: Option<u32>,
 ) -> ChatResult<Vec<ChatMessageSearchResultRead>> {
-    let rows = sqlx::query(
+    let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT
             channel.project_id,
             channel.id AS channel_id,
@@ -1242,9 +1242,11 @@ async fn search_messages(
          JOIN chat_channels channel ON channel.conversation_id = search.conversation_id
          WHERE chat_communication_search_fts MATCH ?
            AND (? IS NULL OR channel.project_id = ?)
+           AND NOT {}
          ORDER BY rank, item.created_at DESC
          LIMIT ?",
-    )
+        inputs::AWAITING_DELIVERY_SQL
+    )))
     .bind(fts_query)
     .bind(project_id)
     .bind(project_id)

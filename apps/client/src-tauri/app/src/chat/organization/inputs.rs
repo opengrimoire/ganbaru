@@ -31,6 +31,54 @@ pub(super) const INPUT_STARTS_WORK: &str = "input_starts_work";
 /// Routing kind of the reply that started a follow-up assignment.
 const FOLLOW_UP_ROUTING_KIND: &str = "follow_up";
 
+/// SQL condition, over a conversation item aliased `item`, that holds while the item is a
+/// person's reply waiting for running work, or one a person cancelled before it reached a run.
+/// Such a reply lives only in the queue of its work: the thread, its reply count, and search
+/// leave it out until the work receives it, and a cancelled one never returns. A reply still
+/// pending on failed or cancelled work shows where it was posted, since no run will take it
+/// until Retry. Replies an agent posted, such as delegated outcomes, always show.
+pub(super) const AWAITING_DELIVERY_SQL: &str = "EXISTS (
+    SELECT 1 FROM chat_work_assignment_inputs waiting
+    JOIN chat_work_assignments waiting_work ON waiting_work.id = waiting.assignment_id
+    JOIN chat_communication_messages waiting_message
+      ON waiting_message.item_id = waiting.message_item_id
+    WHERE waiting.message_item_id = item.id
+      AND waiting.routing_kind IN ('steer', 'queued_continuation')
+      AND (waiting.delivery_state = 'ignored'
+           OR (waiting.delivery_state = 'pending'
+               AND waiting_work.state NOT IN ('failed', 'cancelled')))
+      AND NOT EXISTS (
+        SELECT 1 FROM chat_participants waiting_author
+        WHERE waiting_author.id = waiting_message.author_participant_id
+          AND waiting_author.participant_kind = 'ai_teammate'))";
+
+/// Moves the reply `message_item_id`, which waited for running work and has just reached it, to
+/// the end of its thread at `entered_at`, so the thread shows it after everything that came
+/// before that moment. Only the device that delivers the reply writes the placement, and it
+/// replicates as one register, so every device shows the reply at that place. A reply an agent
+/// posted keeps its place, since it never waited out of view.
+pub(super) async fn place_delivered_reply(
+    connection: &mut sqlx::SqliteConnection,
+    message_item_id: &str,
+    entered_at: &str,
+) -> ChatResult<()> {
+    let agent_authored: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+            SELECT 1 FROM chat_communication_messages message
+            JOIN chat_participants author ON author.id = message.author_participant_id
+            WHERE message.item_id = ? AND author.participant_kind = 'ai_teammate')",
+    )
+    .bind(message_item_id)
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(persistence_error)?;
+    if !agent_authored {
+        ganbaru_chat::timeline::place_item_at_scope_end(connection, message_item_id, entered_at)
+            .await?;
+    }
+    Ok(())
+}
+
 /// Columns of one input row with its message's current revision, shared by every read here.
 const INPUT_ROW_SELECT: &str = "SELECT input.id, input.message_item_id, input.ordinal,
         input.routing_kind, input.delivery_state, input.held, input.delivered_at,
@@ -168,7 +216,8 @@ pub(super) async fn edit_assignment_input(
     Ok(read)
 }
 
-/// Cancels the pending input `input_id` so no run receives it. Its reply stays in the thread.
+/// Cancels the pending input `input_id` so no run receives it. A person's cancelled reply
+/// leaves the thread with it, as [`AWAITING_DELIVERY_SQL`] reads.
 /// An input that already reached a run, failed, or was cancelled is refused, and so is a
 /// `follow_up` input, which only stopping the work it started keeps from the run.
 pub(super) async fn cancel_assignment_input(

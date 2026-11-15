@@ -360,8 +360,12 @@ pub mod reply_thread_group {
 pub mod item_group {
     use super::{GroupId, group_id};
 
-    /// Every column, fixed when the item is posted.
+    /// `conversation_id`, `reply_thread_id`, and `item_kind`, fixed when the item is posted.
     pub const CREATED: GroupId = group_id(0);
+    /// `order_key` and `created_at`: where the item sits in its scope and when it entered it. The
+    /// executing device moves a reply that waited for running work to the end of its thread when
+    /// the work receives it.
+    pub const PLACEMENT: GroupId = group_id(1);
 }
 
 /// Communication message field groups.
@@ -1397,25 +1401,31 @@ pub const REPLY_THREADS: TableSpec = TableSpec {
     ..BASE
 };
 
-/// `chat_conversation_items`, immutable. Items order by `(order_key, id)` within their scope,
-/// so concurrent posts that take one key order by id on every device.
+/// `chat_conversation_items`. Items order by `(order_key, id)` within their scope, so concurrent
+/// posts that take one key order by id on every device. Only the placement changes after the
+/// post, when a waiting reply reaches its work.
 pub const ITEMS: TableSpec = TableSpec {
     id: ITEMS_TABLE,
     name: "chat_conversation_items",
-    groups: &[immutable(
-        item_group::CREATED,
-        &[
-            row_key("conversation_id"),
-            optional_row_key("reply_thread_id"),
-            text("item_kind", MAX_ENUM_CHARS),
-            order_key("order_key"),
-            timestamp("created_at"),
-        ],
-        &[
-            cascade("conversation_id", CONVERSATIONS_TABLE),
-            cascade("reply_thread_id", REPLY_THREADS_TABLE),
-        ],
-    )],
+    groups: &[
+        immutable(
+            item_group::CREATED,
+            &[
+                row_key("conversation_id"),
+                optional_row_key("reply_thread_id"),
+                text("item_kind", MAX_ENUM_CHARS),
+            ],
+            &[
+                cascade("conversation_id", CONVERSATIONS_TABLE),
+                cascade("reply_thread_id", REPLY_THREADS_TABLE),
+            ],
+        ),
+        register(
+            item_group::PLACEMENT,
+            "placement",
+            &[order_key("order_key"), timestamp("created_at")],
+        ),
+    ],
     triggers: &[applier_visible(
         "chat_conversation_items_reply_thread_insert",
     )],

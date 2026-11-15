@@ -137,6 +137,63 @@ async fn next_order_key_follows_its_own_scope_and_breaks_equal_key_ties_by_id() 
 }
 
 #[tokio::test]
+async fn placing_an_item_at_its_scope_end_moves_it_after_every_other_item_of_that_scope_only() {
+    let pool = migrated_pool().await;
+    let conversation = seed_channel(&pool).await;
+    let thread = Some("reply:timeline");
+    insert_item(&pool, "item:waiting", &conversation, thread, "c001").await;
+    insert_item(&pool, "item:agent", &conversation, thread, "c002").await;
+    insert_item(&pool, "item:tied", &conversation, thread, "c002").await;
+    insert_item(&pool, "item:root-later", &conversation, None, "c009").await;
+    let entered = "2026-10-27T09:05:00.000Z";
+
+    let mut connection = pool.acquire().await.unwrap();
+    assert!(
+        place_item_at_scope_end(&mut connection, "item:waiting", entered)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !place_item_at_scope_end(&mut connection, "item:missing", entered)
+            .await
+            .unwrap()
+    );
+    let moved: (String, String) = sqlx::query_as(
+        "SELECT order_key, created_at FROM chat_conversation_items WHERE id = 'item:waiting'",
+    )
+    .fetch_one(&mut *connection)
+    .await
+    .unwrap();
+    assert_eq!(
+        moved,
+        (order_key_after(Some("c002")).unwrap(), entered.to_owned())
+    );
+
+    // An item that is already last keeps its key and only records when it entered.
+    let later = "2026-10-27T09:06:00.000Z";
+    place_item_at_scope_end(&mut connection, "item:waiting", later)
+        .await
+        .unwrap();
+    let kept: (String, String) = sqlx::query_as(
+        "SELECT order_key, created_at FROM chat_conversation_items WHERE id = 'item:waiting'",
+    )
+    .fetch_one(&mut *connection)
+    .await
+    .unwrap();
+    assert_eq!(kept, (moved.0, later.to_owned()));
+    drop(connection);
+
+    let thread_order: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM chat_conversation_items
+             WHERE reply_thread_id = 'reply:timeline' ORDER BY order_key, id",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(thread_order, ["item:agent", "item:tied", "item:waiting"]);
+}
+
+#[tokio::test]
 async fn revision_display_numbers_follow_creation_time_then_id() {
     let pool = migrated_pool().await;
     seed_channel(&pool).await;

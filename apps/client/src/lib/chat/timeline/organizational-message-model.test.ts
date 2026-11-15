@@ -34,6 +34,7 @@ function message(itemId: string, kind: ChatParticipantKind): ChatMessageRead {
     references: [],
     replyThread: null,
     orderKey: "c001",
+    awaitingDelivery: false,
     editedAt: null,
     createdAt: "2026-08-04T12:00:00.000Z",
   };

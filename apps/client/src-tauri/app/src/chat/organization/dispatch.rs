@@ -8,6 +8,7 @@ use super::common::{
 use super::context;
 use super::continuation::{self, CandidateRun, ContinuationKey, TransitionInput};
 use super::delegation;
+use super::inputs::place_delivered_reply;
 use super::reads::read_policy;
 use super::{chat_pool, identifier_error, now_timestamp, persistence_error, u64_value};
 use ganbaru_chat::agent_runs::{
@@ -272,7 +273,7 @@ async fn mark_initial_assignment_input_delivered(
     .await
     .map_err(persistence_error)?;
     for message_item_id in &launch.answered_input_ids {
-        sqlx::query(
+        let delivered = sqlx::query(
             "UPDATE chat_work_assignment_inputs
              SET delivery_state = 'delivered', delivered_at = ?
              WHERE assignment_id = ? AND message_item_id = ?
@@ -284,7 +285,11 @@ async fn mark_initial_assignment_input_delivered(
         .bind(message_item_id)
         .execute(&mut *transaction)
         .await
-        .map_err(persistence_error)?;
+        .map_err(persistence_error)?
+        .rows_affected();
+        if delivered > 0 {
+            place_delivered_reply(&mut transaction, message_item_id, now.as_str()).await?;
+        }
     }
     transaction.commit().await.map_err(persistence_error)?;
     Ok(true)
@@ -1408,6 +1413,7 @@ async fn record_assignment_input_delivered(
     .map_err(persistence_error)?
     .rows_affected();
     if marked > 0 {
+        place_delivered_reply(&mut transaction, message_item_id.as_str(), now.as_str()).await?;
         ganbaru_chat::agent_runs::insert_delivered_sources(
             &mut transaction,
             &prepared.run_id,
@@ -2574,6 +2580,169 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(sources, vec![("item:steer".to_string(),)]);
+        }
+
+        /// Posts agent output in the assignment's reply thread after every seeded reply.
+        async fn seed_agent_output(pool: &SqlitePool) {
+            sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+                "INSERT INTO chat_conversation_items
+                    (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
+                 SELECT 'item:agent-output', conversation_id, id, 'work_update', 'a9',
+                        '{CLAIMED_AT}'
+                 FROM chat_reply_threads WHERE id = 'reply:folders';"
+            )))
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+
+        /// The ids of the reply thread's items in thread order.
+        async fn thread_order(pool: &SqlitePool) -> Vec<String> {
+            sqlx::query_scalar(
+                "SELECT id FROM chat_conversation_items WHERE reply_thread_id = 'reply:folders'
+                 ORDER BY order_key, id",
+            )
+            .fetch_all(pool)
+            .await
+            .unwrap()
+        }
+
+        async fn shown(pool: &SqlitePool, item_id: &str) -> ChatMessageRead {
+            let item_id = ChatConversationItemId::new(item_id).unwrap();
+            crate::chat::organization::reads::read_message(pool, &item_id)
+                .await
+                .unwrap()
+        }
+
+        async fn reply_count(pool: &SqlitePool) -> u64 {
+            let thread = ChatReplyThreadId::new("reply:folders").unwrap();
+            crate::chat::organization::reads::read_reply_thread_summary(pool, &thread)
+                .await
+                .unwrap()
+                .reply_count
+        }
+
+        async fn delivered_at(pool: &SqlitePool, item_id: &str) -> String {
+            sqlx::query_scalar(
+                "SELECT delivered_at FROM chat_work_assignment_inputs WHERE message_item_id = ?",
+            )
+            .bind(item_id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+        }
+
+        #[tokio::test]
+        async fn a_steer_waits_out_of_the_thread_and_enters_it_after_the_output_the_run_had() {
+            let pool = starting_pool().await;
+            seed_inputs_of_every_route(&pool).await;
+            seed_agent_output(&pool).await;
+            sqlx::query("UPDATE chat_agent_runs SET state = 'working' WHERE id = 'run:working'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            let waiting = shown(&pool, "item:steer").await;
+            assert!(waiting.awaiting_delivery);
+            assert!(shown(&pool, "item:continuation").await.awaiting_delivery);
+            assert!(!shown(&pool, "item:follow-up").await.awaiting_delivery);
+            let replies_while_waiting = reply_count(&pool).await;
+
+            let steer = ChatConversationItemId::new("item:steer").unwrap();
+            let prepared = prepare_assignment_input(&pool, &assignment(), &steer)
+                .await
+                .unwrap()
+                .expect("the working run takes the pending steer");
+            record_assignment_input_delivered(&pool, &assignment(), &steer, &prepared)
+                .await
+                .unwrap();
+
+            let entered = shown(&pool, "item:steer").await;
+            assert!(!entered.awaiting_delivery);
+            assert_eq!(
+                entered.created_at.as_str(),
+                delivered_at(&pool, "item:steer").await
+            );
+            assert_eq!(entered.normalized_markdown, waiting.normalized_markdown);
+            assert_eq!(entered.revision_id, waiting.revision_id);
+            assert_eq!(
+                thread_order(&pool).await.last().map(String::as_str),
+                Some("item:steer")
+            );
+            assert_eq!(reply_count(&pool).await, replies_while_waiting + 1);
+            let posted: String = sqlx::query_scalar(
+                "SELECT created_at FROM chat_communication_messages WHERE item_id = 'item:steer'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(posted, CLAIMED_AT, "the message keeps its posting time");
+        }
+
+        #[tokio::test]
+        async fn a_launch_places_the_answers_it_carried_and_leaves_package_inputs_in_place() {
+            let pool = starting_pool().await;
+            seed_inputs_of_every_route(&pool).await;
+            seed_agent_output(&pool).await;
+            let before = thread_order(&pool).await;
+            let binding = working_binding(&pool).await;
+            settle_launch(&pool, &binding, &folder_launch(), None, &at(CLAIMED_AT))
+                .await
+                .unwrap();
+            let launch = AssignmentLaunch {
+                run_id: ChatAgentRunId::new("run:working").unwrap(),
+                launch_error: None,
+                settlement: None,
+                answered_input_ids: vec!["item:continuation".to_string()],
+            };
+            assert!(
+                mark_initial_assignment_input_delivered(&pool, &assignment(), &launch)
+                    .await
+                    .unwrap()
+            );
+
+            let mut expected = before
+                .into_iter()
+                .filter(|id| id != "item:continuation")
+                .collect::<Vec<_>>();
+            expected.push("item:continuation".to_string());
+            assert_eq!(thread_order(&pool).await, expected);
+            let follow_up = shown(&pool, "item:follow-up").await;
+            assert_eq!(follow_up.created_at.as_str(), CLAIMED_AT);
+            assert_eq!(follow_up.order_key, "a2");
+            let answer = shown(&pool, "item:continuation").await;
+            assert_eq!(
+                answer.created_at.as_str(),
+                delivered_at(&pool, "item:continuation").await
+            );
+            assert!(shown(&pool, "item:steer").await.awaiting_delivery);
+        }
+
+        #[tokio::test]
+        async fn held_and_cancelled_replies_stay_out_and_a_failed_work_shows_its_waiting_reply() {
+            let pool = starting_pool().await;
+            seed_inputs_of_every_route(&pool).await;
+            let held = ChatAssignmentInputId::new("input:item:continuation").unwrap();
+            crate::chat::organization::inputs::set_assignment_input_held(&pool, &held, true)
+                .await
+                .unwrap();
+            assert!(shown(&pool, "item:continuation").await.awaiting_delivery);
+            let cancelled = ChatAssignmentInputId::new("input:item:steer").unwrap();
+            crate::chat::organization::inputs::cancel_assignment_input(&pool, &cancelled)
+                .await
+                .unwrap();
+            let gone = shown(&pool, "item:steer").await;
+            assert!(gone.awaiting_delivery);
+            assert_eq!(gone.order_key, "a3", "a cancelled reply never moves");
+
+            sqlx::query(
+                "UPDATE chat_work_assignments SET state = 'failed'
+                 WHERE id = 'assignment:folders'",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            assert!(!shown(&pool, "item:continuation").await.awaiting_delivery);
+            assert!(shown(&pool, "item:steer").await.awaiting_delivery);
         }
 
         async fn run_and_job(

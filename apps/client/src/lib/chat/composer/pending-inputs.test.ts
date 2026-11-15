@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ChatAssignmentInputRead } from "$lib/chat/contracts";
 import {
-  defaultFollowupRouting,
   pendingInputCanSteerNow,
   pendingInputReorderable,
   pendingInputRows,
@@ -67,19 +66,6 @@ describe("pendingInputRows", () => {
       ["input:1", "pending"],
       ["input:3", "failed"],
     ]);
-  });
-});
-
-describe("defaultFollowupRouting", () => {
-  it("steers a teammate in the middle of a turn and queues behind anything else", () => {
-    expect(defaultFollowupRouting(null, "working")).toBe("steer");
-    expect(defaultFollowupRouting(null, "waiting_for_approval")).toBe("queue");
-    expect(defaultFollowupRouting(null, "queued")).toBe("queue");
-  });
-
-  it("keeps the choice the user made for the destination", () => {
-    expect(defaultFollowupRouting("queue", "working")).toBe("queue");
-    expect(defaultFollowupRouting("steer", "waiting_for_answer")).toBe("steer");
   });
 });
 

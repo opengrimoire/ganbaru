@@ -556,6 +556,8 @@ export const chat = {
     bold: "Negrita",
     italic: "Cursiva",
     send: "Enviar",
+    sendTooltip: (shortcut: string) => `Enviar (${shortcut})`,
+    queueOrSteerTooltip: (queueShortcut: string, steerShortcut: string) => `Poner en cola (${queueShortcut})\nRedirigir (${steerShortcut})`,
     steer: "Redirigir turno actual",
     queue: "Poner en cola",
     stop: "Detener",
@@ -753,8 +755,6 @@ export const chat = {
       statusDescription: "Muestra el uso del contexto y los límites del proveedor",
     },
     routing: {
-      steerMode: "Las respuestas redirigen el turno actual, así que haz clic para ponerlas en cola",
-      queueMode: "Las respuestas esperan en la cola, así que haz clic para redirigir el turno actual",
       downgraded: "Se puso en cola porque el compañero no estaba a mitad de un turno",
     },
     budget: {

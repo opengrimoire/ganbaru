@@ -89,6 +89,8 @@ export const focusAndShortcuts = {
       toggleChatInspector: "Alternar inspector de Chat",
       stopActiveTurn: "Detener turno activo",
       sendChatMessage: "Enviar mensaje de Chat",
+      queueChatReply: "Poner en cola una respuesta de Chat mientras trabaja un agente",
+      steerChatTurn: "Redirigir al agente que trabaja",
       insertChatNewline: "Insertar salto de línea en Chat",
       openChatCommandMenu: "Abrir menú de comandos de Chat",
       toggleMusicPanel: "Abrir o cerrar el panel de música",

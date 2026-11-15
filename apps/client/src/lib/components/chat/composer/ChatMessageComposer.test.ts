@@ -230,34 +230,61 @@ describe("ChatMessageComposer", () => {
     expect(send?.disabled).toBe(false);
     send?.click();
     await vi.waitFor(() => expect(post).toHaveBeenCalledOnce());
-    expect(post.mock.calls[0]?.[1]).toMatchObject({ followupRouting: "steer" });
-    expect(post.mock.calls[0]?.[1]).toEqual({ alsoSendToChannel: false, followupRouting: "steer" });
+    expect(post.mock.calls[0]?.[1]).toEqual({ alsoSendToChannel: false, followupRouting: "queue" });
   });
 
-  it("queues a reply when the user chose Queue and explains a steer the work queued", async () => {
+  /** Presses Enter in the composer, with the platform shortcut modifier when `modified`. */
+  async function pressEnter(root: HTMLElement, modified: boolean): Promise<KeyboardEvent> {
+    const editor = root.querySelector<HTMLDivElement>("[data-chat-composer]");
+    if (!editor) throw new Error("Expected the rich composer");
+    const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter", ctrlKey: modified });
+    editor.dispatchEvent(event);
+    await tick();
+    return event;
+  }
+
+  it("queues a reply on Enter and steers on Mod+Enter while work runs, explaining a steer the work queued", async () => {
     vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([]);
     const page = workingReplyThread();
     const post = vi.spyOn(chat, "postOrganizationalMessage").mockResolvedValue(routedResult(page, "queue"));
     const root = mountActiveWork(page);
     await tick();
 
-    await typeReply(root, "Then update the docs");
-    root.querySelector<HTMLButtonElement>(".send-button")?.click();
-    await vi.waitFor(() => expect(root.textContent).toContain("Queued, because the teammate was not in the middle of a turn"));
-    expect(post.mock.calls[0]?.[1]).toMatchObject({ followupRouting: "steer" });
+    expect(root.querySelector("button[data-chat-followup-routing]")).toBeNull();
+    expect(root.querySelector(".send-button")?.getAttribute("data-app-tooltip")).toBe("Queue (Enter)\nSteer (Ctrl + Enter)");
 
-    const toggle = () => root.querySelector<HTMLButtonElement>("button[data-chat-followup-routing]");
-    expect(toggle()?.dataset.chatFollowupRouting).toBe("steer");
-    expect(toggle()?.getAttribute("aria-label")).toBe("Replies steer the current turn, so click to queue them instead");
-    toggle()?.click();
-    await tick();
-    expect(toggle()?.dataset.chatFollowupRouting).toBe("queue");
-    expect(toggle()?.title).toBe("Replies wait in the queue, so click to steer the current turn instead");
-    await typeReply(root, "And the changelog");
-    root.querySelector<HTMLButtonElement>(".send-button")?.click();
-    await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(2));
-    expect(post.mock.calls[1]?.[1]).toMatchObject({ followupRouting: "queue" });
+    await typeReply(root, "Then update the docs");
+    expect((await pressEnter(root, false)).defaultPrevented).toBe(true);
+    await vi.waitFor(() => expect(post).toHaveBeenCalledOnce());
+    expect(post.mock.calls[0]?.[1]).toMatchObject({ followupRouting: "queue" });
     expect(root.textContent).not.toContain("Queued, because the teammate");
+
+    await typeReply(root, "Prefer the smaller fix");
+    await pressEnter(root, true);
+    await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(2));
+    expect(post.mock.calls[1]?.[1]).toMatchObject({ followupRouting: "steer" });
+    await vi.waitFor(() => expect(root.textContent).toContain("Queued, because the teammate was not in the middle of a turn"));
+  });
+
+  it("sends on Enter and Mod+Enter without routing when no work runs", async () => {
+    const page = workingReplyThread();
+    const idle = { ...page, assignment: page.assignment ? { ...page.assignment, state: "completed" as const } : null };
+    vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([]);
+    const post = vi.spyOn(chat, "postOrganizationalMessage").mockResolvedValue(routedResult(idle, null));
+    const root = mountActiveWork(idle);
+    await tick();
+
+    expect(root.querySelector(".send-button")?.getAttribute("data-app-tooltip")).toBe("Send (Enter)");
+    await typeReply(root, "Thanks");
+    await pressEnter(root, false);
+    await vi.waitFor(() => expect(post).toHaveBeenCalledOnce());
+    await typeReply(root, "One more thing");
+    await pressEnter(root, true);
+    await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(2));
+    expect(post.mock.calls.map((call) => call[1])).toEqual([
+      { alsoSendToChannel: false },
+      { alsoSendToChannel: false },
+    ]);
   });
 
   it("edits a waiting reply in the composer and restores the draft after saving", async () => {

@@ -79,6 +79,8 @@ export const focusAndShortcuts = {
       toggleChatInspector: "Toggle Chat inspector",
       stopActiveTurn: "Stop active turn",
       sendChatMessage: "Send Chat message",
+      queueChatReply: "Queue Chat reply while an agent works",
+      steerChatTurn: "Steer the working agent",
       insertChatNewline: "Insert Chat newline",
       openChatCommandMenu: "Open Chat command menu",
       toggleMusicPanel: "Open or close music panel",

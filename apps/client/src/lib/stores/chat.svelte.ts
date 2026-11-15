@@ -773,15 +773,6 @@ export class ChatStore {
     this.organizationalController.setDraft(destination, draft);
   }
 
-  /** The steer or queue choice made for a destination, if any. */
-  organizationalFollowupRouting(destination: string): import("$lib/chat/contracts").ChatFollowupRouting | null {
-    return this.organizationalController.followupRouting(destination);
-  }
-
-  setOrganizationalFollowupRouting(destination: string, routing: import("$lib/chat/contracts").ChatFollowupRouting): void {
-    this.organizationalController.setFollowupRouting(destination, routing);
-  }
-
   setOrganizationalScrollPosition(destination: string, scrollTop: number): void {
     this.organizationalController.setScrollPosition(destination, scrollTop);
   }

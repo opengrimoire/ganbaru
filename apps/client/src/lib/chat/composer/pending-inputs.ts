@@ -1,8 +1,4 @@
-import type {
-  ChatAssignmentInputRead,
-  ChatFollowupRouting,
-  ChatWorkAssignmentState,
-} from "$lib/chat/contracts";
+import type { ChatAssignmentInputRead } from "$lib/chat/contracts";
 
 /** Why a reply addressed to work still shows above the thread composer. */
 export type PendingInputStatus = "pending" | "failed" | "editedAfterDelivery";
@@ -46,20 +42,6 @@ export function pendingInputRows(inputs: readonly ChatAssignmentInputRead[]): Pe
       return status ? [{ input, status }] : [];
     })
     .sort((left, right) => left.input.ordinal - right.input.ordinal);
-}
-
-/**
- * The steer or queue choice a reply to active work starts with: the one the user made for this
- * destination, otherwise steering a teammate in the middle of a turn and queueing behind anything else.
- *
- * @param chosen The choice the user made for the destination, if any.
- * @param state The state of the thread's work.
- */
-export function defaultFollowupRouting(
-  chosen: ChatFollowupRouting | null,
-  state: ChatWorkAssignmentState,
-): ChatFollowupRouting {
-  return chosen ?? (state === "working" ? "steer" : "queue");
 }
 
 /**

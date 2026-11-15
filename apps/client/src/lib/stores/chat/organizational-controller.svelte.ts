@@ -54,15 +54,12 @@ export class ChatOrganizationalController {
   channelNotesVersion = $state(0);
   /** Bumped when push request states may have changed, including pushes that ran without a person, so open cards reread. */
   pushRequestsVersion = $state(0);
-  /** Steer or queue choice per destination, kept across posts so the next reply defaults to it. */
-  followupRoutings = $state<Record<string, ChatFollowupRouting>>({});
 
   constructor(private readonly options: ChatOrganizationalControllerOptions) {}
 
   reset(): void {
     this.drafts = {};
     this.scrollPositions = {};
-    this.followupRoutings = {};
     this.scheduledMessagesVersion += 1;
     this.channelNotesVersion += 1;
     this.pushRequestsVersion += 1;
@@ -74,15 +71,6 @@ export class ChatOrganizationalController {
 
   setDraft(destination: string, draft: ChatOrganizationalDraft): void {
     this.drafts = { ...this.drafts, [destination]: cloneData(draft) };
-  }
-
-  /** The steer or queue choice the user made for a destination, if any. */
-  followupRouting(destination: string): ChatFollowupRouting | null {
-    return this.followupRoutings[destination] ?? null;
-  }
-
-  setFollowupRouting(destination: string, routing: ChatFollowupRouting): void {
-    this.followupRoutings = { ...this.followupRoutings, [destination]: routing };
   }
 
   setScrollPosition(destination: string, scrollTop: number): void {

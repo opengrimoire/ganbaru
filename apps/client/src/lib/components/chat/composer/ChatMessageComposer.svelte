@@ -14,8 +14,6 @@
   import MessageSquareShare from "@lucide/svelte/icons/message-square-share";
   import Plus from "@lucide/svelte/icons/plus";
   import AtSign from "@lucide/svelte/icons/at-sign";
-  import CornerDownRight from "@lucide/svelte/icons/corner-down-right";
-  import ListEnd from "@lucide/svelte/icons/list-end";
   import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
   import type {
@@ -46,7 +44,8 @@
   import { mergePromptCatalog } from "$lib/chat/composer/command-model";
   import { composerMeterRead, type ComposerStatusRead } from "$lib/chat/composer/composer-meter";
   import { CHAT_IMAGE_LIMIT, composerTokenTrigger, validateImageFiles } from "$lib/chat/composer/model";
-  import { defaultFollowupRouting, pendingInputRows, pendingInputStartsWork, type PendingInputRow } from "$lib/chat/composer/pending-inputs";
+  import { pendingInputRows, pendingInputStartsWork, type PendingInputRow } from "$lib/chat/composer/pending-inputs";
+  import { formatShortcut, hasOnlyShortcutModifier } from "$lib/keyboard-shortcuts";
   import { latestStructuredPlanSteps, summarizePlanProgress } from "$lib/chat/composer/plan-progress";
   import { suggestTeammateMention, type MentionSuggestion } from "$lib/chat/composer/mention-suggestion";
   import { pastedTextLineCount } from "$lib/chat/composer/paste";
@@ -373,12 +372,13 @@
     interactionState?.usage ?? null,
     interactionState?.rateLimitStatus ?? null,
   ));
-  const followupRouting = $derived(activeAssignment
-    ? defaultFollowupRouting(chat.organizationalFollowupRouting(destination), activeAssignment.state)
-    : null);
-  const routingLabel = $derived(followupRouting === "queue"
-    ? t("chat.composer.routing.queueMode")
-    : t("chat.composer.routing.steerMode"));
+  /** Whether a post becomes a reply to work an agent is on, which Enter queues and Mod+Enter steers. */
+  const routesFollowups = $derived(activeAssignment !== null && !scheduledFor && !editingInput);
+  const sendTooltip = $derived(routesFollowups
+    ? t("chat.composer.queueOrSteerTooltip", "Enter", formatShortcut("Mod + Enter"))
+    : editingInput ? t("chat.composer.pendingInputs.save")
+    : scheduledFor ? t("chat.organization.scheduleMessage")
+    : t("chat.composer.sendTooltip", "Enter"));
   /** The limit a failed assignment of this thread stopped at, when its budget stopped it. */
   const budgetStop = $derived(threadAssignment ? budgetStoppedAt(threadAssignment, chat.replyThread?.replies ?? []) : null);
   /** The provider limit that stopped or holds the work of this thread, with its reset time when known. */
@@ -652,7 +652,7 @@
     if (editorController?.handleKeydown(event)) return;
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      void post();
+      void post(hasOnlyShortcutModifier(event) ? "steer" : "queue");
     }
   }
 
@@ -1525,7 +1525,11 @@
     persist();
   }
 
-  async function post(): Promise<void> {
+  /**
+   * Sends the draft, or saves the reply being edited. A reply to work an agent is on carries `followupRouting`;
+   * other posts ignore it.
+   */
+  async function post(followupRouting: ChatFollowupRouting = "queue"): Promise<void> {
     if (editingInput) {
       await saveInputEdit();
       return;
@@ -1559,7 +1563,7 @@
         scheduledMessages = [...scheduledMessages.filter((message) => message.id !== scheduled.id), scheduled]
           .sort((left, right) => left.scheduledFor.localeCompare(right.scheduledFor));
       } else {
-        const routing = activeAssignment ? followupRouting : null;
+        const routing = routesFollowups ? followupRouting : null;
         const result = await chat.postOrganizationalMessage(destination, {
           alsoSendToChannel: threadComposer && alsoSendToChannel,
           ...(routing ? { followupRouting: routing } : {}),
@@ -2104,14 +2108,8 @@
         </div>
         {#if threadComposer}<button type="button" class="tool-button" class:active={alsoSendToChannel} aria-label={t("chat.organization.shareReplyToChannel", channelName)} disabled={editLockReason !== null} aria-pressed={alsoSendToChannel} title={editLockReason ?? t("chat.organization.shareReplyToChannel", channelName)} onclick={() => { alsoSendToChannel = !alsoSendToChannel; }}><MessageSquareShare size={15} /></button>{/if}
       {/snippet}
-      {#snippet trailing()}
-        {#if followupRouting && !scheduledFor && !editingInput}
-          {@const routing = followupRouting}
-          <button type="button" class="tool-button" data-chat-followup-routing={routing} aria-label={routingLabel} title={routingLabel} onclick={() => { chat.setOrganizationalFollowupRouting(destination, routing === "steer" ? "queue" : "steer"); }}>{#if routing === "queue"}<ListEnd size={15} />{:else}<CornerDownRight size={15} />{/if}</button>
-        {/if}
-      {/snippet}
       {#snippet actions()}
-        <button type="button" class="send-button" data-action={editingInput ? "save" : "send"} disabled={sending || inputBusyId !== null || !hasMessageContent} aria-disabled={sendBlocked} aria-label={editingInput ? t("chat.composer.pendingInputs.save") : scheduledFor ? t("chat.organization.scheduleMessage") : t("chat.composer.send")} onclick={() => { void post(); }}><ArrowUp size={16} /></button>
+        <button type="button" class="send-button" data-action={editingInput ? "save" : "send"} disabled={sending || inputBusyId !== null || !hasMessageContent} aria-disabled={sendBlocked} aria-label={editingInput ? t("chat.composer.pendingInputs.save") : scheduledFor ? t("chat.organization.scheduleMessage") : t("chat.composer.send")} data-app-tooltip={sendTooltip} onclick={() => { void post(); }}><ArrowUp size={16} /></button>
       {/snippet}
       {#snippet below()}
         {#if validation || disclosureBlocker || providerBlockers.length || messageTooLarge}

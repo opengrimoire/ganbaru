@@ -80,6 +80,8 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = Object.freeze([
       { keys: ["Mod + Shift + J"], action: "Toggle Chat inspector" },
       { keys: ["Mod + ."], action: "Stop active turn" },
       { keys: ["Enter", "Mod + Enter"], action: "Send Chat message" },
+      { keys: ["Enter"], action: "Queue Chat reply while an agent works" },
+      { keys: ["Mod + Enter"], action: "Steer the working agent" },
       { keys: ["Shift + Enter"], action: "Insert Chat newline" },
       { keys: ["Mod + Shift + P"], action: "Open Chat command menu" },
     ],
@@ -148,6 +150,10 @@ function localizedAction(action: string, t: Translate): string {
       return t("settings.shortcuts.action.stopActiveTurn");
     case "Send Chat message":
       return t("settings.shortcuts.action.sendChatMessage");
+    case "Queue Chat reply while an agent works":
+      return t("settings.shortcuts.action.queueChatReply");
+    case "Steer the working agent":
+      return t("settings.shortcuts.action.steerChatTurn");
     case "Insert Chat newline":
       return t("settings.shortcuts.action.insertChatNewline");
     case "Open Chat command menu":

@@ -553,6 +553,8 @@ export const chat = {
     bold: "Bold",
     italic: "Italic",
     send: "Send",
+    sendTooltip: (shortcut: string) => `Send (${shortcut})`,
+    queueOrSteerTooltip: (queueShortcut: string, steerShortcut: string) => `Queue (${queueShortcut})\nSteer (${steerShortcut})`,
     steer: "Steer current turn",
     queue: "Queue next",
     stop: "Stop",
@@ -750,8 +752,6 @@ export const chat = {
       statusDescription: "Show context usage and provider limits",
     },
     routing: {
-      steerMode: "Replies steer the current turn, so click to queue them instead",
-      queueMode: "Replies wait in the queue, so click to steer the current turn instead",
       downgraded: "Queued, because the teammate was not in the middle of a turn",
     },
     budget: {

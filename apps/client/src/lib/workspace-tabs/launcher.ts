@@ -1,4 +1,4 @@
-import { hasOnlyShortcutModifier, menuDigitIndex, type KeyboardModifierState } from "$lib/keyboard-shortcuts";
+import { isNewItemShortcut, menuDigitIndex, type KeyboardModifierState } from "$lib/keyboard-shortcuts";
 import type { View } from "$lib/navigation";
 import { filterProjectLists, type ProjectList } from "$lib/projects/lists";
 import type { ProjectGroup } from "$lib/projects/types";
@@ -78,12 +78,42 @@ export function tabLauncherProjectRows<TProject extends { name: string }>(
   return { groups, sections: ungrouped.map((list) => ({ list, labeled: false })) };
 }
 
+/** What a level's create actions make, in the order its footer shows them. */
+export type TabLauncherCreateKind = "group" | "project" | "folder" | "page" | "channel";
+
+/**
+ * The create actions a level's footer offers, the primary one marked. The primary action is what the new item
+ * shortcut runs: a project on a projects level (a group only at the top), a note on a pages level (a folder only
+ * outside a note), and a channel on a channels level.
+ */
+export function tabLauncherCreateKinds(level: TabLauncherLevel): { kind: TabLauncherCreateKind; primary: boolean }[] {
+  switch (level.type) {
+    case "kinds":
+      return [];
+    case "projects":
+      return level.groupId === null
+        ? [{ kind: "group", primary: false }, { kind: "project", primary: true }]
+        : [{ kind: "project", primary: true }];
+    case "channels":
+      return [{ kind: "channel", primary: true }];
+    case "pages":
+      return level.parent.kind === "page"
+        ? [{ kind: "page", primary: true }]
+        : [{ kind: "folder", primary: false }, { kind: "page", primary: true }];
+  }
+}
+
 /** What the keyboard needs to know about one launcher row. */
 export interface TabLauncherRowShape {
-  /** Rows that take a digit: the kinds, groups, projects, channels, pages, and folders, but not "open here" rows or open tabs. */
+  /** Rows that take a digit: the kinds, groups, projects, channels, pages, and folders, but not "open here" rows, open tabs, or create actions. */
   numbered: boolean;
   /** Whether ArrowRight shows what is inside the row instead of leaving the key to the search caret. */
   canDrill: boolean;
+  /**
+   * A footer create action, listed after every other row so the arrows reach it last. `primary` marks the one the
+   * new item shortcut runs, which an otherwise empty level highlights.
+   */
+  create?: { primary: boolean };
 }
 
 /** The highest row number a digit key can pick. */
@@ -108,8 +138,8 @@ export function tabLauncherDigitsPick(query: string, searchable: boolean): boole
 
 /**
  * The index of the highlighted row. A remembered row keeps the highlight while it is still listed. Otherwise an
- * empty search highlights the first row, which is the "open here" row on the levels below the projects, and a
- * search highlights its first result. Returns -1 when nothing is listed.
+ * empty search highlights the first row, which is the "open here" row where a level has one, or the primary create
+ * action when the level lists nothing else; a search highlights its first result. Returns -1 when nothing is listed.
  */
 export function tabLauncherHighlightIndex<TRow extends TabLauncherRowShape & { key: string }>(
   rows: readonly TRow[],
@@ -121,7 +151,11 @@ export function tabLauncherHighlightIndex<TRow extends TabLauncherRowShape & { k
     const index = rows.findIndex((row) => row.key === highlightKey);
     if (index >= 0) return index;
   }
-  if (!query) return 0;
+  if (!query) {
+    if (!rows[0]?.create) return 0;
+    const primary = rows.findIndex((row) => row.create?.primary);
+    return primary >= 0 ? primary : 0;
+  }
   const firstResult = rows.findIndex((row) => row.numbered);
   return firstResult >= 0 ? firstResult : 0;
 }
@@ -141,7 +175,7 @@ export interface TabLauncherKeyContext {
   highlight: number;
   /** Whether the search caret sits at the end of the text with nothing selected. */
   caretAtEnd: boolean;
-  /** Whether the shortcut modifier with N creates something here, as the new note shortcut does on a pages level. */
+  /** Whether the new item shortcut runs the level's primary create action. */
   createShortcut?: boolean;
 }
 
@@ -163,15 +197,16 @@ function hasCommandModifier(input: KeyboardModifierState): boolean {
  * Decide what a key does, or `null` to leave it to the browser, so it types into the search or moves its caret.
  * Escape clears a search, then goes back a level, then closes. Arrows move the highlight and Enter picks it. A digit
  * picks a numbered row only while digits pick rows, and a digit without a row types instead. ArrowRight shows what is
- * inside a row that has more inside, and ArrowLeft or Backspace in an empty search go back a level. The shortcut
- * modifier with N creates where the level allows it.
+ * inside a row that has more inside, and ArrowLeft or Backspace in an empty search go back a level. Create actions are
+ * plain rows to the keyboard: the arrows, Home, and End reach them and Enter runs them, but no digit does. The new
+ * item shortcut runs the primary create action where the level has one.
  */
 export function tabLauncherKeyAction(input: TabLauncherKeyInput, context: TabLauncherKeyContext): TabLauncherKeyAction | null {
   if (input.isComposing) return null;
   const { query, searchable, atKinds, rows, highlight } = context;
   const emptyQuery = query.length === 0;
   const plain = !hasCommandModifier(input) && !input.shiftKey;
-  if (context.createShortcut && input.key.toLowerCase() === "n" && hasOnlyShortcutModifier(input)) return { type: "create" };
+  if (context.createShortcut && isNewItemShortcut(input)) return { type: "create" };
   switch (input.key) {
     case "Escape":
       if (!emptyQuery) return { type: "clear-search" };

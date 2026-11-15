@@ -5,6 +5,7 @@ import {
   hasOnlyShortcutModifier,
   hasShortcutModifier,
   isApplePlatform,
+  isNewItemShortcut,
   menuDigitIndex,
   shortcutParts,
 } from "./keyboard-shortcuts";
@@ -112,5 +113,24 @@ describe("menuDigitIndex", () => {
       key({ key: "0", code: "Digit0" }), key({ key: "a", code: "KeyA" }),
       key({ ctrlKey: true }), key({ altKey: true }), key({ metaKey: true }), key({ isComposing: true }),
     ]) expect(menuDigitIndex(event)).toBeNull();
+  });
+});
+
+describe("isNewItemShortcut", () => {
+  const key = (overrides: Partial<Parameters<typeof isNewItemShortcut>[0]>): Parameters<typeof isNewItemShortcut>[0] => ({
+    key: "n", altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, isComposing: false, ...overrides,
+  });
+
+  it("matches the platform modifier with N in either case", () => {
+    expect(isNewItemShortcut(key({ ctrlKey: true }), "Linux x86_64")).toBe(true);
+    expect(isNewItemShortcut(key({ key: "N", ctrlKey: true }), "Win32")).toBe(true);
+    expect(isNewItemShortcut(key({ metaKey: true }), "MacIntel")).toBe(true);
+  });
+
+  it("ignores the other platform's modifier, extra modifiers, other keys, and composition", () => {
+    for (const event of [
+      key({ metaKey: true }), key({}), key({ ctrlKey: true, shiftKey: true }), key({ ctrlKey: true, altKey: true }),
+      key({ key: "m", ctrlKey: true }), key({ ctrlKey: true, isComposing: true }),
+    ]) expect(isNewItemShortcut(event, "Linux x86_64")).toBe(false);
   });
 });

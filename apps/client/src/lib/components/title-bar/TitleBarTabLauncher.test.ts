@@ -112,6 +112,15 @@ function surface(): HTMLElement {
   return element;
 }
 
+/** The breadcrumb's last segment, the place the launcher shows. */
+function place(): string | null | undefined {
+  return surface().querySelector("[aria-current=location]")?.textContent;
+}
+
+function highlighted(): string | null | undefined {
+  return surface().querySelector("[data-highlighted]")?.textContent?.trim();
+}
+
 function search(): HTMLInputElement {
   const input = surface().querySelector<HTMLInputElement>("input[type=search]");
   if (!input) throw new Error("Expected the launcher search");
@@ -144,7 +153,7 @@ describe("Tab launcher", () => {
     await vi.waitFor(() => expect(document.activeElement).toBe(search()));
     press(search(), "Enter");
     await tick();
-    expect(surface().textContent).toContain("Chat / Work");
+    expect(place()).toBe("Work");
     expect(tabs.openKind).not.toHaveBeenCalled();
   });
 
@@ -155,7 +164,7 @@ describe("Tab launcher", () => {
     expect(surface().textContent).toContain("Garden");
     press(search(), "1");
     await tick();
-    expect(surface().textContent).toContain("Chat / Work");
+    expect(place()).toBe("Work");
     press(search(), "1");
     await tick();
     expect(surface().textContent).toContain("Open project");
@@ -203,12 +212,24 @@ describe("Tab launcher", () => {
     await tick();
     press(search(), "1");
     await tick();
-    expect(surface().textContent).toContain("Notes / Work / Report");
+    expect(place()).toBe("Report");
   }
+
+  it("leads an empty Notes project with its create actions instead of an open project row", async () => {
+    await openEmptyNotesProject();
+    expect(surface().textContent).not.toContain("Open project");
+    expect(highlighted()).toBe("New note");
+    expect(button("New note").getAttribute("aria-keyshortcuts")).toBe("Control+N Meta+N");
+    press(search(), "ArrowUp");
+    await tick();
+    expect(highlighted()).toBe("New folder");
+    press(search(), "Enter");
+    await tick();
+    expect(surface().querySelector("input:not([type=search])")).not.toBeNull();
+  });
 
   it("creates a note from an empty Notes project and opens it in a new tab", async () => {
     await openEmptyNotesProject();
-    expect(surface().textContent).toContain("New folder");
     button("New note").click();
     await vi.waitFor(() => expect(tabs.openLocation).toHaveBeenCalled());
     expect(notes.createPageInBackground).toHaveBeenCalledWith("", null, { projectId: "report", folderId: null });
@@ -216,24 +237,84 @@ describe("Tab launcher", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it("creates a note with the new note shortcut on a pages level only", async () => {
-    press(surface(), "2");
-    await tick();
-    press(search(), "n", { ctrlKey: true });
-    await tick();
-    expect(notes.createPageInBackground).not.toHaveBeenCalled();
-    press(search(), "Escape");
-    await tick();
+  it("creates a note with the new item shortcut on a pages level and keeps it from global shortcuts", async () => {
+    const outside = vi.fn();
+    window.addEventListener("keydown", outside);
     await openEmptyNotesProject();
     press(search(), "n", { ctrlKey: true });
     await vi.waitFor(() => expect(tabs.openLocation).toHaveBeenCalled());
     expect(notes.createPageInBackground).toHaveBeenCalledTimes(1);
+    expect(outside).not.toHaveBeenCalled();
+    window.removeEventListener("keydown", outside);
+  });
+
+  it("opens the project form with the new item shortcut on a projects level, even while searching", async () => {
+    press(surface(), "n", { ctrlKey: true });
+    await tick();
+    expect(surface().querySelector("input[type=search]")).toBeNull();
+    press(surface(), "2");
+    await tick();
+    const input = search();
+    input.value = "rep";
+    input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    await tick();
+    expect(surface().textContent).not.toContain("New project");
+    press(input, "n", { ctrlKey: true });
+    await tick();
+    expect(search().value).toBe("");
+    const nameField = surface().querySelector<HTMLInputElement>("input:not([type=search])");
+    expect(nameField?.placeholder).toBe("Project name");
+  });
+
+  it("puts the create actions after the list in the arrow cycle without numbers", async () => {
+    press(surface(), "2");
+    await tick();
+    expect(highlighted()).toContain("Work");
+    expect(button("New group").getAttribute("aria-keyshortcuts")).toBeNull();
+    expect(button("New project").getAttribute("aria-keyshortcuts")).toBe("Control+N Meta+N");
+    press(search(), "End");
+    await tick();
+    expect(highlighted()).toBe("New project");
+    press(search(), "ArrowUp");
+    await tick();
+    expect(highlighted()).toBe("New group");
+    press(search(), "ArrowDown");
+    press(search(), "ArrowDown");
+    await tick();
+    expect(highlighted()).toContain("Work");
+    press(search(), "4");
+    expect(surface().querySelector("input:not([type=search])")).toBeNull();
+  });
+
+  it("leads an empty Chat project with New channel instead of an open project row", async () => {
+    press(surface(), "4");
+    await tick();
+    press(search(), "3");
+    await tick();
+    expect(place()).toBe("Garden");
+    expect(surface().textContent).not.toContain("Open project");
+    expect(highlighted()).toBe("New channel");
+  });
+
+  it("asks for a new channel with the new item shortcut on a channels level", async () => {
+    const requested = vi.fn();
+    paneEvents.addEventListener("ganbaru:chat-new-channel", requested);
+    press(surface(), "4");
+    await tick();
+    press(search(), "1");
+    await tick();
+    press(search(), "1");
+    await tick();
+    press(search(), "n", { metaKey: true, ctrlKey: true });
+    press(search(), "n", { ctrlKey: true });
+    await vi.waitFor(() => expect(requested).toHaveBeenCalledTimes(1));
+    paneEvents.removeEventListener("ganbaru:chat-new-channel", requested);
   });
 
   it("highlights a new group in the list", async () => {
     press(surface(), "2");
     await tick();
-    button("Group").click();
+    button("New group").click();
     await tick();
     const input = surface().querySelector<HTMLInputElement>("input:not([type=search])");
     if (!input) throw new Error("Expected the group name field");
@@ -248,7 +329,7 @@ describe("Tab launcher", () => {
   it("cancels an open create form on Escape before going back a level", async () => {
     press(surface(), "2");
     await tick();
-    button("Group").click();
+    button("New group").click();
     await tick();
     const input = surface().querySelector<HTMLInputElement>("input:not([type=search])");
     if (!input) throw new Error("Expected the group name field");

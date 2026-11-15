@@ -2,6 +2,7 @@
   import { onMount, tick, untrack } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
   import Archive from "@lucide/svelte/icons/archive";
+  import BriefcasePlus from "@lucide/svelte/icons/briefcase-plus";
   import Check from "@lucide/svelte/icons/check";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
@@ -12,6 +13,7 @@
   import Folder from "@lucide/svelte/icons/folder";
   import FolderPlus from "@lucide/svelte/icons/folder-plus";
   import Hash from "@lucide/svelte/icons/hash";
+  import LayersPlus from "@lucide/svelte/icons/layers-plus";
   import Plus from "@lucide/svelte/icons/plus";
   import Search from "@lucide/svelte/icons/search";
   import SquarePen from "@lucide/svelte/icons/square-pen";
@@ -67,7 +69,10 @@
     tabLauncherLevel,
     tabLauncherProjectRows,
     tabLauncherRowNumbers,
+    tabLauncherCreateKinds,
+    type TabLauncherCreateKind,
     type TabLauncherPagesParent,
+    type TabLauncherRowShape,
     type TabLauncherStep,
   } from "$lib/workspace-tabs/launcher";
   import type { WorkspaceTab } from "$lib/workspace-tabs/model";
@@ -94,7 +99,8 @@
     | { type: "project"; kind: View; projectId: string }
     | { type: "page"; projectId: string; pageId: string };
 
-  type LauncherRow = { key: string; numbered: boolean; canDrill: boolean } & (
+  type LauncherRow = TabLauncherRowShape & { key: string } & (
+    | { type: "create"; kind: TabLauncherCreateKind }
     | { type: "kind"; kind: View }
     | { type: "tab"; tab: WorkspaceTab }
     | { type: "here"; target: HereTarget; label: string }
@@ -132,7 +138,7 @@
   const HEADER_BUTTON_CLASS =
     "flex size-6 shrink-0 items-center justify-center rounded text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground";
   const FOOTER_BUTTON_CLASS =
-    "flex min-h-8 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-floating-item px-1 text-popover-foreground transition-colors hover:bg-accent hover:text-accent-foreground";
+    "flex min-h-8 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-floating-item px-1 text-popover-foreground transition-colors hover:bg-accent hover:text-accent-foreground data-highlighted:bg-accent data-highlighted:text-accent-foreground";
 
   const tabs = getWorkspaceTabs();
   const projects = useProjects();
@@ -171,7 +177,18 @@
   const searchable = $derived(!atKinds);
   const digitsPick = $derived(tabLauncherDigitsPick(query, searchable));
   const entries = $derived(buildEntries());
-  const rows = $derived(entries.flatMap((entry) => (entry.type === "row" ? [entry.row] : [])));
+  /** The project pickers hide their create buttons while searching; the Notes and Chat pickers keep theirs. */
+  const footerShown = $derived(level.type === "channels" || level.type === "pages" || (level.type === "projects" && !query.trim()));
+  /** The footer's create actions, which stand in for its buttons while no create form is open. */
+  const createRows = $derived<LauncherRow[]>(
+    footerShown && creator === null
+      ? tabLauncherCreateKinds(level).map(({ kind, primary }) => ({
+        type: "create", key: `create:${kind}`, numbered: false, canDrill: false, create: { primary }, kind,
+      }))
+      : [],
+  );
+  /** The listed rows, then the footer's create actions, so the arrows reach those last. */
+  const rows = $derived([...entries.flatMap((entry) => (entry.type === "row" ? [entry.row] : [])), ...createRows]);
   const rowNumbers = $derived(tabLauncherRowNumbers(rows, digitsPick));
   const highlight = $derived(tabLauncherHighlightIndex(rows, highlightKey, query));
   const levelDrills = $derived(rows.some((value) => value.canDrill));
@@ -183,8 +200,6 @@
         ? t("notes.searchPlaceholder")
         : t("calendar.eventPanel.searchProjects"),
   );
-  /** The project pickers hide their create buttons while searching; the Notes and Chat pickers keep theirs. */
-  const footerShown = $derived(level.type === "channels" || level.type === "pages" || (level.type === "projects" && !query.trim()));
   const projectDraftError = $derived.by(() => {
     if (creator?.type !== "project") return null;
     const taken = isProjectNameTaken(projects.projects, creator.groupId, projectDraft)
@@ -278,11 +293,9 @@
 
   function channelEntries(projectId: string): LauncherEntry[] {
     const list: LauncherEntry[] = [];
-    const here = hereEntry({ type: "project", kind: "chat", projectId }, t("titleBar.tab.launcherOpenProject"));
-    if (here) list.push(here);
     const status = statusEntries();
-    if (status) return [...list, ...status];
-    if (!chat.loaded) return [...list, { type: "loading", key: "loading" }];
+    if (status) return status;
+    if (!chat.loaded) return [{ type: "loading", key: "loading" }];
     const normalizedQuery = normalizeChatChannelSearch(query);
     const showArchived = chat.showArchivedChannelsInPickers;
     const { active, archived } = chatChannelPickerRows(
@@ -299,18 +312,21 @@
     }
     if (active.length + archived.length === 0) {
       list.push({ type: "status", key: "status:empty", text: normalizedQuery ? t("chat.channels.noResults") : t("chat.channels.empty") });
+      return list;
     }
-    return list;
+    // An empty project offers its create actions instead, since opening it shows nothing the list does not.
+    const here = hereEntry({ type: "project", kind: "chat", projectId }, t("titleBar.tab.launcherOpenProject"));
+    return here ? [here, ...list] : list;
   }
 
   function pageEntries(projectId: string, parent: TabLauncherPagesParent): LauncherEntry[] {
     const list: LauncherEntry[] = [];
-    const here = parent.kind === "root"
-      ? hereEntry({ type: "project", kind: "notes", projectId }, t("titleBar.tab.launcherOpenProject"))
-      : parent.kind === "page"
-        ? hereEntry({ type: "page", projectId, pageId: parent.id }, t("titleBar.tab.launcherOpenPage"))
-        : null;
-    if (here) list.push(here);
+    // A note opens from inside its own children, which the list never shows. A project opens only from a level that
+    // lists something, so an empty one leads with its create actions; a folder has nothing of its own to open.
+    const pageHere = parent.kind === "page"
+      ? hereEntry({ type: "page", projectId, pageId: parent.id }, t("titleBar.tab.launcherOpenPage"))
+      : null;
+    if (pageHere) list.push(pageHere);
     const status = statusEntries();
     if (status) return [...list, ...status];
     if (!notes.loaded) return [...list, { type: "loading", key: "loading" }];
@@ -352,7 +368,12 @@
       list.push(row({ type: "archived-page", key: `archived-${node.key}`, numbered: true, canDrill: false, projectId, page: node.page, title }));
       listed += 1;
     }
-    if (listed > 0) return list;
+    if (listed > 0) {
+      const projectHere = parent.kind === "root"
+        ? hereEntry({ type: "project", kind: "notes", projectId }, t("titleBar.tab.launcherOpenProject"))
+        : null;
+      return projectHere ? [projectHere, ...list] : list;
+    }
     if (parent.kind === "page" && loadingChildPageIds.has(parent.id)) return [...list, { type: "loading", key: "loading" }];
     list.push({ type: "status", key: "status:empty", text: normalizedQuery ? t("notes.noSearchResults") : t("notes.noPages") });
     return list;
@@ -372,6 +393,17 @@
       case "archived-page":
         return value.title;
       case "folder": return value.folder.name;
+      case "create": return createLabel(value.kind);
+    }
+  }
+
+  function createLabel(kind: TabLauncherCreateKind): string {
+    switch (kind) {
+      case "group": return t("calendar.eventPanel.newGroup");
+      case "project": return t("calendar.eventPanel.newProject");
+      case "folder": return t("notes.newFolder");
+      case "page": return t("notes.newPage");
+      case "channel": return t("chat.channels.createTitle");
     }
   }
 
@@ -464,6 +496,9 @@
         return;
       case "folder":
         void enter({ type: "folder", folderId: value.folder.id, label: value.folder.name });
+        return;
+      case "create":
+        runCreate(value.kind);
         return;
     }
   }
@@ -616,9 +651,34 @@
     }, (error) => notesFailure(error, t("projects.navigator.projectCreateFailed")));
   }
 
-  /** What the shortcut modifier with N creates on this level, the way it makes a new note in the Notes view. */
+  /** Run one of the footer's create actions: a folder, group, or project opens its form, and a note or channel opens in a new tab. */
+  function runCreate(kind: TabLauncherCreateKind): void {
+    switch (kind) {
+      case "group":
+        openCreator({ type: "group" });
+        return;
+      case "project":
+        openCreator({ type: "project", groupId: level.type === "projects" ? level.groupId : null });
+        return;
+      case "folder":
+        openCreator({ type: "folder" });
+        return;
+      case "page":
+        void createPage();
+        return;
+      case "channel":
+        void createChannel();
+        return;
+    }
+  }
+
+  /** Run the level's primary create action for the new item shortcut, even while a search hides the footer. */
   function createFromShortcut(): void {
-    if (level.type === "pages") void createPage();
+    const primary = tabLauncherCreateKinds(level).find((candidate) => candidate.primary);
+    if (!primary || creator?.type === primary.kind) return;
+    if (primary.kind === "project") query = "";
+    highlightKey = null;
+    runCreate(primary.kind);
   }
 
   function loadPageChildren(pageId: string): void {
@@ -658,7 +718,7 @@
       rows,
       highlight,
       caretAtEnd: caretAtEnd(),
-      createShortcut: level.type === "pages",
+      createShortcut: !atKinds,
     });
     if (!action) return;
     event.preventDefault();
@@ -736,6 +796,20 @@
   </button>
 {/snippet}
 
+{#snippet createIcon(kind: TabLauncherCreateKind)}
+  {#if kind === "group"}
+    <LayersPlus size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} class="shrink-0" aria-hidden="true" />
+  {:else if kind === "project"}
+    <BriefcasePlus size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} class="shrink-0" aria-hidden="true" />
+  {:else if kind === "folder"}
+    <FolderPlus size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} class="shrink-0" aria-hidden="true" />
+  {:else if kind === "page"}
+    <SquarePen size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} class="shrink-0" aria-hidden="true" />
+  {:else}
+    <Plus size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} class="shrink-0" aria-hidden="true" />
+  {/if}
+{/snippet}
+
 {#snippet archivedMarker(label: string)}
   <span role="img" class="shrink-0 text-popover-foreground/60" aria-label={label}>
     <Archive size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
@@ -759,15 +833,22 @@
       <div class="flex min-w-0 items-center gap-1">
         <button
           type="button"
-          class="flex size-6 shrink-0 items-center justify-center rounded-md text-popover-foreground/70 hover:bg-accent hover:text-popover-foreground"
+          class="flex size-(--panel-row-height) shrink-0 items-center justify-center rounded-floating-item text-popover-foreground hover:bg-accent hover:text-accent-foreground"
           aria-label={t("common.back")}
           title={t("common.back")}
           onclick={() => void back()}
         >
           <ChevronLeft size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
         </button>
-        <nav class="min-w-0 flex-1 truncate text-panel-detail text-muted-foreground" aria-label={t("titleBar.tab.launcherPath")}>
-          {breadcrumb}
+        <nav class="min-w-0 flex-1 truncate text-popover-foreground" aria-label={t("titleBar.tab.launcherPath")}>
+          {#each path as step, index (index)}
+            {#if index > 0}<span class="px-1 text-muted-foreground" aria-hidden="true">/</span>{/if}
+            {#if index === path.length - 1}
+              <span class="font-medium" aria-current="location">{step.label}</span>
+            {:else}
+              <span>{step.label}</span>
+            {/if}
+          {/each}
         </nav>
       </div>
       <div class="field flex items-center gap-1.5 py-0 pl-2 pr-1">
@@ -891,6 +972,8 @@
               <Hash size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} class="shrink-0" />
             {:else if item.type === "folder"}
               <Folder size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} class="shrink-0" />
+            {:else if item.type === "create"}
+              {@render createIcon(item.kind)}
             {:else if item.page.icon}
               <NotesPageIcon icon={item.page.icon} size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} emojiScale={NOTES_PAGE_CHROME_EMOJI_SCALE} class="shrink-0" />
             {:else}
@@ -942,95 +1025,57 @@
   {#if footerShown}
     <div bind:this={footer} class="relative z-10 shrink-0 bg-popover p-1.5">
       <div class="pointer-events-none absolute left-1.5 right-1.5 top-0 border-t border-border/70"></div>
-      {#if level.type === "pages"}
-        {#if creator?.type === "folder"}
-          <form class="flex gap-1" onsubmit={(event) => { event.preventDefault(); void submitFolder(); }}>
-            <input
-              bind:this={folderInput}
-              bind:value={folderDraft}
-              placeholder={t("notes.defaultFolderName")}
-              aria-label={t("notes.newFolder")}
-              class="field min-w-0 flex-1 text-popover-foreground"
-            />
-            <button type="submit" class="min-h-8 rounded-floating-item bg-primary px-2 text-panel-detail font-medium text-primary-foreground">
-              {t("common.save")}
-            </button>
-          </form>
-        {:else}
-          <div class="flex min-h-8 items-center">
-            {#if level.parent.kind !== "page"}
-              <button type="button" class={FOOTER_BUTTON_CLASS} onclick={() => openCreator({ type: "folder" })}>
-                <FolderPlus size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
-                <span class="truncate">{t("notes.newFolder")}</span>
-              </button>
-              <div class="mx-1 h-5 border-l border-border/70" aria-hidden="true"></div>
-            {/if}
-            <button
-              type="button"
-              class={FOOTER_BUTTON_CLASS}
-              aria-keyshortcuts="Control+N Meta+N"
-              onclick={() => void createPage()}
-            >
-              <SquarePen size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
-              <span class="truncate">{t("notes.newPage")}</span>
-            </button>
-          </div>
-        {/if}
-      {:else if level.type === "channels"}
-        <button type="button" class="menu-item justify-center gap-1.5 text-popover-foreground" onclick={() => void createChannel()}>
-          <Plus size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
-          <span>{t("chat.channels.createTitle")}</span>
-        </button>
-      {:else if level.type === "projects"}
-        {@const groupId = level.groupId}
-        {#if creator?.type === "group"}
-          <ProjectNameDraftForm
-            bind:name={groupDraft}
-            bind:icon={groupIcon}
-            placeholder={t("projects.navigator.groupNamePlaceholder")}
-            iconStrokeWidth={ICON_STROKE_WIDTH}
-            onSubmit={() => void submitGroup()}
-            onCancel={closeCreator}
+      {#if creator?.type === "folder"}
+        <form class="flex gap-1" onsubmit={(event) => { event.preventDefault(); void submitFolder(); }}>
+          <input
+            bind:this={folderInput}
+            bind:value={folderDraft}
+            placeholder={t("notes.defaultFolderName")}
+            aria-label={t("notes.newFolder")}
+            class="field min-w-0 flex-1 text-popover-foreground"
           />
-        {:else if creator?.type === "project"}
-          <ProjectNameDraftForm
-            bind:name={projectDraft}
-            bind:icon={projectIcon}
-            placeholder={t("projects.navigator.projectNamePlaceholder")}
-            error={projectDraftError}
-            iconStrokeWidth={ICON_STROKE_WIDTH}
-            onSubmit={() => void submitProject()}
-            onCancel={closeCreator}
-          />
-        {:else if groupId === null}
-          <div class="grid grid-cols-2 gap-1">
-            <button
-              type="button"
-              class="menu-item min-w-0 justify-center"
-              aria-label={t("calendar.eventPanel.createGroup")}
-              title={t("calendar.eventPanel.createGroup")}
-              onclick={() => openCreator({ type: "group" })}
-            >
-              <Plus size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} class="shrink-0" aria-hidden="true" />
-              <span class="truncate">{t("calendar.eventPanel.createGroupShort")}</span>
-            </button>
-            <button
-              type="button"
-              class="menu-item min-w-0 justify-center"
-              aria-label={t("calendar.eventPanel.createProject")}
-              title={t("calendar.eventPanel.createProject")}
-              onclick={() => openCreator({ type: "project", groupId: null })}
-            >
-              <Plus size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} class="shrink-0" aria-hidden="true" />
-              <span class="truncate">{t("calendar.eventPanel.createProjectShort")}</span>
-            </button>
-          </div>
-        {:else}
-          <button type="button" class="menu-item justify-center" onclick={() => openCreator({ type: "project", groupId })}>
-            <Plus size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
-            <span>{t("calendar.eventPanel.createProject")}</span>
+          <button type="submit" class="min-h-8 rounded-floating-item bg-primary px-2 text-panel-detail font-medium text-primary-foreground">
+            {t("common.save")}
           </button>
-        {/if}
+        </form>
+      {:else if creator?.type === "group"}
+        <ProjectNameDraftForm
+          bind:name={groupDraft}
+          bind:icon={groupIcon}
+          placeholder={t("projects.navigator.groupNamePlaceholder")}
+          iconStrokeWidth={ICON_STROKE_WIDTH}
+          onSubmit={() => void submitGroup()}
+          onCancel={closeCreator}
+        />
+      {:else if creator?.type === "project"}
+        <ProjectNameDraftForm
+          bind:name={projectDraft}
+          bind:icon={projectIcon}
+          placeholder={t("projects.navigator.projectNamePlaceholder")}
+          error={projectDraftError}
+          iconStrokeWidth={ICON_STROKE_WIDTH}
+          onSubmit={() => void submitProject()}
+          onCancel={closeCreator}
+        />
+      {:else}
+        <div class="flex min-h-8 items-center">
+          {#each createRows as item, position (item.key)}
+            {@const index = rows.indexOf(item)}
+            {#if position > 0}<div class="mx-1 h-5 border-l border-border/70" aria-hidden="true"></div>{/if}
+            <button
+              type="button"
+              id={rowId(index)}
+              class={FOOTER_BUTTON_CLASS}
+              aria-keyshortcuts={item.create?.primary ? "Control+N Meta+N" : undefined}
+              data-highlighted={index === highlight || undefined}
+              onpointermove={() => (highlightKey = item.key)}
+              onclick={() => pick(item)}
+            >
+              {#if item.type === "create"}{@render createIcon(item.kind)}{/if}
+              <span class="truncate">{rowLabel(item)}</span>
+            </button>
+          {/each}
+        </div>
       {/if}
     </div>
   {/if}

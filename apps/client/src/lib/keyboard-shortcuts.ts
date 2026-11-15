@@ -102,3 +102,14 @@ export function menuDigitIndex(
   const digit = /^[1-9]$/.test(event.key) ? event.key : /^(?:Digit|Numpad)([1-9])$/.exec(event.code)?.[1];
   return digit ? Number(digit) - 1 : null;
 }
+
+/**
+ * Whether a key is the new item shortcut, the platform modifier with N, which runs a surface's primary create action.
+ * A key in an active composition never matches.
+ */
+export function isNewItemShortcut(
+  event: KeyboardModifierState & Pick<KeyboardEvent, "key" | "isComposing">,
+  platform: string = currentPlatform(),
+): boolean {
+  return !event.isComposing && event.key.toLowerCase() === "n" && hasOnlyShortcutModifier(event, {}, platform);
+}

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildProjectLists } from "$lib/projects/lists";
 import type { ProjectGroup } from "$lib/projects/types";
 import {
+  tabLauncherCreateKinds,
   tabLauncherDigitsPick,
   tabLauncherHighlightIndex,
   tabLauncherKeyAction,
@@ -27,6 +28,8 @@ function key(key: string, overrides: Partial<TabLauncherKeyInput> = {}): TabLaun
 const here: TabLauncherRowShape & { key: string } = { key: "here", numbered: false, canDrill: false };
 const page: TabLauncherRowShape & { key: string } = { key: "page:a", numbered: true, canDrill: true };
 const leaf: TabLauncherRowShape & { key: string } = { key: "page:b", numbered: true, canDrill: false };
+const newFolder: TabLauncherRowShape & { key: string } = { key: "create:folder", numbered: false, canDrill: false, create: { primary: false } };
+const newNote: TabLauncherRowShape & { key: string } = { key: "create:page", numbered: false, canDrill: false, create: { primary: true } };
 
 function context(overrides: Partial<TabLauncherKeyContext> = {}): TabLauncherKeyContext {
   return { query: "", searchable: true, atKinds: false, rows: [here, page, leaf], highlight: 0, caretAtEnd: true, ...overrides };
@@ -104,6 +107,28 @@ describe("tabLauncherProjectRows", () => {
   });
 });
 
+describe("tabLauncherCreateKinds", () => {
+  it("offers a group and a project at the top of a projects level, and only a project inside a group", () => {
+    expect(tabLauncherCreateKinds({ type: "projects", kind: "notes", groupId: null }))
+      .toEqual([{ kind: "group", primary: false }, { kind: "project", primary: true }]);
+    expect(tabLauncherCreateKinds({ type: "projects", kind: "chat", groupId: "work" })).toEqual([{ kind: "project", primary: true }]);
+  });
+
+  it("offers a folder and a note outside a note, and only a note under one", () => {
+    expect(tabLauncherCreateKinds({ type: "pages", projectId: "report", parent: { kind: "root" } }))
+      .toEqual([{ kind: "folder", primary: false }, { kind: "page", primary: true }]);
+    expect(tabLauncherCreateKinds({ type: "pages", projectId: "report", parent: { kind: "folder", id: "drafts" } }))
+      .toEqual([{ kind: "folder", primary: false }, { kind: "page", primary: true }]);
+    expect(tabLauncherCreateKinds({ type: "pages", projectId: "report", parent: { kind: "page", id: "intro" } }))
+      .toEqual([{ kind: "page", primary: true }]);
+  });
+
+  it("offers a channel on a channels level and nothing on the kinds", () => {
+    expect(tabLauncherCreateKinds({ type: "channels", projectId: "report" })).toEqual([{ kind: "channel", primary: true }]);
+    expect(tabLauncherCreateKinds({ type: "kinds" })).toEqual([]);
+  });
+});
+
 describe("tabLauncherRowNumbers", () => {
   it("numbers only numbered rows, from 1 up to 9", () => {
     const rows = [here, ...Array.from({ length: 10 }, () => leaf)];
@@ -115,6 +140,10 @@ describe("tabLauncherRowNumbers", () => {
     expect(tabLauncherDigitsPick("re", false)).toBe(true);
     expect(tabLauncherDigitsPick("", true)).toBe(true);
     expect(tabLauncherRowNumbers([here, page], false)).toEqual([null, null]);
+  });
+
+  it("never numbers create actions", () => {
+    expect(tabLauncherRowNumbers([page, newFolder, newNote], true)).toEqual([1, null, null]);
   });
 });
 
@@ -132,6 +161,13 @@ describe("tabLauncherHighlightIndex", () => {
 
   it("highlights nothing when nothing is listed", () => {
     expect(tabLauncherHighlightIndex([], null, "")).toBe(-1);
+  });
+
+  it("highlights the primary create action of a level that lists nothing else", () => {
+    expect(tabLauncherHighlightIndex([newFolder, newNote], null, "")).toBe(1);
+    expect(tabLauncherHighlightIndex([page, newFolder, newNote], null, "")).toBe(0);
+    expect(tabLauncherHighlightIndex([newFolder], null, "")).toBe(0);
+    expect(tabLauncherHighlightIndex([newFolder, newNote], "create:folder", "")).toBe(0);
   });
 });
 
@@ -204,6 +240,16 @@ describe("tabLauncherKeyAction", () => {
     expect(tabLauncherKeyAction(create, context())).toBeNull();
     expect(tabLauncherKeyAction(key("n"), allowed)).toBeNull();
     expect(tabLauncherKeyAction(key("N", { ctrlKey: true, metaKey: true, shiftKey: true }), allowed)).toBeNull();
+  });
+
+  it("reaches create actions with the arrows, End, and Enter but never with a digit", () => {
+    const rows = [page, leaf, newFolder, newNote];
+    expect(tabLauncherKeyAction(key("ArrowDown"), context({ rows, highlight: 1 }))).toEqual({ type: "highlight", index: 2 });
+    expect(tabLauncherKeyAction(key("ArrowDown"), context({ rows, highlight: 3 }))).toEqual({ type: "highlight", index: 0 });
+    expect(tabLauncherKeyAction(key("End"), context({ rows }))).toEqual({ type: "highlight", index: 3 });
+    expect(tabLauncherKeyAction(key("Enter"), context({ rows, highlight: 2 }))).toEqual({ type: "pick", index: 2 });
+    expect(tabLauncherKeyAction(key("ArrowRight"), context({ rows, highlight: 3 }))).toBeNull();
+    expect(tabLauncherKeyAction(key("3"), context({ rows }))).toBeNull();
   });
 
   it("ignores keys during composition", () => {

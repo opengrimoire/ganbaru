@@ -13,6 +13,7 @@ import {
   MAX_WORKSPACE_TABS,
   MIN_SPLIT_RATIO,
   moveWorkspaceTab,
+  newTabLocation,
   normalizeWorkspaceSplits,
   parseClosedWorkspaceTabs,
   parseWorkspaceTabLocation,
@@ -506,6 +507,18 @@ describe("workspace tab persistence", () => {
 });
 
 describe("workspace tab locations", () => {
+  it("opens a new tab at a reply thread's channel instead of copying the thread tab", () => {
+    const thread: WorkspaceTabLocation = {
+      kind: "chat",
+      projectId: "a",
+      item: { type: "chat-reply-thread", id: "r", channelId: "c" },
+    };
+    expect(newTabLocation(thread)).toEqual({ kind: "chat", projectId: "a", item: { type: "chat-channel", id: "c" } });
+    const channel: WorkspaceTabLocation = { kind: "chat", projectId: "a", item: { type: "chat-channel", id: "c" } };
+    expect(newTabLocation(channel)).toBe(channel);
+    expect(newTabLocation(kindLocation("chat"))).toEqual(kindLocation("chat"));
+  });
+
   it("keeps a reply thread with its channel and rejects one without a valid channel", () => {
     const location = { kind: "chat", projectId: "a", item: { type: "chat-reply-thread", id: "r", channelId: "c" } };
     expect(parseWorkspaceTabLocation(location)).toEqual(location);

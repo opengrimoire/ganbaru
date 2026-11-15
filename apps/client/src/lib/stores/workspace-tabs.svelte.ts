@@ -26,6 +26,7 @@ import {
   kindLocation,
   locationKeepsItem,
   moveWorkspaceTab,
+  newTabLocation,
   parseClosedWorkspaceTabs,
   parseWorkspaceTabsState,
   relativeWorkspaceTabId,
@@ -721,7 +722,7 @@ function openInSplit(id: string): void {
 function newKindTab(kind: View): WorkspaceTab | null {
   const host = connection;
   if (!host || !canAddWorkspaceTab(tabsState)) return null;
-  const tab = createWorkspaceTab(createTabId(), host.adapter.read(kind) ?? kindLocation(kind));
+  const tab = createWorkspaceTab(createTabId(), newTabLocation(host.adapter.read(kind) ?? kindLocation(kind)));
   return { ...tab, ...tabNames(host.adapter, tab) };
 }
 
@@ -763,7 +764,7 @@ function showNeighborOf(id: string): void {
 function openKind(kind: View): void {
   const host = connection;
   if (!host) return;
-  const location = host.adapter.read(kind) ?? kindLocation(kind);
+  const location = newTabLocation(host.adapter.read(kind) ?? kindLocation(kind));
   const tab = createWorkspaceTab(createTabId(), location);
   commitState(insertWorkspaceTab(tabsState, { ...tab, ...tabNames(host.adapter, tab) }, "end"));
 }

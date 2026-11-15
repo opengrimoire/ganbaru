@@ -111,6 +111,16 @@ export function locationKeepsItem(location: WorkspaceTabLocation): boolean {
   return location.item?.type === "chat-reply-thread";
 }
 
+/**
+ * Return where a new tab opens from what a view shows now. A reply thread belongs to the tab that was opened for it, so
+ * a new tab opens at the thread's channel instead of becoming a second copy of that thread tab.
+ */
+export function newTabLocation(location: WorkspaceTabLocation): WorkspaceTabLocation {
+  const item = location.item;
+  if (item?.type !== "chat-reply-thread") return location;
+  return { ...location, item: { type: "chat-channel", id: item.channelId } };
+}
+
 /** Whether a tab at this level and location can be locked: it shows a project or item and is not already kept on it. */
 function lockable(level: WorkspaceTabLevel, location: WorkspaceTabLocation): boolean {
   return level !== "kind" && !locationKeepsItem(location);

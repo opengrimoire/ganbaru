@@ -1088,9 +1088,9 @@
   .chat-timeline-content { width:min(calc(100% - var(--chat-conversation-gutter,1rem) - var(--chat-conversation-gutter,1rem)),var(--chat-conversation-max-width,60rem)); }
   .chat-timeline-scroller { overflow-anchor: none; scrollbar-width: none; }
   .chat-timeline-scroller::-webkit-scrollbar { display: none; width: 0; height: 0; }
-  .chat-timeline-scrollbar { pointer-events: none; position: absolute; right: 0; z-index: 30; width: 8px; contain: strict; opacity: 0; touch-action: none; }
+  .chat-timeline-scrollbar { pointer-events: none; position: absolute; right: 0; z-index: 30; width: var(--app-scrollbar-size); contain: strict; opacity: 0; touch-action: none; }
   .chat-timeline-scrollbar.visible { pointer-events: auto; opacity: 1; }
-  .chat-timeline-scrollbar-thumb { position: absolute; left: 2px; width: 4px; contain: strict; border-radius: 9999px; background-color: var(--app-scrollbar-thumb); cursor: default; will-change: height, transform; }
+  .chat-timeline-scrollbar-thumb { position: absolute; left: 0; width: 100%; box-sizing: border-box; contain: strict; border: 2px solid transparent; border-radius: 9999px; background-color: var(--app-scrollbar-thumb); background-clip: content-box; cursor: default; will-change: height, transform; }
   .chat-timeline-scrollbar-thumb:hover, .chat-timeline-scrollbar-thumb.dragging { background-color: var(--app-scrollbar-thumb-hover); }
   .chat-timeline-row { --chat-participant-gap: 0.75rem; border-radius: 0.4rem; }
   .chat-timeline-row.optimistic { animation: chat-message-in 140ms ease-out; }

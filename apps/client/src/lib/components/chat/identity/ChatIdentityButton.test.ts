@@ -147,7 +147,7 @@ describe("ChatIdentityButton", () => {
     await tick();
     const card = document.body.querySelector<HTMLElement>(".identity-card");
     expect(card?.textContent).toContain("Alice Smith");
-    expect(card?.querySelector(".identity-self")?.textContent).toBe("(You)");
+    expect(card?.querySelector(".identity-name-line strong")?.textContent).toBe("Alice Smith (You)");
     expect(card?.textContent).toContain("Private local identity");
 
     card?.querySelector<HTMLButtonElement>("footer button")?.click();

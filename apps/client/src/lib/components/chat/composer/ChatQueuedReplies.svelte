@@ -3,9 +3,8 @@
   The replies addressed to a thread's work that wait for the run, failed to reach it, or changed
   after it received them, as a compact list attached to the top of the composer. A waiting reply
   can be steered into the current turn now, held back or resumed, reordered, edited in the composer,
-  or removed from the queue; while one is edited, its row offers Save and Discard. A reply that
-  started its own work is only listed while that work can stop: its work already holds its text, so
-  removing it stops that work.
+  or removed from the queue; while one is edited, its row offers Save and Discard. The reply that
+  started the work is not listed: the thread shows it, and Stop working stops it.
 -->
 <script lang="ts">
   import { tick } from "svelte";
@@ -17,13 +16,11 @@
   import Pencil from "@lucide/svelte/icons/pencil";
   import PencilLine from "@lucide/svelte/icons/pencil-line";
   import Play from "@lucide/svelte/icons/play";
-  import Sparkles from "@lucide/svelte/icons/sparkles";
   import Trash from "@lucide/svelte/icons/trash";
   import type { ChatAssignmentInputId } from "$lib/chat/contracts";
   import {
     pendingInputCanSteerNow,
     pendingInputReorderable,
-    pendingInputStartsWork,
     type PendingInputRow,
   } from "$lib/chat/composer/pending-inputs";
   import MoveStepMenuItems from "$lib/components/ui/MoveStepMenuItems.svelte";
@@ -127,7 +124,6 @@
       {@const inputId = row.input.inputId}
       {@const editing = editingInputId === inputId}
       {@const busy = busyInputId === inputId}
-      {@const startsWork = pendingInputStartsWork(row.input)}
       {@const reorderable = pendingInputReorderable(row)}
       {@const held = row.status === "pending" && row.input.held}
       {@const status = editing ? t("chat.composer.pendingInputs.editing") : statusLabel(row)}
@@ -159,14 +155,9 @@
       {:else}
         <li data-input-status={row.status}>
           <span class="queued-copy">
-            <span class="queued-icon" data-app-tooltip={status}>{#if row.status === "failed"}<CircleAlert size={14} />{:else if row.status === "editedAfterDelivery"}<Pencil size={14} />{:else}<Sparkles size={14} />{/if}</span>
+            <span class="queued-icon" data-app-tooltip={status}>{#if row.status === "failed"}<CircleAlert size={14} />{:else}<Pencil size={14} />{/if}</span>
             <span class="queued-preview">{previewText(row)}</span>
           </span>
-          {#if row.status === "pending" && startsWork}
-            <span class="queued-actions">
-              <button type="button" class="queued-icon-action" data-pending-action="cancel" disabled={!idle} aria-label={t("chat.composer.pendingInputs.cancelWork", row.input.preview)} data-app-tooltip={t("chat.composer.pendingInputs.stopWork")} onclick={() => onCancel(row)}><Trash size={14} /></button>
-            </span>
-          {/if}
         </li>
       {/if}
     {/each}

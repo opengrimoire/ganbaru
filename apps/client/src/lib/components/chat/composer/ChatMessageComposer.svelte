@@ -385,9 +385,7 @@
   const providerLimit = $derived(threadComposer
     ? providerLimitNotice(threadAssignment, chat.replyThread?.replies ?? [], interactionState?.rateLimitStatus ?? null)
     : null);
-  // A reply that started work which can no longer be stopped is that work's settled trigger, not a waiting reply.
-  const pendingRows = $derived(pendingInputRows(assignmentInputs)
-    .filter((row) => activeAssignment !== null || !pendingInputStartsWork(row.input)));
+  const pendingRows = $derived(pendingInputRows(assignmentInputs));
   /** The latest structured plan of the running work, while some of its steps are still to do. */
   const taskProgress = $derived.by(() => {
     if (!activeAssignment) return null;
@@ -1203,11 +1201,6 @@
 
   async function cancelInput(row: PendingInputRow): Promise<void> {
     if (inputBusyId || editingInput) return;
-    if (pendingInputStartsWork(row.input)) {
-      await stopAssignment();
-      await refreshAfterInputChange().catch(() => undefined);
-      return;
-    }
     inputBusyId = row.input.inputId;
     error = null;
     try {

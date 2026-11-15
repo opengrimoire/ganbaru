@@ -10,7 +10,8 @@ export interface PendingInputRow {
 }
 
 /**
- * Reads the status a reply shows with, or `null` when it needs no attention: delivered replies the
+ * Reads the status a reply shows with, or `null` when it needs no attention: a waiting reply that
+ * started its own work (the thread already shows it and Stop working stops it), delivered replies the
  * run received as they read now, and replies the run ignored.
  *
  * @param input The reply addressed to the work.
@@ -19,7 +20,7 @@ export interface PendingInputRow {
  */
 export function pendingInputStatus(input: ChatAssignmentInputRead): PendingInputStatus | null {
   switch (input.deliveryState) {
-    case "pending": return "pending";
+    case "pending": return pendingInputStartsWork(input) ? null : "pending";
     case "failed": return "failed";
     case "delivered":
       return input.deliveredRevisionId !== null && input.deliveredRevisionId !== input.currentRevisionId

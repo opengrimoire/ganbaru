@@ -526,21 +526,15 @@ describe("ChatMessageComposer", () => {
       .toEqual(["Then the docs", "Use the staging bucket"]));
   });
 
-  it("stops the work a reply started instead of editing or cancelling the reply", async () => {
-    vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([waitingInput({ routingKind: "follow_up" })]);
-    const cancelInput = vi.spyOn(chatApi, "cancelChatAssignmentInput");
-    const stop = vi.spyOn(chat, "cancelAssignment").mockResolvedValue();
-    const page = workingReplyThread();
-    const root = mountActiveWork(page);
+  it("lists only the replies after the one that started the running work", async () => {
+    vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([
+      waitingInput({ inputId: "input:1", ordinal: 1, routingKind: "follow_up", preview: "Again." }),
+      waitingInput({ inputId: "input:2", ordinal: 2, preview: "Then the docs" }),
+    ]);
+    const root = mountActiveWork();
 
-    await vi.waitFor(() => expect(root.querySelector('[data-pending-action="cancel"]')).not.toBeNull());
-    for (const action of ["more", "steer", "resume-chip"]) {
-      expect(root.querySelector(`[data-pending-action="${action}"]`)).toBeNull();
-    }
-    root.querySelector<HTMLButtonElement>('[data-pending-action="cancel"]')?.click();
-
-    await vi.waitFor(() => expect(stop).toHaveBeenCalledWith(page.assignment?.id));
-    expect(cancelInput).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect([...root.querySelectorAll(".queued-preview")].map((preview) => preview.textContent))
+      .toEqual(["Then the docs"]));
   });
 
   it("explains and rereads a waiting reply that started its own work after the list loaded", async () => {
@@ -557,11 +551,9 @@ describe("ChatMessageComposer", () => {
     expect(inputs.mock.calls.length).toBeGreaterThan(loads);
   });
 
-  it("hides a reply that started work which can no longer stop", async () => {
+  it("shows no queue for the reply that started the running work", async () => {
     vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([waitingInput({ routingKind: "follow_up" })]);
-    const page = workingReplyThread();
-    if (!page.assignment) throw new Error("The fixture holds an assignment");
-    const root = mountActiveWork({ ...page, assignment: { ...page.assignment, state: "cancelled" } });
+    const root = mountActiveWork();
 
     await tick();
     await vi.waitFor(() => expect(chatApi.listChatAssignmentInputs).toHaveBeenCalled());

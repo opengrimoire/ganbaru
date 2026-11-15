@@ -820,12 +820,10 @@ export const chat = {
       steerNow: "Redirigir",
       steerNowTooltip: "Enviar al turno actual ahora",
       remove: "Quitar de la cola",
-      stopWork: "Detener el trabajo que inició esta respuesta",
       resumeReply: (preview: string) => `Reanudar respuesta: ${preview}`,
       steerReply: (preview: string) => `Redirigir el turno actual con la respuesta: ${preview}`,
       moreActions: (preview: string) => `Más acciones para la respuesta: ${preview}`,
       cancelReply: (preview: string) => `Quitar respuesta de la cola: ${preview}`,
-      cancelWork: (preview: string) => `Detener el trabajo que inició esta respuesta: ${preview}`,
     },
   },
   inspector: {

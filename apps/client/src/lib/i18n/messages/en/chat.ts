@@ -817,12 +817,10 @@ export const chat = {
       steerNow: "Steer",
       steerNowTooltip: "Send into the current turn now",
       remove: "Remove from the queue",
-      stopWork: "Stop the work this reply started",
       resumeReply: (preview: string) => `Resume reply: ${preview}`,
       steerReply: (preview: string) => `Steer the current turn with reply: ${preview}`,
       moreActions: (preview: string) => `More actions for reply: ${preview}`,
       cancelReply: (preview: string) => `Remove reply from the queue: ${preview}`,
-      cancelWork: (preview: string) => `Stop the work this reply started: ${preview}`,
     },
   },
   inspector: {

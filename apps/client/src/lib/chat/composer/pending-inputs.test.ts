@@ -48,6 +48,17 @@ describe("pendingInputStatus", () => {
     }))).toBe("editedAfterDelivery");
   });
 
+  it("hides the waiting reply that started its own work but flags it when it fails or changes", () => {
+    expect(pendingInputStatus(input({ routingKind: "follow_up" }))).toBeNull();
+    expect(pendingInputStatus(input({ routingKind: "follow_up", deliveryState: "failed" }))).toBe("failed");
+    expect(pendingInputStatus(input({
+      routingKind: "follow_up",
+      deliveryState: "delivered",
+      deliveredRevisionId: "revision:1",
+      currentRevisionId: "revision:2",
+    }))).toBe("editedAfterDelivery");
+  });
+
   it("hides ignored replies and delivered replies without a recorded revision", () => {
     expect(pendingInputStatus(input({ deliveryState: "ignored" }))).toBeNull();
     expect(pendingInputStatus(input({ deliveryState: "delivered", deliveredRevisionId: null }))).toBeNull();

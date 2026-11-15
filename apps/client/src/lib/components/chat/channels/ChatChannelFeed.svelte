@@ -33,12 +33,15 @@
   let rowObserver: ResizeObserver | null = null;
   const channel = $derived(chat.selectedChannel);
   const destination = $derived(channel ? `channel:${channel.id}` : "channel:none");
+  /** Whether the loaded history belongs to the selected channel; a switch shows no rows until it does. */
+  const messagesReady = $derived(channel !== null && chat.channelMessagesChannelId === channel.id);
+  const messages = $derived(messagesReady ? chat.channelMessages : []);
   const unreadStart = $derived(unreadMessageStartIndex(
-    chat.channelMessages,
+    messages,
     channel?.unreadCount ?? 0,
   ));
   const rows = $derived(buildChannelFeedRows(
-    chat.channelMessages,
+    messages,
     unreadStart,
     channel?.unreadCount ?? 0,
     localization.locale,
@@ -73,7 +76,8 @@
   }
 
   function rememberScrollPosition(): void {
-    if (!feed) return;
+    // A feed waiting for its history scrolls as rows clear, which is not a position the reader chose.
+    if (!feed || restoredDestination !== destination) return;
     followingEnd = organizationalScrollFollowsEnd(feed);
     syncViewport(feed);
     chat.setOrganizationalScrollPosition(destination, feed.scrollTop);
@@ -195,8 +199,11 @@
   $effect(() => {
     const element = feed;
     const key = destination;
+    const ready = messagesReady;
     if (!element) return;
     restoredDestination = null;
+    // The position is restored against the destination's own history, never against rows still loading.
+    if (!ready) return;
     void tick().then(() => {
       if (element !== feed || key !== destination) return;
       element.scrollTop = chat.organizationalScrollPositions[key] ?? element.scrollHeight;
@@ -220,7 +227,7 @@
   });
 
   $effect(() => {
-    chat.channelMessages;
+    messages;
     followNewContentIfAtBottom();
   });
 
@@ -245,7 +252,7 @@
 
   /** Reloads the channel history that failed and rejects when the load fails again. */
   function retryChannelMessages(): Promise<void> {
-    if (chat.channelMessages.length > 0) return chat.loadOlderChannelMessages();
+    if (messages.length > 0) return chat.loadOlderChannelMessages();
     if (!channel) return Promise.reject(new Error("No Chat channel is selected to reload"));
     return chat.loadChannelMessages(channel.id, true);
   }
@@ -257,13 +264,13 @@
     bind:this={feed}
     data-mobile-scroll-fade class="channel-feed"
     role="feed"
-    aria-busy={chat.channelMessagesLoading}
+    aria-busy={chat.channelMessagesLoading || !messagesReady}
     onpointerdown={() => void chat.markSelectedChannelRead()}
     onscroll={rememberScrollPosition}
   >
     <div class="feed-canvas">
       {#if chat.channelMessagesError}<Notice class="feed-error" message={chat.channelMessagesError} onRetry={retryChannelMessages} />{/if}
-      {#if chat.channelPages[0]?.previousCursor}<button type="button" class="load-older" onclick={() => void loadOlderMessages()}>{t("chat.organization.loadOlder")}</button>{/if}
+      {#if messagesReady && chat.channelPages[0]?.previousCursor}<button type="button" class="load-older" onclick={() => void loadOlderMessages()}>{t("chat.organization.loadOlder")}</button>{/if}
       <div
         bind:this={rowList}
         class="feed-rows"
@@ -283,7 +290,7 @@
           </div>
         {/each}
       </div>
-      {#if chat.channelMessagesLoading && chat.channelMessages.length === 0}<Loading layout="fill" />{/if}
+      {#if channel && !chat.channelMessagesError && (!messagesReady || (chat.channelMessagesLoading && messages.length === 0))}<Loading layout="fill" />{/if}
     </div>
   </div>
   {#if channel && !channel.archivedAt}

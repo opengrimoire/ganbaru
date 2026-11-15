@@ -26,6 +26,8 @@ export interface ChatCommunicationControllerOptions {
 export class ChatCommunicationController {
   channelPages = $state<ChatChannelPageRead[]>([]);
   channelMessages = $state<ChatMessageRead[]>([]);
+  /** The channel the loaded messages and pages belong to, so a view never shows one channel's history under another. */
+  channelMessagesChannelId = $state<ChatChannelId | null>(null);
   channelLoading = $state(false);
   channelError = $state<string | null>(null);
   replyThreadPages = $state<ChatReplyThreadPageRead[]>([]);
@@ -55,6 +57,7 @@ export class ChatCommunicationController {
     this.replyThreadCache.clear();
     this.channelPages = [];
     this.channelMessages = [];
+    this.channelMessagesChannelId = null;
     this.channelLoading = false;
     this.channelError = null;
     this.replyThreadPages = [];
@@ -84,17 +87,25 @@ export class ChatCommunicationController {
     if (shouldCache()) this.channelCache.set(channelId, [page]);
   }
 
+  /**
+   * Shows a channel's cached history at once.
+   *
+   * @param channelId - The channel to show.
+   * @returns Whether the cache held the channel; otherwise nothing changes and a load must follow.
+   */
+  showCachedChannel(channelId: ChatChannelId): boolean {
+    const cached = this.channelCache.get(channelId);
+    if (!cached) return false;
+    this.channelLoading = false;
+    this.channelError = null;
+    this.channelPages = cached;
+    this.channelMessages = mergeMessages(cached.flatMap((page) => page.messages));
+    this.channelMessagesChannelId = channelId;
+    return true;
+  }
+
   async loadChannel(channelId: ChatChannelId, force = false): Promise<void> {
-    if (!force) {
-      const cached = this.channelCache.get(channelId);
-      if (cached) {
-        this.channelLoading = false;
-        this.channelError = null;
-        this.channelPages = cached;
-        this.channelMessages = mergeMessages(cached.flatMap((page) => page.messages));
-        return;
-      }
-    }
+    if (!force && this.showCachedChannel(channelId)) return;
     const request = ++this.channelRequest;
     this.channelLoading = true;
     this.channelError = null;
@@ -103,6 +114,7 @@ export class ChatCommunicationController {
       if (!this.isCurrentChannelRequest(request, channelId)) return;
       this.channelPages = [page];
       this.channelMessages = page.messages;
+      this.channelMessagesChannelId = channelId;
       this.channelCache.set(channelId, this.channelPages);
     } catch (error: unknown) {
       if (request !== this.channelRequest) return;
@@ -144,6 +156,7 @@ export class ChatCommunicationController {
       if (!this.isCurrentChannelRequest(request, channelId)) return;
       this.channelPages = [page];
       this.channelMessages = page.messages;
+      this.channelMessagesChannelId = channelId;
     } catch (error: unknown) {
       if (request !== this.channelRequest) return;
       this.channelError = chatErrorMessage(error, translate("chatErrors.actions.loadSearchResult"));

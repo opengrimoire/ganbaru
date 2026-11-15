@@ -360,6 +360,11 @@ export class ChatStore {
     this.communicationController.channelMessages = messages;
   }
 
+  /** The channel the loaded channel history belongs to, which trails the selection while a switch loads. */
+  get channelMessagesChannelId(): ChatChannelId | null {
+    return this.communicationController.channelMessagesChannelId;
+  }
+
   get channelMessagesLoading(): boolean {
     return this.communicationController.channelLoading;
   }
@@ -693,6 +698,8 @@ export class ChatStore {
     this.channelNavigationController.upsert(channel);
     const changedChannel = this.selectedChannelId !== channelId;
     this.selectedChannelId = channelId;
+    // A cached history appears with the channel instead of after the project and folder reads below.
+    if (changedChannel) this.communicationController.showCachedChannel(channelId);
     if (this.owner) saveLastChatChannelId(channel.projectId, channelId);
     this.channelArchiveOpen = false;
     await this.projects.selectProject(channel.projectId);

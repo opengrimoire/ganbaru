@@ -6,7 +6,6 @@
   import Eye from "@lucide/svelte/icons/eye";
   import EyeOff from "@lucide/svelte/icons/eye-off";
   import LayersPlus from "@lucide/svelte/icons/layers-plus";
-  import Plus from "@lucide/svelte/icons/plus";
   import Search from "@lucide/svelte/icons/search";
   import Trash2 from "@lucide/svelte/icons/trash";
   import X from "@lucide/svelte/icons/x";
@@ -1335,8 +1334,8 @@
             )}
             onclick={() => openProjectCreator(mainProjectList.key)}
           >
-            <Plus size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} />
-            <span>{t("calendar.eventPanel.createProject")}</span>
+            <BriefcasePlus size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} class="shrink-0" aria-hidden="true" />
+            <span class="truncate">{t("calendar.eventPanel.newProject")}</span>
           </button>
         {/if}
       {/if}
@@ -1440,8 +1439,8 @@
             void tick().then(updateProjectSubpanelGeometry);
           }}
         >
-          <Plus size={13} strokeWidth={iconStrokeWidth} />
-          <span>{t("calendar.eventPanel.createProject")}</span>
+          <BriefcasePlus size={13} strokeWidth={iconStrokeWidth} class="shrink-0" aria-hidden="true" />
+          <span class="truncate">{t("calendar.eventPanel.newProject")}</span>
         </button>
       {/if}
     </div>

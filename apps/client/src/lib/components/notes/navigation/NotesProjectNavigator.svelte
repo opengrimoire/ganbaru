@@ -6,7 +6,6 @@
   import EyeOff from "@lucide/svelte/icons/eye-off";
   import FileText from "@lucide/svelte/icons/file-text";
   import LayersPlus from "@lucide/svelte/icons/layers-plus";
-  import Plus from "@lucide/svelte/icons/plus";
   import Search from "@lucide/svelte/icons/search";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -1164,8 +1163,8 @@
             class="menu-item justify-center text-popover-foreground"
             onclick={() => openProjectCreator(directProjectList.key)}
           >
-            <Plus size={13} strokeWidth={iconStrokeWidth} />
-            <span>{t("calendar.eventPanel.createProject")}</span>
+            <BriefcasePlus size={13} strokeWidth={iconStrokeWidth} class="shrink-0" aria-hidden="true" />
+            <span class="truncate">{t("calendar.eventPanel.newProject")}</span>
           </button>
         {/if}
       {/if}
@@ -1243,8 +1242,8 @@
             void tick().then(updateProjectSubpanelGeometry);
           }}
         >
-          <Plus size={13} strokeWidth={iconStrokeWidth} />
-          <span>{t("calendar.eventPanel.createProject")}</span>
+          <BriefcasePlus size={13} strokeWidth={iconStrokeWidth} class="shrink-0" aria-hidden="true" />
+          <span class="truncate">{t("calendar.eventPanel.newProject")}</span>
         </button>
       {/if}
     </div>

@@ -552,13 +552,21 @@
     if (bottomPanelOpen) bottomPanelMounted = true;
   });
 
-  let bottomPanelChannelId = untrack(() => chat.selectedChannelId);
-  $effect(() => {
+  let panelChannelId = untrack(() => chat.selectedChannelId);
+  /**
+   * Shows another channel's panel arrangement at once: panel transitions turn off before the DOM applies the new
+   * channel's open state and come back after it is laid out, so neither panel slides open or closed on a switch.
+   */
+  $effect.pre(() => {
     const channelId = chat.selectedChannelId;
-    if (channelId === bottomPanelChannelId) return;
-    bottomPanelChannelId = channelId;
-    // Another channel's bottom panel takes its place at once instead of sliding.
-    bottomPanelSkipCloseTransition = true;
+    if (channelId === panelChannelId) return;
+    panelChannelId = channelId;
+    if (panelTransitionFrame !== null) {
+      window.cancelAnimationFrame(panelTransitionFrame);
+      panelTransitionFrame = null;
+    }
+    panelTransitionsEnabled = false;
+    enablePanelTransitionsAfterLayout();
   });
 
   $effect(() => {
@@ -1212,7 +1220,7 @@
 
   {#if bottomPanelMounted}
     <div class="chat-panel-separator chat-bottom-separator" class:hidden={!bottomPanelVisible} class:active={resizingBottomPanel}><input type="range" min={MIN_BOTTOM_PANEL_HEIGHT} max={bottomPanelResizeMaximum()} step="any" value={bottomPanelHeight} aria-label={t("chat.resizeBottomPanel")} onpointerdown={beginBottomPanelResize} onkeydown={resizeBottomPanelFromKey} ondblclick={(event) => { event.preventDefault(); fitBottomPanelToAvailableSpace(); }} /><span class="chat-panel-separator-line" aria-hidden="true"></span></div>
-    <div class="chat-bottom-transition-shell" class:open={bottomPanelVisible} class:skip-transition={bottomPanelSkipCloseTransition} class:snap-transition={snapTransitioning.bottom} inert={!bottomPanelVisible} style={`--chat-bottom-height:${bottomPanelHeight}px`} in:slide={{ duration: reducedMotion ? 0 : PANEL_TRANSITION_MS, easing: quintOut }}>
+    <div class="chat-bottom-transition-shell" class:open={bottomPanelVisible} class:skip-transition={bottomPanelSkipCloseTransition} class:snap-transition={snapTransitioning.bottom} inert={!bottomPanelVisible} style={`--chat-bottom-height:${bottomPanelHeight}px`} in:slide={{ duration: reducedMotion || !panelTransitionsEnabled ? 0 : PANEL_TRANSITION_MS, easing: quintOut }}>
       <div class="chat-bottom-shell">{#if WorkspacePanel}<WorkspacePanel placement="bottom" visible={bottomPanelVisible} onClose={() => { closeBottomPanel(); }} />{/if}</div>
     </div>
   {/if}

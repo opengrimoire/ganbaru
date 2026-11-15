@@ -49,6 +49,8 @@
   } from "$lib/projects/types";
   import {
     buildProjectLists,
+    normalizeProjectSearch,
+    projectMatchesSearch,
     projectListGroupId,
     projectListKey,
     UNGROUPED_PROJECT_LIST_KEY,
@@ -220,7 +222,7 @@
     if (selectedProject) return projectListKey(selectedProject.groupId);
     return selectedGroupId ? projectListKey(selectedGroupId) : null;
   });
-  const normalizedSearch = $derived(projectSearch.trim().toLowerCase());
+  const normalizedSearch = $derived(normalizeProjectSearch(projectSearch));
   const searchActive = $derived(normalizedSearch.length > 0);
   const groups = $derived.by(() => projects.visibleGroups());
   const visibleGroups = $derived.by(() => groups.filter(groupVisible));
@@ -323,9 +325,7 @@
       ? projects.projectsForGroupIncludingInactive(groupId)
       : projects.projectsForGroup(groupId);
     if (!normalizedSearch) return groupProjects;
-    return groupProjects.filter((project) =>
-      project.name.toLowerCase().includes(normalizedSearch)
-    );
+    return groupProjects.filter((project) => projectMatchesSearch(project, normalizedSearch));
   }
 
   function projectsOfList(list: PickerProjectList): Project[] {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildProjectLists, projectListGroupId, projectListKey, UNGROUPED_PROJECT_LIST_KEY } from "./lists";
+import { buildProjectLists, filterProjectLists, projectListGroupId, projectListKey, projectMatchesSearch, UNGROUPED_PROJECT_LIST_KEY } from "./lists";
 import type { ProjectGroup } from "./types";
 
 function group(id: string): ProjectGroup {
@@ -41,5 +41,32 @@ describe("buildProjectLists", () => {
     expect(buildProjectLists([], projectsFor)).toEqual([
       { key: UNGROUPED_PROJECT_LIST_KEY, group: null, projects: ["loose-a", "loose-b"] },
     ]);
+  });
+});
+
+describe("project search", () => {
+  const named = (name: string) => ({ name });
+
+  it("matches names case-insensitively and treats an empty query as matching everything", () => {
+    expect(projectMatchesSearch(named("Quarterly Report"), "report")).toBe(true);
+    expect(projectMatchesSearch(named("Garden"), "report")).toBe(false);
+    expect(projectMatchesSearch(named("Garden"), "")).toBe(true);
+  });
+
+  it("keeps list and project order and drops lists without a match", () => {
+    const lists = [
+      { key: projectListKey("work"), group: group("work"), projects: [named("Report"), named("Plan"), named("Reports archive")] },
+      { key: projectListKey("home"), group: group("home"), projects: [named("Garden")] },
+      { key: UNGROUPED_PROJECT_LIST_KEY, group: null, projects: [named("Tax report")] },
+    ];
+    expect(filterProjectLists(lists, "  REPORT ")).toEqual([
+      { key: "group:work", group: group("work"), projects: [named("Report"), named("Reports archive")] },
+      { key: "ungrouped", group: null, projects: [named("Tax report")] },
+    ]);
+  });
+
+  it("keeps every list, empty ones included, for a blank query", () => {
+    const lists = [{ key: projectListKey("home"), group: group("home"), projects: [] }];
+    expect(filterProjectLists(lists, "   ")).toEqual(lists);
   });
 });

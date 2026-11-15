@@ -92,10 +92,8 @@
     onClose: () => void;
   } = $props();
 
-  /** What the unnumbered first row of a level opens: a project or a Notes page. */
-  type HereTarget =
-    | { type: "project"; kind: View; projectId: string }
-    | { type: "page"; projectId: string; pageId: string };
+  /** What the unnumbered first row of a level opens: the Notes page whose children it lists. */
+  type HereTarget = { projectId: string; pageId: string };
 
   type LauncherRow = TabLauncherRowShape & { key: string } & (
     | { type: "create"; kind: TabLauncherCreateKind }
@@ -312,17 +310,15 @@
       list.push({ type: "status", key: "status:empty", text: normalizedQuery ? t("chat.channels.noResults") : t("chat.channels.empty") });
       return list;
     }
-    // An empty project offers its create actions instead, since opening it shows nothing the list does not.
-    const here = hereEntry({ type: "project", kind: "chat", projectId }, t("titleBar.tab.launcherOpenProject"));
-    return here ? [here, ...list] : list;
+    return list;
   }
 
   function pageEntries(projectId: string, parent: TabLauncherPagesParent): LauncherEntry[] {
     const list: LauncherEntry[] = [];
-    // A note opens from inside its own children, which the list never shows. A project opens only from a level that
-    // lists something, so an empty one leads with its create actions; a folder has nothing of its own to open.
+    // A note opens from inside its own children, which the list never shows. A project or folder level only lists what
+    // it holds, since picking any of it opens the same project.
     const pageHere = parent.kind === "page"
-      ? hereEntry({ type: "page", projectId, pageId: parent.id }, t("titleBar.tab.launcherOpenPage"))
+      ? hereEntry({ projectId, pageId: parent.id }, t("titleBar.tab.launcherOpenPage"))
       : null;
     if (pageHere) list.push(pageHere);
     const status = statusEntries();
@@ -366,12 +362,7 @@
       list.push(row({ type: "archived-page", key: `archived-${node.key}`, numbered: true, canDrill: false, projectId, page: node.page, title }));
       listed += 1;
     }
-    if (listed > 0) {
-      const projectHere = parent.kind === "root"
-        ? hereEntry({ type: "project", kind: "notes", projectId }, t("titleBar.tab.launcherOpenProject"))
-        : null;
-      return projectHere ? [projectHere, ...list] : list;
-    }
+    if (listed > 0) return list;
     if (parent.kind === "page" && loadingChildPageIds.has(parent.id)) return [...list, { type: "loading", key: "loading" }];
     list.push({ type: "status", key: "status:empty", text: normalizedQuery ? t("notes.noSearchResults") : t("notes.noPages") });
     return list;
@@ -444,14 +435,6 @@
     action();
   }
 
-  function openHere(target: HereTarget): void {
-    if (target.type === "project") {
-      open(() => tabs.openLocation("project", { kind: target.kind, projectId: target.projectId, item: null }));
-    } else {
-      openPage(target.projectId, target.pageId);
-    }
-  }
-
   function openPage(projectId: string, pageId: string): void {
     open(() => tabs.openLocation("item", { kind: "notes", projectId, item: { type: "notes-page", id: pageId } }));
   }
@@ -466,7 +449,7 @@
         open(() => tabs.activate(value.tab.id));
         return;
       case "here":
-        openHere(value.target);
+        openPage(value.target.projectId, value.target.pageId);
         return;
       case "group":
         void enter({ type: "group", groupId: value.group.id, label: value.group.name });

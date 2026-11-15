@@ -167,7 +167,8 @@ describe("Tab launcher", () => {
     expect(place()).toBe("Work");
     press(search(), "1");
     await tick();
-    expect(surface().textContent).toContain("Open project");
+    expect(surface().textContent).toContain("design");
+    expect(surface().textContent).not.toContain("Open project");
     press(search(), "2");
     expect(tabs.openLocation).toHaveBeenCalledWith("item", {
       kind: "chat",

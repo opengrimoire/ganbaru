@@ -1,11 +1,10 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
-  import BriefcasePlus from "@lucide/svelte/icons/briefcase-plus";
+  import Plus from "@lucide/svelte/icons/plus";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Eye from "@lucide/svelte/icons/eye";
   import EyeOff from "@lucide/svelte/icons/eye-off";
   import FileText from "@lucide/svelte/icons/file-text";
-  import LayersPlus from "@lucide/svelte/icons/layers-plus";
   import Search from "@lucide/svelte/icons/search";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -1139,7 +1138,7 @@
         {:else}
           <div class="flex min-h-8 items-center">
             <button type="button" class={FOOTER_CREATE_BUTTON_CLASS} onclick={openGroupCreator}>
-              <LayersPlus size={13} strokeWidth={iconStrokeWidth} class="shrink-0" aria-hidden="true" />
+              <Plus size={13} strokeWidth={iconStrokeWidth} class="shrink-0" aria-hidden="true" />
               <span class="truncate">{t("calendar.eventPanel.newGroup")}</span>
             </button>
             <div class="mx-1 h-5 border-l border-border/70" aria-hidden="true"></div>
@@ -1149,7 +1148,7 @@
               aria-keyshortcuts="Control+N Meta+N"
               onclick={() => openProjectCreator(UNGROUPED_PROJECT_LIST_KEY)}
             >
-              <BriefcasePlus size={13} strokeWidth={iconStrokeWidth} class="shrink-0" aria-hidden="true" />
+              <Plus size={13} strokeWidth={iconStrokeWidth} class="shrink-0" aria-hidden="true" />
               <span class="truncate">{t("calendar.eventPanel.newProject")}</span>
             </button>
           </div>
@@ -1163,7 +1162,7 @@
             class="menu-item justify-center text-popover-foreground"
             onclick={() => openProjectCreator(directProjectList.key)}
           >
-            <BriefcasePlus size={13} strokeWidth={iconStrokeWidth} class="shrink-0" aria-hidden="true" />
+            <Plus size={13} strokeWidth={iconStrokeWidth} class="shrink-0" aria-hidden="true" />
             <span class="truncate">{t("calendar.eventPanel.newProject")}</span>
           </button>
         {/if}
@@ -1242,7 +1241,7 @@
             void tick().then(updateProjectSubpanelGeometry);
           }}
         >
-          <BriefcasePlus size={13} strokeWidth={iconStrokeWidth} class="shrink-0" aria-hidden="true" />
+          <Plus size={13} strokeWidth={iconStrokeWidth} class="shrink-0" aria-hidden="true" />
           <span class="truncate">{t("calendar.eventPanel.newProject")}</span>
         </button>
       {/if}

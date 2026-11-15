@@ -2,7 +2,6 @@
   import { onMount, tick, untrack } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
   import Archive from "@lucide/svelte/icons/archive";
-  import BriefcasePlus from "@lucide/svelte/icons/briefcase-plus";
   import Check from "@lucide/svelte/icons/check";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
@@ -13,7 +12,6 @@
   import Folder from "@lucide/svelte/icons/folder";
   import FolderPlus from "@lucide/svelte/icons/folder-plus";
   import Hash from "@lucide/svelte/icons/hash";
-  import LayersPlus from "@lucide/svelte/icons/layers-plus";
   import Plus from "@lucide/svelte/icons/plus";
   import Search from "@lucide/svelte/icons/search";
   import SquarePen from "@lucide/svelte/icons/square-pen";
@@ -797,11 +795,7 @@
 {/snippet}
 
 {#snippet createIcon(kind: TabLauncherCreateKind)}
-  {#if kind === "group"}
-    <LayersPlus size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} class="shrink-0" aria-hidden="true" />
-  {:else if kind === "project"}
-    <BriefcasePlus size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} class="shrink-0" aria-hidden="true" />
-  {:else if kind === "folder"}
+  {#if kind === "folder"}
     <FolderPlus size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} class="shrink-0" aria-hidden="true" />
   {:else if kind === "page"}
     <SquarePen size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} class="shrink-0" aria-hidden="true" />

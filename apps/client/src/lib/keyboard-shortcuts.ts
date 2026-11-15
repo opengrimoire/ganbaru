@@ -90,3 +90,15 @@ export function appNavigationShortcut(
   if (key === "w") return { type: "close-tab" };
   return null;
 }
+
+/**
+ * Zero-based row a bare digit key picks in a numbered menu, from 1 to 9. The physical key counts too, so layouts that
+ * type digits with Shift still work; any other modifier, or a key in an active composition, picks nothing.
+ */
+export function menuDigitIndex(
+  event: KeyboardModifierState & Pick<KeyboardEvent, "key" | "code" | "isComposing">,
+): number | null {
+  if (event.isComposing || event.ctrlKey || event.altKey || event.metaKey) return null;
+  const digit = /^[1-9]$/.test(event.key) ? event.key : /^(?:Digit|Numpad)([1-9])$/.exec(event.code)?.[1];
+  return digit ? Number(digit) - 1 : null;
+}

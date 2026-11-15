@@ -11,7 +11,6 @@ export const titleBar = {
     closeTab: "Close tab",
     reopenClosedTab: "Reopen",
     launcher: "Open a tab",
-    pressKey: (key: string) => `(press ${key})`,
     openTabs: "Open tabs",
     recentlyClosed: "Recently closed",
     lockTab: "Lock tab",

@@ -14,7 +14,6 @@ export const titleBar = {
     closeTab: "Cerrar pestaña",
     reopenClosedTab: "Reabrir",
     launcher: "Abrir una pestaña",
-    pressKey: (key: string) => `(pulsa ${key})`,
     openTabs: "Pestañas abiertas",
     recentlyClosed: "Cerradas recientemente",
     lockTab: "Bloquear pestaña",

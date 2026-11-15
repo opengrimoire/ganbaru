@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import Check from "@lucide/svelte/icons/check";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { menuDigitIndex } from "$lib/keyboard-shortcuts";
   import { availableAppViews, type View } from "$lib/navigation";
   import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { anchoredPopover } from "$lib/utils/anchored-popover";
@@ -76,14 +77,10 @@
     }
   }
 
-  /**
-   * The kind a digit key opens, numbered from 1 in launcher order. The physical key counts too, so layouts that
-   * type digits with Shift still work.
-   */
+  /** The kind a digit key opens, numbered from 1 in launcher order. */
   function kindForDigit(event: KeyboardEvent): View | null {
-    if (event.ctrlKey || event.altKey || event.metaKey) return null;
-    const digit = /^[1-9]$/.test(event.key) ? event.key : /^(?:Digit|Numpad)([1-9])$/.exec(event.code)?.[1];
-    return digit ? kinds[Number(digit) - 1] ?? null : null;
+    const index = menuDigitIndex(event);
+    return index === null ? null : kinds[index] ?? null;
   }
 
   function openKind(kind: View): void {
@@ -113,7 +110,6 @@
   onkeydown={handleKeydown}
 >
   <div class="surface-floating-body flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden" use:scrollEdgeFadeAction>
-    <p class="menu-label">{t("titleBar.tab.newTab")}</p>
     {#each kinds as kind, index (kind)}
       {@const Icon = workspaceTabKindIcon(kind)}
       {@const key = index < 9 ? String(index + 1) : null}
@@ -125,9 +121,9 @@
         aria-keyshortcuts={key ?? undefined}
         onclick={() => openKind(kind)}
       >
-        <Icon class="text-muted-foreground" />
+        <Icon />
         <span class="min-w-0 truncate">{workspaceTabKindLabel(kind, t)}</span>
-        {#if key}<span class="shrink-0 text-panel-detail text-muted-foreground">{t("titleBar.tab.pressKey", key)}</span>{/if}
+        {#if key}<span class="shrink-0 text-panel-detail text-muted-foreground">{t("common.pressKey", key)}</span>{/if}
       </button>
     {/each}
 
@@ -145,7 +141,7 @@
           data-launcher-item
           onclick={() => activate(tab.id)}
         >
-          <Icon class="text-muted-foreground" />
+          <Icon />
           <span class="min-w-0 flex-1 truncate">{workspaceTabFullLabel(tab, t)}</span>
           {#if active}<Check class="size-3.5 shrink-0" aria-hidden="true" />{/if}
         </button>

@@ -5,6 +5,7 @@ import {
   hasOnlyShortcutModifier,
   hasShortcutModifier,
   isApplePlatform,
+  menuDigitIndex,
   shortcutParts,
 } from "./keyboard-shortcuts";
 
@@ -90,5 +91,26 @@ describe("app navigation shortcuts", () => {
       key({ key: "t", code: "KeyT", altKey: true, ctrlKey: true }),
       key({ key: "b", code: "KeyB", ctrlKey: true }),
     ]) expect(appNavigationShortcut(event)).toBeNull();
+  });
+});
+
+describe("menuDigitIndex", () => {
+  const key = (overrides: Partial<Parameters<typeof menuDigitIndex>[0]>): Parameters<typeof menuDigitIndex>[0] => ({
+    key: "1", code: "Digit1", altKey: false, ctrlKey: false, metaKey: false,
+    shiftKey: false, isComposing: false, ...overrides,
+  });
+
+  it("numbers rows from 1 through 9 by typed or physical digit", () => {
+    expect(menuDigitIndex(key({}))).toBe(0);
+    expect(menuDigitIndex(key({ key: "9", code: "Digit9" }))).toBe(8);
+    expect(menuDigitIndex(key({ key: "&", code: "Digit1", shiftKey: true }))).toBe(0);
+    expect(menuDigitIndex(key({ key: "4", code: "Numpad4" }))).toBe(3);
+  });
+
+  it("ignores zero, letters, modified keys, and composition", () => {
+    for (const event of [
+      key({ key: "0", code: "Digit0" }), key({ key: "a", code: "KeyA" }),
+      key({ ctrlKey: true }), key({ altKey: true }), key({ metaKey: true }), key({ isComposing: true }),
+    ]) expect(menuDigitIndex(event)).toBeNull();
   });
 });

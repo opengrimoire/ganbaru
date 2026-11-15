@@ -1,17 +1,28 @@
 import {
+  CHAT_COMPOSER_MARKS,
   chatComposerDocumentVersioned,
   chatComposerActiveMarks,
   chatComposerMarkdown,
   chatComposerMarksAt,
   chatComposerPlainText,
+  clearChatComposerMarks,
   normalizeChatComposerDocument,
   replaceChatComposerText,
   toggleChatComposerMark,
   type ChatComposerDocument,
+  type ChatComposerLine,
   type ChatComposerMark,
   type ChatComposerSelection,
   type ChatComposerTextRun,
 } from "./rich-text";
+import { chatComposerFormatShortcut, type ChatComposerFormatAction } from "./format-actions";
+import {
+  chatComposerLineBreakEdit,
+  chatComposerLineFormatState,
+  toggleChatComposerLineFormat,
+  type ChatComposerLineFormat,
+  type ChatComposerTextEdit,
+} from "./line-formats";
 import type { ChatMessageReference } from "$lib/chat/contracts";
 import {
   chatReferenceAdjacentToCaret,
@@ -39,6 +50,12 @@ export interface ChatComposerEditorCallbacks {
   onSelectionChange(selection: ChatComposerSelection, activeMarks: ChatComposerMark[]): void;
 }
 
+/** Which formats apply to the current selection, or to the caret and its line. */
+export interface ChatComposerFormatState {
+  marks: ChatComposerMark[];
+  lines: Record<ChatComposerLineFormat, boolean>;
+}
+
 interface EditorSnapshot {
   document: ChatComposerDocument;
   references: ChatMessageReference[];
@@ -53,6 +70,22 @@ interface EditorReferenceRange {
 }
 
 const HISTORY_LIMIT = 100;
+
+const MARK_ELEMENTS: Record<ChatComposerMark, "strong" | "em" | "s" | "code"> = {
+  bold: "strong",
+  italic: "em",
+  strikethrough: "s",
+  code: "code",
+};
+
+const MARK_ELEMENT_ORDER: readonly ChatComposerMark[] = ["code", "strikethrough", "italic", "bold"];
+
+/** Native formatting input types the editor maps to its own marks; others are ignored. */
+const NATIVE_FORMAT_MARKS: Partial<Record<string, ChatComposerMark>> = {
+  formatBold: "bold",
+  formatItalic: "italic",
+  formatStrikeThrough: "strikethrough",
+};
 
 /**
  * Owns every descendant of one Chat contenteditable root.
@@ -143,9 +176,10 @@ export class ChatComposerEditor {
       this.redo();
       return true;
     }
-    if (event.inputType === "formatBold" || event.inputType === "formatItalic") {
+    if (event.inputType.startsWith("format")) {
       event.preventDefault();
-      this.toggleMark(event.inputType === "formatBold" ? "bold" : "italic");
+      const mark = NATIVE_FORMAT_MARKS[event.inputType];
+      if (mark) this.toggleMark(mark);
       return true;
     }
     const selection = this.selection();
@@ -264,17 +298,13 @@ export class ChatComposerEditor {
   /** Handles formatting, history, and soft-break shortcuts before the parent handles sending. */
   public handleKeydown(event: KeyboardEvent): boolean {
     if (this.composing || event.isComposing || event.keyCode === 229) return false;
+    const format = chatComposerFormatShortcut(event);
+    if (format) {
+      event.preventDefault();
+      this.applyFormat(format);
+      return true;
+    }
     const hasCommandModifier = (event.ctrlKey || event.metaKey) && !event.altKey;
-    if (hasCommandModifier && event.key.toLowerCase() === "b") {
-      event.preventDefault();
-      this.toggleMark("bold");
-      return true;
-    }
-    if (hasCommandModifier && event.key.toLowerCase() === "i") {
-      event.preventDefault();
-      this.toggleMark("italic");
-      return true;
-    }
     if (hasCommandModifier && event.key.toLowerCase() === "z") {
       event.preventDefault();
       if (event.shiftKey) this.redo();
@@ -288,10 +318,43 @@ export class ChatComposerEditor {
     }
     if (event.key === "Enter" && event.shiftKey) {
       event.preventDefault();
-      this.replaceSelection("\n");
+      this.insertLineBreak();
       return true;
     }
     return false;
+  }
+
+  /** Returns the marks and line formats the formatting toolbar shows as pressed. */
+  public formatState(): ChatComposerFormatState {
+    const selection = this.selection();
+    return {
+      marks: this.storedMarks ?? chatComposerActiveMarks(this.document, selection),
+      lines: chatComposerLineFormatState(this.plainText(), selection),
+    };
+  }
+
+  /** Applies one toolbar or shortcut formatting action. */
+  public applyFormat(action: ChatComposerFormatAction): void {
+    if (action.kind === "mark") this.toggleMark(action.mark);
+    else this.toggleLineFormat(action.format);
+  }
+
+  /** Toggles a list, quote, or code block on the lines the selection touches, or the caret line. */
+  public toggleLineFormat(format: ChatComposerLineFormat): void {
+    const selection = this.selection();
+    const result = toggleChatComposerLineFormat(this.plainText(), selection, format);
+    if (result.edits.length === 0) {
+      this.root.focus();
+      return;
+    }
+    this.pushUndo(this.snapshot());
+    this.applyTextEdits(result.edits);
+    if (result.codeRange) this.document = clearChatComposerMarks(this.document, result.codeRange);
+    this.storedMarks = null;
+    this.render();
+    this.restoreSelection(result.selection);
+    this.notifyChange();
+    this.notifySelection(result.selection);
   }
 
   /** Synchronizes the active mark controls after pointer or keyboard selection changes. */
@@ -407,7 +470,7 @@ export class ChatComposerEditor {
     this.applyReplacement({ start: offset, end: offset }, text, []);
   }
 
-  /** Toggles bold or italic for the current selection or future typed text. */
+  /** Toggles an inline mark for the current selection or for text typed next at the caret. */
   public toggleMark(mark: ChatComposerMark): void {
     const selection = this.selection();
     if (selection.start === selection.end) {
@@ -426,6 +489,40 @@ export class ChatComposerEditor {
     this.restoreSelection(selection);
     this.notifyChange();
     this.notifySelection(selection);
+  }
+
+  /** Inserts a soft break that continues or ends a list or quote on the caret line. */
+  private insertLineBreak(): void {
+    const selection = this.selection();
+    const edit = selection.start === selection.end
+      ? chatComposerLineBreakEdit(this.plainText(), selection.start)
+      : null;
+    if (!edit) {
+      this.replaceSelection("\n");
+      return;
+    }
+    this.pushUndo(this.snapshot());
+    this.applyTextEdits([edit]);
+    const caret = edit.start + edit.text.length;
+    this.render();
+    this.restoreSelection({ start: caret, end: caret });
+    this.notifyChange();
+    this.notifySelection({ start: caret, end: caret });
+  }
+
+  /** Applies ascending, non-overlapping unmarked text edits from the last to the first. */
+  private applyTextEdits(edits: readonly ChatComposerTextEdit[]): void {
+    for (const edit of [...edits].reverse()) {
+      const previousText = this.plainText();
+      this.document = replaceChatComposerText(this.document, edit, edit.text, []).document;
+      this.references = rebaseChatMessageReferences(
+        previousText,
+        chatComposerPlainText(this.document),
+        this.references,
+        edit.start,
+        edit.end,
+      );
+    }
   }
 
   private replaceSelection(text: string, marks?: readonly ChatComposerMark[]): void {
@@ -678,12 +775,12 @@ function textPointAtOffset(root: HTMLElement, offset: number): { node: Node; off
   return last ? { node: last, offset: last.data.length } : { node: root, offset: 0 };
 }
 
-function readInlineLines(root: ParentNode): import("./rich-text").ChatComposerLine[] {
+function readInlineLines(root: ParentNode): ChatComposerLine[] {
   const childNodes = [...root.childNodes];
   if (childNodes.length === 0 || (childNodes.length === 1 && childNodes[0] instanceof HTMLBRElement)) {
     return [{ runs: [] }];
   }
-  const lines: import("./rich-text").ChatComposerLine[] = [{ runs: [] }];
+  const lines: ChatComposerLine[] = [{ runs: [] }];
   for (const node of root.childNodes) appendInlineNode(node, [], lines);
   return lines;
 }
@@ -691,7 +788,7 @@ function readInlineLines(root: ParentNode): import("./rich-text").ChatComposerLi
 function appendInlineNode(
   node: Node,
   inheritedMarks: ChatComposerMark[],
-  lines: import("./rich-text").ChatComposerLine[],
+  lines: ChatComposerLine[],
 ): void {
   if (node instanceof Text) {
     const text = node.data.replaceAll("\u200b", "");
@@ -708,7 +805,7 @@ function appendInlineNode(
 }
 
 function appendRun(
-  line: import("./rich-text").ChatComposerLine | undefined,
+  line: ChatComposerLine | undefined,
   run: ChatComposerTextRun,
 ): void {
   if (!line) return;
@@ -725,22 +822,16 @@ function elementMarks(element: HTMLElement, inherited: ChatComposerMark[]): Chat
     marks.add("bold");
   }
   if (tag === "I" || tag === "EM" || element.style.fontStyle === "italic") marks.add("italic");
-  return [...marks].sort((left, right) => left.localeCompare(right));
+  const decoration = `${element.style.getPropertyValue("text-decoration-line")} ${element.style.getPropertyValue("text-decoration")}`;
+  if (tag === "S" || tag === "DEL" || tag === "STRIKE" || decoration.includes("line-through")) {
+    marks.add("strikethrough");
+  }
+  if (tag === "CODE") marks.add("code");
+  return CHAT_COMPOSER_MARKS.filter((mark) => marks.has(mark));
 }
 
 function renderRun(owner: Document, run: ChatComposerTextRun): Node {
-  let node: Node = owner.createTextNode(run.text);
-  if (run.marks.includes("italic")) {
-    const italic = owner.createElement("em");
-    italic.append(node);
-    node = italic;
-  }
-  if (run.marks.includes("bold")) {
-    const bold = owner.createElement("strong");
-    bold.append(node);
-    node = bold;
-  }
-  return node;
+  return wrapRunMarks(owner, owner.createTextNode(run.text), run.marks);
 }
 
 function renderRunWithReferences(
@@ -779,17 +870,14 @@ function renderRunWithReferences(
   return fragment;
 }
 
+/** Wraps content in mark elements, innermost first, in the nesting order Markdown serializes. */
 function wrapRunMarks(owner: Document, content: Node, marks: readonly ChatComposerMark[]): Node {
   let node = content;
-  if (marks.includes("italic")) {
-    const italic = owner.createElement("em");
-    italic.append(node);
-    node = italic;
-  }
-  if (marks.includes("bold")) {
-    const bold = owner.createElement("strong");
-    bold.append(node);
-    node = bold;
+  for (const mark of MARK_ELEMENT_ORDER) {
+    if (!marks.includes(mark)) continue;
+    const element = owner.createElement(MARK_ELEMENTS[mark]);
+    element.append(node);
+    node = element;
   }
   return node;
 }

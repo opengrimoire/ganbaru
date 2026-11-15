@@ -83,6 +83,14 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = Object.freeze([
       { keys: ["Enter"], action: "Queue Chat reply while an agent works" },
       { keys: ["Mod + Enter"], action: "Steer the working agent" },
       { keys: ["Shift + Enter"], action: "Insert Chat newline" },
+      { keys: ["Mod + B"], action: "Bold Chat text" },
+      { keys: ["Mod + I"], action: "Italicize Chat text" },
+      { keys: ["Mod + Shift + X"], action: "Strike through Chat text" },
+      { keys: ["Mod + Shift + C"], action: "Format Chat text as code" },
+      { keys: ["Mod + Shift + 7"], action: "Numbered list in Chat" },
+      { keys: ["Mod + Shift + 8"], action: "Bulleted list in Chat" },
+      { keys: ["Mod + Shift + 9"], action: "Quote in Chat" },
+      { keys: ["Mod + Alt + Shift + C"], action: "Code block in Chat" },
       { keys: ["Mod + Shift + P"], action: "Open Chat command menu" },
     ],
   },
@@ -156,6 +164,22 @@ function localizedAction(action: string, t: Translate): string {
       return t("settings.shortcuts.action.steerChatTurn");
     case "Insert Chat newline":
       return t("settings.shortcuts.action.insertChatNewline");
+    case "Bold Chat text":
+      return t("settings.shortcuts.action.boldChatText");
+    case "Italicize Chat text":
+      return t("settings.shortcuts.action.italicChatText");
+    case "Strike through Chat text":
+      return t("settings.shortcuts.action.strikeChatText");
+    case "Format Chat text as code":
+      return t("settings.shortcuts.action.codeChatText");
+    case "Numbered list in Chat":
+      return t("settings.shortcuts.action.orderedChatList");
+    case "Bulleted list in Chat":
+      return t("settings.shortcuts.action.bulletedChatList");
+    case "Quote in Chat":
+      return t("settings.shortcuts.action.quoteChatText");
+    case "Code block in Chat":
+      return t("settings.shortcuts.action.chatCodeBlock");
     case "Open Chat command menu":
       return t("settings.shortcuts.action.openChatCommandMenu");
     case "Toggle Quick notes":

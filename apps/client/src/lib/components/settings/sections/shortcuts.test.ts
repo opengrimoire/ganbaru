@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CHAT_COMPOSER_FORMAT_ACTIONS } from "$lib/chat/composer/format-actions";
 import {
   SHORTCUT_GROUPS,
   filterShortcutGroups,
@@ -262,4 +263,10 @@ describe("shortcut search", () => {
     ]);
   });
 
+  it("lists every Chat composer formatting shortcut in the Chat group", () => {
+    const chatKeys = SHORTCUT_GROUPS.find((group) => group.title === "Chat")?.items.flatMap((item) => item.keys) ?? [];
+
+    for (const action of CHAT_COMPOSER_FORMAT_ACTIONS) expect(chatKeys).toContain(action.shortcut);
+    expect(matchingActions("ctrl shift 9")).toContain("Quote in Chat");
+  });
 });

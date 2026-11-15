@@ -59,6 +59,7 @@
   let cardElement = $state<HTMLElement | null>(null);
   let open = $state(false);
   let pinned = $state(false);
+  let lastPointerType: string | null = null;
   let cardStyle = $state("visibility:hidden");
   let previewTimer: ReturnType<typeof setTimeout> | null = null;
   let closeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -198,7 +199,12 @@
     }, closeDelayMs);
   }
 
+  /**
+   * Opens the card for keyboard and touch activation, which have no hover preview; a mouse click
+   * leaves the hover preview as it is.
+   */
   function togglePinned(event: MouseEvent): void {
+    if (event.detail > 0 && lastPointerType === "mouse") return;
     cancelPreview();
     cancelClose();
     if (open && pinned) {
@@ -306,9 +312,11 @@
   class:name-trigger={presentation === "name"}
   class:mention-trigger={presentation === "mention"}
   aria-label={presentation === "avatar" ? t("chat.organization.identityDetailsFor", visibleTriggerLabel) : undefined}
+  data-app-tooltip-disabled="true"
   aria-haspopup="dialog"
   aria-expanded={open}
   aria-controls={open ? cardId : undefined}
+  onpointerdown={(event) => { lastPointerType = event.pointerType; }}
   onpointerenter={schedulePreview}
   onpointerleave={scheduleClose}
   onfocus={showFromFocus}
@@ -337,6 +345,7 @@
       <div class="identity-heading">
         <div class="identity-name-line">
           <strong>{displayName}</strong>
+          {#if participant?.kind === "local_user" && preferences.profileDisplayName.trim()}<span class="identity-self">{t("chat.organization.youSuffix")}</span>{/if}
           {#if participant?.kind === "ai_teammate"}
             <span
               class="identity-status-dot"
@@ -400,6 +409,7 @@
   .identity-header { display:grid; grid-template-columns:40px minmax(0,1fr); align-items:center; gap:0.65rem; padding:0.75rem 0.8rem 0.4rem; }
   .identity-heading { display:grid; min-width:0; }
   .identity-name-line { display:flex; min-width:0; align-items:center; gap:0.38rem; }
+  .identity-self { flex:0 0 auto; color:var(--muted-foreground); font-size:calc(0.9rem * var(--type-scale)); line-height:1.2rem; }
   .identity-heading strong { overflow:hidden; font-size:calc(0.9rem * var(--type-scale)); font-weight:650; line-height:1.2rem; text-overflow:ellipsis; white-space:nowrap; }
   .identity-heading small { overflow:hidden; color:var(--muted-foreground); font-size:var(--panel-detail-font-size); text-overflow:ellipsis; white-space:nowrap; }
   .identity-status-dot { width:0.42rem; height:0.42rem; flex:0 0 auto; border-radius:999px; background:var(--status-tentative); }

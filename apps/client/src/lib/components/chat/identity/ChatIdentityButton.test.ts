@@ -147,6 +147,7 @@ describe("ChatIdentityButton", () => {
     await tick();
     const card = document.body.querySelector<HTMLElement>(".identity-card");
     expect(card?.textContent).toContain("Alice Smith");
+    expect(card?.querySelector(".identity-self")?.textContent).toBe("(You)");
     expect(card?.textContent).toContain("Private local identity");
 
     card?.querySelector<HTMLButtonElement>("footer button")?.click();
@@ -264,6 +265,26 @@ describe("ChatIdentityButton", () => {
     await tick();
 
     expect(document.body.querySelector<HTMLElement>(".identity-card")?.style.left).toBe("120px");
+  });
+
+  it("ignores a mouse click and shows no tooltip on the trigger", async () => {
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatIdentityButton, {
+      target,
+      props: { participant: localParticipant, presentation: "avatar" },
+    });
+    await tick();
+    const trigger = target.querySelector<HTMLButtonElement>(".identity-trigger");
+    expect(trigger?.dataset.appTooltipDisabled).toBe("true");
+
+    const pointerDown = new MouseEvent("pointerdown", { bubbles: true });
+    Object.defineProperty(pointerDown, "pointerType", { value: "mouse" });
+    trigger?.dispatchEvent(pointerDown);
+    trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+    await tick();
+
+    expect(document.body.querySelector(".identity-card")).toBeNull();
   });
 
   it("previews identity on deliberate hover and closes after leaving", async () => {

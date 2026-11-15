@@ -55,11 +55,10 @@
   const preferences = getPreferences();
   const touchActionsKey = $props.id();
   let actionToolbarVisible = $state(false);
-  const authorDisplayName = $derived(message.authorLabelSnapshot || (message.author ? chatParticipantDisplayName(
-    message.author,
-    preferences.profileDisplayName,
-    t("chat.timeline.you"),
-  ) : ""));
+  // The local person always shows their current profile name; other authors keep the name they posted under.
+  const authorDisplayName = $derived(message.author && (message.author.kind === "local_user" || !message.authorLabelSnapshot)
+    ? chatParticipantDisplayName(message.author, preferences.profileDisplayName, t("chat.timeline.you"))
+    : message.authorLabelSnapshot);
   const actionTarget = $derived(organizationalMessageActionTarget(message));
   const agentUpdate = $derived(chatAgentUpdatePresentation(message.richContent));
   const failure = $derived(agentUpdate?.kind === "failure" ? agentUpdate : null);

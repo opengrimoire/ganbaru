@@ -210,6 +210,7 @@ export const chat = {
     aiTeammate: "Agente de IA",
     identityDetailsFor: (name: string) => `Ver detalles de identidad de ${name}`,
     localProfile: "Identidad local privada",
+    youSuffix: "(Tú)",
     localProfileDetail: "Los mensajes históricos usan el nombre y la imagen actuales de tu perfil en este dispositivo.",
     currentResponseSettings: "Modelo",
     defaultSettings: "Configuración predeterminada",

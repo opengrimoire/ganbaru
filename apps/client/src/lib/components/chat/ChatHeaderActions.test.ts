@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { mount, unmount } from "svelte";
+import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getChat } from "$lib/stores/chat.svelte";
 import ChatHeaderActions from "./ChatHeaderActions.svelte";
@@ -63,5 +63,42 @@ describe("ChatHeaderActions", () => {
     expect(target.querySelector("details")).toBeNull();
     trigger?.click();
     expect(onToggleProjectSettings).toHaveBeenCalledWith(trigger);
+  });
+
+  it("opens the secondary panel only in the selected channel and restores it when switching back", () => {
+    const chat = getChat();
+    const previousChannelId = chat.selectedChannelId;
+    chat.selectedChannelId = "channel-a";
+    const target = document.createElement("div");
+    document.body.append(target);
+    const component = mount(ChatHeaderActions, {
+      target,
+      props: {
+        bottomPanelOpen: false,
+        projectName: "Ganbaru",
+        projectSettingsOpen: false,
+        onToggleBottomPanel: vi.fn(),
+        onToggleProjectSettings: vi.fn(),
+      },
+    });
+    mounted.push({ target, component });
+    const inspectorToggle = () => target.querySelector<HTMLButtonElement>("[data-chat-inspector-action]");
+
+    inspectorToggle()?.click();
+    flushSync();
+    expect(inspectorToggle()?.getAttribute("aria-pressed")).toBe("true");
+
+    chat.selectedChannelId = "channel-b";
+    flushSync();
+    expect(chat.inspectorOpen).toBe(false);
+    expect(inspectorToggle()?.getAttribute("aria-pressed")).toBe("false");
+
+    chat.selectedChannelId = "channel-a";
+    flushSync();
+    expect(chat.inspectorOpen).toBe(true);
+    expect(inspectorToggle()?.getAttribute("aria-pressed")).toBe("true");
+
+    chat.inspectorOpen = false;
+    chat.selectedChannelId = previousChannelId;
   });
 });

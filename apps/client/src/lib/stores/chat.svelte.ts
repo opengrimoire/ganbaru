@@ -67,6 +67,7 @@ import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/teammates/participant-displ
 import { getProjectsStore, type ProjectsStore } from "$lib/stores/projects.svelte";
 import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
 import { preferredProjectWorkingFolder } from "$lib/chat/workspace/working-folder-selection";
+import { chatPanelVisibility } from "$lib/chat/workspace/panel-visibility.svelte";
 import { readLastChatChannelId, saveLastChatChannelId } from "$lib/chat/channel-sections";
 import {
   ChatOrganizationalController,
@@ -162,7 +163,25 @@ export class ChatStore {
   selectedThreadId = $state<ChatThreadId | null>(null);
   selectedExecutionEnvironmentId = $state<string | null>(null);
   railOpen = $state(true);
-  inspectorOpen = $state(false);
+
+  /** Whether the selected channel shows its secondary panel; each channel keeps its own answer. */
+  get inspectorOpen(): boolean {
+    return chatPanelVisibility.isOpen(this.selectedChannelId, "inspector");
+  }
+
+  set inspectorOpen(open: boolean) {
+    chatPanelVisibility.setOpen(this.selectedChannelId, "inspector", open);
+  }
+
+  /** Whether the selected channel shows its bottom panel; each channel keeps its own answer. */
+  get bottomPanelOpen(): boolean {
+    return chatPanelVisibility.isOpen(this.selectedChannelId, "bottom");
+  }
+
+  set bottomPanelOpen(open: boolean) {
+    chatPanelVisibility.setOpen(this.selectedChannelId, "bottom", open);
+  }
+
   loaded = $state(false);
   private loadRequest = 0;
   private projectSelectionProjectId: string | null = null;
@@ -1598,6 +1617,7 @@ export function resetChatForVault(): void {
   shared.archivedTeammates = [];
   shared.configuration.reset();
   shared.reviewQueue.reset();
+  chatPanelVisibility.clear();
 }
 
 /** Show a project's newly saved primary working folder in every pane whose channel belongs to that project. */

@@ -129,8 +129,10 @@
   let resizingBottomPanel = $state(false);
   let inspectorWidth = $state(initialInspectorWidth);
   let bottomPanelHeight = $state(DEFAULT_BOTTOM_PANEL_HEIGHT);
-  let bottomPanelOpen = $state(false);
-  let bottomPanelMounted = $state(false);
+  /** The selected channel owns whether its bottom panel is open, so the shell only reads it. */
+  const bottomPanelOpen = $derived(chat.bottomPanelOpen);
+  /** Keeps the bottom panel mounted once any channel opened it, so its close transition and terminals survive. */
+  let bottomPanelMounted = $state(untrack(() => chat.bottomPanelOpen));
   let bottomPanelSkipCloseTransition = $state(false);
   let reducedMotion = $state(false);
   let headerEditingTitle = $state(false);
@@ -138,6 +140,7 @@
   let projectSettingsTrigger = $state<HTMLButtonElement | null>(null);
   let projectSettingsProjectId = $state<string | null>(null);
   let inspectorWasOpen = false;
+  let inspectorFocusChannelId = untrack(() => chat.selectedChannelId);
   let inspectorReturnFocus: HTMLElement | null = null;
   let replyThreadWasOpen = false;
   let replyThreadReturnFocus: HTMLElement | null = null;
@@ -546,6 +549,19 @@
   });
 
   $effect(() => {
+    if (bottomPanelOpen) bottomPanelMounted = true;
+  });
+
+  let bottomPanelChannelId = untrack(() => chat.selectedChannelId);
+  $effect(() => {
+    const channelId = chat.selectedChannelId;
+    if (channelId === bottomPanelChannelId) return;
+    bottomPanelChannelId = channelId;
+    // Another channel's bottom panel takes its place at once instead of sliding.
+    bottomPanelSkipCloseTransition = true;
+  });
+
+  $effect(() => {
     const maximum = bottomPanelResizeMaximum();
     if (!resizingBottomPanel) {
       bottomPanelHeight = alignBottomPanelHeightToDisplay(
@@ -573,6 +589,15 @@
 
   $effect(() => {
     const open = chat.inspectorOpen;
+    const channelId = chat.selectedChannelId;
+    // Switching channels shows that channel's panel without moving focus into or out of it.
+    const sameChannel = channelId === inspectorFocusChannelId;
+    inspectorFocusChannelId = channelId;
+    if (!sameChannel) {
+      inspectorReturnFocus = null;
+      inspectorWasOpen = open;
+      return;
+    }
     const action = inspectorFocusAction(inspectorWasOpen, open);
     if (action === "enter") {
       inspectorReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -954,12 +979,7 @@
 
   function toggleBottomPanel(): void {
     bottomPanelSkipCloseTransition = false;
-    if (bottomPanelOpen) {
-      bottomPanelOpen = false;
-      return;
-    }
-    bottomPanelMounted = true;
-    bottomPanelOpen = true;
+    chat.bottomPanelOpen = !chat.bottomPanelOpen;
   }
 
   function openInspectorWorkspaceForEvent(event: Event): void {
@@ -978,7 +998,7 @@
 
   function closeBottomPanel(skipTransition = false): void {
     bottomPanelSkipCloseTransition = skipTransition;
-    bottomPanelOpen = false;
+    chat.bottomPanelOpen = false;
   }
 
   function resizeBottomPanelFromKey(event: KeyboardEvent): void {

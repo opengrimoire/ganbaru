@@ -273,7 +273,8 @@
   .composer-toolbar { display: grid; min-height: 2.6rem; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0.5rem; padding: 0 0.75rem 0.5rem; }
   .toolbar-left, .toolbar-right { display: flex; min-width: 0; align-items: center; gap: 0.3rem; }
   .toolbar-left { overflow: hidden; }
-  .toolbar-left:has(:global(details[open])) { overflow: visible; }
+  /* Open menus anchored in the toolbar must not be clipped by its overflow. */
+  .toolbar-left:has(:global(details[open]), :global([aria-expanded="true"])) { overflow: visible; }
   .toolbar-right { flex: 0 1 auto; justify-content: flex-end; }
   .context-meter { position: relative; display: inline-flex; flex: 0 0 auto; }
   .context-ring { display: grid; width: 1.45rem; height: 1.45rem; place-items: center; border-radius: 999px; color: var(--muted-foreground); outline: none; }

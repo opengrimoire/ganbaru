@@ -151,6 +151,7 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_browser_artifacts",
             "chat_provider_cleanup_jobs",
             "chat_terminal_layouts",
+            "idx_chat_terminal_layouts_working_folder",
             "chat_participants",
             "chat_teammates",
             "chat_teammate_policy_revisions",
@@ -2916,5 +2917,60 @@ fn push_approvals_survive_unrelated_and_applied_changes() {
             .await
             .unwrap();
         assert_eq!(approvals, 0, "approvals are deleted with their folder");
+    });
+}
+
+async fn terminal_layout_count(pool: &sqlx::SqlitePool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM chat_terminal_layouts")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[test]
+fn terminal_layouts_are_keyed_by_channel_and_folder_and_follow_both() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        let (_, channel_id) = insert_default_channel(&pool).await;
+        insert_working_folder(&pool, "folder-docs", "project-routine-learning").await;
+        let insert = |folder: &'static str| {
+            sqlx::query(
+                "INSERT INTO chat_terminal_layouts (channel_id, working_folder_id, updated_at)
+                 VALUES (?, ?, ?)",
+            )
+            .bind(channel_id.clone())
+            .bind(folder)
+            .bind(NOW)
+        };
+        insert("working-folder-routine-learning")
+            .execute(&pool)
+            .await
+            .unwrap();
+        insert("folder-docs").execute(&pool).await.unwrap();
+        assert!(
+            insert("folder-docs").execute(&pool).await.is_err(),
+            "one layout per channel and folder"
+        );
+        assert_eq!(terminal_layout_count(&pool).await, 2);
+
+        sqlx::query("DELETE FROM project_working_folders WHERE id = 'folder-docs'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            terminal_layout_count(&pool).await,
+            1,
+            "layouts are deleted with their folder"
+        );
+        sqlx::query("DELETE FROM chat_channels WHERE id = ?")
+            .bind(&channel_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            terminal_layout_count(&pool).await,
+            0,
+            "layouts are deleted with their channel"
+        );
     });
 }

@@ -1,4 +1,5 @@
 import type {
+  ChatChannelId,
   ChatCheckpointId,
   ChatThreadId,
   ChatTurnId,
@@ -419,7 +420,7 @@ export interface ChatRestoreResultRead {
 
 export interface ChatTerminalRead {
   id: string;
-  threadId: ChatThreadId;
+  channelId: ChatChannelId;
   workingFolderId: ProjectWorkingFolderId;
   name: string;
   shell: string;
@@ -440,7 +441,8 @@ export interface ChatTerminalPanelLayout {
 }
 
 export interface ChatTerminalLayoutRead {
-  threadId: ChatThreadId;
+  channelId: ChatChannelId;
+  workingFolderId: ProjectWorkingFolderId;
   schemaVersion: number;
   groups: ChatTerminalPanelLayout[];
   updatedAt: UtcTimestamp | null;

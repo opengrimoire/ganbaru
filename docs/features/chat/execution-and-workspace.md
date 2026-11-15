@@ -24,6 +24,10 @@ A run executes on one device, and its process, approvals, questions, terminal, a
 
 Questions, permission requests, plan confirmations, and provider-native choices appear as validated interactive requests with a stable identity and exactly one terminal resolution. The UI states the requested operation and effective authority: approval panels show the concrete subject (the exact command, path, URL, pattern, query, or tool) outside the collapsed details, and "Allow for session" lists every permission it grants. Answering a provider request never bypasses Ganbaru's own access checks, and stale or duplicate responses are rejected. Execution and its interactive requests stay on the device that executes the assignment: other devices see its progress but cannot answer its approvals or questions.
 
+## Workspace panels
+
+The secondary panel and the bottom panel belong to the selected channel, not to a thread: each channel keeps its own open tabs, selected tab, terminals, and terminal layout, so two channels in the same folder stay separate and switching channels and back restores them. Files, Source control, and Terminal target one working folder, which defaults to the channel's primary folder. Source control can switch the panel to another folder of the project bound on this device, and new terminals start in the chosen folder. The chat's worktree environment applies only while the panel targets the chat's own folder. Review and the preview browser still follow the selected thread or assignment, because their diffs and grants are per session.
+
 ## Files and editor
 
 The Files surface is a bounded view of the authorized execution target. Reads, searches, edits, and saves validate normalized relative paths and reject escapes, unsupported files, oversized content, and stale revisions. Saving against a changed file requires reconciliation instead of overwriting newer content. Syntax highlighting and previews never expand the write boundary.
@@ -44,7 +48,7 @@ A working folder may be a subdirectory of its repository. Review and source cont
 
 ## Terminal
 
-Terminals are bound to one authorized execution target and thread. The frontend receives a narrow stream and input boundary, not a generic process API. Closing a terminal view does not necessarily stop its process, and lifecycle and stop controls stay truthful. Output is bounded, untrusted text; escape sequences cannot become application commands or links without validation. Terminals start without the app's inherited multiplexer and development server port variables, replaying a terminal view resets terminal modes such as the alternate screen and hidden cursor, and terminal history is never persisted.
+Terminals are bound to one channel and one authorized working folder, and start in that folder rather than in a thread's worktree. The frontend receives a narrow stream and input boundary, not a generic process API. Closing a terminal view does not necessarily stop its process, and lifecycle and stop controls stay truthful. Output is bounded, untrusted text; escape sequences cannot become application commands or links without validation. Terminals start without the app's inherited multiplexer and development server port variables, replaying a terminal view resets terminal modes such as the alternate screen and hidden cursor, and terminal history is never persisted.
 
 Terminals start without a confirmation, like a terminal opened in any editor: the user's own shell in a folder they bound is not a privilege escalation over their account.
 

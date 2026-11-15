@@ -1,4 +1,4 @@
-import type { ChatTerminalOutputChunk } from "$lib/chat/contracts";
+import type { ChatChannelId, ChatTerminalOutputChunk, ProjectWorkingFolderId } from "$lib/chat/contracts";
 import { chatErrorMessage } from "$lib/chat/error-presentation";
 import { safeExternalUrl } from "$lib/chat/timeline/markdown";
 
@@ -133,15 +133,29 @@ export function boundTerminalContext(text: string, byteLimit: number): {
 
 export type TerminalPanelPlacement = "inspector" | "bottom";
 
+/**
+ * Names the scope that owns a set of terminals: one channel in one working folder.
+ *
+ * @param channelId - Channel whose panels show the terminals.
+ * @param workingFolderId - Folder the terminals start in.
+ * @returns A key that differs for every channel and folder pair, or null when either is missing.
+ */
+export function terminalScopeKey(
+  channelId: ChatChannelId | null,
+  workingFolderId: ProjectWorkingFolderId | null,
+): string | null {
+  return channelId && workingFolderId ? `${channelId}\n${workingFolderId}` : null;
+}
+
 /** Keeps terminal ownership and selection independent between workspace panels. */
 export class TerminalPanelRegistry {
   readonly #placementByTerminal = new Map<string, TerminalPanelPlacement>();
-  readonly #selectionByPanelThread = new Map<string, string>();
+  readonly #selectionByPanelScope = new Map<string, string>();
 
   /**
    * Claims unassigned terminals for a panel and returns only that panel's terminals.
    *
-   * @param terminals - Terminals available for the current thread and workspace.
+   * @param terminals - Terminals available for the current channel and working folder.
    * @param placement - Panel requesting its terminal collection.
    * @returns Terminals owned by the requesting panel.
    */
@@ -171,24 +185,24 @@ export class TerminalPanelRegistry {
     this.#placementByTerminal.delete(terminalId);
   }
 
-  /** Returns the selected terminal for one panel and thread. */
-  selected(threadId: string, placement: TerminalPanelPlacement): string | null {
-    return this.#selectionByPanelThread.get(this.#selectionKey(threadId, placement)) ?? null;
+  /** Returns the selected terminal for one panel in one channel and working folder. */
+  selected(scopeKey: string, placement: TerminalPanelPlacement): string | null {
+    return this.#selectionByPanelScope.get(this.#selectionKey(scopeKey, placement)) ?? null;
   }
 
-  /** Updates the selected terminal for one panel and thread. */
+  /** Updates the selected terminal for one panel in one channel and working folder. */
   select(
-    threadId: string,
+    scopeKey: string,
     placement: TerminalPanelPlacement,
     terminalId: string | null,
   ): void {
-    const key = this.#selectionKey(threadId, placement);
-    if (terminalId) this.#selectionByPanelThread.set(key, terminalId);
-    else this.#selectionByPanelThread.delete(key);
+    const key = this.#selectionKey(scopeKey, placement);
+    if (terminalId) this.#selectionByPanelScope.set(key, terminalId);
+    else this.#selectionByPanelScope.delete(key);
   }
 
-  #selectionKey(threadId: string, placement: TerminalPanelPlacement): string {
-    return `${placement}:${threadId}`;
+  #selectionKey(scopeKey: string, placement: TerminalPanelPlacement): string {
+    return `${placement}:${scopeKey}`;
   }
 }
 

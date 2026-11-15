@@ -67,7 +67,6 @@ pub(crate) mod sync;
 #[cfg(desktop)]
 pub mod terminal;
 #[cfg(desktop)]
-pub mod terminal_access;
 #[cfg(desktop)]
 pub mod terminal_commands;
 #[cfg(desktop)]

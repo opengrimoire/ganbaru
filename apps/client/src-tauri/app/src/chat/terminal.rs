@@ -6,7 +6,7 @@
 
 use base64::{Engine as _, engine::general_purpose};
 use ganbaru_chat_contracts::models::{
-    ChatError, ChatErrorCode, ChatResult, ChatThreadId, ProjectWorkingFolderId,
+    ChatChannelId, ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId,
 };
 use ganbaru_chat_providers::process::inventory as process_inventory;
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use tauri::Emitter;
 
 pub const CHAT_TERMINAL_STATE_EVENT: &str = "chat://terminal-state";
-const MAX_TERMINALS_PER_THREAD: usize = 8;
+const MAX_TERMINALS_PER_CHANNEL: usize = 8;
 const MAX_TERMINALS_PER_APP: usize = 32;
 const MAX_REPLAY_BYTES: usize = 2 * 1024 * 1024;
 /// Written before replayed output so a reattached view drops modes left from earlier output: leaves the alternate
@@ -146,7 +146,7 @@ fn validate_subscription_id(subscription_id: &str) -> ChatResult<()> {
 #[serde(rename_all = "camelCase")]
 pub struct ChatTerminalRead {
     pub id: String,
-    pub thread_id: ChatThreadId,
+    pub channel_id: ChatChannelId,
     pub working_folder_id: ProjectWorkingFolderId,
     pub name: String,
     pub shell: String,
@@ -233,10 +233,8 @@ fn is_canonical_uuid(value: &str) -> bool {
 
 pub(crate) struct ChatTerminalCreateInput {
     pub terminal_id: String,
-    pub thread_id: ChatThreadId,
+    pub channel_id: ChatChannelId,
     pub working_folder_id: ProjectWorkingFolderId,
-    /// Worktree execution environment the shell starts in, if any.
-    pub environment_id: Option<String>,
     pub workspace_path: PathBuf,
     pub columns: u16,
     pub rows: u16,
@@ -244,9 +242,8 @@ pub(crate) struct ChatTerminalCreateInput {
 
 struct TerminalSpawnSpec {
     terminal_id: String,
-    thread_id: ChatThreadId,
+    channel_id: ChatChannelId,
     working_folder_id: ProjectWorkingFolderId,
-    environment_id: Option<String>,
     workspace_path: PathBuf,
     name: String,
     columns: u16,
@@ -277,9 +274,8 @@ struct TerminalState {
 
 struct TerminalSession {
     id: String,
-    thread_id: ChatThreadId,
+    channel_id: ChatChannelId,
     working_folder_id: ProjectWorkingFolderId,
-    environment_id: Option<String>,
     state: Mutex<TerminalState>,
     master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     writer: Mutex<Option<Box<dyn Write + Send>>>,
@@ -294,7 +290,7 @@ impl TerminalSession {
         let state = self.state.lock().map_err(|_| terminal_state_error())?;
         Ok(ChatTerminalRead {
             id: self.id.clone(),
-            thread_id: self.thread_id.clone(),
+            channel_id: self.channel_id.clone(),
             working_folder_id: self.working_folder_id.clone(),
             name: state.name.clone(),
             shell: state.shell.clone(),
@@ -311,7 +307,7 @@ impl TerminalSession {
         let state = self.state.lock().map_err(|_| terminal_state_error())?;
         let terminal = ChatTerminalRead {
             id: self.id.clone(),
-            thread_id: self.thread_id.clone(),
+            channel_id: self.channel_id.clone(),
             working_folder_id: self.working_folder_id.clone(),
             name: state.name.clone(),
             shell: state.shell.clone(),
@@ -531,14 +527,14 @@ impl Default for ChatTerminalRegistry {
 impl ChatTerminalRegistry {
     pub fn list(
         &self,
-        thread_id: &ChatThreadId,
+        channel_id: &ChatChannelId,
         working_folder_id: &ProjectWorkingFolderId,
     ) -> ChatResult<Vec<ChatTerminalRead>> {
         let sessions = self.sessions.lock().map_err(|_| terminal_state_error())?;
         let mut result = sessions
             .values()
             .filter(|session| {
-                &session.thread_id == thread_id && &session.working_folder_id == working_folder_id
+                &session.channel_id == channel_id && &session.working_folder_id == working_folder_id
             })
             .map(|session| session.read())
             .collect::<ChatResult<Vec<_>>>()?;
@@ -568,9 +564,9 @@ impl ChatTerminalRegistry {
         if sessions.len() >= MAX_TERMINALS_PER_APP
             || sessions
                 .values()
-                .filter(|session| session.thread_id == input.thread_id)
+                .filter(|session| session.channel_id == input.channel_id)
                 .count()
-                >= MAX_TERMINALS_PER_THREAD
+                >= MAX_TERMINALS_PER_CHANNEL
         {
             return Err(ChatError::new(
                 ChatErrorCode::Busy,
@@ -584,9 +580,8 @@ impl ChatTerminalRegistry {
             app,
             TerminalSpawnSpec {
                 terminal_id: input.terminal_id,
-                thread_id: input.thread_id,
+                channel_id: input.channel_id,
                 working_folder_id: input.working_folder_id,
-                environment_id: input.environment_id,
                 workspace_path: input.workspace_path,
                 name: terminal_name,
                 columns: input.columns,
@@ -647,14 +642,14 @@ impl ChatTerminalRegistry {
     pub fn require_scope(
         &self,
         terminal_id: &str,
-        thread_id: &ChatThreadId,
+        channel_id: &ChatChannelId,
         working_folder_id: &ProjectWorkingFolderId,
     ) -> ChatResult<()> {
         let session = self.session(terminal_id)?;
-        if &session.thread_id != thread_id || &session.working_folder_id != working_folder_id {
+        if &session.channel_id != channel_id || &session.working_folder_id != working_folder_id {
             return Err(ChatError::new(
                 ChatErrorCode::Permission,
-                "Chat terminal belongs to another thread or workspace",
+                "Chat terminal belongs to another channel or working folder",
                 false,
             ));
         }
@@ -793,11 +788,6 @@ impl ChatTerminalRegistry {
         self.shutdown_matching(|session| &session.working_folder_id == working_folder_id)
     }
 
-    /// Stops the terminals whose shell started in one worktree execution environment.
-    pub fn shutdown_environment(&self, environment_id: &str) -> ChatResult<()> {
-        self.shutdown_matching(|session| session.environment_id.as_deref() == Some(environment_id))
-    }
-
     fn shutdown_matching(&self, matches: impl Fn(&TerminalSession) -> bool) -> ChatResult<()> {
         let mut sessions = self.sessions.lock().map_err(|_| terminal_state_error())?;
         let terminal_ids = sessions
@@ -811,19 +801,6 @@ impl ChatTerminalRegistry {
             }
         }
         Ok(())
-    }
-
-    /// Returns the threads that currently own at least one terminal.
-    pub fn thread_ids(&self) -> ChatResult<std::collections::BTreeSet<ChatThreadId>> {
-        let sessions = self.sessions.lock().map_err(|_| terminal_state_error())?;
-        Ok(sessions
-            .values()
-            .map(|session| session.thread_id.clone())
-            .collect())
-    }
-
-    pub fn shutdown_thread(&self, thread_id: &ChatThreadId) -> ChatResult<()> {
-        self.shutdown_matching(|session| &session.thread_id == thread_id)
     }
 
     fn session(&self, terminal_id: &str) -> ChatResult<Arc<TerminalSession>> {
@@ -870,9 +847,8 @@ fn spawn_session(
     let writer = pair.master.take_writer().map_err(terminal_io_error)?;
     let session = Arc::new(TerminalSession {
         id: spec.terminal_id,
-        thread_id: spec.thread_id,
+        channel_id: spec.channel_id,
         working_folder_id: spec.working_folder_id,
-        environment_id: spec.environment_id,
         state: Mutex::new(TerminalState {
             name: spec.name,
             shell,
@@ -1372,25 +1348,20 @@ mod tests {
     use super::*;
 
     fn session(running: bool) -> Arc<TerminalSession> {
-        session_in("terminal:test", None, running)
-    }
-
-    fn session_in(id: &str, environment_id: Option<&str>, running: bool) -> Arc<TerminalSession> {
-        session_at(id, "workspace:test", environment_id, running)
+        session_at("terminal:test", "channel:test", "workspace:test", running)
     }
 
     fn session_at(
         id: &str,
+        channel_id: &str,
         working_folder_id: &str,
-        environment_id: Option<&str>,
         running: bool,
     ) -> Arc<TerminalSession> {
         Arc::new(TerminalSession {
             id: id.to_string(),
-            thread_id: ChatThreadId::new("thread:test").expect("thread ID should be valid"),
+            channel_id: ChatChannelId::new(channel_id).expect("channel ID should be valid"),
             working_folder_id: ProjectWorkingFolderId::new(working_folder_id)
                 .expect("workspace ID should be valid"),
-            environment_id: environment_id.map(str::to_string),
             state: Mutex::new(TerminalState {
                 name: "Terminal 1".to_string(),
                 shell: "test-shell".to_string(),
@@ -1518,53 +1489,58 @@ mod tests {
     }
 
     #[test]
-    fn removing_a_worktree_stops_only_the_terminals_started_in_it() {
+    fn terminals_belong_to_one_channel_and_working_folder() {
         let registry = ChatTerminalRegistry::default();
-        let started = [
-            ("terminal:removed", Some("environment:removed")),
-            ("terminal:other", Some("environment:other")),
-            ("terminal:folder", None),
+        let sessions = [
+            session_at("terminal:a-root", "channel:a", "workspace:root", true),
+            session_at("terminal:a-docs", "channel:a", "workspace:docs", true),
+            session_at("terminal:b-root", "channel:b", "workspace:root", true),
         ];
-        let sessions = started
-            .iter()
-            .map(|(id, environment_id)| session_in(id, *environment_id, true))
-            .collect::<Vec<_>>();
         {
             let mut registered = registry.sessions.lock().expect("registry should lock");
             for session in &sessions {
                 registered.insert(session.id.clone(), Arc::clone(session));
             }
         }
+        let channel = |id: &str| ChatChannelId::new(id).expect("channel ID should be valid");
+        let folder =
+            |id: &str| ProjectWorkingFolderId::new(id).expect("workspace ID should be valid");
 
-        registry
-            .shutdown_environment("environment:removed")
-            .expect("shutdown should work");
+        let listed = registry
+            .list(&channel("channel:a"), &folder("workspace:root"))
+            .expect("list should work")
+            .into_iter()
+            .map(|terminal| terminal.id)
+            .collect::<Vec<_>>();
+        assert_eq!(listed, ["terminal:a-root"]);
 
-        assert!(registry.snapshot("terminal:removed").is_err());
-        assert!(!sessions[0].read().expect("session should read").running);
-        for id in ["terminal:other", "terminal:folder"] {
-            assert!(
-                registry
-                    .snapshot(id)
-                    .expect("terminal should remain")
-                    .terminal
-                    .running
-            );
+        assert!(
+            registry
+                .require_scope(
+                    "terminal:a-root",
+                    &channel("channel:a"),
+                    &folder("workspace:root")
+                )
+                .is_ok()
+        );
+        for (channel_id, folder_id) in [
+            ("channel:b", "workspace:root"),
+            ("channel:a", "workspace:docs"),
+        ] {
+            let refused = registry
+                .require_scope("terminal:a-root", &channel(channel_id), &folder(folder_id))
+                .expect_err("a terminal must not be reachable from another channel or folder");
+            assert_eq!(refused.code, ChatErrorCode::Permission);
         }
     }
 
     #[test]
-    fn shutting_down_a_folder_stops_only_the_terminals_started_in_it() {
+    fn shutting_down_a_folder_stops_its_terminals_in_every_channel() {
         let registry = ChatTerminalRegistry::default();
         let sessions = [
-            session_at("terminal:root", "workspace:archived", None, true),
-            session_at(
-                "terminal:worktree",
-                "workspace:archived",
-                Some("environment:archived"),
-                true,
-            ),
-            session_at("terminal:other", "workspace:other", None, true),
+            session_at("terminal:a", "channel:a", "workspace:archived", true),
+            session_at("terminal:b", "channel:b", "workspace:archived", true),
+            session_at("terminal:other", "channel:a", "workspace:other", true),
         ];
         {
             let mut registered = registry.sessions.lock().expect("registry should lock");
@@ -1580,7 +1556,7 @@ mod tests {
             )
             .expect("shutdown should work");
 
-        for (index, id) in ["terminal:root", "terminal:worktree"].iter().enumerate() {
+        for (index, id) in ["terminal:a", "terminal:b"].iter().enumerate() {
             assert!(registry.snapshot(id).is_err());
             assert!(!sessions[index].read().expect("session should read").running);
         }

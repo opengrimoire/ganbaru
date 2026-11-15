@@ -4,13 +4,12 @@ use super::terminal::{
     ChatTerminalCloseResult, ChatTerminalCreateInput, ChatTerminalId, ChatTerminalOutputChunk,
     ChatTerminalRead, ChatTerminalRegistry, ChatTerminalSnapshotRead,
 };
-use super::terminal_access::{ChatTerminalAccess, reservation_mismatch_error};
 use super::workspace::commands::authorize_working_folder;
 use super::workspace::{AuthorizedWorkingFolder, WorkingFolderAuthorizationOperation};
 use crate::db;
 use chrono::{SecondsFormat, Utc};
 use ganbaru_chat_contracts::models::{
-    ChatError, ChatErrorCode, ChatResult, ChatThreadId, ProjectWorkingFolderId, UtcTimestamp,
+    ChatChannelId, ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId, UtcTimestamp,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -22,7 +21,7 @@ use tauri::ipc::Channel;
 #[serde(rename_all = "camelCase")]
 pub struct CreateChatTerminalRequest {
     pub terminal_id: ChatTerminalId,
-    pub thread_id: ChatThreadId,
+    pub channel_id: ChatChannelId,
     pub working_folder_id: ProjectWorkingFolderId,
     pub columns: u16,
     pub rows: u16,
@@ -32,7 +31,7 @@ pub struct CreateChatTerminalRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ChatTerminalInputRequest {
     pub terminal_id: ChatTerminalId,
-    pub thread_id: ChatThreadId,
+    pub channel_id: ChatChannelId,
     pub working_folder_id: ProjectWorkingFolderId,
     pub text: String,
 }
@@ -41,7 +40,7 @@ pub struct ChatTerminalInputRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ChatTerminalResizeRequest {
     pub terminal_id: ChatTerminalId,
-    pub thread_id: ChatThreadId,
+    pub channel_id: ChatChannelId,
     pub working_folder_id: ProjectWorkingFolderId,
     pub columns: u16,
     pub rows: u16,
@@ -60,7 +59,8 @@ pub struct ChatTerminalPanelLayout {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatTerminalLayoutRead {
-    pub thread_id: ChatThreadId,
+    pub channel_id: ChatChannelId,
+    pub working_folder_id: ProjectWorkingFolderId,
     pub schema_version: u32,
     pub groups: Vec<ChatTerminalPanelLayout>,
     pub updated_at: Option<UtcTimestamp>,
@@ -70,35 +70,37 @@ pub struct ChatTerminalLayoutRead {
 pub async fn chat_list_terminals(
     app: tauri::AppHandle,
     db_url: String,
-    thread_id: ChatThreadId,
+    channel_id: ChatChannelId,
     working_folder_id: ProjectWorkingFolderId,
 ) -> ChatResult<Vec<ChatTerminalRead>> {
     let pool = chat_pool(app.clone(), db_url).await?;
-    authorize_thread_workspace(&app, &pool, &thread_id, &working_folder_id).await?;
+    authorize_channel_workspace(&app, &pool, &channel_id, &working_folder_id).await?;
     app.state::<ChatTerminalRegistry>()
-        .list(&thread_id, &working_folder_id)
+        .list(&channel_id, &working_folder_id)
 }
 
 #[tauri::command]
 pub async fn chat_read_terminal_layout(
     app: tauri::AppHandle,
     db_url: String,
-    thread_id: ChatThreadId,
+    channel_id: ChatChannelId,
     working_folder_id: ProjectWorkingFolderId,
 ) -> ChatResult<ChatTerminalLayoutRead> {
     let pool = chat_pool(app.clone(), db_url).await?;
-    authorize_thread_workspace(&app, &pool, &thread_id, &working_folder_id).await?;
+    authorize_channel_workspace(&app, &pool, &channel_id, &working_folder_id).await?;
     let row = sqlx::query(
         "SELECT layout_schema_version, layout_data, updated_at
-         FROM chat_terminal_layouts WHERE thread_id = ?",
+         FROM chat_terminal_layouts WHERE channel_id = ? AND working_folder_id = ?",
     )
-    .bind(thread_id.as_str())
+    .bind(channel_id.as_str())
+    .bind(working_folder_id.as_str())
     .fetch_optional(&pool)
     .await
     .map_err(persistence_error)?;
     let Some(row) = row else {
         return Ok(ChatTerminalLayoutRead {
-            thread_id,
+            channel_id,
+            working_folder_id,
             schema_version: 1,
             groups: Vec::new(),
             updated_at: None,
@@ -119,7 +121,8 @@ pub async fn chat_read_terminal_layout(
             .map_err(persistence_error)?;
     validate_terminal_layout_groups(&groups)?;
     Ok(ChatTerminalLayoutRead {
-        thread_id,
+        channel_id,
+        working_folder_id,
         schema_version,
         groups,
         updated_at: Some(
@@ -136,20 +139,23 @@ pub async fn chat_read_terminal_layout(
 pub async fn chat_save_terminal_panel_layout(
     app: tauri::AppHandle,
     db_url: String,
-    thread_id: ChatThreadId,
+    channel_id: ChatChannelId,
     working_folder_id: ProjectWorkingFolderId,
     panel: ChatTerminalPanelLayout,
 ) -> ChatResult<ChatTerminalLayoutRead> {
     validate_terminal_layout_groups(std::slice::from_ref(&panel))?;
     let pool = chat_pool(app.clone(), db_url).await?;
-    authorize_thread_workspace(&app, &pool, &thread_id, &working_folder_id).await?;
+    authorize_channel_workspace(&app, &pool, &channel_id, &working_folder_id).await?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
-    let existing: Option<String> =
-        sqlx::query_scalar("SELECT layout_data FROM chat_terminal_layouts WHERE thread_id = ?")
-            .bind(thread_id.as_str())
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(persistence_error)?;
+    let existing: Option<String> = sqlx::query_scalar(
+        "SELECT layout_data FROM chat_terminal_layouts
+         WHERE channel_id = ? AND working_folder_id = ?",
+    )
+    .bind(channel_id.as_str())
+    .bind(working_folder_id.as_str())
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(persistence_error)?;
     let mut groups = existing
         .map(|data| -> ChatResult<Vec<ChatTerminalPanelLayout>> {
             let value: serde_json::Value =
@@ -167,14 +173,15 @@ pub async fn chat_save_terminal_panel_layout(
     let data = serde_json::to_string(&json!({ "groups": groups })).map_err(persistence_error)?;
     sqlx::query(
         "INSERT INTO chat_terminal_layouts
-            (thread_id, layout_schema_version, layout_data, updated_at)
-         VALUES (?, 1, ?, ?)
-         ON CONFLICT(thread_id) DO UPDATE SET
+            (channel_id, working_folder_id, layout_schema_version, layout_data, updated_at)
+         VALUES (?, ?, 1, ?, ?)
+         ON CONFLICT(channel_id, working_folder_id) DO UPDATE SET
             layout_schema_version = excluded.layout_schema_version,
             layout_data = excluded.layout_data,
             updated_at = excluded.updated_at",
     )
-    .bind(thread_id.as_str())
+    .bind(channel_id.as_str())
+    .bind(working_folder_id.as_str())
     .bind(data)
     .bind(now.as_str())
     .execute(&mut *transaction)
@@ -182,7 +189,8 @@ pub async fn chat_save_terminal_panel_layout(
     .map_err(persistence_error)?;
     transaction.commit().await.map_err(persistence_error)?;
     Ok(ChatTerminalLayoutRead {
-        thread_id,
+        channel_id,
+        working_folder_id,
         schema_version: 1,
         groups,
         updated_at: Some(now),
@@ -230,20 +238,16 @@ pub async fn chat_terminal_create(
 ) -> ChatResult<ChatTerminalSnapshotRead> {
     let pool = chat_pool(app.clone(), db_url).await?;
     let scope =
-        authorize_thread_scope(&app, &pool, &request.thread_id, &request.working_folder_id).await?;
-    let folder =
-        ganbaru_chat::repository::workspaces::read_workspace(&pool, &request.working_folder_id)
+        authorize_channel_scope(&app, &pool, &request.channel_id, &request.working_folder_id)
             .await?;
-    validate_terminal_start(scope.thread_archived, folder.archived_at.is_some())?;
-    let authorized = scope.authorized;
+    validate_terminal_start(scope.channel_archived, scope.folder_archived)?;
     app.state::<ChatTerminalRegistry>().create(
         app.clone(),
         ChatTerminalCreateInput {
             terminal_id: request.terminal_id.into_inner(),
-            thread_id: request.thread_id,
+            channel_id: request.channel_id,
             working_folder_id: request.working_folder_id,
-            environment_id: scope.environment_id,
-            workspace_path: authorized.canonical_path,
+            workspace_path: scope.authorized.canonical_path,
             columns: request.columns,
             rows: request.rows,
         },
@@ -255,13 +259,13 @@ pub async fn chat_terminal_snapshot(
     app: tauri::AppHandle,
     db_url: String,
     terminal_id: ChatTerminalId,
-    thread_id: ChatThreadId,
+    channel_id: ChatChannelId,
     working_folder_id: ProjectWorkingFolderId,
 ) -> ChatResult<ChatTerminalSnapshotRead> {
     let pool = chat_pool(app.clone(), db_url).await?;
-    authorize_thread_workspace(&app, &pool, &thread_id, &working_folder_id).await?;
+    authorize_channel_workspace(&app, &pool, &channel_id, &working_folder_id).await?;
     let registry = app.state::<ChatTerminalRegistry>();
-    registry.require_scope(terminal_id.as_str(), &thread_id, &working_folder_id)?;
+    registry.require_scope(terminal_id.as_str(), &channel_id, &working_folder_id)?;
     registry.snapshot(terminal_id.as_str())
 }
 
@@ -271,15 +275,15 @@ pub async fn chat_terminal_attach(
     app: tauri::AppHandle,
     db_url: String,
     terminal_id: ChatTerminalId,
-    thread_id: ChatThreadId,
+    channel_id: ChatChannelId,
     working_folder_id: ProjectWorkingFolderId,
     subscription_id: String,
     channel: Channel<ChatTerminalOutputChunk>,
 ) -> ChatResult<ChatTerminalSnapshotRead> {
     let pool = chat_pool(app.clone(), db_url).await?;
-    authorize_thread_workspace(&app, &pool, &thread_id, &working_folder_id).await?;
+    authorize_channel_workspace(&app, &pool, &channel_id, &working_folder_id).await?;
     let registry = app.state::<ChatTerminalRegistry>();
-    registry.require_scope(terminal_id.as_str(), &thread_id, &working_folder_id)?;
+    registry.require_scope(terminal_id.as_str(), &channel_id, &working_folder_id)?;
     registry.attach(terminal_id.as_str(), subscription_id, Box::new(channel))
 }
 
@@ -313,11 +317,12 @@ pub async fn chat_terminal_input(
     request: ChatTerminalInputRequest,
 ) -> ChatResult<()> {
     let pool = chat_pool(app.clone(), db_url).await?;
-    authorize_thread_workspace(&app, &pool, &request.thread_id, &request.working_folder_id).await?;
+    authorize_channel_workspace(&app, &pool, &request.channel_id, &request.working_folder_id)
+        .await?;
     let registry = app.state::<ChatTerminalRegistry>();
     registry.require_scope(
         request.terminal_id.as_str(),
-        &request.thread_id,
+        &request.channel_id,
         &request.working_folder_id,
     )?;
     registry.input(request.terminal_id.as_str(), &request.text)
@@ -330,11 +335,12 @@ pub async fn chat_terminal_resize(
     request: ChatTerminalResizeRequest,
 ) -> ChatResult<()> {
     let pool = chat_pool(app.clone(), db_url).await?;
-    authorize_thread_workspace(&app, &pool, &request.thread_id, &request.working_folder_id).await?;
+    authorize_channel_workspace(&app, &pool, &request.channel_id, &request.working_folder_id)
+        .await?;
     let registry = app.state::<ChatTerminalRegistry>();
     registry.require_scope(
         request.terminal_id.as_str(),
-        &request.thread_id,
+        &request.channel_id,
         &request.working_folder_id,
     )?;
     registry.resize(request.terminal_id.as_str(), request.columns, request.rows)
@@ -345,84 +351,55 @@ pub async fn chat_terminal_close(
     app: tauri::AppHandle,
     db_url: String,
     terminal_id: ChatTerminalId,
-    thread_id: ChatThreadId,
+    channel_id: ChatChannelId,
     working_folder_id: ProjectWorkingFolderId,
     confirmed: bool,
 ) -> ChatResult<ChatTerminalCloseResult> {
     let pool = chat_pool(app.clone(), db_url).await?;
-    authorize_thread_workspace(&app, &pool, &thread_id, &working_folder_id).await?;
+    authorize_channel_workspace(&app, &pool, &channel_id, &working_folder_id).await?;
     let registry = app.state::<ChatTerminalRegistry>();
-    registry.require_scope(terminal_id.as_str(), &thread_id, &working_folder_id)?;
+    registry.require_scope(terminal_id.as_str(), &channel_id, &working_folder_id)?;
     registry.close(terminal_id.as_str(), confirmed)
 }
 
-/// Binds an unsaved draft thread to its working folder so it may open terminals.
-/// A persisted thread needs no reservation and is only checked against the folder.
-#[tauri::command]
-pub async fn chat_reserve_draft_thread(
-    app: tauri::AppHandle,
-    db_url: String,
-    thread_id: ChatThreadId,
-    working_folder_id: ProjectWorkingFolderId,
-) -> ChatResult<()> {
-    let pool = chat_pool(app.clone(), db_url).await?;
-    if let Some(stored) = read_thread_scope(&pool, &thread_id).await? {
-        return validate_terminal_thread_scope(Some(&stored), None, &working_folder_id);
-    }
-    authorize_working_folder(
-        &app,
-        &pool,
-        &working_folder_id,
-        WorkingFolderAuthorizationOperation::TerminalStart,
-    )
-    .await?;
-    let live_threads = app.state::<ChatTerminalRegistry>().thread_ids()?;
-    app.state::<ChatTerminalAccess>().reserve(
-        &active_vault_id(&app)?,
-        &thread_id,
-        &working_folder_id,
-        |thread| live_threads.contains(thread),
-    )
-}
-
-/// A thread's authorized terminal workspace and execution environment.
-struct ThreadTerminalScope {
-    environment_id: Option<String>,
-    thread_archived: bool,
+/// A channel's authorized terminal working folder and the archive states that gate new shells.
+struct ChannelTerminalScope {
+    channel_archived: bool,
+    folder_archived: bool,
     authorized: AuthorizedWorkingFolder,
 }
 
-/// Authorizes a persisted or reserved thread in its working folder for terminal access on this device.
-pub(crate) async fn authorize_thread_workspace(
+/// The stored channel fields that decide terminal access.
+struct StoredChannelScope {
+    project_id: String,
+    archived: bool,
+}
+
+/// Authorizes a channel of the active vault in one of its project's working folders for terminal access on
+/// this device.
+pub(crate) async fn authorize_channel_workspace(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
-    thread_id: &ChatThreadId,
+    channel_id: &ChatChannelId,
     working_folder_id: &ProjectWorkingFolderId,
 ) -> ChatResult<AuthorizedWorkingFolder> {
     Ok(
-        authorize_thread_scope(app, pool, thread_id, working_folder_id)
+        authorize_channel_scope(app, pool, channel_id, working_folder_id)
             .await?
             .authorized,
     )
 }
 
-async fn authorize_thread_scope(
+async fn authorize_channel_scope(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
-    thread_id: &ChatThreadId,
+    channel_id: &ChatChannelId,
     working_folder_id: &ProjectWorkingFolderId,
-) -> ChatResult<ThreadTerminalScope> {
-    let vault_id = active_vault_id(app)?;
-    let access = app.state::<ChatTerminalAccess>();
-    let stored_scope = read_thread_scope(pool, thread_id).await?;
-    let reserved = match stored_scope {
-        Some(_) => {
-            access.release(&vault_id, thread_id)?;
-            None
-        }
-        None => access.reserved_folder(&vault_id, thread_id)?,
-    };
-    validate_terminal_thread_scope(stored_scope.as_ref(), reserved.as_ref(), working_folder_id)?;
+) -> ChatResult<ChannelTerminalScope> {
+    let channel = read_channel_scope(pool, channel_id).await?;
+    let folder =
+        ganbaru_chat::repository::workspaces::read_workspace(pool, working_folder_id).await?;
+    validate_terminal_channel_scope(channel.as_ref(), &folder.project_id)?;
     let authorized = authorize_working_folder(
         app,
         pool,
@@ -430,80 +407,67 @@ async fn authorize_thread_scope(
         WorkingFolderAuthorizationOperation::TerminalStart,
     )
     .await?;
-    let thread_archived = stored_scope
-        .as_ref()
-        .is_some_and(|(_, state, _)| state == "archived");
-    let environment_id = stored_scope.and_then(|(_, _, environment_id)| environment_id);
-    let authorized = super::execution_environment::resolve_environment_workspace(
-        app,
-        pool,
-        authorized,
-        environment_id.as_deref(),
-    )
-    .await?;
-    Ok(ThreadTerminalScope {
-        environment_id,
-        thread_archived,
+    Ok(ChannelTerminalScope {
+        channel_archived: channel.is_some_and(|channel| channel.archived),
+        folder_archived: folder.archived_at.is_some(),
         authorized,
     })
 }
 
-async fn read_thread_scope(
+async fn read_channel_scope(
     pool: &SqlitePool,
-    thread_id: &ChatThreadId,
-) -> ChatResult<Option<(String, String, Option<String>)>> {
-    let row = sqlx::query(
-        "SELECT working_folder_id, state, execution_environment_id
-         FROM chat_threads WHERE id = ?",
-    )
-    .bind(thread_id.as_str())
-    .fetch_optional(pool)
-    .await
-    .map_err(persistence_error)?;
+    channel_id: &ChatChannelId,
+) -> ChatResult<Option<StoredChannelScope>> {
+    let row = sqlx::query("SELECT project_id, archived_at FROM chat_channels WHERE id = ?")
+        .bind(channel_id.as_str())
+        .fetch_optional(pool)
+        .await
+        .map_err(persistence_error)?;
     row.as_ref()
-        .map(|row| -> ChatResult<(String, String, Option<String>)> {
-            Ok((
-                row.try_get::<String, _>("working_folder_id")
+        .map(|row| -> ChatResult<StoredChannelScope> {
+            Ok(StoredChannelScope {
+                project_id: row
+                    .try_get::<String, _>("project_id")
                     .map_err(persistence_error)?,
-                row.try_get::<String, _>("state")
-                    .map_err(persistence_error)?,
-                row.try_get::<Option<String>, _>("execution_environment_id")
-                    .map_err(persistence_error)?,
-            ))
+                archived: row
+                    .try_get::<Option<String>, _>("archived_at")
+                    .map_err(persistence_error)?
+                    .is_some(),
+            })
         })
         .transpose()
 }
 
-/// Accepts a persisted open thread in the requested folder, or an unsaved
-/// draft that Rust reserved for that folder. Unknown thread IDs are rejected.
-fn validate_terminal_thread_scope(
-    stored_scope: Option<&(String, String, Option<String>)>,
-    reserved_folder: Option<&ProjectWorkingFolderId>,
-    working_folder_id: &ProjectWorkingFolderId,
+/// Accepts a stored channel whose project owns the working folder. Unknown channel IDs are rejected, and a
+/// folder of another project never opens a terminal for the channel.
+fn validate_terminal_channel_scope(
+    channel: Option<&StoredChannelScope>,
+    folder_project_id: &str,
 ) -> ChatResult<()> {
-    let Some((stored_workspace, state, _)) = stored_scope else {
-        return match reserved_folder {
-            Some(folder) if folder == working_folder_id => Ok(()),
-            Some(_) => Err(reservation_mismatch_error()),
-            None => Err(thread_not_found_error()),
-        };
+    let Some(channel) = channel else {
+        return Err(ChatError::new(
+            ChatErrorCode::NotFound,
+            "Chat channel was not found",
+            true,
+        ));
     };
-    if state == "closed" {
-        return Err(thread_not_found_error());
-    }
-    if stored_workspace != working_folder_id.as_str() {
-        return Err(reservation_mismatch_error());
+    if channel.project_id != folder_project_id {
+        return Err(ChatError::new(
+            ChatErrorCode::Permission,
+            "The working folder belongs to another project than the channel",
+            false,
+        ));
     }
     Ok(())
 }
 
-/// Refuses a new shell in an archived thread or working folder. Terminals that
+/// Refuses a new shell in an archived channel or working folder. Terminals that
 /// already run there stay listable, usable, and closable.
-fn validate_terminal_start(thread_archived: bool, folder_archived: bool) -> ChatResult<()> {
+fn validate_terminal_start(channel_archived: bool, folder_archived: bool) -> ChatResult<()> {
     let message = if folder_archived {
         "Unarchive the working folder to start a terminal in it"
-    } else if thread_archived {
-        "Unarchive the Chat thread to start a terminal in it"
+    } else if channel_archived {
+        "Restore the channel to start a terminal in it"
     } else {
         return Ok(());
     };
@@ -512,20 +476,6 @@ fn validate_terminal_start(thread_archived: bool, folder_archived: bool) -> Chat
         message,
         true,
     ))
-}
-
-fn thread_not_found_error() -> ChatError {
-    ChatError::new(ChatErrorCode::NotFound, "Chat thread was not found", true)
-}
-
-fn active_vault_id(app: &tauri::AppHandle) -> ChatResult<String> {
-    crate::vault::active_vault_id(app).map_err(|_| {
-        ChatError::new(
-            ChatErrorCode::Persistence,
-            "Active vault is unavailable",
-            true,
-        )
-    })
 }
 
 fn now_timestamp() -> ChatResult<UtcTimestamp> {
@@ -547,17 +497,70 @@ fn persistence_error<T>(_error: T) -> ChatError {
         true,
     )
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn workspace(id: &str) -> ProjectWorkingFolderId {
-        ProjectWorkingFolderId::new(id).expect("workspace ID should be valid")
+    const TIMESTAMP: &str = "2026-11-14T00:00:00.000Z";
+
+    fn channel(id: &str) -> ChatChannelId {
+        ChatChannelId::new(id).expect("channel ID should be valid")
     }
 
-    fn stored(folder: &str, state: &str) -> (String, String, Option<String>) {
-        (folder.to_string(), state.to_string(), None)
+    fn stored(project_id: &str, archived: bool) -> StoredChannelScope {
+        StoredChannelScope {
+            project_id: project_id.to_string(),
+            archived,
+        }
+    }
+
+    async fn pool_with_channels() -> SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory database should open");
+        ganbaru_db::test_support::apply_migrated_template(&pool)
+            .await
+            .expect("migrations should apply");
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&pool)
+            .await
+            .expect("foreign keys should turn off");
+        for (id, project_id, archived_at) in [
+            ("channel:open", "project:a", None),
+            ("channel:archived", "project:a", Some(TIMESTAMP)),
+        ] {
+            sqlx::query(
+                "INSERT INTO chat_conversations
+                    (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
+                 VALUES (?, ?, 'channel', ?, ?, ?)",
+            )
+            .bind(format!("conversation:{id}"))
+            .bind(project_id)
+            .bind(TIMESTAMP)
+            .bind(TIMESTAMP)
+            .bind(TIMESTAMP)
+            .execute(&pool)
+            .await
+            .expect("conversation should insert");
+            sqlx::query(
+                "INSERT INTO chat_channels
+                    (id, project_id, conversation_id, name, archived_at, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(id)
+            .bind(project_id)
+            .bind(format!("conversation:{id}"))
+            .bind(id)
+            .bind(archived_at)
+            .bind(TIMESTAMP)
+            .bind(TIMESTAMP)
+            .execute(&pool)
+            .await
+            .expect("channel should insert");
+        }
+        pool
     }
 
     #[test]
@@ -565,7 +568,7 @@ mod tests {
         let request = |terminal_id: &str| {
             serde_json::from_value::<ChatTerminalInputRequest>(json!({
                 "terminalId": terminal_id,
-                "threadId": "thread",
+                "channelId": "channel",
                 "workingFolderId": "folder",
                 "text": "ls\r",
             }))
@@ -587,71 +590,71 @@ mod tests {
             assert!(request(invalid).is_err(), "{invalid:?} is rejected");
         }
     }
+
     #[test]
-    fn terminal_create_rejects_unknown_thread_without_reservation() {
-        let folder = workspace("workspace:test");
-        let unknown = validate_terminal_thread_scope(None, None, &folder)
-            .expect_err("an unknown thread ID must not authorize a terminal");
+    fn terminal_requests_name_a_channel_instead_of_a_thread() {
+        let legacy = serde_json::from_value::<ChatTerminalInputRequest>(json!({
+            "terminalId": "0f8fad5b-d9cb-469f-a165-70867728950e",
+            "threadId": "thread",
+            "workingFolderId": "folder",
+            "text": "ls\r",
+        }));
+        assert!(legacy.is_err(), "a thread-scoped request has no channel");
+    }
+
+    #[test]
+    fn terminal_scope_rejects_unknown_channels_and_folders_of_other_projects() {
+        let unknown = validate_terminal_channel_scope(None, "project:a")
+            .expect_err("an unknown channel ID must not authorize a terminal");
         assert_eq!(unknown.code, ChatErrorCode::NotFound);
 
-        assert!(validate_terminal_thread_scope(None, Some(&folder), &folder).is_ok());
-        let elsewhere =
-            validate_terminal_thread_scope(None, Some(&workspace("workspace:other")), &folder)
-                .expect_err("a draft reserved for another folder must not authorize this one");
-        assert_eq!(elsewhere.code, ChatErrorCode::Permission);
-    }
-
-    #[test]
-    fn terminal_scope_rejects_closed_or_cross_workspace_threads() {
-        let folder = workspace("workspace:test");
         assert!(
-            validate_terminal_thread_scope(
-                Some(&stored("workspace:test", "active")),
-                None,
-                &folder
-            )
-            .is_ok()
+            validate_terminal_channel_scope(Some(&stored("project:a", false)), "project:a").is_ok()
         );
-
-        let closed = validate_terminal_thread_scope(
-            Some(&stored("workspace:test", "closed")),
-            None,
-            &folder,
-        )
-        .expect_err("closed threads must not authorize terminals");
-        assert_eq!(closed.code, ChatErrorCode::NotFound);
-
-        let mismatched = validate_terminal_thread_scope(
-            Some(&stored("workspace:other", "active")),
-            Some(&folder),
-            &folder,
-        )
-        .expect_err("cross-workspace threads must not authorize terminals");
-        assert_eq!(mismatched.code, ChatErrorCode::Permission);
+        let foreign =
+            validate_terminal_channel_scope(Some(&stored("project:a", false)), "project:b")
+                .expect_err("a folder of another project must not open a terminal for the channel");
+        assert_eq!(foreign.code, ChatErrorCode::Permission);
     }
 
     #[test]
-    fn archived_threads_keep_running_terminals_and_archived_scopes_start_none() {
-        let folder = workspace("workspace:test");
+    fn archived_channels_keep_running_terminals_and_archived_scopes_start_none() {
         assert!(
-            validate_terminal_thread_scope(
-                Some(&stored("workspace:test", "archived")),
-                None,
-                &folder
-            )
-            .is_ok(),
-            "surviving terminals of an archived thread stay reachable"
+            validate_terminal_channel_scope(Some(&stored("project:a", true)), "project:a").is_ok(),
+            "surviving terminals of an archived channel stay reachable"
         );
         assert!(validate_terminal_start(false, false).is_ok());
-        for (thread_archived, folder_archived) in [(true, false), (false, true), (true, true)] {
-            let refused = validate_terminal_start(thread_archived, folder_archived)
+        for (channel_archived, folder_archived) in [(true, false), (false, true), (true, true)] {
+            let refused = validate_terminal_start(channel_archived, folder_archived)
                 .expect_err("archived scopes must not start terminals");
             assert_eq!(refused.code, ChatErrorCode::InvalidStateTransition);
         }
     }
 
+    #[tokio::test]
+    async fn channel_scope_reads_the_stored_project_and_archive_state() {
+        let pool = pool_with_channels().await;
+        let open = read_channel_scope(&pool, &channel("channel:open"))
+            .await
+            .expect("channel should read")
+            .expect("channel should exist");
+        assert_eq!(open.project_id, "project:a");
+        assert!(!open.archived);
+        let archived = read_channel_scope(&pool, &channel("channel:archived"))
+            .await
+            .expect("channel should read")
+            .expect("channel should exist");
+        assert!(archived.archived);
+        assert!(
+            read_channel_scope(&pool, &channel("channel:missing"))
+                .await
+                .expect("missing channel should read")
+                .is_none()
+        );
+    }
+
     #[test]
-    fn layout_and_preview_discovery_authorize_the_thread_before_reading() {
+    fn layout_and_preview_discovery_authorize_the_channel_before_reading() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/chat");
         for (file, command, first_read) in [
             (
@@ -677,14 +680,14 @@ mod tests {
             let end = start + source[start..].find("\n}\n").expect("command ends");
             let body = &source[start..end];
             let authorized = body
-                .find("authorize_thread_workspace(")
-                .unwrap_or_else(|| panic!("{command} authorizes the thread"));
+                .find("authorize_channel_workspace(")
+                .unwrap_or_else(|| panic!("{command} authorizes the channel"));
             let read = body
                 .find(first_read)
                 .unwrap_or_else(|| panic!("{command} reads {first_read}"));
             assert!(
                 authorized < read,
-                "{command} must authorize the thread before {first_read}"
+                "{command} must authorize the channel before {first_read}"
             );
         }
     }

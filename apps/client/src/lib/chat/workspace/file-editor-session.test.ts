@@ -47,6 +47,8 @@ function pendingConfirmation(): (confirmed: boolean) => void {
 function createSession(): { session: ChatFileEditorSession; selectedPaths: string[] } {
   const selectedPaths: string[] = [];
   const options: ChatFileEditorSessionOptions = {
+    workingFolderId: () => mocks.chat.selectedWorkingFolderId,
+    executionEnvironmentId: () => mocks.chat.selectedExecutionEnvironmentId,
     selectedPath: () => selectedPaths.at(-1) ?? null,
     setSelectedPath: (path) => { selectedPaths.push(path); },
     refreshParentDirectory: async () => undefined,

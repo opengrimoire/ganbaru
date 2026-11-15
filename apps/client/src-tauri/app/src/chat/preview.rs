@@ -8,7 +8,8 @@ use ganbaru_chat::repository::resources::{
     self, BrowserArtifactQuota, ChatResourceKind, ChatResourceRead, StoreBrowserArtifact,
 };
 use ganbaru_chat_contracts::models::{
-    ChatError, ChatErrorCode, ChatResult, ChatThreadId, ProjectWorkingFolderId, UtcTimestamp,
+    ChatChannelId, ChatError, ChatErrorCode, ChatResult, ChatThreadId, ProjectWorkingFolderId,
+    UtcTimestamp,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -492,22 +493,19 @@ pub async fn chat_browser_status(
 pub async fn chat_browser_discover_servers(
     app: tauri::AppHandle,
     db_url: String,
-    thread_id: ChatThreadId,
+    channel_id: ChatChannelId,
+    working_folder_id: ProjectWorkingFolderId,
 ) -> ChatResult<Vec<DiscoveredPreviewServer>> {
     let pool = chat_pool(&app, db_url).await?;
-    let working_folder_id = repository::thread_working_folder(&pool, &thread_id).await?;
-    let registry = app.state::<super::terminal::ChatTerminalRegistry>();
-    let terminals = registry.list(&thread_id, &working_folder_id)?;
-    if terminals.is_empty() {
-        return Ok(Vec::new());
-    }
-    super::terminal_commands::authorize_thread_workspace(
+    super::terminal_commands::authorize_channel_workspace(
         &app,
         &pool,
-        &thread_id,
+        &channel_id,
         &working_folder_id,
     )
     .await?;
+    let registry = app.state::<super::terminal::ChatTerminalRegistry>();
+    let terminals = registry.list(&channel_id, &working_folder_id)?;
     let mut candidates = HashMap::<String, String>::new();
     for terminal in terminals {
         let snapshot = registry.snapshot(&terminal.id)?;

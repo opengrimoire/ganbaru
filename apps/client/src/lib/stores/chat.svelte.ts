@@ -694,7 +694,7 @@ export class ChatStore {
     this.selectedThreadId = null;
     this.selectedExecutionRunId = null;
     this.selectedExecutionEnvironmentId = null;
-    // Workspace tools such as the terminal are scoped to a thread, so a channel without a session keeps a draft one.
+    // The composer and the preview browser address the next session by a draft thread ID until a message starts it.
     if (this.selectedWorkingFolderId) {
       this.composerRuntimeController.ensureDraftThread(this.selectedWorkingFolderId);
     } else {

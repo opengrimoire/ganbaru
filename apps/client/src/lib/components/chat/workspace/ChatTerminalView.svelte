@@ -39,7 +39,7 @@
   const preferences = getPreferences();
   const terminalIdentity = untrack(() => ({
     id: terminalRead.id,
-    threadId: terminalRead.threadId,
+    channelId: terminalRead.channelId,
     workingFolderId: terminalRead.workingFolderId,
   }));
   const notifyState = untrack(() => onState);
@@ -83,7 +83,7 @@
       import("@xterm/addon-fit"),
       chatApi.attachChatTerminal(
         terminalIdentity.id,
-        terminalIdentity.threadId,
+        terminalIdentity.channelId,
         terminalIdentity.workingFolderId,
         subscriptionId,
         outputChannel,
@@ -135,7 +135,7 @@
         claimResize();
         void chatApi.writeChatTerminal(
           terminalIdentity.id,
-          terminalIdentity.threadId,
+          terminalIdentity.channelId,
           terminalIdentity.workingFolderId,
           data,
         ).catch((reason: unknown) => { error = terminalMessage(reason); });
@@ -151,7 +151,7 @@
         if (!ownsResize()) return;
         void chatApi.resizeChatTerminal(
           terminalIdentity.id,
-          terminalIdentity.threadId,
+          terminalIdentity.channelId,
           terminalIdentity.workingFolderId,
           terminal.cols,
           terminal.rows,
@@ -262,7 +262,7 @@
     try {
       const snapshot = await chatApi.readChatTerminalSnapshot(
         terminalIdentity.id,
-        terminalIdentity.threadId,
+        terminalIdentity.channelId,
         terminalIdentity.workingFolderId,
       );
       xterm?.reset();

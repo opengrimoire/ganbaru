@@ -964,6 +964,7 @@ export const chat = {
     cloneRepository: "Clonar en la carpeta",
     cloneEmptyFolderNotice: "Solo se puede clonar cuando la carpeta de trabajo seleccionada está vacía.",
     executionEnvironment: "Entorno de ejecución",
+    workingFolder: "Carpeta de trabajo",
     currentFolder: "Carpeta actual",
     newWorktree: "Nuevo árbol de trabajo",
     branchName: "Nombre de rama",

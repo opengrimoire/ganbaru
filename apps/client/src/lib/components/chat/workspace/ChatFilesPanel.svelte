@@ -45,6 +45,8 @@
 
   let {
     active = true,
+    folderId,
+    folderEnvironmentId,
     directoryPath,
     selectedPath,
     treeVisible,
@@ -53,6 +55,10 @@
     onReviewCreated = () => {},
   }: {
     active?: boolean;
+    /** Folder this panel browses, chosen per channel panel. */
+    folderId: string | null;
+    /** Execution environment inside that folder, or null for the folder itself. */
+    folderEnvironmentId: string | null;
     directoryPath: string;
     selectedPath: string | null;
     treeVisible: boolean;
@@ -104,6 +110,8 @@
   let rootLoadingTimer: number | null = null;
   let activeScopeKey = "";
   const editorSession = new ChatFileEditorSession({
+    workingFolderId: () => folderId,
+    executionEnvironmentId: () => folderEnvironmentId,
     selectedPath: () => selectedPath,
     setSelectedPath: (path) => onStateChange({ selectedPath: path }),
     refreshParentDirectory: (path) => refreshParentDirectory(path),
@@ -113,7 +121,7 @@
     recreateConfirmation: () => ({ message: t("chat.inspector.confirmRecreateFile"), confirmLabel: t("chat.inspector.recreateFile") }),
     previewUnavailableMessage: () => t("chat.inspector.previewUnavailable"),
   });
-  const workingFolderId = $derived(chat.selectedWorkingFolderId);
+  const workingFolderId = $derived(folderId);
   const treeRows = $derived(flattenChatFileTree(rootEntries, childrenByDirectory, expandedPaths));
   const shownRows = $derived.by<ChatFileTreeRow[]>(() => {
     if (!query.trim()) return treeRows;
@@ -130,7 +138,7 @@
   const visibleError = $derived(editorSession.error ?? error);
   const observerMatchesScope = $derived(
     observerStatus?.workingFolderId === workingFolderId
-      && observerStatus?.executionEnvironmentId === chat.selectedExecutionEnvironmentId,
+      && observerStatus?.executionEnvironmentId === folderEnvironmentId,
   );
 
   onMount(() => {
@@ -181,7 +189,7 @@
 
   $effect(() => {
     const workspace = workingFolderId;
-    const executionEnvironmentId = chat.selectedExecutionEnvironmentId;
+    const executionEnvironmentId = folderEnvironmentId;
     const scope = `${workspace ?? ""}:${chat.selectedThreadId ?? ""}:${executionEnvironmentId ?? ""}`;
     if (scope === loadedScope) return;
     loadedScope = scope;
@@ -204,7 +212,7 @@
   $effect(() => {
     const isActive = active;
     const workspace = workingFolderId;
-    const executionEnvironmentId = chat.selectedExecutionEnvironmentId;
+    const executionEnvironmentId = folderEnvironmentId;
     const scopeKey = loadedScope;
     if (!isActive || !workspace) {
       activeScopeKey = "";
@@ -220,7 +228,7 @@
 
   $effect(() => {
     const workspace = workingFolderId;
-    const environmentId = chat.selectedExecutionEnvironmentId;
+    const environmentId = folderEnvironmentId;
     const path = selectedPath;
     const key = `${loadedScope}\u0000${path ?? ""}`;
     if (!active || !workspace || !path
@@ -230,7 +238,7 @@
     const previousPath = editorSession.preview?.relativePath ?? null;
     void selectFile(path, environmentId).then((opened) => {
       if (!opened && previousPath && selectedPath === path && workingFolderId === workspace
-        && chat.selectedExecutionEnvironmentId === environmentId) {
+        && folderEnvironmentId === environmentId) {
         onStateChange({ selectedPath: previousPath });
       }
     });
@@ -240,7 +248,7 @@
     const workspace = workingFolderId;
     const value = query.trim();
     const showIgnored = includeIgnored;
-    const executionEnvironmentId = chat.selectedExecutionEnvironmentId;
+    const executionEnvironmentId = folderEnvironmentId;
     const requestedRevision = searchRefreshRevision;
     if (!active || !workspace || !value) {
       searchResults = [];
@@ -263,7 +271,7 @@
   async function loadRoot(
     workspace: string,
     pathToReveal = "",
-    executionEnvironmentId = chat.selectedExecutionEnvironmentId,
+    executionEnvironmentId = folderEnvironmentId,
   ): Promise<void> {
     const requestId = ++treeRequestId;
     beginRootLoading();
@@ -286,7 +294,7 @@
     const requestId = treeRequestId;
     loadingPaths = [...loadingPaths, path];
     try {
-      const result = await chatApi.listProjectWorkingFolderDirectory(workspace, path, includeIgnored, chat.selectedExecutionEnvironmentId);
+      const result = await chatApi.listProjectWorkingFolderDirectory(workspace, path, includeIgnored, folderEnvironmentId);
       if (requestId !== treeRequestId || workspace !== workingFolderId) return;
       childrenByDirectory = { ...childrenByDirectory, [path]: result.entries };
     } catch (reason: unknown) {
@@ -304,7 +312,7 @@
     const workspace = workingFolderId;
     if (!workspace || paths.length === 0) return;
     const requestId = ++treeRequestId;
-    const environmentId = chat.selectedExecutionEnvironmentId;
+    const environmentId = folderEnvironmentId;
     const uniquePaths = [...new Set(paths)];
     if (showProgress) {
       visibleTreeRefreshRequestId = requestId;
@@ -375,7 +383,7 @@
 
   async function reconcileWorkspaceChange(batch: ChatWorkspaceChangeBatch): Promise<void> {
     if (batch.workingFolderId !== workingFolderId
-      || batch.executionEnvironmentId !== chat.selectedExecutionEnvironmentId) return;
+      || batch.executionEnvironmentId !== folderEnvironmentId) return;
     if (batch.renames.length > 0) {
       rootEntries = rootEntries.map((entry) => workspaceEntryAfterRenames(entry, batch));
       const nextChildren: Record<string, ProjectWorkingFolderFileEntry[]> = {};
@@ -442,7 +450,7 @@
 
   async function selectFile(
     path: string,
-    executionEnvironmentId = chat.selectedExecutionEnvironmentId,
+    executionEnvironmentId = folderEnvironmentId,
     discardDirty = false,
   ): Promise<boolean> {
     selectedPathSyncKey = `${loadedScope}\u0000${path}`;
@@ -579,7 +587,7 @@
 
   function openSelectedExternally(): void {
     if (!workingFolderId || !selectedPath) return;
-    chatApi.openProjectWorkingFolderFile(workingFolderId, selectedPath, chat.selectedExecutionEnvironmentId)
+    chatApi.openProjectWorkingFolderFile(workingFolderId, selectedPath, folderEnvironmentId)
       .catch((reason: unknown) => { if (errorCode(reason) !== "cancelled") error = message(reason); });
   }
 

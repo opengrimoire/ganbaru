@@ -16,7 +16,12 @@
   import Plus from "@lucide/svelte/icons/plus";
   import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
-  import type { BrowserTabBounds, BrowserTabRead } from "$lib/chat/contracts";
+  import type {
+    BrowserTabBounds,
+    BrowserTabRead,
+    ChatChannelId,
+    ProjectWorkingFolderId,
+  } from "$lib/chat/contracts";
   import { urlReach } from "$lib/chat/workspace/loopback";
   import { requestConfirmation, type ConfirmationRequest } from "$lib/components/ui/confirmation.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -27,6 +32,14 @@
 
   type ViewportPreset = "responsive" | "mobile" | "tablet" | "desktop";
 
+  interface Props {
+    /** Channel whose terminals announce preview servers. */
+    channelId: ChatChannelId | null;
+    /** Working folder the panel targets. */
+    workingFolderId: ProjectWorkingFolderId | null;
+  }
+
+  const { channelId, workingFolderId }: Props = $props();
   const { t } = getLocalization();
   const chat = useChat();
   let viewport: HTMLDivElement | undefined = $state();
@@ -462,11 +475,11 @@
   }
 
   async function discoverServers(): Promise<void> {
-    if (!threadId || loading) return;
+    if (!channelId || !workingFolderId || loading) return;
     loading = true;
     error = null;
     try {
-      discoveredServers = await chatApi.discoverPreviewServers(threadId);
+      discoveredServers = await chatApi.discoverPreviewServers(channelId, workingFolderId);
       if (discoveredServers.length === 0) artifactStatus = t("chat.browser.noServers");
     } catch (reason) {
       error = message(reason);
@@ -491,7 +504,7 @@
     <button type="button" class="chat-icon-button" disabled={!browserTab?.visible} aria-label={t("chat.browser.forward")} title={t("chat.browser.forward")} onclick={() => { const selectedThread = threadId; const selectedTab = tabId; if (selectedThread && selectedTab) void control(() => chatApi.browserForward(selectedThread, selectedTab)); }}><ArrowRight size={14} /></button>
     <button type="button" class="chat-icon-button" disabled={!browserTab?.visible} aria-label={t("chat.browser.refresh")} title={t("chat.browser.refresh")} onclick={() => { const selectedThread = threadId; const selectedTab = tabId; if (selectedThread && selectedTab) void control(() => chatApi.refreshBrowserTab(selectedThread, selectedTab)); }}><RefreshCw size={14} /></button>
     <input class="field" bind:value={url} autocomplete="url" spellcheck="false" aria-label={t("chat.browser.url")} placeholder={t("chat.browser.urlPlaceholder")} />
-    <button type="button" class="chat-icon-button" disabled={!threadId || loading} aria-label={t("chat.browser.discoverServers")} title={t("chat.browser.discoverServers")} onclick={() => void discoverServers()}><Search size={14} /></button>
+    <button type="button" class="chat-icon-button" disabled={!channelId || !workingFolderId || loading} aria-label={t("chat.browser.discoverServers")} title={t("chat.browser.discoverServers")} onclick={() => void discoverServers()}><Search size={14} /></button>
     <button type="submit" class="chat-icon-button" disabled={!url.trim() || loading} aria-label={t("chat.browser.open")} title={t("chat.browser.open")}><ExternalLink size={14} /></button>
   </form>
   {#if discoveredServers.length > 0}

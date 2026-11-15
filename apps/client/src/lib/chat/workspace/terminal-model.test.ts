@@ -11,6 +11,7 @@ import {
   terminalLinkTarget,
   terminalOutputByteLength,
   terminalPasteNeedsConfirmation,
+  terminalScopeKey,
 } from "./terminal-model";
 
 function chunk(generation: number, sequence: number, text: string) {
@@ -106,13 +107,34 @@ describe("Chat terminal model", () => {
     expect(registry.claimAvailable([first, second], "inspector")).toEqual([first]);
     expect(registry.claimAvailable([first, second], "bottom")).toEqual([second]);
 
-    registry.select("thread", "inspector", first.id);
-    registry.select("thread", "bottom", second.id);
-    expect(registry.selected("thread", "inspector")).toBe(first.id);
-    expect(registry.selected("thread", "bottom")).toBe(second.id);
+    const scope = terminalScopeKey("channel", "folder");
+    expect(scope).not.toBeNull();
+    registry.select(scope ?? "", "inspector", first.id);
+    registry.select(scope ?? "", "bottom", second.id);
+    expect(registry.selected(scope ?? "", "inspector")).toBe(first.id);
+    expect(registry.selected(scope ?? "", "bottom")).toBe(second.id);
 
     registry.release(first.id);
     expect(registry.claimAvailable([first, second], "bottom")).toEqual([first, second]);
+  });
+
+  it("keeps terminal selections separate for channels that share a folder and for folders of one channel", () => {
+    const registry = new TerminalPanelRegistry();
+    const channelXDocs = terminalScopeKey("channel-x", "folder-docs") ?? "";
+    const channelYDocs = terminalScopeKey("channel-y", "folder-docs") ?? "";
+    const channelXApp = terminalScopeKey("channel-x", "folder-app") ?? "";
+    expect(new Set([channelXDocs, channelYDocs, channelXApp]).size).toBe(3);
+    expect(terminalScopeKey(null, "folder-docs")).toBeNull();
+    expect(terminalScopeKey("channel-x", null)).toBeNull();
+
+    registry.select(channelXDocs, "bottom", "terminal-1");
+    registry.select(channelYDocs, "bottom", "terminal-2");
+    expect(registry.selected(channelXDocs, "bottom")).toBe("terminal-1");
+    expect(registry.selected(channelYDocs, "bottom")).toBe("terminal-2");
+    expect(registry.selected(channelXApp, "bottom")).toBeNull();
+    registry.select(channelXDocs, "bottom", null);
+    expect(registry.selected(channelXDocs, "bottom")).toBeNull();
+    expect(registry.selected(channelYDocs, "bottom")).toBe("terminal-2");
   });
 });
 

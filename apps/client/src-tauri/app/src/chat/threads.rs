@@ -557,8 +557,6 @@ pub async fn chat_delete_thread_permanently(
         &timestamp(now)?,
     )
     .await?;
-    app.state::<super::terminal::ChatTerminalRegistry>()
-        .shutdown_thread(&thread_id)?;
     app.state::<super::internal_mcp::InternalMcpRegistry>()
         .stop_thread_endpoint(&thread_id)
         .await;

@@ -84,14 +84,14 @@ describe("resolveBrowserApproval", () => {
 });
 
 describe("terminal layout commands", () => {
-  it("name the working folder so Rust authorizes the thread in it", async () => {
+  it("name the channel and working folder so Rust authorizes the channel in it", async () => {
     const { readChatTerminalLayout, saveChatTerminalPanelLayout } = await import("./workspace");
-    const layout = { threadId: "thread-1", schemaVersion: 1, groups: [], updatedAt: null };
+    const layout = { channelId: "channel-1", workingFolderId: "folder-1", schemaVersion: 1, groups: [], updatedAt: null };
     invokeMock.mockResolvedValue(layout);
-    await readChatTerminalLayout("thread-1", "folder-1");
+    await readChatTerminalLayout("channel-1", "folder-1");
     expect(invokeMock).toHaveBeenLastCalledWith("chat_read_terminal_layout", {
       dbUrl: "sqlite:test",
-      threadId: "thread-1",
+      channelId: "channel-1",
       workingFolderId: "folder-1",
     });
     const panel = {
@@ -101,12 +101,34 @@ describe("terminal layout commands", () => {
       splitDirection: "horizontal" as const,
       splitSizes: [],
     };
-    await saveChatTerminalPanelLayout("thread-1", "folder-1", panel);
+    await saveChatTerminalPanelLayout("channel-1", "folder-1", panel);
     expect(invokeMock).toHaveBeenLastCalledWith("chat_save_terminal_panel_layout", {
       dbUrl: "sqlite:test",
-      threadId: "thread-1",
+      channelId: "channel-1",
       workingFolderId: "folder-1",
       panel,
+    });
+  });
+
+  it("start terminals and discover preview servers in the panel's channel and folder", async () => {
+    const { createChatTerminal, discoverPreviewServers } = await import("./workspace");
+    invokeMock.mockRejectedValueOnce(new Error("stop after the call"));
+    const request = {
+      terminalId: "0f8fad5b-d9cb-469f-a165-70867728950e",
+      channelId: "channel-1",
+      workingFolderId: "folder-2",
+      columns: 80,
+      rows: 24,
+    };
+    await expect(createChatTerminal(request)).rejects.toThrow("stop after the call");
+    expect(invokeMock).toHaveBeenLastCalledWith("chat_terminal_create", { dbUrl: "sqlite:test", request });
+
+    invokeMock.mockResolvedValueOnce([]);
+    await expect(discoverPreviewServers("channel-1", "folder-2")).resolves.toEqual([]);
+    expect(invokeMock).toHaveBeenLastCalledWith("chat_browser_discover_servers", {
+      dbUrl: "sqlite:test",
+      channelId: "channel-1",
+      workingFolderId: "folder-2",
     });
   });
 });

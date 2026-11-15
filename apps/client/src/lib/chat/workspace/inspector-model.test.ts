@@ -5,7 +5,6 @@ import {
   ChatInspectorSessionState,
   closeInspectorTab,
   inspectorFocusAction,
-  inspectorSessionKey,
   moveWorkspacePanelTab,
   normalizeWorkspacePanelTabName,
   openInspectorTab,
@@ -22,21 +21,31 @@ import {
 } from "./inspector-model";
 
 describe("Chat inspector model", () => {
-  it("preserves independent per-thread session state", () => {
+  it("restores each channel's tabs, chosen folder, and selection after switching away and back", () => {
     const state = new ChatInspectorSessionState();
-    state.update("thread-a", { tab: "terminal", selectedFile: "src/a.ts" });
-    state.update("thread-b", { tab: "files" });
-    expect(state.read("thread-a").tab).toBe("terminal");
-    expect(state.read("thread-a").selectedFile).toBe("src/a.ts");
-    expect(state.read("thread-b").tab).toBe("files");
+    state.update("channel-a", {
+      tab: "terminal",
+      openTabs: ["files", "terminal"],
+      tabOrder: ["files", "terminal"],
+      selectedFile: "src/a.ts",
+      workingFolderId: "folder-docs",
+    });
+    state.update("channel-b", { tab: "files" });
+    expect(state.read("channel-b").workingFolderId).toBeNull();
+    const restored = state.read("channel-a");
+    expect(restored.tab).toBe("terminal");
+    expect(restored.openTabs).toEqual(["files", "terminal"]);
+    expect(restored.selectedFile).toBe("src/a.ts");
+    expect(restored.workingFolderId).toBe("folder-docs");
+    expect(state.read("channel-b").tab).toBe("files");
   });
 
   it("starts the inspector with the file browser and adds each panel once", () => {
     const state = new ChatInspectorSessionState();
-    expect(state.read("thread-a").tab).toBe("files");
-    expect(state.read("thread-a").openTabs).toEqual(["files"]);
-    expect(state.read("thread-a").tabOrder).toEqual(["files"]);
-    expect(state.read("thread-a").tabNames).toEqual({});
+    expect(state.read("channel-a").tab).toBe("files");
+    expect(state.read("channel-a").openTabs).toEqual(["files"]);
+    expect(state.read("channel-a").tabOrder).toEqual(["files"]);
+    expect(state.read("channel-a").tabNames).toEqual({});
     expect(openInspectorTab(["files"], "review")).toEqual(["files", "review"]);
     expect(openInspectorTab(["files", "review"], "files")).toEqual(["files", "review"]);
   });
@@ -44,32 +53,32 @@ describe("Chat inspector model", () => {
   it("supports a terminal-first bottom panel without inheriting the inspector default", () => {
     const state = new ChatInspectorSessionState("terminal");
     expect(state.read(null).tab).toBe("terminal");
-    expect(state.read("thread-a").openTabs).toEqual(["terminal"]);
-    expect(state.read("thread-a").tabOrder).toEqual(["terminal"]);
-    expect(state.read("thread-a").fileTreeVisible).toBe(false);
+    expect(state.read("channel-a").openTabs).toEqual(["terminal"]);
+    expect(state.read("channel-a").tabOrder).toEqual(["terminal"]);
+    expect(state.read("channel-a").fileTreeVisible).toBe(false);
   });
 
-  it("keeps renamed tabs isolated by thread and protects stored state from mutation", () => {
+  it("keeps renamed tabs isolated by channel and protects stored state from mutation", () => {
     const state = new ChatInspectorSessionState();
-    state.update("thread-a", { tabNames: { files: "Sources" } });
-    const firstRead = state.read("thread-a");
+    state.update("channel-a", { tabNames: { files: "Sources" } });
+    const firstRead = state.read("channel-a");
     firstRead.tabNames.files = "Mutated";
 
-    expect(state.read("thread-a").tabNames).toEqual({ files: "Sources" });
-    expect(state.read("thread-b").tabNames).toEqual({});
+    expect(state.read("channel-a").tabNames).toEqual({ files: "Sources" });
+    expect(state.read("channel-b").tabNames).toEqual({});
   });
 
-  it("bounds retained per-thread panel state", () => {
+  it("bounds retained per-channel panel state", () => {
     const state = new ChatInspectorSessionState();
     for (let index = 0; index < 64; index += 1) {
-      state.update(`thread-${index}`, { selectedFile: `src/${index}.ts` });
+      state.update(`channel-${index}`, { selectedFile: `src/${index}.ts` });
     }
-    state.read("thread-0");
-    state.update("thread-64", { selectedFile: "src/64.ts" });
+    state.read("channel-0");
+    state.update("channel-64", { selectedFile: "src/64.ts" });
 
-    expect(state.read("thread-0").selectedFile).toBe("src/0.ts");
-    expect(state.read("thread-1").selectedFile).toBeNull();
-    expect(state.read("thread-64").selectedFile).toBe("src/64.ts");
+    expect(state.read("channel-0").selectedFile).toBe("src/0.ts");
+    expect(state.read("channel-1").selectedFile).toBeNull();
+    expect(state.read("channel-64").selectedFile).toBe("src/64.ts");
   });
 
   it("uses the terminal path as its default tab name and bounds custom names", () => {
@@ -149,12 +158,12 @@ describe("Chat inspector model", () => {
   it("preserves internal pane sizes independently per placement session", () => {
     const inspector = new ChatInspectorSessionState("files");
     const bottom = new ChatInspectorSessionState("terminal");
-    inspector.update("thread-a", { fileTreeWidthPx: 280, changedFileListHeightPx: 190 });
-    bottom.update("thread-a", { fileTreeWidthPx: 180, changedFileListHeightPx: 72 });
-    expect(inspector.read("thread-a").fileTreeWidthPx).toBe(280);
-    expect(inspector.read("thread-a").changedFileListHeightPx).toBe(190);
-    expect(bottom.read("thread-a").fileTreeWidthPx).toBe(180);
-    expect(bottom.read("thread-a").changedFileListHeightPx).toBe(72);
+    inspector.update("channel-a", { fileTreeWidthPx: 280, changedFileListHeightPx: 190 });
+    bottom.update("channel-a", { fileTreeWidthPx: 180, changedFileListHeightPx: 72 });
+    expect(inspector.read("channel-a").fileTreeWidthPx).toBe(280);
+    expect(inspector.read("channel-a").changedFileListHeightPx).toBe(190);
+    expect(bottom.read("channel-a").fileTreeWidthPx).toBe(180);
+    expect(bottom.read("channel-a").changedFileListHeightPx).toBe(72);
   });
 
   it("selects the nearest tab when a workspace panel closes", () => {
@@ -172,11 +181,6 @@ describe("Chat inspector model", () => {
     });
   });
 
-  it("keeps inspector state available for a workspace draft", () => {
-    expect(inspectorSessionKey(null, "workspace-a")).toBe("draft:workspace-a");
-    expect(inspectorSessionKey("thread-a", "workspace-a")).toBe("thread-a");
-    expect(inspectorSessionKey(null, null)).toBeNull();
-  });
 
   it("derives a stable changed-file tree including renames", () => {
     const tree = buildChangedFileTree([

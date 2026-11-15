@@ -961,6 +961,7 @@ export const chat = {
     cloneRepository: "Clone into folder",
     cloneEmptyFolderNotice: "Cloning is allowed only when the selected working folder is empty.",
     executionEnvironment: "Execution environment",
+    workingFolder: "Working folder",
     currentFolder: "Current folder",
     newWorktree: "New worktree",
     branchName: "Branch name",

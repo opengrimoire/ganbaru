@@ -183,7 +183,6 @@ commands.allow = [
   "chat_rename_thread",
   "chat_replace_credential",
   "chat_replace_teammate_access",
-  "chat_reserve_draft_thread",
   "chat_resolve_approval",
   "chat_resolve_conflict",
   "chat_resolve_user_input",

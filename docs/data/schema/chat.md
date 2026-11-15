@@ -91,7 +91,7 @@ Review artifacts are derived from authorized repository state. Persisted patch o
 
 ## Terminals, previews, and workspace observation
 
-Terminal sessions, browser previews, internal file tools, and workspace observers retain exact thread and execution-target identity. Native process handles, ports, absolute paths, and watcher state are device-local runtime data.
+Terminal sessions belong to one channel and working folder; browser previews, internal file tools, and workspace observers retain exact thread and execution-target identity. Native process handles, ports, absolute paths, and watcher state are device-local runtime data. Saved terminal layouts (`chat_terminal_layouts`) are keyed by channel and working folder, follow both on deletion, and stay device-local, because the terminals they describe run only on this device.
 
 Only one mutable provider driver generation owns an active thread at a time. Stopped or mismatched generations cannot append ordinary projection events. Workspace observation coalesces bounded semantic events and uses typed invalidation on overflow instead of persisting an unbounded path stream.
 

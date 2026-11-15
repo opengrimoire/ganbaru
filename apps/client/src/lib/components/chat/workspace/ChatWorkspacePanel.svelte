@@ -9,7 +9,7 @@
   const terminalPanels = new TerminalPanelRegistry();
   const terminalLoadLocks = new Map<string, Promise<void>>();
 
-  /** Serializes terminal discovery and creation within one thread and workspace. */
+  /** Serializes terminal discovery and creation within one channel and working folder. */
   async function withTerminalLoadLock<T>(scopeKey: string, operation: () => Promise<T>): Promise<T> {
     const previous = terminalLoadLocks.get(scopeKey) ?? Promise.resolve();
     let release: () => void = () => undefined;
@@ -43,7 +43,6 @@
   import {
     CHAT_WORKSPACE_PANEL_TAB_NAME_MAX_LENGTH,
     closeInspectorTab,
-    inspectorSessionKey,
     normalizeWorkspacePanelTabName,
     openInspectorTab,
     reconcileWorkspacePanelTabOrder,
@@ -51,11 +50,15 @@
     terminalWorkspacePanelTabKey,
     workspacePanelKinds,
     workspacePanelTerminalId,
-    type ChatInspectorThreadState,
+    type ChatInspectorPanelState,
     type ChatWorkspacePanelTabKey,
   } from "$lib/chat/workspace/inspector-model";
   import { WorkspacePanelTabController } from "$lib/chat/workspace/panel-tabs.svelte";
-  import { terminalErrorMessage } from "$lib/chat/workspace/terminal-model";
+  import { terminalErrorMessage, terminalScopeKey as scopeKeyFor } from "$lib/chat/workspace/terminal-model";
+  import {
+    channelPanelWorkingFolders,
+    resolveChannelPanelWorkingFolder,
+  } from "$lib/chat/workspace/working-folder-selection";
   import {
     CHAT_OPEN_WORKSPACE_PANEL_EVENT,
     isChatWorkspaceRequest,
@@ -110,7 +113,7 @@
     maxHeight: 0,
     placement: "below",
   };
-  let panelState = $state<ChatInspectorThreadState>(placementSession().read(null));
+  let panelState = $state<ChatInspectorPanelState>(placementSession().read(null));
   let terminals: ChatTerminalRead[] = $state([]);
   let selectedTerminalId: string | null = $state(null);
   let terminalsLoading = $state(false);
@@ -128,9 +131,21 @@
   let reviewOpenRequest = 0;
   let destroyed = false;
   let isTerminalSplit = $state(false);
-  const threadId = $derived(chat.selectedThreadId ?? chat.draftThreadId);
-  const workingFolderId = $derived(chat.selectedWorkingFolderId);
-  const sessionKey = $derived(inspectorSessionKey(threadId, workingFolderId));
+  /** The panel belongs to the selected channel, so its tabs, chosen folder, and terminals follow the channel. */
+  const sessionKey = $derived(chat.selectedChannelId);
+  const folderChoices = $derived(channelPanelWorkingFolders(chat.workingFolders, chat.selectedChannel?.projectId ?? null));
+  const folderOptions = $derived(folderChoices.map((entry) => ({
+    value: entry.workingFolder.id,
+    label: entry.workingFolder.displayName,
+  })));
+  const workingFolderId = $derived(resolveChannelPanelWorkingFolder(
+    folderChoices,
+    panelState.workingFolderId,
+    chat.selectedWorkingFolderId,
+  ));
+  /** The chat's execution environment applies only while the panel targets the chat's own folder. */
+  const followsChatFolder = $derived(workingFolderId !== null && workingFolderId === chat.selectedWorkingFolderId);
+  const executionEnvironmentId = $derived(followsChatFolder ? chat.selectedExecutionEnvironmentId : null);
   const selectedTerminal = $derived(terminals.find((terminal) => terminal.id === selectedTerminalId) ?? null);
   /** True when the terminal tab has no terminal to show after loading, so its failure fills the tab. */
   const terminalLoadFailed = $derived(panelState.tab === "terminal" && !terminalsLoading && !(isTerminalSplit && terminals.length > 1) && !selectedTerminal);
@@ -308,10 +323,10 @@
 
   $effect(() => {
     const terminalOpen = panelState.openTabs.includes("terminal");
-    const thread = threadId;
+    const channel = sessionKey;
     const workspace = workingFolderId;
-    const nextKey = `${thread ?? ""}:${workspace ?? ""}`;
-    if (!terminalOpen || !thread || !workspace) {
+    const nextKey = scopeKeyFor(channel, workspace);
+    if (!terminalOpen || !channel || !workspace || !nextKey) {
       terminalScopeKey = "";
       terminals = [];
       selectedTerminalId = null;
@@ -323,10 +338,20 @@
     }
     if (terminalScopeKey === nextKey && (terminalsLoading || terminals.length > 0 || error)) return;
     terminalScopeKey = nextKey;
-    void loadTerminals(thread, workspace, nextKey);
+    void loadTerminals(channel, workspace, nextKey);
   });
 
-  function update(updateValue: Partial<ChatInspectorThreadState>): void {
+  /** Points this panel's Files, Source control, and new terminals at another folder of the channel's project. */
+  function chooseWorkingFolder(folderId: string): void {
+    if (folderId === workingFolderId) return;
+    update({
+      workingFolderId: folderId,
+      fileBrowserPath: "",
+      filePreviewPath: null,
+    });
+  }
+
+  function update(updateValue: Partial<ChatInspectorPanelState>): void {
     const key = sessionKey;
     if (!key) return;
     panelState = placementSession().update(key, updateValue);
@@ -337,14 +362,15 @@
     if (terminalLayoutSaveTimer !== null) window.clearTimeout(terminalLayoutSaveTimer);
     terminalLayoutSaveTimer = window.setTimeout(() => {
       terminalLayoutSaveTimer = null;
-      const thread = threadId;
+      const channel = sessionKey;
       const workspace = workingFolderId;
-      if (!thread || !workspace || chat.selectedThreadId !== thread || terminals.length === 0) return;
+      if (!channel || !workspace || terminalsLoading || terminals.length === 0) return;
+      if (terminalScopeKey !== scopeKeyFor(channel, workspace)) return;
       const terminalNames = terminals.map((terminal) => workspacePanelTabLabel(terminalWorkspacePanelTabKey(terminal.id)));
       const selectedIndex = selectedTerminalId === null
         ? -1
         : terminals.findIndex((terminal) => terminal.id === selectedTerminalId);
-      void chatApi.saveChatTerminalPanelLayout(thread, workspace, {
+      void chatApi.saveChatTerminalPanelLayout(channel, workspace, {
         placement,
         terminalNames,
         selectedIndex: selectedIndex >= 0 ? selectedIndex : null,
@@ -433,7 +459,7 @@
   }
 
   async function loadTerminals(
-    thread: string,
+    channel: string,
     workspace: string,
     scopeKey: string,
   ): Promise<void> {
@@ -443,14 +469,13 @@
     error = null;
     try {
       const loaded = await withTerminalLoadLock(scopeKey, async () => {
-        await chatApi.reserveChatDraftThread(thread, workspace);
         const [available, layout] = await Promise.all([
-          chatApi.listChatTerminals(thread, workspace),
-          chatApi.readChatTerminalLayout(thread, workspace),
+          chatApi.listChatTerminals(channel, workspace),
+          chatApi.readChatTerminalLayout(channel, workspace),
         ]);
         const owned = terminalPanels.claimAvailable(available, placement);
         if (owned.length > 0) return { terminals: owned, layout };
-        const snapshot = await createTerminal(thread, workspace);
+        const snapshot = await createTerminal(channel, workspace);
         return { terminals: [snapshot.terminal], layout };
       });
       if (destroyed || terminalScopeKey !== scopeKey) return;
@@ -473,7 +498,7 @@
         tabNames[terminalWorkspacePanelTabKey(firstTerminal.id)] = placeholderName;
         update({ tabNames });
       }
-      const remembered = terminalPanels.selected(thread, placement);
+      const remembered = terminalPanels.selected(scopeKey, placement);
       const savedSelection = savedPanel?.selectedIndex === null || savedPanel?.selectedIndex === undefined
         ? null
         : loaded.terminals[savedPanel.selectedIndex]?.id ?? null;
@@ -488,13 +513,12 @@
   }
 
   async function createTerminal(
-    thread: string,
+    channel: string,
     workspace: string,
   ): ReturnType<typeof chatApi.createChatTerminal> {
-    await chatApi.reserveChatDraftThread(thread, workspace);
     const snapshot = await chatApi.createChatTerminal({
       terminalId: crypto.randomUUID(),
-      threadId: thread,
+      channelId: channel,
       workingFolderId: workspace,
       columns: 80,
       rows: 24,
@@ -504,12 +528,12 @@
   }
 
   async function addTerminal(): Promise<void> {
-    const thread = threadId;
+    const channel = sessionKey;
     const workspace = workingFolderId;
-    if (!thread || !workspace) return;
+    if (!channel || !workspace) return;
     panelPickerOpen = false;
-    const snapshot = await createTerminal(thread, workspace);
-    if (destroyed || terminalScopeKey !== `${thread}:${workspace}`) return;
+    const snapshot = await createTerminal(channel, workspace);
+    if (destroyed || terminalScopeKey !== scopeKeyFor(channel, workspace)) return;
     const previousOrder = orderedTabKeys;
     terminals = [...terminals, snapshot.terminal];
     update({
@@ -524,12 +548,12 @@
   }
 
   async function retryTerminalLoad(): Promise<void> {
-    const thread = threadId;
+    const channel = sessionKey;
     const workspace = workingFolderId;
-    if (!thread || !workspace) throw new Error("Terminal retry needs a thread and a working folder");
-    const scopeKey = `${thread}:${workspace}`;
+    const scopeKey = scopeKeyFor(channel, workspace);
+    if (!channel || !workspace || !scopeKey) throw new Error("Terminal retry needs a channel and a working folder");
     terminalScopeKey = scopeKey;
-    await loadTerminals(thread, workspace, scopeKey);
+    await loadTerminals(channel, workspace, scopeKey);
     if (error) throw new Error(error);
   }
 
@@ -543,7 +567,8 @@
 
   function selectTerminal(terminalId: string | null): void {
     selectedTerminalId = terminalId;
-    if (threadId) terminalPanels.select(threadId, placement, terminalId);
+    const scopeKey = scopeKeyFor(sessionKey, workingFolderId);
+    if (scopeKey) terminalPanels.select(scopeKey, placement, terminalId);
     scheduleTerminalLayoutSave();
   }
 
@@ -557,11 +582,11 @@
   }
 
   async function closeTerminal(terminal: ChatTerminalRead): Promise<void> {
-    const thread = threadId;
+    const channel = sessionKey;
     const workspace = workingFolderId;
-    if (!thread || !workspace) return;
-    const scopeKey = `${thread}:${workspace}`;
-    let result = await chatApi.closeChatTerminal(terminal.id, thread, workspace, false);
+    const scopeKey = scopeKeyFor(channel, workspace);
+    if (!channel || !workspace || !scopeKey) return;
+    let result = await chatApi.closeChatTerminal(terminal.id, channel, workspace, false);
     if (destroyed || terminalScopeKey !== scopeKey) return;
     if (result.confirmationRequired) {
       const confirmed = await requestConfirmation({
@@ -570,7 +595,7 @@
         danger: true,
       });
       if (!confirmed || destroyed || terminalScopeKey !== scopeKey) return;
-      result = await chatApi.closeChatTerminal(terminal.id, thread, workspace, true);
+      result = await chatApi.closeChatTerminal(terminal.id, channel, workspace, true);
       if (destroyed || terminalScopeKey !== scopeKey) return;
     }
     if (!result.closed) return;
@@ -939,6 +964,8 @@
       <div class="retained-workspace-panel" class:hidden={panelState.tab !== "files"}>
         <ChatFilesPanel
           active={visible && panelState.tab === "files"}
+          folderId={workingFolderId}
+          folderEnvironmentId={executionEnvironmentId}
           directoryPath={panelState.fileBrowserPath}
           selectedPath={panelState.filePreviewPath}
           treeVisible={panelState.fileTreeVisible}
@@ -984,9 +1011,15 @@
     {:else if panelState.tab === "plan"}
       <ChatPlanPanel />
     {:else if panelState.tab === "sourceControl"}
-      <ChatSourceControlPanel />
+      <ChatSourceControlPanel
+        folderId={workingFolderId}
+        folderEnvironmentId={executionEnvironmentId}
+        environmentSwitchable={followsChatFolder}
+        {folderOptions}
+        onFolderChange={chooseWorkingFolder}
+      />
     {:else if panelState.tab === "browser"}
-      <ChatBrowserPanel />
+      <ChatBrowserPanel channelId={sessionKey} {workingFolderId} />
     {/if}
   </div>
 </section>

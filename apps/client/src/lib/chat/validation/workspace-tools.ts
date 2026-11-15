@@ -445,7 +445,7 @@ export function parseChatTerminal(value: unknown, label = "terminal"): ChatTermi
   const record = readRecord(value, label);
   return {
     id: readIdentifier(record.id, `${label}.id`),
-    threadId: readIdentifier(record.threadId, `${label}.threadId`),
+    channelId: readIdentifier(record.channelId, `${label}.channelId`),
     workingFolderId: readIdentifier(record.workingFolderId, `${label}.workingFolderId`),
     name: readString(record.name, `${label}.name`),
     shell: readString(record.shell, `${label}.shell`),
@@ -472,7 +472,8 @@ function parseChatTerminalPanelLayout(value: unknown, label: string): ChatTermin
 export function parseChatTerminalLayout(value: unknown): ChatTerminalLayoutRead {
   const record = readRecord(value, "terminalLayout");
   return {
-    threadId: readIdentifier(record.threadId, "terminalLayout.threadId"),
+    channelId: readIdentifier(record.channelId, "terminalLayout.channelId"),
+    workingFolderId: readIdentifier(record.workingFolderId, "terminalLayout.workingFolderId"),
     schemaVersion: readNonNegativeSafeInteger(record.schemaVersion, "terminalLayout.schemaVersion"),
     groups: array(record.groups, "terminalLayout.groups", parseChatTerminalPanelLayout),
     updatedAt: readNullable(record.updatedAt, "terminalLayout.updatedAt", readUtcTimestamp),

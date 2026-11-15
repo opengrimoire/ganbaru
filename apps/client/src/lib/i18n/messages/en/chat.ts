@@ -305,6 +305,7 @@ export const chat = {
       interval: "Every few hours",
       intervalHours: "Hours between messages",
       invalid: "Choose a valid repeat rule.",
+      needsSchedule: "Choose when to send it first to make it repeat",
       everyDay: "Every day",
       mondayToFriday: "Monday to Friday",
       everyHours: (count: number) => count === 1 ? "Every hour" : `Every ${count} hours`,

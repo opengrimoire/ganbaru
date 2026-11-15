@@ -15,14 +15,19 @@
     repeat,
     summary = null,
     disabled = false,
+    unavailableReason = null,
     onChange,
   }: {
     repeat: ChatRepeatSelection;
     /** Localized description of the rule the current choice produces, when it repeats. */
     summary?: string | null;
     disabled?: boolean;
+    /** Explains why repeating is unavailable; the choice is disabled and the reason shows as its tooltip. */
+    unavailableReason?: string | null;
     onChange: (repeat: ChatRepeatSelection) => void;
   } = $props();
+
+  const locked = $derived(disabled || unavailableReason !== null);
 
   const { t } = getLocalization();
   const choiceLabels: Record<ChatRepeatChoice, () => string> = {
@@ -48,26 +53,26 @@
 </script>
 
 <div class="repeat-control">
-  <div class="interval-row text-panel-detail text-muted-foreground">
-    <span>{t("chat.organization.repeat.label")}</span>
+  <div class="repeat-row" class:unavailable={unavailableReason !== null} data-app-tooltip={unavailableReason ?? undefined}>
+    <strong>{t("chat.organization.repeat.label")}</strong>
     <Select
       inline
-      class="w-36"
+      class="w-auto min-w-0 flex-1"
       ariaLabel={t("chat.organization.repeat.label")}
       value={repeat.choice}
       {options}
-      {disabled}
+      disabled={locked}
       onChange={(value) => { if (isRepeatChoice(value)) onChange({ ...repeat, choice: value }); }}
     />
   </div>
-  {#if repeat.choice === "custom_days"}
+  {#if unavailableReason === null && repeat.choice === "custom_days"}
     <ChatWeekdayToggles
       mask={repeat.weekdays}
       label={t("chat.organization.repeat.customDays")}
       {disabled}
       onChange={(weekdays) => onChange({ ...repeat, weekdays })}
     />
-  {:else if repeat.choice === "interval"}
+  {:else if unavailableReason === null && repeat.choice === "interval"}
     <label class="interval-row text-panel-detail text-muted-foreground">
       <span>{t("chat.organization.repeat.intervalHours")}</span>
       <input
@@ -88,4 +93,9 @@
 <style>
   .repeat-control { display:grid; gap:0.3rem; padding:0.15rem 0.25rem 0.3rem; }
   .interval-row { display:flex; align-items:center; justify-content:space-between; gap:0.5rem; }
+  .repeat-row { display:flex; align-items:center; gap:0.75rem; }
+  .repeat-row strong { flex:0 0 auto; font-weight:600; }
+  /* The disabled select passes the pointer to its row so the row shows the reason and the not-allowed cursor. */
+  .repeat-row.unavailable { cursor:not-allowed; }
+  .repeat-row.unavailable :global(button) { pointer-events:none; }
 </style>

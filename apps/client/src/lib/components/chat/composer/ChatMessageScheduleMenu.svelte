@@ -44,6 +44,7 @@
     selectedRecurrence = null,
     startCustom = false,
     allowClear = true,
+    persistent = false,
     scheduledMessages = [],
     disabled = false,
     onSelect = () => {},
@@ -60,6 +61,8 @@
     startCustom?: boolean;
     /** Offers clearing the selection to send immediately. */
     allowClear?: boolean;
+    /** Stays open after a choice, and a repeat change applies to the selected time at once. */
+    persistent?: boolean;
     scheduledMessages?: ChatScheduledMessageRead[];
     disabled?: boolean;
     onSelect?: (scheduledFor: string, recurrence: ChatRecurrenceSpec | null) => void;
@@ -172,10 +175,20 @@
     return chatRecurrenceFromRepeat(repeat, selection, localTimezone()) ?? undefined;
   }
 
+  /** Updates the repeat choice; a persistent menu outside the custom view applies it to the selected time at once. */
   function changeRepeat(next: ChatRepeatSelection): void {
     repeat = next;
     repeatTouched = true;
     error = null;
+    if (!persistent || customScheduleOpen || disabled || !selectedScheduledFor) return;
+    const selection = selectionFromInstant(selectedScheduledFor);
+    if (!selection) return;
+    const recurrence = recurrenceFor(selection, selectedScheduledFor);
+    if (recurrence === undefined) {
+      error = t("chat.organization.repeat.invalid");
+      return;
+    }
+    onSelect(selectedScheduledFor, recurrence);
   }
 
   function isSelected(selection: ChatScheduleSelection): boolean {
@@ -195,13 +208,21 @@
       error = t("chat.organization.repeat.invalid");
       return;
     }
+    error = null;
+    scheduleDate = selection.date;
+    scheduleTime = selection.time;
+    customScheduleOpen = false;
+    scheduleTimePickerOpen = false;
     onSelect(scheduledFor, recurrence);
-    onClose();
+    if (!persistent) onClose();
   }
 
   function clearSchedule(): void {
+    repeat = chatRepeatFromRecurrence(null);
+    repeatTouched = false;
+    error = null;
     onClear();
-    onClose();
+    if (!persistent) onClose();
   }
 
   async function cancelScheduledMessage(id: ChatScheduledMessageId): Promise<void> {
@@ -328,7 +349,7 @@
           selectedDate={scheduleDate}
           minDate={scheduleToday}
           small
-          highlightMode="none"
+          highlightMode="day"
           activeHighlight="primary"
           onSelect={(date) => { scheduleDate = date; }}
           onCancel={() => { customScheduleOpen = false; scheduleTimePickerOpen = false; }}
@@ -393,7 +414,13 @@
         </button>
       </div>
       <div class="menu-separator" role="separator"></div>
-      <ChatScheduleRepeatControl {repeat} summary={repeatSummary} {disabled} onChange={changeRepeat} />
+      <ChatScheduleRepeatControl
+        {repeat}
+        summary={repeatSummary}
+        {disabled}
+        unavailableReason={selectedScheduledFor || !persistent ? null : t("chat.organization.repeat.needsSchedule")}
+        onChange={changeRepeat}
+      />
     {/if}
   {/if}
   {#if error}<Notice class="schedule-error" message={error} />{/if}

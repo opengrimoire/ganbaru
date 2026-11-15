@@ -1740,15 +1740,12 @@
   function selectSchedule(nextScheduledFor: string, nextRecurrence: ChatRecurrenceSpec | null): void {
     scheduledFor = nextScheduledFor;
     scheduledRecurrence = nextRecurrence;
-    scheduleMenuOpen = false;
     persist();
-    void tick().then(() => editorController?.focus());
   }
 
   function clearSchedule(): void {
     scheduledFor = null;
     scheduledRecurrence = null;
-    scheduleMenuOpen = false;
     persist();
   }
 
@@ -2086,7 +2083,7 @@
           {#if scheduleMenuOpen}
             {#if ScheduleMenu}
               {@const LoadedScheduleMenu = ScheduleMenu}
-              <LoadedScheduleMenu mode="choose" selectedScheduledFor={scheduledFor} selectedRecurrence={scheduledRecurrence} disabled={sending} onSelect={selectSchedule} onClear={clearSchedule} onClose={() => { scheduleMenuOpen = false; }} />
+              <LoadedScheduleMenu mode="choose" persistent selectedScheduledFor={scheduledFor} selectedRecurrence={scheduledRecurrence} disabled={sending} onSelect={selectSchedule} onClear={clearSchedule} onClose={() => { scheduleMenuOpen = false; }} />
             {:else}<div class="composer-menu schedule-loading surface-floating surface-floating-body"><Loading layout="fill" /></div>{/if}
           {/if}
         </div>

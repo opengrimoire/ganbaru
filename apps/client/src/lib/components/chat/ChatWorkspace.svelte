@@ -10,6 +10,7 @@
     preloadChatLocalExecutionUi,
   } from "$lib/chat/workspace/local-execution-ui";
   import { inspectorFocusAction } from "$lib/chat/workspace/inspector-model";
+  import { chatPanelScope } from "$lib/chat/workspace/panel-visibility.svelte";
   import {
     CHAT_OPEN_WORKSPACE_PANEL_EVENT,
     chatWorkspaceRequest,
@@ -583,15 +584,15 @@
     if (bottomPanelOpen) bottomPanelMounted = true;
   });
 
-  let panelChannelId = untrack(() => chat.selectedChannelId);
+  let shownPanelScope = untrack(() => chatPanelScope(chat.selectedChannelId, chat.replyThreadTabId));
   /**
-   * Shows another channel's panel arrangement at once: panel transitions turn off before the DOM applies the new
-   * channel's open state and come back after it is laid out, so neither panel slides open or closed on a switch.
+   * Shows another channel's or reply thread tab's panel arrangement at once: panel transitions turn off before the DOM
+   * applies the new open state and come back after it is laid out, so neither panel slides open or closed on a switch.
    */
   $effect.pre(() => {
-    const channelId = chat.selectedChannelId;
-    if (channelId === panelChannelId) return;
-    panelChannelId = channelId;
+    const panelScope = chatPanelScope(chat.selectedChannelId, chat.replyThreadTabId);
+    if (panelScope === shownPanelScope) return;
+    shownPanelScope = panelScope;
     if (panelTransitionFrame !== null) {
       window.cancelAnimationFrame(panelTransitionFrame);
       panelTransitionFrame = null;

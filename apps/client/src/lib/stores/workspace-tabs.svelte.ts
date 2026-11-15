@@ -24,6 +24,7 @@ import {
   insertWorkspaceTab,
   isWithinTabScope,
   kindLocation,
+  locationKeepsItem,
   moveWorkspaceTab,
   parseClosedWorkspaceTabs,
   parseWorkspaceTabsState,
@@ -365,11 +366,16 @@ async function restoreActive(): Promise<void> {
 
 /**
  * Drop the lock of a tab whose project or item could not be shown, for example because it was deleted, so
- * the tab follows the stores again instead of opening a new tab every time it is selected.
+ * the tab follows the stores again instead of opening a new tab every time it is selected. A tab kept on its
+ * item without a lock takes what the stores show instead.
  */
 function unlockIfUnreachable(tabId: string, shown: WorkspaceTabLocation): void {
   const tab = tabsState.tabs.find((candidate) => candidate.id === tabId);
-  if (tab?.locked && !isWithinTabScope(tab, shown)) setState(updateWorkspaceTab(tabsState, tabId, { locked: false }));
+  if (!tab || isWithinTabScope(tab, shown)) return;
+  if (tab.locked) setState(updateWorkspaceTab(tabsState, tabId, { locked: false }));
+  else if (locationKeepsItem(tab.location) && meaningfulLocation(shown)) {
+    setState(updateWorkspaceTab(tabsState, tabId, { location: shown }));
+  }
 }
 
 function commitState(next: WorkspaceTabsState): void {
@@ -765,8 +771,6 @@ function openKind(kind: View): void {
 export interface OpenWorkspaceLocationOptions {
   /** Leave the current tab in front. */
   background?: boolean;
-  /** Keep the new tab on this location, so navigating elsewhere from it opens another tab. */
-  locked?: boolean;
 }
 
 /** Open a project or item in a tab of its own. A tab that already shows it at that level is focused instead. */
@@ -777,7 +781,7 @@ function openLocation(
 ): void {
   const host = connection;
   if (!host) return;
-  const created = createWorkspaceTab(createTabId(), location, { level, locked: options.locked ?? false });
+  const created = createWorkspaceTab(createTabId(), location, { level });
   const tab = { ...created, ...tabNames(host.adapter, created) };
   const existing = tabsState.tabs.find((candidate) => tabMatchesTarget(candidate, tab.level, location));
   if (existing) {

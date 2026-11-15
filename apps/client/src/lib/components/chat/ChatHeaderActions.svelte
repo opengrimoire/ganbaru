@@ -1,5 +1,4 @@
 <script lang="ts">
-  import AppWindow from "@lucide/svelte/icons/app-window";
   import PanelBottom from "@lucide/svelte/icons/panel-bottom";
   import PanelRight from "@lucide/svelte/icons/panel-right";
   import Settings2 from "@lucide/svelte/icons/settings-2";
@@ -66,7 +65,7 @@
       kind: "chat",
       projectId: channel.projectId,
       item: { type: "chat-reply-thread", id: replyThreadId, channelId: channel.id },
-    }, { locked: true });
+    });
   }
 </script>
 
@@ -82,7 +81,7 @@
   {/if}
   {#if canOpenReplyThreadTab}
     <button type="button" class={iconButtonClass} aria-label={t("chat.organization.openThreadInNewTab")} title={t("chat.organization.openThreadInNewTab")} data-chat-reply-thread-new-tab onclick={openReplyThreadInNewTab}>
-      <AppWindow size={actionIconSize} strokeWidth={1.75} />
+      <SquareArrowOutUpRight size={actionIconSize} strokeWidth={1.75} />
     </button>
   {:else if localExecutionAvailable && selectedThread && !replyThreadTab && detachBlock !== "unsupported"}
     <button type="button" class={cn(iconButtonClass, detachBlock !== null && "cursor-not-allowed opacity-40")} aria-label={t("chat.detach")} aria-disabled={detachBlock !== null} title={detachTitle} onclick={() => { if (detachBlock === null) detachThread(); }}>

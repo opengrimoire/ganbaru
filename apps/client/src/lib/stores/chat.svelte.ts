@@ -78,6 +78,7 @@ import { ChatCommunicationController } from "$lib/stores/chat/communication-cont
 import { ChatReviewQueueController } from "$lib/stores/chat/review-queue-controller.svelte";
 import { channelNeedsVisit, type ChatBatchAcceptSummary } from "$lib/chat/review-queue/model";
 import { ChatTimelineController } from "$lib/stores/chat/timeline-controller.svelte";
+import { ExactExecutionReadCache, type ExactExecutionRead } from "$lib/chat/timeline/reply-thread-model";
 import {
   fullNativeChange,
   mergeNativeChanges,
@@ -106,6 +107,8 @@ export type { ChatComposerSendOptions, ChatThreadTurnRef } from "$lib/stores/cha
 
 /** Channels whose open reply thread is remembered, matching the bound on per-channel panel state. */
 const MAX_REMEMBERED_CHANNEL_REPLY_THREADS = 64;
+/** Reply threads whose exact execution reads are kept for an instant return to them. */
+const EXACT_EXECUTION_READ_THREADS = 8;
 const paneStores = new ChatPaneStores<ChatStore>();
 
 /**
@@ -148,6 +151,8 @@ export class ChatStore {
   private readonly organizationalController: ChatOrganizationalController;
   private readonly threadCollectionController: ChatThreadCollectionController;
   private readonly timelineController: ChatTimelineController;
+  /** Exact execution reads of recently shown reply threads, kept across remounts of the reply thread view. */
+  readonly exactExecutionReads = new ExactExecutionReadCache<ExactExecutionRead>(EXACT_EXECUTION_READ_THREADS);
   selectedChannelId = $state<ChatChannelId | null>(null);
   teammateIdentities = $derived([...this.teammates, ...this.archivedTeammates]);
   openReplyThreadId = $state<ChatReplyThreadId | null>(null);
@@ -199,6 +204,8 @@ export class ChatStore {
   private projectSelectionProjectId: string | null = null;
   private projectSelectionPromise: Promise<void> | null = null;
   private channelSelectionRequest = 0;
+  /** The latest channel selection that finished or failed; another value means a selection is still loading. */
+  private settledChannelSelectionRequest = 0;
   /** The reply thread each channel had open when it was left, in memory for this app session. */
   private readonly openReplyThreadByChannel = new Map<ChatChannelId, ChatReplyThreadId>();
   private channelReadPromise: { channelId: ChatChannelId; promise: Promise<void> } | null = null;
@@ -516,10 +523,12 @@ export class ChatStore {
     this.lastNativeSequences.clear();
     this.loadRequest += 1;
     this.channelSelectionRequest += 1;
+    this.settledChannelSelectionRequest = this.channelSelectionRequest;
     this.loaded = false;
     this.waitingAssignments = [];
     this.waitingAssignmentTotal = 0;
     this.communicationController.reset();
+    this.exactExecutionReads.clear();
     this.channelNavigationController.reset();
     this.organizationalController.reset();
     this.threadCollectionController.reset();
@@ -695,9 +704,14 @@ export class ChatStore {
     return tracked;
   }
 
+  /**
+   * Follows a project selection to that project's remembered channel. A channel or reply thread shown meanwhile,
+   * such as the place a workspace tab restores after selecting its project, wins over the remembered channel.
+   */
   private async performProjectSelection(projectId: string): Promise<void> {
+    const channelRequest = this.channelSelectionRequest;
     if (!await this.loadProjectChannels(projectId)) return;
-    if (this.projects.selectedProjectId !== projectId) return;
+    if (this.projects.selectedProjectId !== projectId || channelRequest !== this.channelSelectionRequest) return;
     const rememberedChannelId = readLastChatChannelId(projectId);
     const selected = this.activeChannels.find((channel) => channel.id === rememberedChannelId)
       ?? this.activeChannels.find((channel) => channel.isDefault)
@@ -724,7 +738,53 @@ export class ChatStore {
   }
 
   private async showChannel(channelId: ChatChannelId, replyThreadTabId: ChatReplyThreadId | null): Promise<void> {
+    const settled = this.settledChannelSelectionRequest === this.channelSelectionRequest;
     const request = ++this.channelSelectionRequest;
+    if (settled && this.switchChannelMode(channelId, replyThreadTabId)) {
+      this.settledChannelSelectionRequest = request;
+      return;
+    }
+    try {
+      await this.loadShownChannel(request, channelId, replyThreadTabId);
+    } finally {
+      if (request === this.channelSelectionRequest) this.settledChannelSelectionRequest = request;
+    }
+  }
+
+  /**
+   * Switches a settled channel between its feed and one of its reply thread tabs without reading the channel again.
+   *
+   * @param channelId - Channel that must already be shown.
+   * @param replyThreadTabId - Reply thread of the thread tab, or null for the channel feed.
+   * @returns Whether the switch happened; false when a full channel load is needed.
+   */
+  private switchChannelMode(channelId: ChatChannelId, replyThreadTabId: ChatReplyThreadId | null): boolean {
+    const channel = this.selectedChannel;
+    if (!channel || channel.id !== channelId || this.replyThreadTabId === replyThreadTabId) return false;
+    if (this.projects.selectedProjectId !== channel.projectId) return false;
+    this.replyThreadTabId = replyThreadTabId;
+    this.channelArchiveOpen = false;
+    if (replyThreadTabId) this.showReplyThreadOfTab(channelId, replyThreadTabId);
+    else this.restoreChannelReplyThread(channelId);
+    this.selectedThreadId = null;
+    this.selectedExecutionRunId = null;
+    this.selectedExecutionEnvironmentId = null;
+    if (this.selectedWorkingFolderId) {
+      this.composerRuntimeController.ensureDraftThread(this.selectedWorkingFolderId);
+    } else {
+      this.composerRuntimeController.discardDraft();
+    }
+    this.interaction = null;
+    if (!replyThreadTabId && channelNeedsVisit(channel)) void this.markSelectedChannelRead();
+    return true;
+  }
+
+  /** Reads and shows a channel for one selection request, stopping when a newer request starts. */
+  private async loadShownChannel(
+    request: number,
+    channelId: ChatChannelId,
+    replyThreadTabId: ChatReplyThreadId | null,
+  ): Promise<void> {
     const channel = this.channelNavigationController.find(channelId)
       ?? await chatApi.readChatChannel(channelId);
     if (request !== this.channelSelectionRequest) return;

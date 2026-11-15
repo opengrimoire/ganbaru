@@ -359,22 +359,26 @@
   }
 
   /**
-   * Closes the workspace tab that shows the reply thread on its own. When it is this window's only tab, the tab
-   * stops following the thread and shows the channel instead, so closing the thread never closes the window.
+   * Closes the workspace tab that shows the reply thread on its own. When it is this window's only tab, its channel
+   * opens in a tab first, so closing the thread never closes the window.
    */
   function closeReplyThreadTab(): void {
-    const channelId = chat.selectedChannelId;
+    const channel = chat.selectedChannel;
     const replyThreadId = chat.replyThreadTabId;
     const tab = tabs.tabs.find(({ location: { item } }) =>
-      item?.type === "chat-reply-thread" && item.id === replyThreadId && item.channelId === channelId,
+      item?.type === "chat-reply-thread" && item.id === replyThreadId && item.channelId === channel?.id,
     );
     if (tab && tabs.tabs.length > 1) {
       tabs.close(tab.id);
       return;
     }
-    if (!channelId) return;
-    if (tab) tabs.setLocked(tab.id, false);
-    void chat.selectChannel(channelId).catch((error: unknown) => {
+    if (!channel) return;
+    if (tab) {
+      tabs.openLocation("item", { kind: "chat", projectId: channel.projectId, item: { type: "chat-channel", id: channel.id } });
+      tabs.close(tab.id);
+      return;
+    }
+    void chat.selectChannel(channel.id).catch((error: unknown) => {
       layoutError = chatErrorMessage(error);
     });
   }

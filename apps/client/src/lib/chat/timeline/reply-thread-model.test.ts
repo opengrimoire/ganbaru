@@ -19,6 +19,7 @@ import {
   exactExecutionReadKey,
   exactExecutionRuns,
   exactRunPresentationsReady,
+  ExactExecutionReadCache,
   failureShownByReply,
   latestRenderableAgentRun,
   planExactExecutionReads,
@@ -545,6 +546,35 @@ describe("reply thread exact execution reads", () => {
 
     expect(plan.toRead).toEqual([]);
     expect(plan.visible).toEqual({});
+  });
+});
+
+describe("ExactExecutionReadCache", () => {
+  it("returns a reply thread's reads again without sharing its stored map", () => {
+    const cache = new ExactExecutionReadCache<string>(2);
+    const reads = new Map([["run", { updatedAt: "2026-08-02T08:00:05Z", read: "turns" }]]);
+    cache.set("thread", reads);
+    reads.clear();
+
+    const restored = cache.get("thread");
+    restored.delete("run");
+
+    expect([...cache.get("thread").entries()]).toEqual([["run", { updatedAt: "2026-08-02T08:00:05Z", read: "turns" }]]);
+    expect(cache.get("unknown").size).toBe(0);
+  });
+
+  it("evicts the least recently shown reply thread past its bound", () => {
+    const cache = new ExactExecutionReadCache<number>(2);
+    cache.set("first", new Map([["run", { updatedAt: "a", read: 1 }]]));
+    cache.set("second", new Map([["run", { updatedAt: "a", read: 2 }]]));
+    cache.get("first");
+    cache.set("third", new Map([["run", { updatedAt: "a", read: 3 }]]));
+
+    expect(cache.get("second").size).toBe(0);
+    expect(cache.get("first").get("run")?.read).toBe(1);
+    expect(cache.get("third").get("run")?.read).toBe(3);
+    cache.clear();
+    expect(cache.get("first").size).toBe(0);
   });
 });
 

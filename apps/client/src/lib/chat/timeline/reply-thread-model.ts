@@ -3,6 +3,7 @@ import type {
   ChatErrorCode,
   ChatMessageRead,
   ChatTeammateChannelAccess,
+  ChatThreadShellRead,
   ChatTimelinePageRead,
   ChatTimelineTurnRead,
   ChatWorkAssignmentRead,
@@ -59,6 +60,48 @@ export function exactExecutionRuns(runs: readonly ChatAgentRunRead[]): ChatAgent
 export interface CachedExactExecution<Read> {
   updatedAt: string;
   read: Read;
+}
+
+/** The exact turns and execution thread read for one agent run of a reply thread. */
+export interface ExactExecutionRead {
+  timelinePage: ChatTimelinePageRead;
+  thread: ChatThreadShellRead;
+}
+
+/**
+ * Keeps the exact execution reads of recently shown reply threads, so a reply thread shown again renders its runs
+ * at once while changed runs are read again. Evicts the least recently used reply thread past its bound.
+ */
+export class ExactExecutionReadCache<Read> {
+  private readonly entries = new Map<string, Map<string, CachedExactExecution<Read>>>();
+
+  /** @param maximumThreads Most reply threads kept; must be at least one. */
+  constructor(private readonly maximumThreads: number) {}
+
+  /** Returns a copy of the reads kept for a reply thread, or an empty map, and marks it recently used. */
+  get(replyThreadId: string): Map<string, CachedExactExecution<Read>> {
+    const reads = this.entries.get(replyThreadId);
+    if (!reads) return new Map();
+    this.entries.delete(replyThreadId);
+    this.entries.set(replyThreadId, reads);
+    return new Map(reads);
+  }
+
+  /** Stores the reads of a reply thread, replacing what was kept for it. */
+  set(replyThreadId: string, reads: ReadonlyMap<string, CachedExactExecution<Read>>): void {
+    this.entries.delete(replyThreadId);
+    this.entries.set(replyThreadId, new Map(reads));
+    while (this.entries.size > Math.max(1, this.maximumThreads)) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest === undefined) break;
+      this.entries.delete(oldest);
+    }
+  }
+
+  /** Forgets every kept read. */
+  clear(): void {
+    this.entries.clear();
+  }
 }
 
 /** What to show and what to read for the exact runs of a reply thread. */

@@ -48,9 +48,9 @@ function settings(sendKey: "enter" | "mod_enter" = "enter"): ChatSettingsRead {
 }
 
 /** Builds navigation for local history that is independent of provider availability. */
-function channel(id = "general"): ChatChannelRead {
+function channel(id = "general", projectId = "project"): ChatChannelRead {
   return {
-    id, conversationId: `conversation-${id}`, projectId: "project", name: id, topic: "",
+    id, conversationId: `conversation-${id}`, projectId, name: id, topic: "",
     isDefault: id === "general", memberships: [], messageCount: 0, unreadCount: 0, unreadReplyCount: 0, unseenFailure: false,
     latestPreview: null, lastActivityAt: "2026-09-22T12:00:00Z", attentionState: null,
     revision: 1, archivedAt: null, createdAt: "2026-09-22T12:00:00Z", updatedAt: "2026-09-22T12:00:00Z",
@@ -362,5 +362,47 @@ describe("Chat stores of split panes", () => {
     expect(secondary.loaded).toBe(false);
     expect(secondary.selectedChannelId).toBeNull();
     expect(secondary.settings).toBeNull();
+  });
+});
+
+describe("Chat reply thread tabs", () => {
+  beforeEach(() => {
+    vi.mocked(chatApi.listChatNavigationChannels).mockResolvedValue([
+      channel(), channel("other"), channel("elsewhere", "other-project"),
+    ]);
+    vi.spyOn(chatApi, "listChatChannels").mockImplementation(async (projectId) => (
+      projectId === "project" ? [channel(), channel("other")] : [channel("elsewhere", "other-project")]
+    ));
+    vi.spyOn(chatApi, "readChatReplyThreadPage").mockRejectedValue(new Error("no reply thread"));
+    vi.spyOn(chatApi, "setChatChannelRead").mockImplementation(async (channelId) => channel(channelId));
+    vi.spyOn(chatApi, "readChatChannel").mockImplementation(async (channelId) => (
+      channelId === "elsewhere" ? channel(channelId, "other-project") : channel(channelId)
+    ));
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+  });
+
+  it("keeps a restored reply thread tab when its project selection finishes after it", async () => {
+    await chat.ensureLoaded();
+    await chat.selectChannel("elsewhere");
+    const projectSelection = chat.syncProjectSelection("project");
+    const threadTab = chat.showReplyThreadTab("general", "reply-thread");
+    await Promise.all([projectSelection, threadTab]);
+    expect(chat.selectedChannelId).toBe("general");
+    expect(chat.replyThreadTabId).toBe("reply-thread");
+    expect(chat.openReplyThreadId).toBe("reply-thread");
+  });
+
+  it("switches between a channel and its reply thread tab at once without rereading the channel", async () => {
+    await chat.ensureLoaded();
+    await chat.showReplyThreadTab("general", "reply-thread");
+    const pageReads = vi.mocked(chatApi.readChatChannelPage).mock.calls.length;
+    const toChannel = chat.selectChannel("general");
+    expect(chat.replyThreadTabId).toBeNull();
+    await toChannel;
+    const toThread = chat.showReplyThreadTab("general", "reply-thread");
+    expect(chat.replyThreadTabId).toBe("reply-thread");
+    expect(chat.openReplyThreadId).toBe("reply-thread");
+    await toThread;
+    expect(chatApi.readChatChannelPage).toHaveBeenCalledTimes(pageReads);
   });
 });

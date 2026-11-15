@@ -22,7 +22,7 @@ Tabs, their order, the active tab, and the recently closed list persist per devi
 
 ## Locking
 
-A locked tab stays on its project or item. Navigating somewhere outside it inside the tab opens that place in another tab, or focuses the tab that already shows it, and the locked tab keeps its place. Locking a kind tab narrows it to the project it shows, or to its item when there is no project, since a tab locked to a whole kind would restrict nothing. A lock whose project or item no longer exists is dropped when the tab is restored.
+A locked tab stays on its project or item. Navigating somewhere outside it inside the tab opens that place in another tab, or focuses the tab that already shows it, and the locked tab keeps its place. Locking a kind tab narrows it to the project it shows, or to its item when there is no project, since a tab locked to a whole kind would restrict nothing. A lock whose project or item no longer exists is dropped when the tab is restored. A Chat reply thread tab stays on its thread without a lock, since the thread is all it shows, and it never offers locking.
 
 ## Title bar
 

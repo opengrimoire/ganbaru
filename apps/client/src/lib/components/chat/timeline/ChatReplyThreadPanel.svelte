@@ -4,7 +4,7 @@
   import X from "@lucide/svelte/icons/x";
   import { tick } from "svelte";
   import * as chatApi from "$lib/api/chat";
-  import type { ChatAgentRunRead, ChatThreadShellRead, ChatTimelinePageRead } from "$lib/chat/contracts";
+  import type { ChatAgentRunRead, ChatThreadShellRead } from "$lib/chat/contracts";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
   import {
     agentRunRestart,
@@ -20,6 +20,7 @@
     retryableFailureEntryKey,
     shouldGroupReplyMessages,
     type CachedExactExecution,
+    type ExactExecutionRead,
   } from "$lib/chat/timeline/reply-thread-model";
   import { formatDateTime } from "$lib/i18n/formatters";
   import { organizationalScrollFollowsEnd } from "$lib/chat/timeline/organizational-scroll";
@@ -44,11 +45,6 @@
   import ChatDelegatedWorkList from "./ChatDelegatedWorkList.svelte";
   import ChatDelegationOrigin from "./ChatDelegationOrigin.svelte";
   import ChatSecretRequests from "./ChatSecretRequests.svelte";
-
-  interface ExactExecutionRead {
-    timelinePage: ChatTimelinePageRead;
-    thread: ChatThreadShellRead;
-  }
 
   let {
     presentation = "complementary",
@@ -261,7 +257,7 @@
     });
   }
 
-  /** Reads the exact turns of runs that are new or changed and merges them into the panel's read cache. */
+  /** Reads the exact turns of runs that are new or changed and merges them into the read cache kept by the Chat store. */
   async function loadExactExecutions(
     runs: readonly ChatAgentRunRead[],
     threadId: string,
@@ -297,6 +293,8 @@
         failures.push(chatErrorMessage(result.reason, t("chatErrors.actions.workAction")));
       }
     }
+    chat.exactExecutionReads.set(threadId, exactExecutionCache);
+    if (page?.thread.id !== threadId) return;
     const plan = planExactExecutionReads(exactExecutionRuns(page?.agentRuns ?? []), exactExecutionCache, exactExecutionReadsInFlight);
     exactExecutionCache = plan.cache;
     exactExecutions = plan.visible;
@@ -323,11 +321,12 @@
     exactExecutionScope = scope;
     if (threadId !== exactExecutionThreadId) {
       exactExecutionThreadId = threadId;
-      exactExecutionCache = new Map();
+      exactExecutionCache = threadId === null ? new Map() : chat.exactExecutionReads.get(threadId);
     }
     exactExecutionError = null;
     const plan = planExactExecutionReads(exactRuns, exactExecutionCache, exactExecutionReadsInFlight);
     exactExecutionCache = plan.cache;
+    if (threadId !== null) chat.exactExecutionReads.set(threadId, plan.cache);
     exactExecutions = plan.visible;
     if (threadId !== null && plan.toRead.length > 0) {
       void loadExactExecutions(plan.toRead, threadId);
@@ -458,55 +457,57 @@
       {:else}<div class="thread-failure"><Notice layout="fill" message={chat.replyThreadError} onRetry={retryReplyThread} /></div>{/if}
     {/if}
     {#if page && executionPresentationReady}
-      {#if page.previousCursor}<button type="button" class="load-older" onclick={() => void chat.loadOlderReplyThreadMessages()}>{t("chat.organization.loadOlder")}</button>{/if}
-      <div class="date-divider"><span>{formatDateTime(localization.locale, Date.parse(page.rootMessage.createdAt), { dateStyle: "full" })}</span></div>
-      <ChatOrganizationalMessage message={page.rootMessage} showReplyStrip={false} currentResponseSettings onActionError={reportMessageActionError} />
-      {#if assignment?.delegation}<ChatDelegationOrigin delegation={assignment.delegation} onOpenThread={openThread} />{/if}
-      {#if runLocationLabel}<p class="run-location" data-run-location>{runLocationLabel}</p>{/if}
-      {#each renderEntries as entry, index (entry.key)}
-        {@const previousEntry = renderEntries[index - 1]}
-        {@const previousCreatedAt = previousEntry ? entryCreatedAt(previousEntry) : page.rootMessage.createdAt}
-        {#if !isSameDay(previousCreatedAt, entryCreatedAt(entry))}
-          <div class="date-divider"><span>{formatDateTime(localization.locale, Date.parse(entryCreatedAt(entry)), { dateStyle: "full" })}</span></div>
-        {/if}
-        {#if entry.kind === "message"}
-          <ChatOrganizationalMessage
-            message={entry.message}
-            showReplyStrip={false}
-            currentResponseSettings
-            grouped={previousEntry?.kind === "message" && shouldGroupReplyMessages(previousEntry.message, entry.message)}
-            onActionError={reportMessageActionError}
-            answerChoices={answerableQuestion?.messageItemId === entry.message.itemId ? answerableQuestion.choices : []}
-            onChooseAnswer={answerableQuestion?.messageItemId === entry.message.itemId ? chooseAnswer : undefined}
-            onRetryFailure={retryableFailureKey === entry.key ? retryFailedWork : undefined}
-          />
-        {:else}
-          {@const exactExecution = exactExecutions[entry.run.id]}
-          {@const restartLabel = runRestartLabel(entry.run)}
-          {#if restartLabel}<p class="run-restart" data-run-restart>{restartLabel}</p>{/if}
-          {#if entry.loaded}
-            <ChatExecutionTimeline
-              embedded
-              hideUserMessages
-              teammate={executionTeammate}
-              turnId={entry.run.providerExecutionTurnId}
+      <div class="thread-canvas">
+        {#if page.previousCursor}<button type="button" class="load-older" onclick={() => void chat.loadOlderReplyThreadMessages()}>{t("chat.organization.loadOlder")}</button>{/if}
+        <div class="date-divider"><span>{formatDateTime(localization.locale, Date.parse(page.rootMessage.createdAt), { dateStyle: "full" })}</span></div>
+        <ChatOrganizationalMessage message={page.rootMessage} showReplyStrip={false} currentResponseSettings onActionError={reportMessageActionError} />
+        {#if assignment?.delegation}<ChatDelegationOrigin delegation={assignment.delegation} onOpenThread={openThread} />{/if}
+        {#if runLocationLabel}<p class="run-location" data-run-location>{runLocationLabel}</p>{/if}
+        {#each renderEntries as entry, index (entry.key)}
+          {@const previousEntry = renderEntries[index - 1]}
+          {@const previousCreatedAt = previousEntry ? entryCreatedAt(previousEntry) : page.rootMessage.createdAt}
+          {#if !isSameDay(previousCreatedAt, entryCreatedAt(entry))}
+            <div class="date-divider"><span>{formatDateTime(localization.locale, Date.parse(entryCreatedAt(entry)), { dateStyle: "full" })}</span></div>
+          {/if}
+          {#if entry.kind === "message"}
+            <ChatOrganizationalMessage
+              message={entry.message}
+              showReplyStrip={false}
+              currentResponseSettings
+              grouped={previousEntry?.kind === "message" && shouldGroupReplyMessages(previousEntry.message, entry.message)}
+              onActionError={reportMessageActionError}
+              answerChoices={answerableQuestion?.messageItemId === entry.message.itemId ? answerableQuestion.choices : []}
+              onChooseAnswer={answerableQuestion?.messageItemId === entry.message.itemId ? chooseAnswer : undefined}
+              onRetryFailure={retryableFailureKey === entry.key ? retryFailedWork : undefined}
+            />
+          {:else}
+            {@const exactExecution = exactExecutions[entry.run.id]}
+            {@const restartLabel = runRestartLabel(entry.run)}
+            {#if restartLabel}<p class="run-restart" data-run-restart>{restartLabel}</p>{/if}
+            {#if entry.loaded}
+              <ChatExecutionTimeline
+                embedded
+                hideUserMessages
+                teammate={executionTeammate}
+                turnId={entry.run.providerExecutionTurnId}
+                timelinePage={exactExecution?.timelinePage ?? null}
+                executionThread={exactExecution?.thread ?? null}
+              />
+            {/if}
+            <ChatAgentRunStatus
+              run={entry.run}
+              teammateName={executionTeammateName}
               timelinePage={exactExecution?.timelinePage ?? null}
-              executionThread={exactExecution?.thread ?? null}
+              replies={page.replies}
+              fallbackDetail={entry.run.id === page.agentRuns.at(-1)?.id ? assignment?.stateReason ?? null : null}
+              failureShownElsewhere={failureShownByReply(renderEntries, entry.run)}
+              onRetryFailure={retryableFailureKey === entry.key ? retryFailedWork : undefined}
+              onActionError={reportMessageActionError}
             />
           {/if}
-          <ChatAgentRunStatus
-            run={entry.run}
-            teammateName={executionTeammateName}
-            timelinePage={exactExecution?.timelinePage ?? null}
-            replies={page.replies}
-            fallbackDetail={entry.run.id === page.agentRuns.at(-1)?.id ? assignment?.stateReason ?? null : null}
-            failureShownElsewhere={failureShownByReply(renderEntries, entry.run)}
-            onRetryFailure={retryableFailureKey === entry.key ? retryFailedWork : undefined}
-            onActionError={reportMessageActionError}
-          />
-        {/if}
-      {/each}
-      {#if page.delegatedChildren.length > 0}<ChatDelegatedWorkList delegatedChildren={page.delegatedChildren} onOpenThread={openThread} />{/if}
+        {/each}
+        {#if page.delegatedChildren.length > 0}<ChatDelegatedWorkList delegatedChildren={page.delegatedChildren} onOpenThread={openThread} />{/if}
+      </div>
     {:else if chat.replyThreadLoading || page}
       <Loading layout="fill" />
     {/if}
@@ -556,6 +557,12 @@
   .reply-thread-panel :global(.thread-error) { padding:0.6rem; font-size: calc(0.7rem * var(--type-scale)); }
   .thread-failure { height:100%; font-size: calc(0.7rem * var(--type-scale)); }
   .load-older { display:block; margin:0.3rem auto 0.6rem; border-radius:0.4rem; padding:0.3rem 0.5rem; color:var(--muted-foreground); font-size: calc(0.68rem * var(--type-scale)); }.load-older:hover { background:var(--accent); }
+  [data-presentation="main"] .thread-canvas { --chat-message-row-padding-inline:0rem; width:min(calc(100% - var(--chat-conversation-gutter,1rem) - var(--chat-conversation-gutter,1rem)),var(--chat-conversation-max-width,60rem)); margin-inline:auto; }
+  [data-presentation="main"] .date-divider { margin:0.75rem 0; }
+  [data-presentation="main"] .run-restart,[data-presentation="main"] .run-location { margin-inline:0; }
+  [data-presentation="main"] .thread-composer { padding-inline:var(--chat-conversation-gutter,1rem); }
+  [data-presentation="main"] .thread-request,[data-presentation="main"] .thread-secrets { padding-inline:max(var(--chat-conversation-gutter,1rem),calc((100% - var(--chat-conversation-max-width,60rem)) / 2)); }
+  @container chat-shell (max-width:440px) { [data-presentation="main"] { --chat-conversation-gutter:0.5rem; } }
   @media (pointer:coarse) { .scratch-inspector { min-width:2.75rem; min-height:2.75rem; } }
   @media (hover:none) { .tab-close { opacity:1; } }
 </style>

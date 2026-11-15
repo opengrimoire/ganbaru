@@ -517,13 +517,16 @@ describe("workspace tab locations", () => {
     expect(parseWorkspaceTabLocation({ ...location, kind: "notes" })).toBeNull();
   });
 
-  it("round-trips a locked reply thread tab and confines it to that thread", () => {
+  it("round-trips a reply thread tab unlocked and confines it to that thread", () => {
     const thread: WorkspaceTabLocation = {
       kind: "chat",
       projectId: "a",
       item: { type: "chat-reply-thread", id: "r", channelId: "c" },
     };
-    const threadTab = createWorkspaceTab("t", thread, { level: "item", locked: true, title: "Thread", projectTitle: null });
+    const threadTab = createWorkspaceTab("t", thread, { level: "project", locked: true, title: "Thread", projectTitle: null });
+    expect(threadTab).toMatchObject({ level: "item", locked: false });
+    expect(workspaceTabLockLevel(threadTab)).toBeNull();
+    expect(updateWorkspaceTab(state([threadTab]), "t", { locked: true }).tabs[0]?.locked).toBe(false);
     const parsed = parseWorkspaceTabsState(JSON.parse(serializeWorkspaceTabsState(state([threadTab]))), ALL_KINDS);
     expect(parsed?.tabs).toEqual([threadTab]);
     expect(isWithinTabScope(threadTab, thread)).toBe(true);

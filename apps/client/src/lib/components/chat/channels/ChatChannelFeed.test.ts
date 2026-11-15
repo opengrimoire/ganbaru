@@ -57,6 +57,7 @@ describe("ChatChannelFeed", () => {
   const chat = getChat();
   const originalChannelMessages = chat.channelMessages;
   const originalSelectedChannelId = chat.selectedChannelId;
+  const originalChannelMessagesChannelId = chat.channelMessagesChannelId;
   let target: HTMLDivElement | undefined;
   let component: ReturnType<typeof mount> | undefined;
 
@@ -69,6 +70,7 @@ describe("ChatChannelFeed", () => {
     });
     chat.channelMessages = [message];
     chat.selectedChannelId = "first";
+    chat.channelMessagesChannelId = "first";
   });
 
   afterEach(async () => {
@@ -78,6 +80,7 @@ describe("ChatChannelFeed", () => {
     target = undefined;
     chat.channelMessages = originalChannelMessages;
     chat.selectedChannelId = originalSelectedChannelId;
+    chat.channelMessagesChannelId = originalChannelMessagesChannelId;
     vi.restoreAllMocks();
   });
 

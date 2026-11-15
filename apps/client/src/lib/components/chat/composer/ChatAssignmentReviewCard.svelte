@@ -96,7 +96,7 @@
 </section>
 
 <style>
-  .review-card { display:grid; gap:0.35rem; margin:0 0.35rem 0.35rem; border-radius:0.65rem; background:color-mix(in srgb,var(--accent) 58%,transparent); padding:0.35rem 0.4rem 0.35rem 0.55rem; color:var(--muted-foreground); }
+  .review-card { display:grid; gap:0.35rem; margin:0 0.35rem 0.35rem; border-radius:0.65rem; background:color-mix(in srgb,var(--accent) 58%,var(--cal-bg)); padding:0.35rem 0.4rem 0.35rem 0.55rem; color:var(--muted-foreground); }
   .review-card:not(:has(.review-note)) { grid-template-columns:minmax(0,1fr) auto; align-items:center; }
   .review-card p { margin:0; min-width:0; font-size:calc(0.7rem * var(--type-scale)); }
   .review-note { width:100%; resize:vertical; font-size:calc(0.72rem * var(--type-scale)); }

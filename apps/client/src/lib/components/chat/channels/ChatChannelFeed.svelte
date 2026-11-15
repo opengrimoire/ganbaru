@@ -8,6 +8,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChat } from "$lib/stores/chat.svelte";
   import ChatMessageComposer from "$lib/components/chat/composer/ChatMessageComposer.svelte";
+  import { chatComposerDock, type ChatComposerDockMetrics } from "$lib/components/chat/composer/composer-dock";
   import ChatOrganizationalMessage from "$lib/components/chat/timeline/ChatOrganizationalMessage.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
@@ -31,6 +32,8 @@
   let rowListOffset = $state(0);
   let measuredHeights = $state<ReadonlyMap<string, number>>(new Map());
   let rowObserver: ResizeObserver | null = null;
+  /** Height of the composer dock floating over the feed end, reserved below the last row. */
+  let dockHeight = $state(0);
   const channel = $derived(chat.selectedChannel);
   const destination = $derived(channel ? `channel:${channel.id}` : "channel:none");
   /**
@@ -109,6 +112,13 @@
       if (element !== feed || key !== destination || !followingEnd) return;
       setFeedScrollTop(element, key, element.scrollHeight);
     });
+  }
+
+  /** Reserves the dock height below the last row and keeps a feed that follows its end pinned when the dock resizes. */
+  function reserveDockSpace(metrics: ChatComposerDockMetrics): void {
+    if (metrics.height === dockHeight) return;
+    dockHeight = metrics.height;
+    followNewContentIfAtBottom();
   }
 
   function reportActionError(error: unknown): void {
@@ -265,7 +275,7 @@
   }
 </script>
 
-<section class="channel-surface" aria-label={channel ? `#${channel.name}` : t("chat.title")}>
+<section class="channel-surface" style:--chat-composer-dock-height={`${channel && !channel.archivedAt ? dockHeight : 0}px`} aria-label={channel ? `#${channel.name}` : t("chat.title")}>
   {#if actionError}<Notice class="feed-action-error" message={actionError} onDismiss={() => { actionError = null; }} />{/if}
   <div
     bind:this={feed}
@@ -301,7 +311,7 @@
     </div>
   </div>
   {#if channel && !channel.archivedAt}
-    <div class="channel-composer-dock">
+    <div class="channel-composer-dock" use:chatComposerDock={{ onMeasure: reserveDockSpace }}>
       {#key destination}
         <ChatMessageComposer {destination} placeholder={t("chat.organization.messageChannel")} onRequestScrollToBottom={scrollToBottomForUserAction} />
       {/key}
@@ -310,16 +320,17 @@
 </section>
 
 <style>
-  .channel-surface { display:flex; min-height:0; flex:1; flex-direction:column; overflow:hidden; }
+  .channel-surface { position:relative; display:flex; min-height:0; flex:1; flex-direction:column; overflow:hidden; }
   .channel-feed { min-height:0; flex:1; overflow-y:scroll; overscroll-behavior:contain; overflow-anchor:none; }
-  .feed-canvas { --channel-feed-section-space:1.2rem; --chat-message-row-padding-inline:0rem; width:min(calc(100% - var(--chat-conversation-gutter,1rem) - var(--chat-conversation-gutter,1rem)),var(--chat-conversation-max-width,60rem)); min-height:100%; margin-inline:auto; padding-bottom:1rem; }
+  .feed-canvas { --channel-feed-section-space:1.2rem; --chat-message-row-padding-inline:0rem; width:min(calc(100% - var(--chat-conversation-gutter,1rem) - var(--chat-conversation-gutter,1rem)),var(--chat-conversation-max-width,60rem)); min-height:100%; margin-inline:auto; padding-bottom:calc(var(--chat-composer-dock-height,0px) + 1rem); }
   /* Each row is its own block formatting context, so divider margins count toward the measured row height. */
   .feed-row { display:flow-root; }
   .divider { display:flex; align-items:center; gap:0.5rem; margin:0.75rem 0; color:var(--muted-foreground); font-size: calc(0.65rem * var(--type-scale)); }
   .divider.first-date { margin-top:var(--channel-feed-section-space); margin-bottom:calc(var(--channel-feed-section-space) - var(--chat-conversation-entry-space,0.45rem)); }
   .divider::before,.divider::after { height:1px; flex:1; background:var(--border); content:""; }.divider.unread { color:var(--primary); }.divider.unread::before,.divider.unread::after { background:color-mix(in srgb,var(--primary) 55%,var(--border)); }
   .load-older { display:block; margin:0.6rem auto; border-radius:0.4rem; padding:0.3rem 0.55rem; color:var(--muted-foreground); font-size: calc(0.7rem * var(--type-scale)); }.load-older:hover { background:var(--accent); }
-  .channel-composer-dock { display:flex; flex:0 0 auto; justify-content:center; padding:0.5rem var(--chat-conversation-gutter,1rem) 0.75rem; background:linear-gradient(to bottom,transparent,var(--cal-bg) 18%); }
+  /* The dock floats over the feed end: messages show around the surfaces above the composer and inside its rounded top corners, and the backdrop hides them below the corner curve. Only the surfaces take pointer input. */
+  .channel-composer-dock { position:absolute; inset:auto 0 0; z-index:1; display:flex; justify-content:center; padding:0.5rem var(--chat-conversation-gutter,1rem) 0.75rem; background:linear-gradient(to bottom,transparent var(--chat-composer-dock-backdrop-top,0px),var(--cal-bg) var(--chat-composer-dock-backdrop-top,0px)); pointer-events:none; }
   .channel-surface > :global(.feed-action-error) { flex:0 0 auto; padding:0.6rem; font-size: calc(0.7rem * var(--type-scale)); }
   .feed-canvas > :global(.feed-error) { width:fit-content; max-width:100%; margin-inline:auto; padding:1rem; font-size: calc(0.78rem * var(--type-scale)); }
   @container chat-shell (max-width:440px) { .channel-surface { --chat-conversation-gutter:0.5rem; } }

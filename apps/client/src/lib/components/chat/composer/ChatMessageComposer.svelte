@@ -2236,12 +2236,14 @@
 </div>
 
 <style>
-  .composer-stack { width:min(100%,var(--chat-conversation-max-width,60rem)); }
+  /* The stack floats over the timeline end, so its gaps pass pointer input through and each surface above the composer paints an opaque background. */
+  .composer-stack { width:min(100%,var(--chat-conversation-max-width,60rem)); pointer-events:none; }
+  .composer-stack > :global(*) { pointer-events:auto; }
   .scheduled-summary { display:flex; min-height:2rem; align-items:center; gap:0.45rem; margin:0 0.35rem 0.35rem; border-radius:0.55rem; padding:0.25rem 0.35rem 0.25rem 0.55rem; }
-  .composer-stack :global(.assignment-notice) { margin:0 0.35rem 0.35rem; padding:0.25rem 0.35rem 0.25rem 0.55rem; font-size:calc(0.7rem * var(--type-scale)); }
+  .composer-stack :global(.assignment-notice) { margin:0 0.35rem 0.35rem; border-radius:0.55rem; background:var(--cal-bg); padding:0.25rem 0.35rem 0.25rem 0.55rem; font-size:calc(0.7rem * var(--type-scale)); }
   .scheduled-summary > span { min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:calc(0.7rem * var(--type-scale)); }
   .scheduled-summary button { min-height:1.75rem; border-radius:0.4rem; padding:0.2rem 0.45rem; font-size:calc(0.68rem * var(--type-scale)); font-weight:500; }
-  .scheduled-summary { background:color-mix(in srgb,var(--accent) 58%,transparent); color:var(--muted-foreground); }
+  .scheduled-summary { background:color-mix(in srgb,var(--accent) 58%,var(--cal-bg)); color:var(--muted-foreground); }
   .scheduled-summary-anchor,.menu-anchor { position:relative; }
   .organizational-composer { --composer-button-size:1.9rem; position:relative; width:100%; }
   .reference-picker { z-index:100; display:flex; flex-direction:column; overflow:hidden; }

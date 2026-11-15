@@ -32,7 +32,7 @@
 </section>
 
 <style>
-  .task-progress { display: grid; gap: 0.2rem; margin: 0 0.35rem 0.35rem; padding: 0.3rem 0.55rem; }
+  .task-progress { display: grid; gap: 0.2rem; margin: 0 0.35rem 0.35rem; border-radius: 0.55rem; background: var(--cal-bg); padding: 0.3rem 0.55rem; }
   .task-progress-header { display: flex; min-width: 0; align-items: center; gap: 0.55rem; min-height: 1.75rem; text-align: start; }
   .task-progress-title { flex: 0 0 auto; color: var(--foreground); font-size: calc(0.7rem * var(--type-scale)); font-weight: 600; }
   .task-progress-bar { display: flex; min-width: 0; flex: 1 1 0%; gap: 0.15rem; }

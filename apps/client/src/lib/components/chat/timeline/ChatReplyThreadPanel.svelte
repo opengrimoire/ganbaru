@@ -34,6 +34,7 @@
   import ChatAgentRunStatus from "./ChatAgentRunStatus.svelte";
   import ChatExecutionTimeline from "./ChatExecutionTimeline.svelte";
   import ChatMessageComposer from "$lib/components/chat/composer/ChatMessageComposer.svelte";
+  import { chatComposerDock, type ChatComposerDockMetrics } from "$lib/components/chat/composer/composer-dock";
   import ChatOrganizationalMessage from "./ChatOrganizationalMessage.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
@@ -81,7 +82,11 @@
   let scratchManagerLoad: Promise<void> | null = null;
   let followingEnd = true;
   let restoredDestination: string | null = null;
+  /** Height of the composer dock floating over the thread end, reserved below the last entry. */
+  let dockHeight = $state(0);
   const page = $derived(chat.replyThread);
+  /** Whether the composer dock floats over the thread end. */
+  const composerDocked = $derived(Boolean(page) && !chat.selectedChannel?.archivedAt);
   const assignment = $derived(page?.assignment ?? null);
   const executionTeammate = $derived(assignment?.teammate
     ?? page?.thread.participants.find((participant) => participant.kind === "ai_teammate")
@@ -257,6 +262,13 @@
     });
   }
 
+  /** Reserves the dock height below the last entry and keeps a thread that follows its end pinned when the dock resizes. */
+  function reserveDockSpace(metrics: ChatComposerDockMetrics): void {
+    if (metrics.height === dockHeight) return;
+    dockHeight = metrics.height;
+    followNewContentIfAtBottom();
+  }
+
   /** Reads the exact turns of runs that are new or changed and merges them into the read cache kept by the Chat store. */
   async function loadExactExecutions(
     runs: readonly ChatAgentRunRead[],
@@ -421,6 +433,7 @@
   aria-label={t("chat.organization.thread")}
   data-presentation={presentation}
   data-chat-reply-thread
+  style:--chat-composer-dock-height={`${composerDocked ? dockHeight : 0}px`}
 >
   <header class="thread-header" class:reserve-global-actions={reserveGlobalActions}>
     <div class="thread-tab-shell" role="tablist">
@@ -513,15 +526,17 @@
     {/if}
   </div>
 
-  {#if page && !chat.selectedChannel?.archivedAt}
-    {#if chat.interaction?.pendingRequest}<div class="thread-request"><ChatRequestPanel pending={chat.interaction.pendingRequest} /></div>{/if}
-    {#if localExecutionAvailable && chat.openReplyThreadId}
-      <div class="thread-secrets"><ChatSecretRequests replyThreadId={chat.openReplyThreadId} refreshKey={page} teammateName={executionTeammateName} /></div>
-    {/if}
-    <div class="thread-composer">
-      {#key `${destination}:${composerRevision}`}
-        <ChatMessageComposer {destination} threadComposer placeholder={t("chat.organization.messageChannel")} onRequestScrollToBottom={scrollToBottomForUserAction} />
-      {/key}
+  {#if composerDocked}
+    <div class="thread-dock" use:chatComposerDock={{ onMeasure: reserveDockSpace }}>
+      {#if chat.interaction?.pendingRequest}<div class="thread-request"><ChatRequestPanel pending={chat.interaction.pendingRequest} /></div>{/if}
+      {#if localExecutionAvailable && chat.openReplyThreadId}
+        <div class="thread-secrets"><ChatSecretRequests replyThreadId={chat.openReplyThreadId} refreshKey={page} teammateName={executionTeammateName} /></div>
+      {/if}
+      <div class="thread-composer">
+        {#key `${destination}:${composerRevision}`}
+          <ChatMessageComposer {destination} threadComposer placeholder={t("chat.organization.messageChannel")} onRequestScrollToBottom={scrollToBottomForUserAction} />
+        {/key}
+      </div>
     </div>
   {/if}
 </section>
@@ -532,7 +547,7 @@
 {/if}
 
 <style>
-  .reply-thread-panel { display:flex; width:100%; height:100%; min-height:0; flex-direction:column; background:var(--cal-bg); }
+  .reply-thread-panel { position:relative; display:flex; width:100%; height:100%; min-height:0; flex-direction:column; background:var(--cal-bg); }
   .thread-header { display:flex; height:var(--toolbar-h); min-height:var(--toolbar-h); flex:0 0 auto; align-items:center; gap:0.2rem; background:var(--cal-bg); padding-inline:0.45rem; }
   .thread-header.reserve-global-actions { padding-right:var(--chat-global-actions-width); }
   .thread-tab-shell { display:flex; width:9.5rem; min-width:3.75rem; height:2rem; flex:0 1 9.5rem; align-items:stretch; overflow:hidden; border-radius:0.55rem; background:var(--accent); color:var(--foreground); user-select:none; }
@@ -546,12 +561,14 @@
   .thread-header > span { flex:1; }
   .scratch-inspector { display:grid; min-width:2rem; min-height:2rem; place-items:center; border-radius:0.42rem; color:var(--muted-foreground); }
   .scratch-inspector:hover { background:var(--accent); color:var(--foreground); }
-  .thread-scroll { min-height:0; flex:1; overflow-y:scroll; overscroll-behavior:contain; padding-block:0.4rem; }
+  .thread-scroll { min-height:0; flex:1; overflow-y:scroll; overscroll-behavior:contain; padding-block:0.4rem calc(var(--chat-composer-dock-height,0px) + 0.4rem); }
   .date-divider { display:flex; align-items:center; gap:0.5rem; margin:0.75rem; color:var(--muted-foreground); font-size: calc(0.65rem * var(--type-scale)); }
   .date-divider::before,.date-divider::after { height:1px; flex:1; background:var(--border); content:""; }
   .run-restart,.run-location { margin:0.25rem 0.75rem; color:var(--muted-foreground); font-size: calc(0.65rem * var(--type-scale)); }
-  .thread-request { flex:0 0 auto; border-top:1px solid var(--border); padding:0.5rem; }
-  .thread-secrets { flex:0 0 auto; padding:0 0.5rem; }
+  /* The dock floats over the thread end: entries show around the surfaces above the composer and inside its rounded top corners, and the backdrop hides them below the corner curve. Only the surfaces take pointer input. */
+  .thread-dock { position:absolute; inset:auto 0 0; z-index:1; display:flex; flex-direction:column; background:linear-gradient(to bottom,transparent var(--chat-composer-dock-backdrop-top,0px),var(--cal-bg) var(--chat-composer-dock-backdrop-top,0px)); pointer-events:none; }
+  .thread-request { flex:0 0 auto; border-top:1px solid var(--border); background:var(--cal-bg); padding:0.5rem; pointer-events:auto; }
+  .thread-secrets { flex:0 0 auto; background:var(--cal-bg); padding:0 0.5rem; pointer-events:auto; }
   .thread-secrets:empty { display:none; }
   .thread-composer { display:flex; flex:0 0 auto; justify-content:center; padding:0.5rem 0.5rem 0.75rem; }
   .reply-thread-panel :global(.thread-error) { padding:0.6rem; font-size: calc(0.7rem * var(--type-scale)); }

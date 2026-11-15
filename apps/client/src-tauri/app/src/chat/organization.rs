@@ -1074,6 +1074,15 @@ pub async fn chat_cancel_scheduled_message(
 }
 
 #[tauri::command]
+pub async fn chat_update_scheduled_message(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: UpdateScheduledChatMessageCommand,
+) -> ChatResult<ChatScheduledMessageRead> {
+    scheduling::update_scheduled_message(app, db_url, request).await
+}
+
+#[tauri::command]
 pub async fn chat_retry_scheduled_message(
     app: tauri::AppHandle,
     db_url: String,

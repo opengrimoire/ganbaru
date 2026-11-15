@@ -51,6 +51,7 @@
     onClear = () => {},
     onClose = () => {},
     onMessagesChange = () => {},
+    onEdit,
   }: {
     mode?: ScheduleMenuMode;
     align?: "left" | "right";
@@ -69,6 +70,8 @@
     onClear?: () => void;
     onClose?: () => void;
     onMessagesChange?: (messages: ChatScheduledMessageRead[]) => void;
+    /** Loads a scheduled message into the composer for editing; manage mode offers no edit action without it. */
+    onEdit?: (message: ChatScheduledMessageRead) => void;
   } = $props();
 
   const chat = useChat();
@@ -330,6 +333,8 @@
           onSendNow={() => { void sendScheduledMessageNow(scheduled.id); }}
           onRetry={() => retryScheduledMessage(scheduled.id)}
           onCancel={() => { void cancelScheduledMessage(scheduled.id); }}
+          onEdit={onEdit ? () => { onEdit(scheduled); onClose(); } : undefined}
+          onActionError={(cause) => { error = chatErrorMessage(cause, t("chatErrors.actions.scheduleAction")); }}
         />
       {/each}
     </div>

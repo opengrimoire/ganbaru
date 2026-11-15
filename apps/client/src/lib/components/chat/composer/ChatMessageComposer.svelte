@@ -10,6 +10,7 @@
   import Hash from "@lucide/svelte/icons/hash";
   import Image from "@lucide/svelte/icons/image";
   import MessageSquareShare from "@lucide/svelte/icons/message-square-share";
+  import Pencil from "@lucide/svelte/icons/pencil";
   import Plus from "@lucide/svelte/icons/plus";
   import AtSign from "@lucide/svelte/icons/at-sign";
   import X from "@lucide/svelte/icons/x";
@@ -66,7 +67,7 @@
     type ChatReferenceClipboardSlice,
     type ChatReferenceTrigger,
   } from "$lib/chat/composer/message-references";
-  import { chatErrorMessage, chatErrorReason } from "$lib/chat/error-presentation";
+  import { chatErrorCode, chatErrorMessage, chatErrorReason } from "$lib/chat/error-presentation";
   import { parseChatMessageReference } from "$lib/chat/validation";
   import { formatDateTime, formatList } from "$lib/i18n/formatters";
   import { budgetStoppedAt, providerLimitNotice } from "$lib/chat/budgets/budget-model";
@@ -259,6 +260,11 @@
   /** The waiting reply the editor holds; the destination draft stays in the store until the edit ends. */
   let editingInput = $state<ChatAssignmentInputRead | null>(null);
   let inputBusyId = $state<string | null>(null);
+  /**
+   * The scheduled message the editor holds, with the share choice of the draft it set aside; the
+   * destination draft, its time, and its repeat rule stay in the store until the edit ends.
+   */
+  let editingScheduled = $state<{ message: ChatScheduledMessageRead; draftAlsoSendToChannel: boolean } | null>(null);
   /** Why every tool beyond text is off: an edit replaces only the text of a waiting reply. */
   const editLockReason = $derived(editingInput ? t("chat.composer.pendingInputs.textOnly") : null);
 
@@ -372,6 +378,7 @@
   const sendTooltip = $derived(routesFollowups
     ? t("chat.composer.queueOrSteerTooltip", "Enter", formatShortcut("Mod + Enter"))
     : editingInput ? t("chat.composer.pendingInputs.save")
+    : editingScheduled ? t("chat.organization.saveScheduledMessage")
     : scheduledFor ? t("chat.organization.scheduleMessage")
     : t("chat.composer.sendTooltip", "Enter"));
   /** The limit a failed assignment of this thread stopped at, when its budget stopped it. */
@@ -425,6 +432,7 @@
       paneEvents.removeEventListener("ganbaru:chat-stop-requested", stop);
       // The destination draft stayed in the store while a waiting reply was edited, so the next mount restores it.
       editingInput = null;
+      editingScheduled = null;
       releaseReviewNote();
       editorController = null;
     };
@@ -534,7 +542,7 @@
   });
 
   function persist(): void {
-    if (editingInput) return;
+    if (editingInput || editingScheduled) return;
     const references = chatReferencesForMarkdown(editorDocument, editorReferences);
     const draft: ChatOrganizationalDraft = {
       normalizedMarkdown,
@@ -1119,7 +1127,7 @@
 
   function startInputEdit(row: PendingInputRow): void {
     const reply = replyForInput(row.input);
-    if (!reply || editingInput) return;
+    if (!reply || editingInput || editingScheduled) return;
     persist();
     closePicker();
     closePromptMenu();
@@ -1141,6 +1149,110 @@
   function discardInputEdit(): void {
     if (!editingInput || inputBusyId) return;
     restoreDraftAfterEdit();
+  }
+
+  /**
+   * Loads a scheduled message into the editor with its references, attachments, time, and repeat
+   * rule. A repeating message shows its pending occurrence as the time, so saving without touching
+   * the time keeps its series where it is.
+   */
+  function startScheduledEdit(message: ChatScheduledMessageRead): void {
+    if (editingInput || editingScheduled || sending || message.state === "dispatching") return;
+    persist();
+    closePicker();
+    closePromptMenu();
+    error = null;
+    editingScheduled = { message, draftAlsoSendToChannel: alsoSendToChannel };
+    const recurrence = message.recurrence;
+    scheduledFor = recurrence ? recurrence.nextOccurrenceAt : message.scheduledFor;
+    scheduledRecurrence = recurrence
+      ? { rule: { ...recurrence.rule }, timeZone: recurrence.timeZone, quietPolicy: recurrence.quietPolicy }
+      : null;
+    alsoSendToChannel = message.alsoSendToChannel;
+    loadEditorContent(
+      parseChatComposerDocument(message.richContent, message.normalizedMarkdown),
+      message.references,
+      message.attachmentIds,
+    );
+    void loadAttachmentReads(message.attachmentIds);
+  }
+
+  /** Ends a scheduled message edit and puts the set aside draft, with its time and repeat rule, back in the editor. */
+  function restoreDraftAfterScheduledEdit(): void {
+    const editing = editingScheduled;
+    if (!editing) return;
+    editingScheduled = null;
+    const draft = chat.organizationalDraft(destination);
+    scheduledFor = draft.scheduledFor;
+    scheduledRecurrence = draft.recurrence;
+    alsoSendToChannel = editing.draftAlsoSendToChannel;
+    loadEditorContent(parseChatComposerDocument(draft.richContent, draft.normalizedMarkdown), draft.references, draft.attachmentIds, {
+      start: draft.selectionStart,
+      end: draft.selectionEnd,
+    });
+  }
+
+  function discardScheduledEdit(): void {
+    if (!editingScheduled || sending) return;
+    restoreDraftAfterScheduledEdit();
+  }
+
+  /**
+   * Saves the editor over the scheduled message it holds. A message that was sent, cancelled, or
+   * started sending meanwhile ends the edit with an explanation and a fresh list.
+   */
+  async function saveScheduledEdit(): Promise<void> {
+    const editing = editingScheduled;
+    if (!editing || sending || !hasMessageContent) return;
+    const original = editing.message;
+    const originalScheduledFor = original.recurrence?.nextOccurrenceAt ?? original.scheduledFor;
+    if (!scheduledFor) {
+      error = t("chat.organization.invalidScheduleTime");
+      return;
+    }
+    if (validation || providerBlockers.length > 0 || messageTooLarge) {
+      await focusBlocker();
+      return;
+    }
+    sending = true;
+    error = null;
+    try {
+      const blocker = await validateChannelDisclosures();
+      if (blocker) {
+        disclosureBlocker = blocker;
+        await focusBlocker();
+        return;
+      }
+      if (scheduledFor !== originalScheduledFor) {
+        const { chatScheduleIsFuture } = await import("$lib/chat/composer/message-scheduling");
+        if (!chatScheduleIsFuture(scheduledFor)) {
+          error = t("chat.organization.invalidScheduleTime");
+          return;
+        }
+      }
+      const updated = await chat.updateScheduledOrganizationalMessage({
+        scheduledMessageId: original.id,
+        scheduledFor,
+        normalizedMarkdown,
+        richContent: chatComposerDocumentVersioned(editorDocument),
+        attachmentIds: [...attachmentIds],
+        references: chatReferencesForMarkdown(editorDocument, editorReferences),
+        alsoSendToChannel: threadComposer && alsoSendToChannel,
+        recurrence: scheduledRecurrence,
+      });
+      scheduledMessages = scheduledMessages.map((message) => message.id === updated.id ? updated : message)
+        .sort((left, right) => left.scheduledFor.localeCompare(right.scheduledFor));
+      restoreDraftAfterScheduledEdit();
+    } catch (cause: unknown) {
+      const code = chatErrorCode(cause);
+      error = chatErrorMessage(cause, t("chatErrors.actions.scheduleAction"));
+      if (code === "not_found" || code === "busy") {
+        restoreDraftAfterScheduledEdit();
+        await loadScheduledMessages(destination);
+      }
+    } finally {
+      sending = false;
+    }
   }
 
   /**
@@ -1518,6 +1630,10 @@
   async function post(followupRouting: ChatFollowupRouting = "queue"): Promise<void> {
     if (editingInput) {
       await saveInputEdit();
+      return;
+    }
+    if (editingScheduled) {
+      await saveScheduledEdit();
       return;
     }
     if (sending || !hasMessageContent) return;
@@ -1979,7 +2095,14 @@
   {#if assignmentAwaitingStart}
     <Notice class="assignment-notice" role="status" message={workAwaitsStartMessage} retryLabel={t("chat.organization.startHere")} onRetry={startAssignmentHere} copy={false} />
   {/if}
-  {#if nextScheduledMessage}
+  {#if editingScheduled}
+    <div class="scheduled-summary" data-scheduled-edit>
+      <Pencil size={13} />
+      <span>{t("chat.organization.editingScheduledMessage")}</span>
+      <button type="button" data-scheduled-edit-action="discard" disabled={sending} onclick={discardScheduledEdit}>{t("chat.organization.discardScheduledMessageEdit")}</button>
+      <button type="button" data-scheduled-edit-action="save" disabled={sending || !hasMessageContent} onclick={() => { void saveScheduledEdit(); }}>{t("chat.composer.pendingInputs.save")}</button>
+    </div>
+  {:else if nextScheduledMessage}
     <div class="scheduled-summary">
       <Clock3 size={13} />
       <span>{t("chat.organization.scheduledMessageSummary", scheduledMessages.length, formatScheduledInstant(nextScheduledDelivery ?? nextScheduledMessage.scheduledFor))}</span>
@@ -1988,7 +2111,7 @@
         {#if scheduledMessagesOpen}
           {#if ScheduleMenu}
             {@const LoadedScheduledMessagesMenu = ScheduleMenu}
-            <LoadedScheduledMessagesMenu mode="manage" align="right" {scheduledMessages} onMessagesChange={updateScheduledMessages} onClose={() => { scheduledMessagesOpen = false; }} />
+            <LoadedScheduledMessagesMenu mode="manage" align="right" {scheduledMessages} onMessagesChange={updateScheduledMessages} onEdit={editingInput ? undefined : startScheduledEdit} onClose={() => { scheduledMessagesOpen = false; }} />
           {:else}<div class="composer-menu schedule-loading align-right surface-floating surface-floating-body"><Loading layout="fill" /></div>{/if}
         {/if}
       </div>
@@ -2083,14 +2206,14 @@
           {#if scheduleMenuOpen}
             {#if ScheduleMenu}
               {@const LoadedScheduleMenu = ScheduleMenu}
-              <LoadedScheduleMenu mode="choose" persistent selectedScheduledFor={scheduledFor} selectedRecurrence={scheduledRecurrence} disabled={sending} onSelect={selectSchedule} onClear={clearSchedule} onClose={() => { scheduleMenuOpen = false; }} />
+              <LoadedScheduleMenu mode="choose" persistent selectedScheduledFor={scheduledFor} selectedRecurrence={scheduledRecurrence} allowClear={!editingScheduled} disabled={sending} onSelect={selectSchedule} onClear={clearSchedule} onClose={() => { scheduleMenuOpen = false; }} />
             {:else}<div class="composer-menu schedule-loading surface-floating surface-floating-body"><Loading layout="fill" /></div>{/if}
           {/if}
         </div>
         {#if threadComposer}<button type="button" class="tool-button" class:active={alsoSendToChannel} aria-label={t("chat.organization.shareReplyToChannel", channelName)} disabled={editLockReason !== null} aria-pressed={alsoSendToChannel} title={editLockReason ?? t("chat.organization.shareReplyToChannel", channelName)} onclick={() => { alsoSendToChannel = !alsoSendToChannel; }}><MessageSquareShare size={15} /></button>{/if}
       {/snippet}
       {#snippet actions()}
-        <button type="button" class="send-button" data-action={editingInput ? "save" : "send"} disabled={sending || inputBusyId !== null || !hasMessageContent} aria-disabled={sendBlocked} aria-label={editingInput ? t("chat.composer.pendingInputs.save") : scheduledFor ? t("chat.organization.scheduleMessage") : t("chat.composer.send")} data-app-tooltip={sendTooltip} onclick={() => { void post(); }}><ArrowUp size={16} /></button>
+        <button type="button" class="send-button" data-action={editingInput || editingScheduled ? "save" : "send"} disabled={sending || inputBusyId !== null || !hasMessageContent} aria-disabled={sendBlocked} aria-label={editingInput ? t("chat.composer.pendingInputs.save") : editingScheduled ? t("chat.organization.saveScheduledMessage") : scheduledFor ? t("chat.organization.scheduleMessage") : t("chat.composer.send")} data-app-tooltip={sendTooltip} onclick={() => { void post(); }}><ArrowUp size={16} /></button>
       {/snippet}
       {#snippet below()}
         {#if validation || disclosureBlocker || providerBlockers.length || messageTooLarge}

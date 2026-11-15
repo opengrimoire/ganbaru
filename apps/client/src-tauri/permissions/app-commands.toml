@@ -243,6 +243,7 @@ commands.allow = [
   "chat_update_diagnostic_preferences",
   "chat_update_panels",
   "chat_update_provider_models",
+  "chat_update_scheduled_message",
   "chat_validate_working_folder_mentions",
   "chat_watch_workspace",
   "clear_benchmark_state",

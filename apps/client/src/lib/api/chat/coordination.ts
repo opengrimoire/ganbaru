@@ -47,6 +47,7 @@ import type {
   PostChatMessageRequest,
   PostChatMessageResult,
   ScheduleChatMessageRequest,
+  UpdateScheduledChatMessageRequest,
   ChatScheduledMessageDispatchRead,
   ChatScheduledMessageId,
   ChatScheduledMessageRead,
@@ -381,6 +382,15 @@ export async function cancelScheduledChatMessage(
   await invoke("chat_cancel_scheduled_message", {
     dbUrl: await ensureDbUrl(), scheduledMessageId,
   });
+}
+
+/** Replaces the content, time, and repeat rule of a scheduled message that is not being sent yet. */
+export async function updateScheduledChatMessage(
+  request: UpdateScheduledChatMessageRequest,
+): Promise<ChatScheduledMessageRead> {
+  return parseChatScheduledMessage(await invoke<unknown>("chat_update_scheduled_message", {
+    dbUrl: await ensureDbUrl(), request,
+  }));
 }
 
 export async function retryScheduledChatMessage(

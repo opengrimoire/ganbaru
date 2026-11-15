@@ -2,8 +2,8 @@
 //!
 //! A scheduled message replicates, but only its executing device sends it, retries it, or sends
 //! it at once; that device keeps the claim, attempt count, and retry time in its local dispatch
-//! row. Any device may cancel a scheduled message. A repeating message stays scheduled and posts
-//! once per occurrence.
+//! row. Any device may edit or cancel a scheduled message. A repeating message stays scheduled
+//! and posts once per occurrence.
 
 mod proposals;
 mod series;
@@ -71,46 +71,13 @@ pub(super) async fn schedule_message(
     db_url: String,
     request: ScheduleChatMessageCommand,
 ) -> ChatResult<ChatScheduledMessageRead> {
-    validate_message_request(&request.message)?;
-    refuse_scheduled_post_choices(&request.message)?;
+    let serialized = validate_scheduled_message(&request.message)?;
     let now = now_timestamp()?;
-    validate_scheduled_for(&request.scheduled_for, &now)?;
-    let first_occurrence_at = match request.recurrence.as_ref() {
-        Some(spec) => {
-            validate_recurrence(spec)?;
-            Some(series::first_occurrence_at(spec, &request.scheduled_for)?)
-        }
-        None => None,
-    };
-    let serialized = serde_json::to_string(&request.message).map_err(serialization_error)?;
-    validate_scheduled_content(&serialized, &request.message.references)?;
+    let first_occurrence_at =
+        validate_schedule(&request.scheduled_for, request.recurrence.as_ref(), &now)?;
     let device_id = this_device_id(&app)?;
     let pool = chat_pool(app.clone(), db_url).await?;
-    let channel = super::super::channels::read_channel(&pool, &request.message.channel_id).await?;
-    if channel.archived_at.is_some() {
-        return Err(ChatError::new(
-            ChatErrorCode::Conflict,
-            "Restore the channel before scheduling a message",
-            true,
-        ));
-    }
-    if let Some(reply_thread_id) = request.message.reply_thread_id.as_ref() {
-        require_reply_thread(&pool, reply_thread_id, &channel.conversation_id).await?;
-    }
-    let resolved_invocation = resolve_invoked_teammate(
-        &pool,
-        &channel.conversation_id,
-        request.message.reply_thread_id.as_ref(),
-        &request.message.references,
-    )
-    .await?;
-    require_continuation_scope_is_unchanged(
-        resolved_invocation
-            .as_ref()
-            .and_then(|invocation| invocation.active_assignment.as_ref())
-            .is_some(),
-        &request.message.references,
-    )?;
+    require_scheduled_destination(&pool, &request.message).await?;
     validate_scheduled_attachments(&pool, &request.message.attachment_ids).await?;
     if let Some(existing) =
         sqlx::query("SELECT request_data, scheduled_for FROM chat_scheduled_messages WHERE id = ?")
@@ -220,6 +187,64 @@ pub(super) async fn schedule_message(
         request.recurrence.as_ref(),
     );
     read_scheduled_message(&pool, &request.scheduled_message_id).await
+}
+
+/// Checks the scheduled `message` on its own and returns the request it stores.
+fn validate_scheduled_message(message: &PostChatMessageCommand) -> ChatResult<String> {
+    validate_message_request(message)?;
+    refuse_scheduled_post_choices(message)?;
+    let serialized = serde_json::to_string(message).map_err(serialization_error)?;
+    validate_scheduled_content(&serialized, &message.references)?;
+    Ok(serialized)
+}
+
+/// Checks the delivery time `scheduled_for` and the repeat rule `recurrence` at `now`, and
+/// returns when a repeating message first posts.
+fn validate_schedule(
+    scheduled_for: &UtcTimestamp,
+    recurrence: Option<&RecurrenceSpec>,
+    now: &UtcTimestamp,
+) -> ChatResult<Option<String>> {
+    validate_scheduled_for(scheduled_for, now)?;
+    recurrence
+        .map(|spec| {
+            validate_recurrence(spec)?;
+            series::first_occurrence_at(spec, scheduled_for)
+        })
+        .transpose()
+}
+
+/// Refuses a scheduled `message` whose channel is archived, whose reply thread is not in the
+/// channel's conversation, or whose mentions would widen the scope of work it continues.
+async fn require_scheduled_destination(
+    pool: &SqlitePool,
+    message: &PostChatMessageCommand,
+) -> ChatResult<()> {
+    let channel = super::super::channels::read_channel(pool, &message.channel_id).await?;
+    if channel.archived_at.is_some() {
+        return Err(ChatError::new(
+            ChatErrorCode::Conflict,
+            "Restore the channel before scheduling a message",
+            true,
+        ));
+    }
+    if let Some(reply_thread_id) = message.reply_thread_id.as_ref() {
+        require_reply_thread(pool, reply_thread_id, &channel.conversation_id).await?;
+    }
+    let resolved_invocation = resolve_invoked_teammate(
+        pool,
+        &channel.conversation_id,
+        message.reply_thread_id.as_ref(),
+        &message.references,
+    )
+    .await?;
+    require_continuation_scope_is_unchanged(
+        resolved_invocation
+            .as_ref()
+            .and_then(|invocation| invocation.active_assignment.as_ref())
+            .is_some(),
+        &message.references,
+    )
 }
 
 /// Digest of the consent to `request_data` as the request of `scheduled_message_id`, sent once
@@ -668,6 +693,269 @@ pub(super) async fn cancel_scheduled_message(
     );
     #[cfg(mobile)]
     let _ = (app, deleted_request, deleted_spec);
+    Ok(())
+}
+
+/// Replaces the content, delivery time, and repeat rule of a scheduled message from any device.
+/// The message keeps its id, client command id, channel, reply thread, and executing device, so
+/// its eventual post stays idempotent. A message this device is sending refuses the edit, and a
+/// message already sent or cancelled is not found.
+///
+/// The request, its mentions, and its attachments replace the stored content as one unit, so a
+/// concurrent edit on another device resolves to one whole edit. A repeating message keeps its
+/// count of posted occurrences; a changed rule or time makes its pending occurrence the first
+/// the rule names at or after `scheduled_for`. On the executing device the edit is a local
+/// gesture and gives consent to the new request; elsewhere the executing device holds no
+/// consent to it, so the work it starts asks for acceptance there.
+pub(super) async fn update_scheduled_message(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: UpdateScheduledChatMessageCommand,
+) -> ChatResult<ChatScheduledMessageRead> {
+    let device_id = this_device_id(&app)?;
+    let pool = chat_pool(app.clone(), db_url).await?;
+    let now = now_timestamp()?;
+    apply_scheduled_update(
+        &pool,
+        &device_id,
+        request,
+        &now,
+        |scheduled_message_id, request_data, spec| {
+            #[cfg(desktop)]
+            record_scheduled_consent(&app, scheduled_message_id, request_data, spec);
+            #[cfg(mobile)]
+            let _ = (&app, scheduled_message_id, request_data, spec);
+        },
+    )
+    .await
+}
+
+/// Applies the edit `request` made on `device_id` at `now`, calling `record_consent` with the
+/// new request before the commit when this device executes the message.
+pub(super) async fn apply_scheduled_update(
+    pool: &SqlitePool,
+    device_id: &str,
+    request: UpdateScheduledChatMessageCommand,
+    now: &UtcTimestamp,
+    record_consent: impl FnOnce(&ChatScheduledMessageId, &str, Option<&RecurrenceSpec>),
+) -> ChatResult<ChatScheduledMessageRead> {
+    let pool = pool.clone();
+    let now = now.clone();
+    let scheduled_message_id = request.scheduled_message_id.clone();
+    let stored = sqlx::query(
+        "SELECT request_data, scheduled_for, executing_device_id
+         FROM chat_scheduled_messages WHERE id = ?",
+    )
+    .bind(scheduled_message_id.as_str())
+    .fetch_optional(&pool)
+    .await
+    .map_err(persistence_error)?
+    .ok_or_else(scheduled_not_found)?;
+    let stored_request: String = stored.try_get("request_data").map_err(persistence_error)?;
+    let stored_scheduled_for: String =
+        stored.try_get("scheduled_for").map_err(persistence_error)?;
+    let executing_device: Option<String> = stored
+        .try_get("executing_device_id")
+        .map_err(persistence_error)?;
+    let previous = serde_json::from_str::<PostChatMessageCommand>(&stored_request)
+        .map_err(serialization_error)?;
+    let previous_series = series::read_series(&pool, &scheduled_message_id).await?;
+    let attachments_changed = previous.attachment_ids != request.attachment_ids;
+    let message = PostChatMessageCommand {
+        client_command_id: previous.client_command_id,
+        channel_id: previous.channel_id,
+        reply_thread_id: previous.reply_thread_id,
+        normalized_markdown: request.normalized_markdown,
+        rich_content: request.rich_content,
+        attachment_ids: request.attachment_ids,
+        references: request.references,
+        execution_target: previous.execution_target,
+        also_send_to_channel: request.also_send_to_channel,
+        followup_routing: None,
+    };
+    let serialized = validate_scheduled_message(&message)?;
+    let timing = scheduled_timing_change(
+        &request.scheduled_for,
+        request.recurrence.as_ref(),
+        &stored_scheduled_for,
+        previous_series.as_ref(),
+        &now,
+    )?;
+    let rule_changed =
+        previous_series.as_ref().map(|series| &series.spec) != request.recurrence.as_ref();
+    if serialized == stored_request && timing.is_none() && !rule_changed {
+        return read_scheduled_message(&pool, &scheduled_message_id).await;
+    }
+    require_scheduled_destination(&pool, &message).await?;
+    if attachments_changed {
+        validate_scheduled_attachments(&pool, &message.attachment_ids).await?;
+    }
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    let updated = sqlx::query(
+        "UPDATE chat_scheduled_messages
+         SET request_data = ?1, scheduled_for = ?2, updated_at = ?3
+         WHERE id = ?4 AND NOT EXISTS (
+           SELECT 1 FROM chat_scheduled_message_dispatch dispatch
+           WHERE dispatch.scheduled_message_id = ?4 AND dispatch.claim_token IS NOT NULL
+         )",
+    )
+    .bind(&serialized)
+    .bind(timing.as_ref().map_or(stored_scheduled_for.as_str(), |_| {
+        request.scheduled_for.as_str()
+    }))
+    .bind(now.as_str())
+    .bind(scheduled_message_id.as_str())
+    .execute(&mut *transaction)
+    .await
+    .map_err(persistence_error)?;
+    if updated.rows_affected() != 1 {
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_scheduled_messages WHERE id = ?)")
+                .bind(scheduled_message_id.as_str())
+                .fetch_one(&mut *transaction)
+                .await
+                .map_err(persistence_error)?;
+        return Err(if exists {
+            scheduled_busy()
+        } else {
+            scheduled_not_found()
+        });
+    }
+    sqlx::query("DELETE FROM chat_scheduled_message_references WHERE scheduled_message_id = ?")
+        .bind(scheduled_message_id.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(persistence_error)?;
+    for (index, reference) in message.references.iter().enumerate() {
+        insert_scheduled_reference(&mut transaction, &scheduled_message_id, reference, index)
+            .await?;
+    }
+    if attachments_changed {
+        replace_scheduled_attachments(&mut transaction, &scheduled_message_id, &message, &now)
+            .await?;
+    }
+    let due_at = match (request.recurrence.as_ref(), previous_series.as_ref()) {
+        (None, None) => timing
+            .as_ref()
+            .map(|_| request.scheduled_for.as_str().to_owned()),
+        (None, Some(_)) => {
+            series::delete_series(&mut transaction, &scheduled_message_id).await?;
+            Some(request.scheduled_for.as_str().to_owned())
+        }
+        (Some(spec), None) => {
+            series::require_series_room(&mut transaction, &message.channel_id).await?;
+            let first_at = timing
+                .clone()
+                .unwrap_or_else(|| request.scheduled_for.as_str().to_owned());
+            series::insert_series(
+                &mut transaction,
+                &scheduled_message_id,
+                spec,
+                &first_at,
+                &now,
+            )
+            .await?;
+            Some(first_at)
+        }
+        (Some(spec), Some(_)) => match timing.as_ref() {
+            Some(next_at) => {
+                series::reschedule_series(
+                    &mut transaction,
+                    &scheduled_message_id,
+                    rule_changed.then_some(spec),
+                    next_at,
+                    &now,
+                )
+                .await?;
+                Some(next_at.clone())
+            }
+            None => None,
+        },
+    };
+    if let Some(due_at) = due_at.as_deref() {
+        sqlx::query(
+            "UPDATE chat_scheduled_message_dispatch
+             SET available_at = ?1, attempt_count = 0, deferred_until = NULL, updated_at = ?2
+             WHERE scheduled_message_id = ?3 AND claim_token IS NULL",
+        )
+        .bind(due_at)
+        .bind(now.as_str())
+        .bind(scheduled_message_id.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(persistence_error)?;
+    }
+    // Recorded before the commit replaces the request, so a dispatch of the new request sees
+    // the consent.
+    if executing_device.as_deref() == Some(device_id) {
+        record_consent(
+            &scheduled_message_id,
+            &serialized,
+            request.recurrence.as_ref(),
+        );
+    }
+    transaction.commit().await.map_err(persistence_error)?;
+    read_scheduled_message(&pool, &scheduled_message_id).await
+}
+
+/// When a scheduled message edited to `scheduled_for` on the rule `recurrence` is next due, or
+/// `None` when the edit keeps its timing: the same rule and pending occurrence for a repeating
+/// message, or the same delivery time for a one-time one. Changed timing must be valid at `now`.
+fn scheduled_timing_change(
+    scheduled_for: &UtcTimestamp,
+    recurrence: Option<&RecurrenceSpec>,
+    stored_scheduled_for: &str,
+    stored_series: Option<&series::StoredSeries>,
+    now: &UtcTimestamp,
+) -> ChatResult<Option<String>> {
+    let unchanged = match (recurrence, stored_series) {
+        (None, None) => scheduled_for.as_str() == stored_scheduled_for,
+        (Some(spec), Some(stored)) if *spec == stored.spec => {
+            series::first_occurrence_at(spec, scheduled_for)? == stored.next_occurrence_at
+        }
+        _ => false,
+    };
+    if unchanged {
+        return Ok(None);
+    }
+    let first_at = validate_schedule(scheduled_for, recurrence, now)?;
+    Ok(Some(
+        first_at.unwrap_or_else(|| scheduled_for.as_str().to_owned()),
+    ))
+}
+
+/// Replaces the attachments of `scheduled_message_id` with those of `message`, marking each one
+/// it no longer holds unreferenced when nothing else does.
+async fn replace_scheduled_attachments(
+    transaction: &mut Transaction<'_, Sqlite>,
+    scheduled_message_id: &ChatScheduledMessageId,
+    message: &PostChatMessageCommand,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    let removed = sqlx::query_scalar::<_, String>(
+        "DELETE FROM chat_scheduled_message_attachment_references
+         WHERE scheduled_message_id = ? RETURNING attachment_id",
+    )
+    .bind(scheduled_message_id.as_str())
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    insert_attachment_references(
+        transaction,
+        AttachmentReferenceOwner::ScheduledMessage,
+        scheduled_message_id.as_str(),
+        &message.attachment_ids,
+    )
+    .await?;
+    for attachment_id in removed {
+        if !message
+            .attachment_ids
+            .iter()
+            .any(|kept| kept.as_str() == attachment_id)
+        {
+            mark_attachment_unreferenced_if_unused(transaction, &attachment_id, now).await?;
+        }
+    }
     Ok(())
 }
 
@@ -1253,6 +1541,29 @@ pub(super) async fn prepare_scheduled_dispatch(
            ON recurrence.scheduled_message_id = scheduled.id
          WHERE scheduled.executing_device_id = ?2
          ON CONFLICT(scheduled_message_id) DO NOTHING",
+    )
+    .bind(now.as_str())
+    .bind(device_id)
+    .execute(pool)
+    .await
+    .map_err(persistence_error)?;
+    // A delivery time edited on another device moves the local due time: a row with no failed
+    // attempt follows it either way, and a row waiting to retry follows it when it moved later.
+    sqlx::query(
+        "UPDATE chat_scheduled_message_dispatch AS dispatch
+         SET available_at = due.due_at, attempt_count = 0, updated_at = ?1
+         FROM (
+           SELECT scheduled.id,
+                  coalesce(recurrence.next_occurrence_at, scheduled.scheduled_for) AS due_at
+           FROM chat_scheduled_messages scheduled
+           LEFT JOIN chat_scheduled_message_recurrences recurrence
+             ON recurrence.scheduled_message_id = scheduled.id
+           WHERE scheduled.executing_device_id = ?2 AND scheduled.failed_at IS NULL
+         ) AS due
+         WHERE dispatch.scheduled_message_id = due.id
+           AND dispatch.claim_token IS NULL AND dispatch.deferred_until IS NULL
+           AND dispatch.available_at <> due.due_at
+           AND (dispatch.attempt_count = 0 OR dispatch.available_at < due.due_at)",
     )
     .bind(now.as_str())
     .bind(device_id)

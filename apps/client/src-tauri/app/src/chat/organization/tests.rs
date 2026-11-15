@@ -6147,3 +6147,208 @@ async fn an_assignment_read_names_the_newest_local_run_thread_and_none_without_l
     let elsewhere = read_assignment(&pool, &assignment_id).await.unwrap();
     assert_eq!(elsewhere.latest_run_provider_thread_id, None);
 }
+
+/// An edit of `scheduled:test` to `markdown`, sent once at `scheduled_for`.
+fn scheduled_edit(markdown: &str, scheduled_for: &str) -> UpdateScheduledChatMessageCommand {
+    let content = message(markdown);
+    UpdateScheduledChatMessageCommand {
+        scheduled_message_id: ChatScheduledMessageId::new("scheduled:test").unwrap(),
+        scheduled_for: UtcTimestamp::new(scheduled_for).unwrap(),
+        normalized_markdown: content.normalized_markdown,
+        rich_content: content.rich_content,
+        attachment_ids: Vec::new(),
+        references: Vec::new(),
+        also_send_to_channel: true,
+        recurrence: None,
+    }
+}
+
+async fn scheduled_available_at(pool: &SqlitePool) -> String {
+    sqlx::query_scalar(
+        "SELECT available_at FROM chat_scheduled_message_dispatch
+         WHERE scheduled_message_id = 'scheduled:test'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[test]
+fn editing_a_scheduled_message_replaces_it_in_place_and_moves_its_delivery() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        let now = UtcTimestamp::new("2026-08-03T00:00:00.000Z").unwrap();
+        seed_test_channel(&pool, &now).await;
+        let request_data = serde_json::to_string(&message("Draft wording")).unwrap();
+        insert_test_scheduled_message(&pool, &request_data, Some(SCHEDULING_DEVICE), true, &now)
+            .await;
+        let mut consents = Vec::new();
+
+        let edited = scheduling::apply_scheduled_update(
+            &pool,
+            SCHEDULING_DEVICE,
+            scheduled_edit("Final wording", "2026-08-05T09:00:00.000Z"),
+            &now,
+            |id, request_data, spec| {
+                consents.push((
+                    id.as_str().to_owned(),
+                    request_data.to_owned(),
+                    spec.cloned(),
+                ));
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(edited.id.as_str(), "scheduled:test");
+        assert_eq!(edited.normalized_markdown, "Final wording");
+        assert!(edited.also_send_to_channel);
+        assert_eq!(edited.scheduled_for.as_str(), "2026-08-05T09:00:00.000Z");
+        let stored: PostChatMessageCommand = serde_json::from_str(
+            &sqlx::query_scalar::<_, String>(
+                "SELECT request_data FROM chat_scheduled_messages WHERE id = 'scheduled:test'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(stored.client_command_id.as_str(), "command:test");
+        assert_eq!(stored.normalized_markdown, "Final wording");
+        assert_eq!(
+            scheduled_available_at(&pool).await,
+            "2026-08-05T09:00:00.000Z"
+        );
+        // The executing device consents to the request it now holds.
+        assert_eq!(consents.len(), 1);
+        assert_eq!(consents[0].0, "scheduled:test");
+        assert_eq!(consents[0].1, serde_json::to_string(&stored).unwrap());
+        assert_eq!(consents[0].2, None);
+
+        // An edit on another device leaves the executing device without consent to it.
+        let mut elsewhere = 0;
+        scheduling::apply_scheduled_update(
+            &pool,
+            "device:phone",
+            scheduled_edit("Phone wording", "2026-08-05T09:00:00.000Z"),
+            &now,
+            |_, _, _| elsewhere += 1,
+        )
+        .await
+        .unwrap();
+        assert_eq!(elsewhere, 0);
+    });
+}
+
+#[test]
+fn editing_a_scheduled_message_refuses_one_being_sent_or_gone() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        let now = UtcTimestamp::new("2026-08-03T00:00:00.000Z").unwrap();
+        seed_test_channel(&pool, &now).await;
+        let request_data = serde_json::to_string(&message("Draft wording")).unwrap();
+        insert_test_scheduled_message(&pool, &request_data, Some(SCHEDULING_DEVICE), true, &now)
+            .await;
+        let scheduled_message_id = ChatScheduledMessageId::new("scheduled:test").unwrap();
+        claim_scheduled_message_for_immediate_send(
+            &pool,
+            &scheduled_message_id,
+            SCHEDULING_DEVICE,
+            &now,
+            "claim:a",
+        )
+        .await
+        .unwrap();
+
+        let busy = scheduling::apply_scheduled_update(
+            &pool,
+            SCHEDULING_DEVICE,
+            scheduled_edit("Too late", "2026-08-05T09:00:00.000Z"),
+            &now,
+            |_, _, _| panic!("a refused edit gives no consent"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(busy.code, ChatErrorCode::Busy);
+        let stored: String = sqlx::query_scalar(
+            "SELECT request_data FROM chat_scheduled_messages WHERE id = 'scheduled:test'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(stored, request_data);
+
+        let mut missing = scheduled_edit("Nothing", "2026-08-05T09:00:00.000Z");
+        missing.scheduled_message_id = ChatScheduledMessageId::new("scheduled:gone").unwrap();
+        let gone = scheduling::apply_scheduled_update(
+            &pool,
+            SCHEDULING_DEVICE,
+            missing,
+            &now,
+            |_, _, _| (),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(gone.code, ChatErrorCode::NotFound);
+    });
+}
+
+#[test]
+fn a_delivery_time_edited_elsewhere_moves_the_local_due_time() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        let now = UtcTimestamp::new("2026-08-03T00:00:00.000Z").unwrap();
+        seed_test_channel(&pool, &now).await;
+        let request_data = serde_json::to_string(&message("Send from the desk")).unwrap();
+        insert_test_scheduled_message(&pool, &request_data, Some(SCHEDULING_DEVICE), true, &now)
+            .await;
+        // An edit from another device arrives through sync, which leaves the dispatch row alone.
+        let move_to = |scheduled_for: &'static str| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query(
+                    "UPDATE chat_scheduled_messages SET scheduled_for = ?
+                     WHERE id = 'scheduled:test'",
+                )
+                .bind(scheduled_for)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+        };
+
+        move_to("2026-08-06T00:00:00.000Z").await;
+        scheduling::prepare_scheduled_dispatch(&pool, SCHEDULING_DEVICE, &now)
+            .await
+            .unwrap();
+        assert_eq!(
+            scheduled_available_at(&pool).await,
+            "2026-08-06T00:00:00.000Z"
+        );
+
+        // A row waiting to retry keeps its later retry time when the delivery moves earlier.
+        sqlx::query(
+            "UPDATE chat_scheduled_message_dispatch
+             SET attempt_count = 1, available_at = '2026-08-06T00:05:00.000Z'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        move_to("2026-08-05T00:00:00.000Z").await;
+        scheduling::prepare_scheduled_dispatch(&pool, SCHEDULING_DEVICE, &now)
+            .await
+            .unwrap();
+        assert_eq!(
+            scheduled_available_at(&pool).await,
+            "2026-08-06T00:05:00.000Z"
+        );
+        move_to("2026-08-07T00:00:00.000Z").await;
+        scheduling::prepare_scheduled_dispatch(&pool, SCHEDULING_DEVICE, &now)
+            .await
+            .unwrap();
+        assert_eq!(
+            scheduled_available_at(&pool).await,
+            "2026-08-07T00:00:00.000Z"
+        );
+    });
+}

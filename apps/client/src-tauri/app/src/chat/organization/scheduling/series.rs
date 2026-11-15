@@ -368,17 +368,7 @@ pub(super) async fn insert_series(
     first_at: &str,
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
-    let (interval_minutes, local_minute, weekdays_mask) = match spec.rule {
-        RecurrenceRule::Interval { minutes } => (Some(i64::from(minutes)), None, None),
-        RecurrenceRule::FixedTime {
-            local_minute,
-            weekdays,
-        } => (
-            None,
-            Some(i64::from(local_minute)),
-            Some(i64::from(weekdays.mask())),
-        ),
-    };
+    let (interval_minutes, local_minute, weekdays_mask) = rule_columns(spec);
     sqlx::query(
         "INSERT INTO chat_scheduled_message_recurrences
             (id, scheduled_message_id, rule_kind, interval_minutes, local_minute, weekdays_mask,
@@ -400,6 +390,77 @@ pub(super) async fn insert_series(
     .await
     .map_err(persistence_error)?;
     Ok(())
+}
+
+/// Makes the pending occurrence of `scheduled_message_id` the one due at `next_at`, keeping the
+/// count of posted occurrences, and replaces its rule with `spec` when one is given.
+pub(super) async fn reschedule_series(
+    transaction: &mut Transaction<'_, Sqlite>,
+    scheduled_message_id: &ChatScheduledMessageId,
+    spec: Option<&RecurrenceSpec>,
+    next_at: &str,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    if let Some(spec) = spec {
+        let (interval_minutes, local_minute, weekdays_mask) = rule_columns(spec);
+        sqlx::query(
+            "UPDATE chat_scheduled_message_recurrences
+             SET rule_kind = ?, interval_minutes = ?, local_minute = ?, weekdays_mask = ?,
+                 time_zone = ?, quiet_policy = ?, updated_at = ?
+             WHERE scheduled_message_id = ?",
+        )
+        .bind(spec.rule.kind())
+        .bind(interval_minutes)
+        .bind(local_minute)
+        .bind(weekdays_mask)
+        .bind(&spec.time_zone)
+        .bind(spec.quiet_policy.as_str())
+        .bind(now.as_str())
+        .bind(scheduled_message_id.as_str())
+        .execute(&mut **transaction)
+        .await
+        .map_err(persistence_error)?;
+    }
+    sqlx::query(
+        "UPDATE chat_scheduled_message_recurrences
+         SET next_occurrence_at = ?, updated_at = ?
+         WHERE scheduled_message_id = ?",
+    )
+    .bind(next_at)
+    .bind(now.as_str())
+    .bind(scheduled_message_id.as_str())
+    .execute(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    Ok(())
+}
+
+/// Removes the rule of `scheduled_message_id`, so it sends once.
+pub(super) async fn delete_series(
+    transaction: &mut Transaction<'_, Sqlite>,
+    scheduled_message_id: &ChatScheduledMessageId,
+) -> ChatResult<()> {
+    sqlx::query("DELETE FROM chat_scheduled_message_recurrences WHERE scheduled_message_id = ?")
+        .bind(scheduled_message_id.as_str())
+        .execute(&mut **transaction)
+        .await
+        .map_err(persistence_error)?;
+    Ok(())
+}
+
+/// The interval, local minute, and weekday mask columns that store the rule of `spec`.
+fn rule_columns(spec: &RecurrenceSpec) -> (Option<i64>, Option<i64>, Option<i64>) {
+    match spec.rule {
+        RecurrenceRule::Interval { minutes } => (Some(i64::from(minutes)), None, None),
+        RecurrenceRule::FixedTime {
+            local_minute,
+            weekdays,
+        } => (
+            None,
+            Some(i64::from(local_minute)),
+            Some(i64::from(weekdays.mask())),
+        ),
+    }
 }
 
 /// How a series moves past its pending occurrence.

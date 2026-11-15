@@ -1017,6 +1017,20 @@ export interface ScheduleChatMessageRequest {
   recurrence: ChatRecurrenceSpec | null;
 }
 
+/** New content, delivery time, and repeat rule for a message still waiting to be sent; its channel, reply thread, and command id stay. */
+export interface UpdateScheduledChatMessageRequest {
+  scheduledMessageId: ChatScheduledMessageId;
+  /** Delivery time of a one-time message, or the time from which a repeating one next posts. */
+  scheduledFor: UtcTimestamp;
+  normalizedMarkdown: string;
+  richContent: VersionedJson;
+  attachmentIds: ChatAttachmentId[];
+  references: ChatMessageReference[];
+  alsoSendToChannel: boolean;
+  /** Repeat rule; `null` sends the message once. */
+  recurrence: ChatRecurrenceSpec | null;
+}
+
 export interface ChatScheduledMessageRead {
   id: ChatScheduledMessageId;
   channelId: ChatChannelId;

@@ -9,6 +9,7 @@ import type {
   ChatMessageReference,
   ChatParticipantRead,
   ChatReplyThreadPageRead,
+  ChatScheduledMessageRead,
   PostChatMessageResult,
 } from "$lib/chat/contracts";
 import * as chatApi from "$lib/api/chat";
@@ -314,6 +315,110 @@ describe("ChatMessageComposer", () => {
     await vi.waitFor(() => expect(editor?.textContent).toBe("My unsent draft"));
     expect(post).not.toHaveBeenCalled();
     expect(inputs.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  function pendingScheduled(overrides: Partial<ChatScheduledMessageRead> = {}): ChatScheduledMessageRead {
+    return {
+      id: "scheduled:1",
+      channelId: "channel:1",
+      replyThreadId: null,
+      normalizedMarkdown: "Post the weekly status",
+      richContent: { schemaVersion: 1, value: {} },
+      attachmentIds: [],
+      references: [],
+      alsoSendToChannel: false,
+      state: "scheduled",
+      scheduledFor: "2099-01-05T09:00:00.000Z",
+      lastError: null,
+      createdAt: "2026-11-14T10:00:00.000Z",
+      recurrence: null,
+      ...overrides,
+    };
+  }
+
+  /** Mounts a channel composer with `scheduled` pending and opens its edit from the manage list. */
+  async function editScheduledFromList(scheduled: ChatScheduledMessageRead): Promise<HTMLDivElement> {
+    const destination = `channel:${crypto.randomUUID()}`;
+    vi.spyOn(chat, "listScheduledOrganizationalMessages").mockResolvedValue([scheduled]);
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatMessageComposer, { target, props: { destination, placeholder: "Message" } });
+    const root = target;
+    await tick();
+    await typeReply(root, "My unsent draft");
+    await vi.waitFor(() => expect(root.querySelector(".scheduled-summary button")).not.toBeNull());
+    root.querySelector<HTMLButtonElement>(".scheduled-summary button")?.click();
+    await vi.waitFor(() => expect(root.querySelector('[data-message-action="edit"]')).not.toBeNull());
+    root.querySelector<HTMLButtonElement>('[data-message-action="edit"]')?.click();
+    await tick();
+    return root;
+  }
+
+  it("edits a scheduled message in place from the manage list and restores the draft after saving", async () => {
+    const scheduled = pendingScheduled({
+      recurrence: {
+        rule: { kind: "interval", minutes: 120 },
+        timeZone: "UTC",
+        quietPolicy: "defer",
+        nextOccurrenceAt: "2099-01-05T13:00:00.000Z",
+        firedCount: 2,
+        skippedOccurrences: 0,
+        deferredUntil: null,
+      },
+    });
+    const update = vi.spyOn(chat, "updateScheduledOrganizationalMessage")
+      .mockImplementation((request) => Promise.resolve({ ...scheduled, normalizedMarkdown: request.normalizedMarkdown }));
+    const schedule = vi.spyOn(chat, "scheduleOrganizationalMessage");
+    const root = await editScheduledFromList(scheduled);
+    const editor = root.querySelector<HTMLDivElement>("[data-chat-composer]");
+
+    expect(root.querySelector('[role="dialog"][aria-label="Scheduled messages"]')).toBeNull();
+    expect(editor?.textContent).toBe("Post the weekly status");
+    expect(root.querySelector("[data-scheduled-edit]")?.textContent).toContain("Editing a scheduled message");
+    expect(root.querySelector('.send-button[data-action="save"]')?.getAttribute("aria-label")).toBe("Save scheduled message");
+
+    await typeReply(root, "Post the weekly status with the release");
+    root.querySelector<HTMLButtonElement>('[data-scheduled-edit-action="save"]')?.click();
+    await vi.waitFor(() => expect(update).toHaveBeenCalledOnce());
+    const request = update.mock.calls[0]?.[0];
+    expect(request?.scheduledMessageId).toBe("scheduled:1");
+    expect(request?.normalizedMarkdown).toBe("Post the weekly status with the release");
+    expect(request?.scheduledFor).toBe("2099-01-05T13:00:00.000Z");
+    expect(request?.recurrence).toEqual({ rule: { kind: "interval", minutes: 120 }, timeZone: "UTC", quietPolicy: "defer" });
+    await vi.waitFor(() => expect(editor?.textContent).toBe("My unsent draft"));
+    expect(root.querySelector("[data-scheduled-edit]")).toBeNull();
+    expect(root.querySelector('.send-button[data-action="send"]')).not.toBeNull();
+    expect(schedule).not.toHaveBeenCalled();
+  });
+
+  it("discards a scheduled message edit and keeps the draft it set aside", async () => {
+    const update = vi.spyOn(chat, "updateScheduledOrganizationalMessage");
+    const root = await editScheduledFromList(pendingScheduled());
+    await typeReply(root, "A change to throw away");
+
+    root.querySelector<HTMLButtonElement>('[data-scheduled-edit-action="discard"]')?.click();
+    await tick();
+
+    expect(root.querySelector("[data-chat-composer]")?.textContent).toBe("My unsent draft");
+    expect(root.querySelector("[data-scheduled-edit]")).toBeNull();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("ends the edit and rereads the list when the scheduled message started sending meanwhile", async () => {
+    vi.spyOn(chat, "updateScheduledOrganizationalMessage").mockRejectedValue({
+      code: "busy",
+      message: "This scheduled message is already being sent",
+      retryable: true,
+    });
+    const root = await editScheduledFromList(pendingScheduled());
+    const list = vi.mocked(chat.listScheduledOrganizationalMessages);
+    const readsBefore = list.mock.calls.length;
+
+    root.querySelector<HTMLButtonElement>('[data-scheduled-edit-action="save"]')?.click();
+
+    await vi.waitFor(() => expect(root.querySelector("[data-chat-composer]")?.textContent).toBe("My unsent draft"));
+    expect(root.querySelector("[data-scheduled-edit]")).toBeNull();
+    expect(list.mock.calls.length).toBeGreaterThan(readsBefore);
   });
 
   it("keeps a waiting reply edit to its text so no attachment or reference is dropped on save", async () => {

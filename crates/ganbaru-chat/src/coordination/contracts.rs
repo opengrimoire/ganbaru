@@ -277,6 +277,27 @@ pub struct ScheduleChatMessageCommand {
     pub recurrence: Option<RecurrenceSpec>,
 }
 
+/// New content, delivery time, and repeat rule for a message still waiting to be sent. The
+/// message keeps its id, client command id, channel, reply thread, and executing device.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateScheduledChatMessageCommand {
+    pub scheduled_message_id: ChatScheduledMessageId,
+    /// Delivery time of a one-time message, or the time from which a repeating one next posts.
+    pub scheduled_for: UtcTimestamp,
+    pub normalized_markdown: String,
+    pub rich_content: VersionedJson,
+    #[serde(default)]
+    pub attachment_ids: Vec<ChatAttachmentId>,
+    #[serde(default)]
+    pub references: Vec<ChatMessageReference>,
+    #[serde(default)]
+    pub also_send_to_channel: bool,
+    /// Repeat rule; `None` sends the message once.
+    #[serde(default)]
+    pub recurrence: Option<RecurrenceSpec>,
+}
+
 /// A message waiting to be sent, once or on a repeat rule.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]

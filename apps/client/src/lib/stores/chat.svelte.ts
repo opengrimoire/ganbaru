@@ -807,6 +807,16 @@ export class ChatStore {
     this.publishChannelChange(channelId);
   }
 
+  /** Replaces the content, time, and repeat rule of a scheduled message in the selected channel. */
+  async updateScheduledOrganizationalMessage(
+    request: import("$lib/chat/contracts").UpdateScheduledChatMessageRequest,
+  ): Promise<ChatScheduledMessageRead> {
+    const channelId = this.selectedChannelId;
+    const scheduled = await this.organizationalController.updateScheduled(request);
+    this.publishChannelChange(channelId);
+    return scheduled;
+  }
+
   async retryScheduledOrganizationalMessage(id: ChatScheduledMessageId): Promise<ChatScheduledMessageRead> {
     const channelId = this.selectedChannelId;
     const scheduled = await this.organizationalController.retryScheduled(id);

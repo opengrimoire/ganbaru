@@ -1863,9 +1863,11 @@ const fn optional_bounded(name: &'static str, min: i64, max: i64) -> ColumnSpec 
 }
 
 /// `chat_scheduled_message_recurrences`, one per repeating scheduled message under an id derived
-/// from it, and deleted with it, so a cancel wins over a concurrent rule edit or advance. Only
-/// the scheduled message's executing device advances the progress, so its register has one
-/// writer. Rules are checked for shape on admission; the executing device resolves the zone.
+/// from it, and deleted with it, so a cancel wins over a concurrent rule edit or advance. The
+/// scheduled message's executing device advances the progress, and an edit that changes the
+/// rule or time on any device moves the next occurrence, so an edit concurrent with an advance
+/// resolves to one whole progress value and can repeat or drop that one occurrence. Rules are
+/// checked for shape on admission; the executing device resolves the zone.
 pub const RECURRENCES: TableSpec = TableSpec {
     id: RECURRENCES_TABLE,
     name: "chat_scheduled_message_recurrences",

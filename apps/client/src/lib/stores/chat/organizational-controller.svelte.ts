@@ -10,6 +10,7 @@ import type {
   ChatScheduledMessageId,
   ChatScheduledMessageRead,
   PostChatMessageResult,
+  UpdateScheduledChatMessageRequest,
   UtcTimestamp,
   VersionedJson,
 } from "$lib/chat/contracts";
@@ -168,6 +169,13 @@ export class ChatOrganizationalController {
       await this.options.loadReplyThread(replyThreadId, true);
     }
     return result;
+  }
+
+  /** Replaces the content, time, and repeat rule of a scheduled message in place. */
+  async updateScheduled(request: UpdateScheduledChatMessageRequest): Promise<ChatScheduledMessageRead> {
+    const scheduled = await chatApi.updateScheduledChatMessage(request);
+    this.scheduledMessagesVersion += 1;
+    return scheduled;
   }
 
   async retryScheduled(id: ChatScheduledMessageId): Promise<ChatScheduledMessageRead> {

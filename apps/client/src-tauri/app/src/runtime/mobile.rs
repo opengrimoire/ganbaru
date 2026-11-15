@@ -110,6 +110,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::organization::chat_list_scheduled_messages,
             chat::organization::chat_cancel_scheduled_message,
             chat::organization::chat_retry_scheduled_message,
+            chat::organization::chat_update_scheduled_message,
             chat::organization::chat_send_scheduled_message_now,
             chat::organization::chat_dispatch_due_scheduled_messages,
             chat::quiet_periods::chat_read_quiet_periods,

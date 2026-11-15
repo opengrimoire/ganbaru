@@ -1,6 +1,6 @@
 use super::*;
 use crate::chat::organization::scheduling::{
-    claim_scheduled_message_for_immediate_send, read_scheduled_message,
+    apply_scheduled_update, claim_scheduled_message_for_immediate_send, read_scheduled_message,
 };
 use crate::chat::organization::tests::{
     SCHEDULING_DEVICE, chat_writers_of, insert_test_scheduled_message, message, migrated_pool,
@@ -8,7 +8,9 @@ use crate::chat::organization::tests::{
 };
 use crate::chat::organization::workflow::PostingDevice;
 use crate::chat::organization::{ScheduledConsent, ScheduledSend, persist_post};
-use ganbaru_chat::coordination::contracts::PostChatMessageCommand;
+use ganbaru_chat::coordination::contracts::{
+    ChatScheduledMessageRead, PostChatMessageCommand, UpdateScheduledChatMessageCommand,
+};
 
 /// Due time of the first occurrence of the test series, its anchor.
 const ANCHOR: &str = "2026-08-04T00:00:00.000Z";
@@ -639,4 +641,124 @@ fn scheduled_quiet_period_without_a_known_end_holds_for_one_retry_interval() {
         ends_at_ms: None,
     };
     assert_eq!(super::super::quiet_gate_of(open, now).until_ms(), None);
+}
+
+/// An edit of the test series to `markdown`, from `scheduled_for` on `recurrence`.
+fn series_edit(
+    markdown: &str,
+    scheduled_for: &str,
+    recurrence: Option<RecurrenceSpec>,
+) -> UpdateScheduledChatMessageCommand {
+    let content = message(markdown);
+    UpdateScheduledChatMessageCommand {
+        scheduled_message_id: test_id(),
+        scheduled_for: UtcTimestamp::new(scheduled_for).unwrap(),
+        normalized_markdown: content.normalized_markdown,
+        rich_content: content.rich_content,
+        attachment_ids: Vec::new(),
+        references: Vec::new(),
+        also_send_to_channel: false,
+        recurrence,
+    }
+}
+
+async fn edit_series(
+    pool: &SqlitePool,
+    now: &UtcTimestamp,
+    edit: UpdateScheduledChatMessageCommand,
+) -> ChatScheduledMessageRead {
+    apply_scheduled_update(pool, SCHEDULING_DEVICE, edit, now, |_, _, _| ())
+        .await
+        .unwrap()
+}
+
+async fn recurrence_rows(pool: &SqlitePool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM chat_scheduled_message_recurrences")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[test]
+fn editing_a_series_keeps_its_progress_unless_its_timing_changes() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        let now = UtcTimestamp::new("2026-08-03T00:00:00.000Z").unwrap();
+        insert_test_series(&pool, &now).await;
+        sqlx::query("UPDATE chat_scheduled_message_recurrences SET fired_count = 2")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // New wording on the same rule and pending occurrence leaves the series where it was.
+        let reworded = edit_series(
+            &pool,
+            &now,
+            series_edit("Stand up now", ANCHOR, Some(hourly())),
+        )
+        .await;
+        assert_eq!(reworded.normalized_markdown, "Stand up now");
+        assert_eq!(progress(&pool).await, (ANCHOR.to_owned(), 2));
+        assert_eq!(dispatch(&pool).await, (ANCHOR.to_owned(), 0, None, 0));
+
+        // A new rule and start move the pending occurrence and keep the posted count.
+        let every_two_hours = RecurrenceSpec {
+            rule: RecurrenceRule::Interval { minutes: 120 },
+            ..hourly()
+        };
+        let moved = edit_series(
+            &pool,
+            &now,
+            series_edit(
+                "Stand up now",
+                "2026-08-06T00:00:00.000Z",
+                Some(every_two_hours.clone()),
+            ),
+        )
+        .await;
+        let recurrence = moved.recurrence.unwrap();
+        assert_eq!(recurrence.spec, every_two_hours);
+        assert_eq!(
+            recurrence.next_occurrence_at.as_str(),
+            "2026-08-06T00:00:00.000Z"
+        );
+        assert_eq!(recurrence.fired_count, 2);
+        assert_eq!(
+            dispatch(&pool).await,
+            ("2026-08-06T00:00:00.000Z".to_owned(), 0, None, 0)
+        );
+
+        // Without a rule the message is sent once at the given time.
+        let once = edit_series(
+            &pool,
+            &now,
+            series_edit("Stand up once", "2026-08-07T00:00:00.000Z", None),
+        )
+        .await;
+        assert_eq!(once.recurrence, None);
+        assert_eq!(once.scheduled_for.as_str(), "2026-08-07T00:00:00.000Z");
+        assert_eq!(recurrence_rows(&pool).await, 0);
+        assert_eq!(
+            dispatch(&pool).await.0,
+            "2026-08-07T00:00:00.000Z".to_owned()
+        );
+
+        // A rule added to a one-time message starts a series from its first occurrence.
+        let repeating = edit_series(
+            &pool,
+            &now,
+            series_edit("Stand up again", "2026-08-08T00:00:00.000Z", Some(hourly())),
+        )
+        .await;
+        let recurrence = repeating.recurrence.unwrap();
+        assert_eq!(
+            recurrence.next_occurrence_at.as_str(),
+            "2026-08-08T00:00:00.000Z"
+        );
+        assert_eq!(recurrence.fired_count, 0);
+        assert_eq!(
+            dispatch(&pool).await.0,
+            "2026-08-08T00:00:00.000Z".to_owned()
+        );
+    });
 }

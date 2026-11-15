@@ -467,12 +467,17 @@ pub mod input_group {
     pub const IDENTITY: GroupId = group_id(0);
     /// `created_at`.
     pub const CREATED: GroupId = group_id(1);
-    /// `assignment_id`, `ordinal`, and `routing_kind`.
+    /// `assignment_id` and `routing_kind`.
     pub const ROUTING: GroupId = group_id(2);
     /// `delivery_state`, `delivered_at`, and `delivered_revision_id`.
     pub const DELIVERY: GroupId = group_id(3);
     /// Whether the row exists.
     pub const EXISTS: GroupId = group_id(4);
+    /// `held`, set while a person keeps a waiting reply from delivery.
+    pub const HOLD: GroupId = group_id(5);
+    /// `ordinal`, apart from the routing so a reorder never undoes a concurrent move of the
+    /// reply onto another assignment.
+    pub const ORDER: GroupId = group_id(6);
 }
 
 /// Semantic update field groups.
@@ -2025,7 +2030,6 @@ pub const INPUTS: TableSpec = TableSpec {
                 "routing",
                 &[
                     row_key("assignment_id"),
-                    integer("ordinal", 1),
                     text("routing_kind", MAX_ENUM_CHARS),
                 ],
             ),
@@ -2041,6 +2045,8 @@ pub const INPUTS: TableSpec = TableSpec {
             ],
         ),
         exists(input_group::EXISTS),
+        register(input_group::HOLD, "hold", &[flag("held")]),
+        register(input_group::ORDER, "order", &[integer("ordinal", 1)]),
     ],
     derived_key: Some(DerivedKey {
         exists_group: input_group::EXISTS,

@@ -425,7 +425,7 @@ pub async fn answered_question_awaiting_dispatch(
                SELECT 1 FROM chat_work_assignment_inputs input
                WHERE input.assignment_id = ?1
                  AND input.routing_kind IN ('steer', 'queued_continuation')
-                 AND input.delivery_state = 'pending'
+                 AND input.delivery_state = 'pending' AND input.held = 0
                  AND {PERSON_INPUT_SQL}
              )
          )"
@@ -553,7 +553,7 @@ pub async fn read_answered_question(
            ON revision.id = message.current_revision_id
          WHERE input.assignment_id = ?1
            AND input.routing_kind IN ('steer', 'queued_continuation')
-           AND input.delivery_state = 'pending'
+           AND input.delivery_state = 'pending' AND input.held = 0
            AND {PERSON_INPUT_SQL}
            AND NOT EXISTS(
              SELECT 1 FROM chat_message_references reference

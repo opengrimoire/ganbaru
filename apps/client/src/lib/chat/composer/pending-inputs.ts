@@ -71,3 +71,23 @@ export function defaultFollowupRouting(
 export function pendingInputStartsWork(input: ChatAssignmentInputRead): boolean {
   return input.routingKind === "follow_up";
 }
+
+/**
+ * Whether a row is a waiting reply that can be held, steered, edited, and moved in the queue: one
+ * that has not reached the run and did not start its own work.
+ *
+ * @param row The listed reply.
+ */
+export function pendingInputReorderable(row: PendingInputRow): boolean {
+  return row.status === "pending" && !pendingInputStartsWork(row.input);
+}
+
+/**
+ * Whether steering a waiting reply now would change its delivery: it waits behind the current turn,
+ * or a person holds it back.
+ *
+ * @param row The listed reply.
+ */
+export function pendingInputCanSteerNow(row: PendingInputRow): boolean {
+  return pendingInputReorderable(row) && (row.input.routingKind !== "steer" || row.input.held);
+}

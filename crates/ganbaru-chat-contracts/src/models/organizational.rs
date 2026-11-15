@@ -1234,6 +1234,8 @@ pub struct ChatAssignmentInputRead {
     pub routing_kind: String,
     /// `pending`, `delivered`, `failed`, or `ignored`.
     pub delivery_state: String,
+    /// Whether a person holds the pending input back from delivery until they resume it.
+    pub held: bool,
     pub delivered_at: Option<UtcTimestamp>,
     /// The message revision the run received, present once the input is delivered.
     pub delivered_revision_id: Option<ChatMessageRevisionId>,

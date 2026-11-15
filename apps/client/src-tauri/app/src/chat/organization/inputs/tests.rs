@@ -378,6 +378,141 @@ async fn a_follow_up_that_started_work_is_listed_but_never_edited_or_cancelled()
     assert_eq!(conflict_reason(&late), Some(INPUT_ALREADY_DELIVERED));
 }
 
+#[tokio::test]
+async fn hold_and_resume_change_only_pending_waiting_replies() {
+    let pool = pool().await;
+    seed_local_reply(&pool, "item:queued", 2, "Then update the docs").await;
+    seed_local_reply(&pool, "item:delivered", 3, "Prefer the smaller fix").await;
+    deliver(&pool, "item:delivered").await;
+    seed_reply(
+        &pool,
+        "item:follow-up",
+        4,
+        "follow_up",
+        LOCAL_PARTICIPANT_ID,
+        "Also check the logs",
+    )
+    .await;
+
+    let held = set_assignment_input_held(&pool, &input("item:queued"), true)
+        .await
+        .unwrap();
+    assert!(held.held);
+    let listed = list_assignment_inputs(&pool, &assignment()).await.unwrap();
+    assert!(listed[0].held, "the hold is stored and listed");
+    let resumed = set_assignment_input_held(&pool, &input("item:queued"), false)
+        .await
+        .unwrap();
+    assert!(!resumed.held);
+
+    let late = set_assignment_input_held(&pool, &input("item:delivered"), true)
+        .await
+        .unwrap_err();
+    assert_eq!(conflict_reason(&late), Some(INPUT_ALREADY_DELIVERED));
+    let follow_up = set_assignment_input_held(&pool, &input("item:follow-up"), true)
+        .await
+        .unwrap_err();
+    assert_eq!(conflict_reason(&follow_up), Some(INPUT_STARTS_WORK));
+    let missing = set_assignment_input_held(&pool, &input("item:missing"), true)
+        .await
+        .unwrap_err();
+    assert_eq!(missing.code, ChatErrorCode::NotFound);
+}
+
+#[tokio::test]
+async fn steering_a_queued_reply_routes_it_to_the_current_turn_and_resumes_it() {
+    let pool = pool().await;
+    seed_local_reply(&pool, "item:queued", 2, "Then update the docs").await;
+    set_assignment_input_held(&pool, &input("item:queued"), true)
+        .await
+        .unwrap();
+
+    let steered = steer_assignment_input(&pool, &input("item:queued"))
+        .await
+        .unwrap();
+    assert_eq!(
+        (steered.routing_kind.as_str(), steered.held),
+        ("steer", false)
+    );
+
+    cancel_assignment_input(&pool, &input("item:queued"))
+        .await
+        .unwrap();
+    let settled = steer_assignment_input(&pool, &input("item:queued"))
+        .await
+        .unwrap_err();
+    assert_eq!(conflict_reason(&settled), Some(INPUT_ALREADY_DELIVERED));
+}
+
+#[tokio::test]
+async fn reorder_keeps_the_slots_of_waiting_replies_and_refuses_a_stale_set() {
+    let pool = pool().await;
+    seed_local_reply(&pool, "item:first", 2, "First").await;
+    seed_local_reply(&pool, "item:delivered", 3, "Delivered").await;
+    deliver(&pool, "item:delivered").await;
+    seed_local_reply(&pool, "item:second", 4, "Second").await;
+    seed_local_reply(&pool, "item:third", 6, "Third").await;
+
+    let reordered = reorder_assignment_inputs(
+        &pool,
+        &assignment(),
+        &[
+            input("item:third"),
+            input("item:first"),
+            input("item:second"),
+        ],
+    )
+    .await
+    .unwrap();
+    let order = reordered
+        .iter()
+        .map(|read| (read.message_item_id.as_str(), read.ordinal))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        order,
+        [
+            ("item:third", 2),
+            ("item:delivered", 3),
+            ("item:first", 4),
+            ("item:second", 6)
+        ],
+        "the delivered reply keeps its place between the reordered ones"
+    );
+
+    let stale = reorder_assignment_inputs(
+        &pool,
+        &assignment(),
+        &[input("item:first"), input("item:second")],
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(stale.code, ChatErrorCode::StaleRevision);
+    let with_settled = reorder_assignment_inputs(
+        &pool,
+        &assignment(),
+        &[
+            input("item:first"),
+            input("item:second"),
+            input("item:third"),
+            input("item:delivered"),
+        ],
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(with_settled.code, ChatErrorCode::StaleRevision);
+}
+
+#[test]
+fn reorder_ordinals_stay_strictly_increasing() {
+    assert_eq!(reorder_ordinals(&[1, 3, 4]).unwrap(), [1, 3, 4]);
+    assert_eq!(reorder_ordinals(&[2, 2, 3]).unwrap(), [2, 3, 4]);
+    assert_eq!(reorder_ordinals(&[]).unwrap(), Vec::<i64>::new());
+    assert_eq!(
+        reorder_ordinals(&[i64::MAX, i64::MAX]).unwrap_err().code,
+        ChatErrorCode::Validation
+    );
+}
+
 #[test]
 fn preview_cuts_at_a_character_boundary() {
     let text = format!("{}tail", "€".repeat(INPUT_PREVIEW_CHARS));

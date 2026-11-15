@@ -881,6 +881,8 @@ export interface ChatAssignmentInputRead {
   ordinal: number;
   routingKind: ChatAssignmentInputRoutingKind;
   deliveryState: ChatAssignmentInputDeliveryState;
+  /** Whether a person holds the pending reply back from delivery until they resume it. */
+  held: boolean;
   deliveredAt: UtcTimestamp | null;
   /** The message revision the run received, present once the input is delivered. */
   deliveredRevisionId: ChatMessageRevisionId | null;

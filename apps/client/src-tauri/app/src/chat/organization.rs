@@ -1406,6 +1406,38 @@ pub async fn chat_cancel_assignment_input(
     inputs::cancel_assignment_input_command(app, db_url, input_id).await
 }
 
+/// Holds a waiting reply back from delivery, or resumes it, keeping its place in the queue.
+#[tauri::command]
+pub async fn chat_set_assignment_input_held(
+    app: tauri::AppHandle,
+    db_url: String,
+    input_id: ChatAssignmentInputId,
+    held: bool,
+) -> ChatResult<ChatAssignmentInputRead> {
+    inputs::set_assignment_input_held_command(app, db_url, input_id, held).await
+}
+
+/// Sends a waiting reply into the current turn of its work instead of after it.
+#[tauri::command]
+pub async fn chat_steer_assignment_input(
+    app: tauri::AppHandle,
+    db_url: String,
+    input_id: ChatAssignmentInputId,
+) -> ChatResult<ChatAssignmentInputRead> {
+    inputs::steer_assignment_input_command(app, db_url, input_id).await
+}
+
+/// Puts the waiting replies of an assignment in a new order, returning every input it lists.
+#[tauri::command]
+pub async fn chat_reorder_assignment_inputs(
+    app: tauri::AppHandle,
+    db_url: String,
+    assignment_id: ChatWorkAssignmentId,
+    ordered_input_ids: Vec<ChatAssignmentInputId>,
+) -> ChatResult<Vec<ChatAssignmentInputRead>> {
+    inputs::reorder_assignment_inputs_command(app, db_url, assignment_id, ordered_input_ids).await
+}
+
 /// Sets the token and working time limits of an assignment as the person here, keeping what
 /// its work already used. Any device can set them, including on work a limit stopped.
 #[tauri::command]

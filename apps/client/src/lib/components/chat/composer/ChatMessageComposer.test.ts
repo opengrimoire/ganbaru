@@ -165,6 +165,7 @@ describe("ChatMessageComposer", () => {
       ordinal: 1,
       routingKind: "queued_continuation",
       deliveryState: "pending",
+      held: false,
       deliveredAt: null,
       deliveredRevisionId: null,
       currentRevisionId: "revision:reply",
@@ -199,6 +200,16 @@ describe("ChatMessageComposer", () => {
     line.textContent = text;
     editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
     await tick();
+  }
+
+  /** Opens the more menu of the first waiting reply once the queue lists it. */
+  async function openReplyMenu(root: HTMLElement): Promise<HTMLElement> {
+    await vi.waitFor(() => expect(root.querySelector('[data-pending-action="more"]')).not.toBeNull());
+    root.querySelector<HTMLButtonElement>('[data-pending-action="more"]')?.click();
+    await tick();
+    const menu = document.querySelector<HTMLElement>("[data-chat-queued-reply-menu]");
+    if (!menu) throw new Error("Expected the waiting reply menu");
+    return menu;
   }
 
   it("stops active work from the pane shortcut without a stop button of its own and keeps Send for replies", async () => {
@@ -260,9 +271,9 @@ describe("ChatMessageComposer", () => {
     await tick();
     await typeReply(root, "My unsent draft");
 
-    await vi.waitFor(() => expect(root.querySelector('[data-pending-action="edit"]')).not.toBeNull());
-    root.querySelector<HTMLButtonElement>('[data-pending-action="edit"]')?.click();
+    (await openReplyMenu(root)).querySelector<HTMLButtonElement>('[data-pending-action="edit"]')?.click();
     await tick();
+    expect(document.querySelector("[data-chat-queued-reply-menu]")).toBeNull();
     const editor = root.querySelector<HTMLDivElement>("[data-chat-composer]");
     expect(editor?.textContent).toBe("Use the staging bucket");
     expect(root.querySelector('.send-button[data-action="save"]')).not.toBeNull();
@@ -292,10 +303,9 @@ describe("ChatMessageComposer", () => {
     vi.spyOn(chat, "loadReplyThread").mockResolvedValue();
     const root = mountActiveWork({ ...page, replies: [reply] });
 
-    await vi.waitFor(() => expect(root.querySelector('[data-pending-action="edit"]')).not.toBeNull());
     const imageTool = () => root.querySelector<HTMLButtonElement>('button[aria-label="Attach images"]');
     expect(imageTool()?.disabled).toBe(false);
-    root.querySelector<HTMLButtonElement>('[data-pending-action="edit"]')?.click();
+    (await openReplyMenu(root)).querySelector<HTMLButtonElement>('[data-pending-action="edit"]')?.click();
     await tick();
 
     expect(root.querySelector(".chat-reference-atom")).toBeNull();
@@ -355,8 +365,7 @@ describe("ChatMessageComposer", () => {
     vi.spyOn(chat, "loadReplyThread").mockResolvedValue();
     const root = mountActiveWork({ ...page, replies: [reply] });
 
-    await vi.waitFor(() => expect(root.querySelector('[data-pending-action="edit"]')).not.toBeNull());
-    root.querySelector<HTMLButtonElement>('[data-pending-action="edit"]')?.click();
+    (await openReplyMenu(root)).querySelector<HTMLButtonElement>('[data-pending-action="edit"]')?.click();
     await tick();
     root.querySelector<HTMLButtonElement>('[data-pending-action="save"]')?.click();
 
@@ -391,14 +400,103 @@ describe("ChatMessageComposer", () => {
     vi.spyOn(chat, "loadReplyThread").mockResolvedValue();
     const root = mountActiveWork();
 
-    await vi.waitFor(() => expect(root.querySelector('[data-pending-action="cancel"]')).not.toBeNull());
-    expect(root.querySelector<HTMLButtonElement>('[data-pending-action="edit"]')?.disabled).toBe(true);
-    expect(root.textContent).toContain("Load this reply in the thread to edit it");
+    const editItem = (await openReplyMenu(root)).querySelector<HTMLButtonElement>('[data-pending-action="edit"]');
+    expect(editItem?.getAttribute("aria-disabled")).toBe("true");
+    expect(editItem?.dataset.appTooltip).toBe("Load this reply in the thread to edit it");
+    editItem?.click();
+    await tick();
+    expect(root.querySelector('.send-button[data-action="save"]')).toBeNull();
     inputs.mockResolvedValue([]);
     root.querySelector<HTMLButtonElement>('[data-pending-action="cancel"]')?.click();
 
     await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith("input:1"));
     await vi.waitFor(() => expect(root.querySelector("[data-chat-pending-inputs]")).toBeNull());
+  });
+
+  it("lists each waiting reply with steer, remove, and more actions, and an On hold chip that resumes it", async () => {
+    vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([
+      waitingInput(),
+      waitingInput({ inputId: "input:2", messageItemId: "item:2", ordinal: 2, held: true, preview: "Compare two layouts" }),
+      waitingInput({ inputId: "input:3", messageItemId: "item:3", ordinal: 3, deliveryState: "failed", preview: "Check the logs" }),
+    ]);
+    const setHeld = vi.spyOn(chatApi, "setChatAssignmentInputHeld").mockResolvedValue(waitingInput({ inputId: "input:2" }));
+    vi.spyOn(chat, "loadReplyThread").mockResolvedValue();
+    const root = mountActiveWork();
+
+    await vi.waitFor(() => expect(root.querySelectorAll("[data-chat-pending-inputs] li")).toHaveLength(3));
+    const [waiting, held, failed] = [...root.querySelectorAll<HTMLLIElement>("[data-chat-pending-inputs] li")];
+    expect(root.querySelector("[data-chat-pending-inputs]")?.textContent).not.toContain("Waiting replies");
+    expect(waiting?.querySelector(".queued-preview")?.textContent).toBe("Use the staging bucket");
+    expect(waiting?.querySelector(".queued-icon")?.getAttribute("data-app-tooltip")).toBe("After this turn");
+    expect(waiting?.querySelector('[data-pending-action="resume-chip"]')).toBeNull();
+    expect(waiting?.querySelector('[data-pending-action="steer"]')?.getAttribute("aria-label")).toBe("Steer the current turn with reply: Use the staging bucket");
+    expect(waiting?.querySelector('[data-pending-action="cancel"]')?.getAttribute("data-app-tooltip")).toBe("Remove from the queue");
+    expect(waiting?.querySelector('[data-pending-action="more"]')?.getAttribute("aria-haspopup")).toBe("menu");
+
+    const chip = held?.querySelector<HTMLButtonElement>('[data-pending-action="resume-chip"]');
+    expect(chip?.textContent).toBe("On hold");
+    expect(chip?.getAttribute("aria-label")).toBe("Resume reply: Compare two layouts");
+    expect(chip?.dataset.appTooltip).toBe("Resume");
+    expect(held?.querySelector('[data-pending-action="steer"]')).not.toBeNull();
+
+    expect(failed?.querySelector(".queued-icon")?.getAttribute("data-app-tooltip")).toBe("Not delivered");
+    expect(failed?.querySelector("button")).toBeNull();
+
+    chip?.click();
+    await vi.waitFor(() => expect(setHeld).toHaveBeenCalledWith("input:2", false));
+  });
+
+  it("holds, resumes, and steers a waiting reply from its row and menu", async () => {
+    const inputs = vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([waitingInput()]);
+    const setHeld = vi.spyOn(chatApi, "setChatAssignmentInputHeld").mockResolvedValue(waitingInput({ held: true }));
+    const steer = vi.spyOn(chatApi, "steerChatAssignmentInput").mockResolvedValue(waitingInput({ routingKind: "steer" }));
+    vi.spyOn(chat, "loadReplyThread").mockResolvedValue();
+    const root = mountActiveWork();
+
+    const menu = await openReplyMenu(root);
+    expect(menu.querySelector('[data-pending-action="resume"]')).toBeNull();
+    inputs.mockResolvedValue([waitingInput({ held: true })]);
+    menu.querySelector<HTMLButtonElement>('[data-pending-action="hold"]')?.click();
+    await vi.waitFor(() => expect(setHeld).toHaveBeenCalledWith("input:1", true));
+    await vi.waitFor(() => expect(root.querySelector('[data-pending-action="resume-chip"]')).not.toBeNull());
+
+    (await openReplyMenu(root)).querySelector<HTMLButtonElement>('[data-pending-action="resume"]')?.click();
+    await vi.waitFor(() => expect(setHeld).toHaveBeenLastCalledWith("input:1", false));
+
+    await vi.waitFor(() => expect(root.querySelector<HTMLButtonElement>('[data-pending-action="steer"]')?.disabled).toBe(false));
+    root.querySelector<HTMLButtonElement>('[data-pending-action="steer"]')?.click();
+    await vi.waitFor(() => expect(steer).toHaveBeenCalledWith("input:1"));
+  });
+
+  it("offers no steer for a reply that already steers the current turn", async () => {
+    vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([waitingInput({ routingKind: "steer" })]);
+    const root = mountActiveWork();
+
+    await vi.waitFor(() => expect(root.querySelector('[data-pending-action="more"]')).not.toBeNull());
+    expect(root.querySelector('[data-pending-action="steer"]')).toBeNull();
+    expect(root.querySelector(".queued-icon")?.getAttribute("data-app-tooltip")).toBe("Steers the current turn");
+  });
+
+  it("moves a waiting reply down the queue from its menu and keeps the saved order", async () => {
+    const page = workingReplyThread();
+    const second = waitingInput({ inputId: "input:2", messageItemId: "item:2", ordinal: 2, preview: "Then the docs" });
+    vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([waitingInput(), second]);
+    const reorder = vi.spyOn(chatApi, "reorderChatAssignmentInputs").mockResolvedValue([
+      { ...second, ordinal: 1 },
+      waitingInput({ ordinal: 2 }),
+    ]);
+    const root = mountActiveWork(page);
+
+    const menu = await openReplyMenu(root);
+    const items = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+    const moveUp = items.find((item) => item.textContent?.includes("Move up"));
+    const moveDown = items.find((item) => item.textContent?.includes("Move down"));
+    expect(moveUp?.getAttribute("aria-disabled")).toBe("true");
+    moveDown?.click();
+
+    await vi.waitFor(() => expect(reorder).toHaveBeenCalledWith(page.assignment?.id, ["input:2", "input:1"]));
+    await vi.waitFor(() => expect([...root.querySelectorAll(".queued-preview")].map((preview) => preview.textContent))
+      .toEqual(["Then the docs", "Use the staging bucket"]));
   });
 
   it("stops the work a reply started instead of editing or cancelling the reply", async () => {
@@ -409,8 +507,9 @@ describe("ChatMessageComposer", () => {
     const root = mountActiveWork(page);
 
     await vi.waitFor(() => expect(root.querySelector('[data-pending-action="cancel"]')).not.toBeNull());
-    expect(root.querySelector('[data-pending-action="edit"]')).toBeNull();
-    expect(root.textContent).not.toContain("Load this reply in the thread to edit it");
+    for (const action of ["more", "steer", "resume-chip"]) {
+      expect(root.querySelector(`[data-pending-action="${action}"]`)).toBeNull();
+    }
     root.querySelector<HTMLButtonElement>('[data-pending-action="cancel"]')?.click();
 
     await vi.waitFor(() => expect(stop).toHaveBeenCalledWith(page.assignment?.id));

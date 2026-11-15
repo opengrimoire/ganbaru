@@ -308,8 +308,8 @@ pub(super) async fn deliver_pending_assignment_inputs(
     Ok(())
 }
 
-/// Pending steer inputs of `assignment_id`, in posting order. These reach a run only while it
-/// works, unlike the trigger and follow-ups its package carries; a queued continuation waits
+/// Pending steer inputs of `assignment_id` that no one holds, in queue order. These reach a run
+/// only while it works, unlike the trigger and follow-ups its package carries; a queued continuation waits
 /// for the turn to end, when follow-up recovery continues the work with it.
 async fn pending_live_input_ids(
     pool: &SqlitePool,
@@ -318,8 +318,8 @@ async fn pending_live_input_ids(
     sqlx::query_scalar::<_, String>(
         "SELECT message_item_id FROM chat_work_assignment_inputs
          WHERE assignment_id = ? AND routing_kind = 'steer'
-           AND delivery_state = 'pending'
-         ORDER BY ordinal",
+           AND delivery_state = 'pending' AND held = 0
+         ORDER BY ordinal, id",
     )
     .bind(assignment_id.as_str())
     .fetch_all(pool)
@@ -1318,7 +1318,7 @@ async fn prepare_assignment_input(
          JOIN chat_communication_message_revisions_numbered revision
            ON revision.id = message.current_revision_id
          WHERE run.assignment_id = ? AND input.message_item_id = ?
-           AND run.state = 'working' AND input.delivery_state = 'pending'
+           AND run.state = 'working' AND input.delivery_state = 'pending' AND input.held = 0
            AND input.routing_kind = 'steer'
            AND CASE
                  WHEN channel_access.participate_inherits_profile = 1
@@ -2397,6 +2397,99 @@ mod tests {
                     content_sha256: framed.content_sha256,
                     kind: DeliveryKind::Steer,
                 }
+            );
+        }
+
+        #[tokio::test]
+        async fn held_replies_wait_and_steers_reach_the_run_in_queue_order() {
+            use crate::chat::organization::inputs::{
+                reorder_assignment_inputs, set_assignment_input_held, steer_assignment_input,
+            };
+            let pool = starting_pool().await;
+            seed_inputs_of_every_route(&pool).await;
+            seed_input(&pool, "item:second", 5, "steer", "Keep the tests green").await;
+            sqlx::query("UPDATE chat_agent_runs SET state = 'working' WHERE id = 'run:working'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            let item = |id: &str| ChatConversationItemId::new(id).unwrap();
+            let input = |id: &str| ChatAssignmentInputId::new(format!("input:{id}")).unwrap();
+
+            let held = set_assignment_input_held(&pool, &input("item:steer"), true)
+                .await
+                .unwrap();
+            assert!(held.held);
+            assert_eq!(
+                pending_live_input_ids(&pool, &assignment()).await.unwrap(),
+                vec![item("item:second")],
+                "delivery takes the first reply no one holds"
+            );
+            assert!(
+                prepare_assignment_input(&pool, &assignment(), &item("item:steer"))
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "the working run never takes a held reply"
+            );
+
+            set_assignment_input_held(&pool, &input("item:steer"), false)
+                .await
+                .unwrap();
+            assert!(
+                prepare_assignment_input(&pool, &assignment(), &item("item:steer"))
+                    .await
+                    .unwrap()
+                    .is_some(),
+                "a resumed reply is eligible again"
+            );
+            let reordered = reorder_assignment_inputs(
+                &pool,
+                &assignment(),
+                &[
+                    input("item:second"),
+                    input("item:continuation"),
+                    input("item:steer"),
+                ],
+            )
+            .await
+            .unwrap();
+            let order = reordered
+                .iter()
+                .filter(|read| read.routing_kind != "follow_up")
+                .map(|read| (read.message_item_id.as_str(), read.ordinal))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                order,
+                [
+                    ("item:second", 3),
+                    ("item:continuation", 4),
+                    ("item:steer", 5)
+                ],
+                "the reordered replies take the slots they held"
+            );
+            assert_eq!(
+                pending_live_input_ids(&pool, &assignment()).await.unwrap(),
+                vec![item("item:second"), item("item:steer")]
+            );
+
+            set_assignment_input_held(&pool, &input("item:continuation"), true)
+                .await
+                .unwrap();
+            let steered = steer_assignment_input(&pool, &input("item:continuation"))
+                .await
+                .unwrap();
+            assert_eq!(
+                (steered.routing_kind.as_str(), steered.held),
+                ("steer", false),
+                "steering now resumes a held reply"
+            );
+            assert_eq!(
+                pending_live_input_ids(&pool, &assignment()).await.unwrap(),
+                vec![
+                    item("item:second"),
+                    item("item:continuation"),
+                    item("item:steer")
+                ]
             );
         }
 

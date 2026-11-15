@@ -715,18 +715,20 @@ pub(super) async fn create_assignment(
 pub(super) struct PendingInput {
     pub(super) id: String,
     pub(super) message_item_id: String,
+    /// Whether a person holds it back from delivery.
+    pub(super) held: bool,
 }
 
 /// Reads, in delivery order, the pending replies of `assignment_id` whose messages belong to
-/// `reply_thread_id`. A synced input row can name any message, so the thread is checked on the
-/// message itself.
+/// `reply_thread_id`, held ones included. A synced input row can name any message, so the
+/// thread is checked on the message itself.
 pub(super) async fn pending_thread_inputs(
     transaction: &mut Transaction<'_, Sqlite>,
     assignment_id: &ChatWorkAssignmentId,
     reply_thread_id: &ChatReplyThreadId,
 ) -> ChatResult<Vec<PendingInput>> {
     let rows = sqlx::query(
-        "SELECT input.id, input.message_item_id
+        "SELECT input.id, input.message_item_id, input.held
          FROM chat_work_assignment_inputs input
          JOIN chat_reply_threads thread ON thread.id = ?2
          JOIN chat_conversation_items item
@@ -748,13 +750,15 @@ pub(super) async fn pending_thread_inputs(
             Ok(PendingInput {
                 id: row.try_get("id").map_err(persistence_error)?,
                 message_item_id: row.try_get("message_item_id").map_err(persistence_error)?,
+                held: row.try_get::<i64, _>("held").map_err(persistence_error)? != 0,
             })
         })
         .collect()
 }
 
 /// Moves the pending inputs `input_ids`, in order, behind the inputs `assignment_id` already
-/// holds, routed as `routing_kind`, or keeping their routing when it is `None`.
+/// holds, routed as `routing_kind`, or keeping their routing when it is `None`. A held input
+/// keeps its routing either way, so resuming it later queues it as it was.
 pub(super) async fn move_pending_inputs(
     transaction: &mut Transaction<'_, Sqlite>,
     input_ids: &[String],
@@ -785,7 +789,9 @@ pub(super) async fn move_pending_inputs(
             })?;
         sqlx::query(
             "UPDATE chat_work_assignment_inputs
-             SET assignment_id = ?, ordinal = ?, routing_kind = coalesce(?, routing_kind)
+             SET assignment_id = ?, ordinal = ?,
+                 routing_kind = CASE WHEN held = 1 THEN routing_kind
+                                     ELSE coalesce(?, routing_kind) END
              WHERE id = ? AND delivery_state = 'pending'",
         )
         .bind(assignment_id.as_str())

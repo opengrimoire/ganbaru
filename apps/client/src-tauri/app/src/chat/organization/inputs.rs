@@ -33,7 +33,7 @@ const FOLLOW_UP_ROUTING_KIND: &str = "follow_up";
 
 /// Columns of one input row with its message's current revision, shared by every read here.
 const INPUT_ROW_SELECT: &str = "SELECT input.id, input.message_item_id, input.ordinal,
-        input.routing_kind, input.delivery_state, input.delivered_at,
+        input.routing_kind, input.delivery_state, input.held, input.delivered_at,
         input.delivered_revision_id, message.current_revision_id,
         message.author_participant_id, revision.normalized_markdown
      FROM chat_work_assignment_inputs input
@@ -188,16 +188,141 @@ pub(super) async fn cancel_assignment_input(
     .rows_affected();
     let read = read_input(&mut transaction, input_id).await?;
     if cancelled == 0 {
-        return Err(
-            if read.routing_kind == FOLLOW_UP_ROUTING_KIND && read.delivery_state == "pending" {
-                starts_work()
-            } else {
-                already_delivered()
-            },
-        );
+        return Err(refusal_of_settled(&read));
     }
     transaction.commit().await.map_err(persistence_error)?;
     Ok(read)
+}
+
+/// Holds the pending reply `input_id` back from delivery, or resumes it when `held` is false. A
+/// held reply keeps its place in the queue, and every delivery path skips it until it resumes.
+/// A `follow_up` input is refused, since the work it started already carries its text.
+pub(super) async fn set_assignment_input_held(
+    pool: &SqlitePool,
+    input_id: &ChatAssignmentInputId,
+    held: bool,
+) -> ChatResult<ChatAssignmentInputRead> {
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    let changed = sqlx::query(
+        "UPDATE chat_work_assignment_inputs SET held = ?
+         WHERE id = ? AND routing_kind IN ('steer', 'queued_continuation')
+           AND delivery_state = 'pending'",
+    )
+    .bind(i64::from(held))
+    .bind(input_id.as_str())
+    .execute(&mut *transaction)
+    .await
+    .map_err(persistence_error)?
+    .rows_affected();
+    let read = read_input(&mut transaction, input_id).await?;
+    if changed == 0 {
+        return Err(refusal_of_settled(&read));
+    }
+    transaction.commit().await.map_err(persistence_error)?;
+    Ok(read)
+}
+
+/// Routes the pending reply `input_id` into the current turn of its work, ahead of the queue,
+/// and resumes it when it was held. Work with no running turn receives it when its next turn
+/// starts, as any steer.
+pub(super) async fn steer_assignment_input(
+    pool: &SqlitePool,
+    input_id: &ChatAssignmentInputId,
+) -> ChatResult<ChatAssignmentInputRead> {
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    let changed = sqlx::query(
+        "UPDATE chat_work_assignment_inputs SET routing_kind = 'steer', held = 0
+         WHERE id = ? AND routing_kind IN ('steer', 'queued_continuation')
+           AND delivery_state = 'pending'",
+    )
+    .bind(input_id.as_str())
+    .execute(&mut *transaction)
+    .await
+    .map_err(persistence_error)?
+    .rows_affected();
+    let read = read_input(&mut transaction, input_id).await?;
+    if changed == 0 {
+        return Err(refusal_of_settled(&read));
+    }
+    transaction.commit().await.map_err(persistence_error)?;
+    Ok(read)
+}
+
+/// Puts the pending replies of `assignment_id` in the order of `ordered_input_ids`, which must
+/// name exactly the replies still waiting there. They take the ordinal slots they already held,
+/// raised where needed to stay strictly increasing, so the inputs around them keep their place
+/// and the order stays a total one on every device.
+pub(super) async fn reorder_assignment_inputs(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+    ordered_input_ids: &[ChatAssignmentInputId],
+) -> ChatResult<Vec<ChatAssignmentInputRead>> {
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    let waiting = sqlx::query(
+        "SELECT id, ordinal FROM chat_work_assignment_inputs
+         WHERE assignment_id = ? AND routing_kind IN ('steer', 'queued_continuation')
+           AND delivery_state = 'pending'
+         ORDER BY ordinal, id",
+    )
+    .bind(assignment_id.as_str())
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(persistence_error)?;
+    let mut slots = Vec::with_capacity(waiting.len());
+    let mut waiting_ids = Vec::with_capacity(waiting.len());
+    for row in &waiting {
+        slots.push(
+            row.try_get::<i64, _>("ordinal")
+                .map_err(persistence_error)?,
+        );
+        waiting_ids.push(row.try_get::<String, _>("id").map_err(persistence_error)?);
+    }
+    let mut requested = ordered_input_ids
+        .iter()
+        .map(|id| id.as_str().to_owned())
+        .collect::<Vec<_>>();
+    let mut current = waiting_ids.clone();
+    requested.sort_unstable();
+    current.sort_unstable();
+    if requested != current {
+        return Err(ChatError::new(
+            ChatErrorCode::StaleRevision,
+            "The waiting replies changed before the reorder",
+            true,
+        ));
+    }
+    for (input_id, ordinal) in ordered_input_ids.iter().zip(reorder_ordinals(&slots)?) {
+        sqlx::query(
+            "UPDATE chat_work_assignment_inputs SET ordinal = ?
+             WHERE id = ? AND ordinal IS NOT ?",
+        )
+        .bind(ordinal)
+        .bind(input_id.as_str())
+        .bind(ordinal)
+        .execute(&mut *transaction)
+        .await
+        .map_err(persistence_error)?;
+    }
+    transaction.commit().await.map_err(persistence_error)?;
+    list_assignment_inputs(pool, assignment_id).await
+}
+
+/// Strictly increasing ordinals for reordered inputs that held the ascending `slots`: each takes
+/// its slot, or one past the previous ordinal when that slot would tie or go backwards.
+pub(super) fn reorder_ordinals(slots: &[i64]) -> ChatResult<Vec<i64>> {
+    let mut ordinals = Vec::with_capacity(slots.len());
+    let mut previous: Option<i64> = None;
+    for &slot in slots {
+        let next = match previous {
+            Some(previous) => slot.max(previous.checked_add(1).ok_or_else(|| {
+                ChatError::new(ChatErrorCode::Validation, "Too many waiting replies", true)
+            })?),
+            None => slot,
+        };
+        ordinals.push(next);
+        previous = Some(next);
+    }
+    Ok(ordinals)
 }
 
 pub(super) async fn list_assignment_inputs_command(
@@ -226,6 +351,71 @@ pub(super) async fn cancel_assignment_input_command(
 ) -> ChatResult<ChatAssignmentInputRead> {
     let pool = chat_pool(app, db_url).await?;
     cancel_assignment_input(&pool, &input_id).await
+}
+
+pub(super) async fn set_assignment_input_held_command(
+    app: tauri::AppHandle,
+    db_url: String,
+    input_id: ChatAssignmentInputId,
+    held: bool,
+) -> ChatResult<ChatAssignmentInputRead> {
+    let pool = chat_pool(app.clone(), db_url).await?;
+    let read = set_assignment_input_held(&pool, &input_id, held).await?;
+    if !held {
+        continue_released_input(&app, &pool, &input_id).await?;
+    }
+    Ok(read)
+}
+
+pub(super) async fn steer_assignment_input_command(
+    app: tauri::AppHandle,
+    db_url: String,
+    input_id: ChatAssignmentInputId,
+) -> ChatResult<ChatAssignmentInputRead> {
+    let pool = chat_pool(app.clone(), db_url).await?;
+    let read = steer_assignment_input(&pool, &input_id).await?;
+    continue_released_input(&app, &pool, &input_id).await?;
+    Ok(read)
+}
+
+pub(super) async fn reorder_assignment_inputs_command(
+    app: tauri::AppHandle,
+    db_url: String,
+    assignment_id: ChatWorkAssignmentId,
+    ordered_input_ids: Vec<ChatAssignmentInputId>,
+) -> ChatResult<Vec<ChatAssignmentInputRead>> {
+    let pool = chat_pool(app, db_url).await?;
+    reorder_assignment_inputs(&pool, &assignment_id, &ordered_input_ids).await
+}
+
+/// Hands a reply that just became deliverable to the path sync takes for routed replies: a
+/// steer reaches the run this device holds, and a reply left behind a turn that already ended
+/// continues the work in a follow-up. Work another device executes picks the change up when it
+/// replicates there.
+async fn continue_released_input(
+    app: &tauri::AppHandle,
+    pool: &SqlitePool,
+    input_id: &ChatAssignmentInputId,
+) -> ChatResult<()> {
+    let assignment_id: Option<String> =
+        sqlx::query_scalar("SELECT assignment_id FROM chat_work_assignment_inputs WHERE id = ?")
+            .bind(input_id.as_str())
+            .fetch_optional(pool)
+            .await
+            .map_err(persistence_error)?;
+    #[cfg(desktop)]
+    if let Some(assignment_id) = assignment_id {
+        super::assignments::start_synced_assignment_work(
+            app,
+            crate::chat::sync::SyncedAssignmentWork {
+                routed: std::collections::BTreeSet::from([assignment_id]),
+                ..Default::default()
+            },
+        );
+    }
+    #[cfg(mobile)]
+    let _ = (app, assignment_id);
+    Ok(())
 }
 
 async fn read_input(
@@ -261,6 +451,7 @@ fn input_read(row: &SqliteRow) -> ChatResult<ChatAssignmentInputRead> {
         ordinal: u64_value(row.try_get("ordinal").map_err(persistence_error)?)?,
         routing_kind: row.try_get("routing_kind").map_err(persistence_error)?,
         delivery_state: row.try_get("delivery_state").map_err(persistence_error)?,
+        held: row.try_get::<i64, _>("held").map_err(persistence_error)? != 0,
         delivered_at: optional_timestamp(row.try_get("delivered_at").map_err(persistence_error)?)?,
         delivered_revision_id: optional_revision_id(
             row.try_get("delivered_revision_id")
@@ -293,6 +484,16 @@ fn preview(markdown: &str) -> (String, bool) {
     match markdown.char_indices().nth(INPUT_PREVIEW_CHARS) {
         Some((end, _)) => (markdown[..end].to_string(), true),
         None => (markdown.to_string(), false),
+    }
+}
+
+/// Why a change to the waiting reply `read` was refused: it started its own work, or it already
+/// left pending.
+fn refusal_of_settled(read: &ChatAssignmentInputRead) -> ChatError {
+    if read.routing_kind == FOLLOW_UP_ROUTING_KIND && read.delivery_state == "pending" {
+        starts_work()
+    } else {
+        already_delivered()
     }
 }
 

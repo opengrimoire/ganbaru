@@ -784,9 +784,11 @@ table 396 chat_work_assignment_inputs replicated key id rule any
   derived key exists 4 inputs message_item_id prefix assignment-input
   group 0 immutable message_item_id:row_key->372:cascade
   group 1 register created_at:timestamp
-  group 2 register assignment_id:row_key->395:cascade ordinal:integer(1..=9223372036854775807) routing_kind:text(..=32)
+  group 2 register assignment_id:row_key->395:cascade routing_kind:text(..=32)
   group 3 coupled delivery_state:text(..=32) delivered_at:optional_timestamp delivered_revision_id:optional_row_key
   group 4 register
+  group 5 register held:flag
+  group 6 register ordinal:integer(1..=9223372036854775807)
 table 397 chat_work_semantic_updates replicated key item_id rule any
   key parent 371
   group 0 immutable assignment_id:row_key->395:cascade update_kind:text(..=32) payload_schema_version:integer(1..=9223372036854775807) payload_data:text(..=196608) created_at:timestamp

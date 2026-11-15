@@ -61,7 +61,7 @@ pub(super) async fn recover_assignment_dispatch_jobs(
          JOIN chat_work_assignment_inputs input ON input.assignment_id = assignment.id
          WHERE assignment.state = 'working' AND run.state = 'working'
            AND input.routing_kind = 'steer'
-           AND input.delivery_state = 'pending'
+           AND input.delivery_state = 'pending' AND input.held = 0
          ORDER BY assignment.updated_at, assignment.id LIMIT 32",
     )
     .fetch_all(&pool)
@@ -453,7 +453,7 @@ async fn stranded_follow_up_ids(
              SELECT value FROM json_each(?2)
            )))
            AND input.routing_kind IN ('steer', 'queued_continuation')
-           AND input.delivery_state = 'pending'
+           AND input.delivery_state = 'pending' AND input.held = 0
            AND (?4 IS NULL OR assignment.id = ?4)
            AND assignment.id > ?5
          ORDER BY assignment.id LIMIT ?6",
@@ -536,10 +536,10 @@ async fn recover_follow_up(
         transaction.rollback().await.map_err(persistence_error)?;
         return Ok(None);
     }
-    // The first reply of the thread triggers the follow-up, and `create_assignment` carries
-    // the later ones behind it.
+    // The first reply of the thread that no one holds triggers the follow-up, and
+    // `create_assignment` carries the others behind it, held ones included.
     let stranded = pending_thread_inputs(&mut transaction, assignment_id, &reply_thread_id).await?;
-    let Some(first) = stranded.into_iter().next() else {
+    let Some(first) = stranded.into_iter().find(|input| !input.held) else {
         transaction.rollback().await.map_err(persistence_error)?;
         return Ok(None);
     };
@@ -1979,7 +1979,7 @@ async fn requeue_answered_work(pool: &SqlitePool, device_id: &str) -> ChatResult
          WHERE assignment.state = 'waiting_for_answer'
            AND coalesce(assignment.executing_device_id, ?1) = ?1
            AND input.routing_kind IN ('steer', 'queued_continuation')
-           AND input.delivery_state = 'pending'
+           AND input.delivery_state = 'pending' AND input.held = 0
          ORDER BY assignment.id LIMIT ?2",
     )
     .bind(device_id)

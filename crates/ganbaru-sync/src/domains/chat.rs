@@ -1453,9 +1453,12 @@ fn validate_input(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> 
     match (group, fields) {
         (input_group::IDENTITY, [_]) | (input_group::EXISTS, []) => Ok(()),
         (input_group::CREATED, [created_at]) => timestamp(created_at),
-        (input_group::ROUTING, [_assignment, ordinal, kind]) => {
-            at_least(ordinal, 1, "chat assignment input ordinal")?;
+        (input_group::ROUTING, [_assignment, kind]) => {
             one_of(kind, &ROUTING_KINDS, "chat assignment input routing")
+        }
+        (input_group::HOLD, [held]) => flag(held),
+        (input_group::ORDER, [ordinal]) => {
+            at_least(ordinal, 1, "chat assignment input ordinal").map(|_| ())
         }
         (input_group::DELIVERY, [state, delivered_at, delivered_revision]) => {
             one_of(state, &DELIVERY_STATES, "chat assignment input delivery")?;

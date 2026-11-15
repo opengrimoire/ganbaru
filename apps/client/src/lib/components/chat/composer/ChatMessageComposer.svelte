@@ -88,7 +88,7 @@
   import ChatComposerFrame from "./ChatComposerFrame.svelte";
   import ChatComposerInfoPanel from "./ChatComposerInfoPanel.svelte";
   import ChatComposerSuggestionMenu from "./ChatComposerSuggestionMenu.svelte";
-  import ChatPendingInputs from "./ChatPendingInputs.svelte";
+  import ChatQueuedReplies from "./ChatQueuedReplies.svelte";
   import ChatTaskProgressCard from "./ChatTaskProgressCard.svelte";
   import { isAppFloatingSurfaceTarget } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
@@ -1222,6 +1222,52 @@
     }
   }
 
+  /**
+   * Runs one change to a waiting reply and reloads the queue, explaining a refusal because the reply
+   * already left the queue.
+   *
+   * @param row The waiting reply the change applies to.
+   * @param change The change to request.
+   */
+  async function changeWaitingInput(row: PendingInputRow, change: () => Promise<unknown>): Promise<void> {
+    if (inputBusyId || editingInput) return;
+    inputBusyId = row.input.inputId;
+    error = null;
+    try {
+      await change();
+      await refreshAfterInputChange();
+    } catch (cause: unknown) {
+      const settled = settledInputMessage(cause);
+      error = settled ?? chatErrorMessage(cause, t("chatErrors.actions.updateMessage"));
+      if (settled) await refreshAfterInputChange().catch(() => undefined);
+    } finally {
+      inputBusyId = null;
+    }
+  }
+
+  function setInputHeld(row: PendingInputRow, held: boolean): Promise<void> {
+    return changeWaitingInput(row, () => chatApi.setChatAssignmentInputHeld(row.input.inputId, held));
+  }
+
+  function steerInput(row: PendingInputRow): Promise<void> {
+    return changeWaitingInput(row, () => chatApi.steerChatAssignmentInput(row.input.inputId));
+  }
+
+  /** Saves the waiting replies in a new order, reloading the queue when it changed meanwhile. */
+  async function reorderInputs(orderedInputIds: string[]): Promise<void> {
+    const assignmentId = threadAssignment?.id;
+    if (!assignmentId || editingInput) return;
+    const request = ++assignmentInputsRequest;
+    error = null;
+    try {
+      const inputs = await chatApi.reorderChatAssignmentInputs(assignmentId, orderedInputIds);
+      if (request === assignmentInputsRequest) assignmentInputs = inputs;
+    } catch (cause: unknown) {
+      error = chatErrorMessage(cause, t("chatErrors.actions.updateMessage"));
+      await loadAssignmentInputs(assignmentId);
+    }
+  }
+
   function composerWorkingFolderId(): string | null {
     return chat.selectedWorkingFolderId
       ?? chat.workingFolders.find((folder) => folder.workingFolder.projectId === chat.selectedChannel?.projectId)
@@ -1965,7 +2011,7 @@
   {#if taskProgress}<ChatTaskProgressCard summary={taskProgress} />{/if}
 
   {#if pendingRows.length > 0}
-    <ChatPendingInputs rows={pendingRows} editingInputId={editingInput?.inputId ?? null} busyInputId={inputBusyId} canEdit={canEditInput} onEdit={startInputEdit} onCancel={(row) => { void cancelInput(row); }} onSave={() => { void saveInputEdit(); }} onDiscard={discardInputEdit} />
+    <ChatQueuedReplies rows={pendingRows} editingInputId={editingInput?.inputId ?? null} busyInputId={inputBusyId} canEdit={canEditInput} onEdit={startInputEdit} onCancel={(row) => { void cancelInput(row); }} onSave={() => { void saveInputEdit(); }} onDiscard={discardInputEdit} onSetHeld={(row, held) => { void setInputHeld(row, held); }} onSteer={(row) => { void steerInput(row); }} onReorder={reorderInputs} />
   {/if}
 
   <div bind:this={composerRoot} class="organizational-composer" data-organizational-composer>

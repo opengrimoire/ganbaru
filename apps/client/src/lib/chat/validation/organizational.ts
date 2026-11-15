@@ -1199,6 +1199,7 @@ export function parseChatAssignmentInput(value: unknown, label = "Chat assignmen
     ordinal: readNonNegativeSafeInteger(record.ordinal, `${label}.ordinal`),
     routingKind: readEnum(record.routingKind, CHAT_ASSIGNMENT_INPUT_ROUTING_KINDS, `${label}.routingKind`),
     deliveryState: readEnum(record.deliveryState, CHAT_ASSIGNMENT_INPUT_DELIVERY_STATES, `${label}.deliveryState`),
+    held: readBoolean(record.held, `${label}.held`),
     deliveredAt: readNullable(record.deliveredAt, `${label}.deliveredAt`, readUtcTimestamp),
     deliveredRevisionId: readNullable(record.deliveredRevisionId, `${label}.deliveredRevisionId`, readIdentifier),
     currentRevisionId: readNullable(record.currentRevisionId, `${label}.currentRevisionId`, readIdentifier),

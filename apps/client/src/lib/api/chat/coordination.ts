@@ -566,6 +566,39 @@ export async function cancelChatAssignmentInput(inputId: ChatAssignmentInputId):
   }));
 }
 
+/** Holds a waiting reply back from delivery, or resumes it so it is delivered in its turn. */
+export async function setChatAssignmentInputHeld(
+  inputId: ChatAssignmentInputId,
+  held: boolean,
+): Promise<ChatAssignmentInputRead> {
+  return parseChatAssignmentInput(await invoke<unknown>("chat_set_assignment_input_held", {
+    dbUrl: await ensureDbUrl(), inputId, held,
+  }));
+}
+
+/** Sends one waiting reply into the teammate's current turn now, resuming it when held. */
+export async function steerChatAssignmentInput(inputId: ChatAssignmentInputId): Promise<ChatAssignmentInputRead> {
+  return parseChatAssignmentInput(await invoke<unknown>("chat_steer_assignment_input", {
+    dbUrl: await ensureDbUrl(), inputId,
+  }));
+}
+
+/**
+ * Reorders the waiting replies of one assignment.
+ *
+ * @param orderedInputIds Every waiting reply of the assignment, in the new delivery order.
+ * @returns The replies addressed to the assignment, in delivery order.
+ * @throws When the waiting replies changed before the reorder.
+ */
+export async function reorderChatAssignmentInputs(
+  assignmentId: ChatWorkAssignmentId,
+  orderedInputIds: readonly ChatAssignmentInputId[],
+): Promise<ChatAssignmentInputRead[]> {
+  return parseChatAssignmentInputs(await invoke<unknown>("chat_reorder_assignment_inputs", {
+    dbUrl: await ensureDbUrl(), assignmentId, orderedInputIds,
+  }));
+}
+
 /** Sets the token and working time limits of an assignment, keeping what its work already used. */
 export async function setChatAssignmentBudget(
   assignmentId: ChatWorkAssignmentId,

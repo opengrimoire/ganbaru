@@ -1089,6 +1089,8 @@ function createProjectsStore(pane: ProjectsPane) {
       if (projectId) setSelectedProjectId(pane, projectId);
       return projectId;
     },
+    /** Create a project and leave the pane on what it shows, for creators that open the project elsewhere. */
+    addProjectWithoutSelecting: actions.addProject,
   };
 }
 

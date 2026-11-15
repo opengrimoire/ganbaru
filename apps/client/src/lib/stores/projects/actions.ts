@@ -292,7 +292,8 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     invalidateAssetUrl("project-icon", previousPath);
   }
 
-  async function addGroup(name: string, icon: string = DEFAULT_PROJECT_GROUP_ICON): Promise<void> {
+  /** Create a project group. Returns its id, or `undefined` when the name is blank. */
+  async function addGroup(name: string, icon: string = DEFAULT_PROJECT_GROUP_ICON): Promise<string | undefined> {
     const displayName = normalizeProjectName(name);
     if (!displayName) return;
     const id = crypto.randomUUID();
@@ -302,6 +303,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       icon,
       color: null,
     }));
+    return id;
   }
 
   async function setGroupCollapsed(groupId: string, collapsed: boolean): Promise<void> {

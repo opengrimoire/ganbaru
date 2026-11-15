@@ -2144,6 +2144,7 @@ export function createNotesEditorStore(
     showSelectedPageAs,
     createPage: pageActions.createPage,
     createSubpage: pageActions.createSubpage,
+    createPageInBackground: pageActions.createPageInBackground,
     retryPageCreation: () => {
       const pageId = pageSession.selectedPageId;
       if (pageId) pageCreationController.retry(pageId);

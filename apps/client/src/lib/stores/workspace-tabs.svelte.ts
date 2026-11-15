@@ -133,6 +133,8 @@ let launcherRequests = $state(0);
 /** The shown tab that reads and restores the secondary view stores, or null when the shown tabs use different stores. */
 let secondaryTabId = $state<string | null>(null);
 let restoreSequence = 0;
+/** The latest restore of the shown tabs, settled once they show their locations or a later change takes over. */
+let latestRestore: Promise<void> = Promise.resolve();
 let activationOrder: string[] = [];
 let connection: WorkspaceTabsConnection | null = null;
 /** The last tab opened in the background and the tab it was opened from, so a run of them keeps its order. */
@@ -335,7 +337,12 @@ function cancelRestore(): void {
  * Show the active tab and the tab beside it. The partner goes first, so the active tab's own location wins
  * wherever the two touch the same stores.
  */
-async function restoreActive(): Promise<void> {
+function restoreActive(): Promise<void> {
+  latestRestore = restoreShownTabs();
+  return latestRestore;
+}
+
+async function restoreShownTabs(): Promise<void> {
   const host = connection;
   if (!host) return;
   const tab = currentTab();
@@ -1125,6 +1132,10 @@ export function getWorkspaceTabs() {
     },
     /** The view stores a shown tab reads and restores. */
     paneScope: scopeOf,
+    /** Settles once the shown tabs finish restoring their locations into the view stores. */
+    whenRestored(): Promise<void> {
+      return latestRestore;
+    },
     navigationScope,
     navigateIn,
     holds,

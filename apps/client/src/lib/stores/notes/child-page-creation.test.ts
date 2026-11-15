@@ -30,6 +30,9 @@ function editor(text = "/Note") {
   const focus = vi.fn();
   const resetUndoHistory = vi.fn();
   const activateProvisionalPage = vi.fn();
+  const beginPageCreation = vi.fn();
+  const discardFailedPageCreation = vi.fn();
+  let creationAttempt: "ready" | "failed" = "ready";
   const session = new NotesPageSessionController({
     initialSelectedPageId: pageId, persistSelectedPageId: vi.fn(), recordRecentPage: vi.fn(),
   });
@@ -70,8 +73,8 @@ function editor(text = "/Note") {
       loaded = next;
       blocks = Object.fromEntries(next.blocks.results.map((block) => [block.id, block]));
     },
-    activateProvisionalPage, beginPageCreation: vi.fn(), awaitPageReady: async () => undefined,
-    awaitPageCreationAttempt: async () => "ready", discardFailedPageCreation: vi.fn(),
+    activateProvisionalPage, beginPageCreation, awaitPageReady: async () => undefined,
+    awaitPageCreationAttempt: async () => creationAttempt, discardFailedPageCreation,
     activateRestoredPage: async () => undefined, applyPostMutation: vi.fn(),
     selectPage: async () => undefined, selectPageAfterRemoval: async () => undefined,
     discardRemovedPageWrites: vi.fn(), reloadPageBreadcrumb: async () => undefined,
@@ -100,6 +103,8 @@ function editor(text = "/Note") {
   });
   return {
     actions, pageActions, activateProvisionalPage, persistence, stored, writes, release, session, error, resetUndoHistory,
+    beginPageCreation, discardFailedPageCreation,
+    failCreation: () => { creationAttempt = "failed"; },
     block: () => blocks[blockId],
   };
 }
@@ -192,5 +197,19 @@ describe("child-note creation through the editor queue", () => {
     await h.pageActions.createSubpage("00000000-0000-4000-8000-000000000003", "Elsewhere");
     await h.pageActions.createPage("Root");
     expect(h.activateProvisionalPage.mock.calls.map(([, openMode]) => openMode)).toEqual(["center", "full", "full"]);
+  });
+
+  it("creates a note in the background without opening it, and discards it when creation fails", async () => {
+    const h = editor();
+    const folderId = "00000000-0000-4000-8000-000000000004";
+    const id = await h.pageActions.createPageInBackground("", null, { projectId: "project", folderId });
+    expect(h.activateProvisionalPage).not.toHaveBeenCalled();
+    expect(h.session.selectedPageId).toBe(pageId);
+    expect(h.beginPageCreation).toHaveBeenCalledWith(expect.objectContaining({ id, project_id: "project", folder_id: folderId }), expect.anything());
+    h.failCreation();
+    await expect(h.pageActions.createPageInBackground("", pageId)).rejects.toThrow();
+    const failedId = h.beginPageCreation.mock.calls[1]?.[0].id;
+    expect(failedId).toBeDefined();
+    expect(h.discardFailedPageCreation).toHaveBeenCalledWith(failedId);
   });
 });

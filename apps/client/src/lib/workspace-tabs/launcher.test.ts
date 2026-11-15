@@ -80,9 +80,9 @@ describe("tabLauncherProjectRows", () => {
   ]);
   const lists = buildProjectLists([group("work"), group("empty"), group("home")], (id) => projectsByGroup.get(id) ?? []);
 
-  it("lists groups holding a project, then the projects outside every group", () => {
+  it("lists every group, empty ones included, then the projects outside every group", () => {
     const rows = tabLauncherProjectRows(lists, null, "");
-    expect(rows.groups.map((candidate) => candidate.id)).toEqual(["work", "home"]);
+    expect(rows.groups.map((candidate) => candidate.id)).toEqual(["work", "empty", "home"]);
     expect(rows.sections).toEqual([{ list: lists[3], labeled: false }]);
   });
 
@@ -193,6 +193,17 @@ describe("tabLauncherKeyAction", () => {
     expect(tabLauncherKeyAction(key("ArrowLeft"), context())).toEqual({ type: "back" });
     expect(tabLauncherKeyAction(key("Backspace"), context({ query: "a" }))).toBeNull();
     expect(tabLauncherKeyAction(key("ArrowLeft"), context({ atKinds: true, searchable: false }))).toBeNull();
+  });
+
+  it("creates with the shortcut modifier and N only where the level allows it", () => {
+    const create = key("n", { ctrlKey: true, metaKey: false });
+    const appleCreate = key("n", { metaKey: true });
+    const allowed = context({ createShortcut: true });
+    const createOnThisPlatform = tabLauncherKeyAction(create, allowed) ?? tabLauncherKeyAction(appleCreate, allowed);
+    expect(createOnThisPlatform).toEqual({ type: "create" });
+    expect(tabLauncherKeyAction(create, context())).toBeNull();
+    expect(tabLauncherKeyAction(key("n"), allowed)).toBeNull();
+    expect(tabLauncherKeyAction(key("N", { ctrlKey: true, metaKey: true, shiftKey: true }), allowed)).toBeNull();
   });
 
   it("ignores keys during composition", () => {

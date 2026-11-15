@@ -1,4 +1,4 @@
-import { menuDigitIndex, type KeyboardModifierState } from "$lib/keyboard-shortcuts";
+import { hasOnlyShortcutModifier, menuDigitIndex, type KeyboardModifierState } from "$lib/keyboard-shortcuts";
 import type { View } from "$lib/navigation";
 import { filterProjectLists, type ProjectList } from "$lib/projects/lists";
 import type { ProjectGroup } from "$lib/projects/types";
@@ -56,9 +56,10 @@ export interface TabLauncherProjectRows<TProject> {
 }
 
 /**
- * Choose the rows of a projects level, mirroring the groups mode of the project pickers. At the top, groups that hold
- * a project come first and the projects outside every group follow; inside a group, its projects. A search looks
- * through every project, whatever group is open, and labels each matching list with its group.
+ * Choose the rows of a projects level, mirroring the groups mode of the project pickers. At the top, every group comes
+ * first, empty ones included so a new group can take its first project, and the projects outside every group follow;
+ * inside a group, its projects. A search looks through every project, whatever group is open, and labels each
+ * matching list with its group.
  */
 export function tabLauncherProjectRows<TProject extends { name: string }>(
   lists: readonly ProjectList<TProject>[],
@@ -72,7 +73,7 @@ export function tabLauncherProjectRows<TProject extends { name: string }>(
     const list = lists.find((candidate) => candidate.group?.id === groupId);
     return { groups: [], sections: list ? [{ list, labeled: false }] : [] };
   }
-  const groups = lists.flatMap((list) => (list.group && list.projects.length > 0 ? [list.group] : []));
+  const groups = lists.flatMap((list) => (list.group ? [list.group] : []));
   const ungrouped = lists.filter((list) => list.group === null && list.projects.length > 0);
   return { groups, sections: ungrouped.map((list) => ({ list, labeled: false })) };
 }
@@ -106,9 +107,9 @@ export function tabLauncherDigitsPick(query: string, searchable: boolean): boole
 }
 
 /**
- * The index of the highlighted row. A remembered row keeps the highlight while it is still listed; otherwise the
- * first row is highlighted, which is the "open here" row, when the level has one, while the search is empty and the first result while it is
- * not. Returns -1 when nothing is listed.
+ * The index of the highlighted row. A remembered row keeps the highlight while it is still listed. Otherwise an
+ * empty search highlights the first row, which is the "open here" row on the levels below the projects, and a
+ * search highlights its first result. Returns -1 when nothing is listed.
  */
 export function tabLauncherHighlightIndex<TRow extends TabLauncherRowShape & { key: string }>(
   rows: readonly TRow[],
@@ -140,6 +141,8 @@ export interface TabLauncherKeyContext {
   highlight: number;
   /** Whether the search caret sits at the end of the text with nothing selected. */
   caretAtEnd: boolean;
+  /** Whether the shortcut modifier with N creates something here, as the new note shortcut does on a pages level. */
+  createShortcut?: boolean;
 }
 
 /** What a key does in the launcher. */
@@ -149,7 +152,8 @@ export type TabLauncherKeyAction =
   | { type: "drill"; index: number }
   | { type: "back" }
   | { type: "clear-search" }
-  | { type: "close" };
+  | { type: "close" }
+  | { type: "create" };
 
 function hasCommandModifier(input: KeyboardModifierState): boolean {
   return input.ctrlKey || input.altKey || input.metaKey;
@@ -159,13 +163,15 @@ function hasCommandModifier(input: KeyboardModifierState): boolean {
  * Decide what a key does, or `null` to leave it to the browser, so it types into the search or moves its caret.
  * Escape clears a search, then goes back a level, then closes. Arrows move the highlight and Enter picks it. A digit
  * picks a numbered row only while digits pick rows, and a digit without a row types instead. ArrowRight shows what is
- * inside a row that has more inside, and ArrowLeft or Backspace in an empty search go back a level.
+ * inside a row that has more inside, and ArrowLeft or Backspace in an empty search go back a level. The shortcut
+ * modifier with N creates where the level allows it.
  */
 export function tabLauncherKeyAction(input: TabLauncherKeyInput, context: TabLauncherKeyContext): TabLauncherKeyAction | null {
   if (input.isComposing) return null;
   const { query, searchable, atKinds, rows, highlight } = context;
   const emptyQuery = query.length === 0;
   const plain = !hasCommandModifier(input) && !input.shiftKey;
+  if (context.createShortcut && input.key.toLowerCase() === "n" && hasOnlyShortcutModifier(input)) return { type: "create" };
   switch (input.key) {
     case "Escape":
       if (!emptyQuery) return { type: "clear-search" };

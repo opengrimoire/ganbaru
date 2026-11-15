@@ -1,36 +1,62 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
+  import Archive from "@lucide/svelte/icons/archive";
   import Check from "@lucide/svelte/icons/check";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import CornerDownLeft from "@lucide/svelte/icons/corner-down-left";
+  import Eye from "@lucide/svelte/icons/eye";
+  import EyeOff from "@lucide/svelte/icons/eye-off";
   import FileText from "@lucide/svelte/icons/file-text";
   import Folder from "@lucide/svelte/icons/folder";
+  import FolderPlus from "@lucide/svelte/icons/folder-plus";
   import Hash from "@lucide/svelte/icons/hash";
+  import Plus from "@lucide/svelte/icons/plus";
   import Search from "@lucide/svelte/icons/search";
+  import SquarePen from "@lucide/svelte/icons/square-pen";
   import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
   import ProjectLifecycleIcon from "$lib/components/projects/ProjectLifecycleIcon.svelte";
+  import ProjectNameDraftForm from "$lib/components/projects/pickers/ProjectNameDraftForm.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
+  import SidebarOrderMenu from "$lib/components/ui/SidebarOrderMenu.svelte";
   import StarredIconBadge from "$lib/components/ui/StarredIconBadge.svelte";
+  import { isProjectNameTakenError } from "$lib/api/projects";
   import type { ChatChannelRead } from "$lib/chat/contracts";
-  import { chatChannelMatchesSearch, normalizeChatChannelSearch } from "$lib/chat/channel-search";
+  import { chatChannelPickerRows, normalizeChatChannelSearch } from "$lib/chat/channel-search";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
+  import { chatPaneEvents } from "$lib/chat/pane-events";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { availableAppViews, type View } from "$lib/navigation";
+  import { notesFailure } from "$lib/notes/failure";
   import type { NotesFolder, NotesPage } from "$lib/notes/types";
-  import { notesHierarchyChildren, type NotesHierarchyOrder } from "$lib/notes/navigation/hierarchy-menu";
+  import {
+    notesArchivedParentPageIds,
+    notesHierarchyArchivedChildren,
+    notesHierarchyChildren,
+    type NotesHierarchyOrder,
+  } from "$lib/notes/navigation/hierarchy-menu";
   import { notesFoldersForProject } from "$lib/notes/navigation/tree";
   import { NOTES_PAGE_CHROME_EMOJI_SCALE } from "$lib/notes/pages/icon";
   import { notesPageTitle } from "$lib/notes/pages/title";
   import { notesPagesForProject } from "$lib/notes/project-membership";
-  import type { Project, ProjectGroup } from "$lib/projects/types";
+  import { isProjectNameTaken, projectNameKey } from "$lib/projects/text";
+  import {
+    DEFAULT_PROJECT_GROUP_ICON,
+    DEFAULT_PROJECT_ICON,
+    type Project,
+    type ProjectGroup,
+  } from "$lib/projects/types";
   import { getChat } from "$lib/stores/chat.svelte";
   import { getChatSidebarOrder } from "$lib/stores/chat/sidebar-order.svelte";
   import { getNotes } from "$lib/stores/notes.svelte";
+  import { getPreferences } from "$lib/stores/preferences.svelte";
   import { useProjects } from "$lib/stores/projects.svelte";
   import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { anchoredPopover } from "$lib/utils/anchored-popover";
+  import type { SidebarSortOrder } from "$lib/utils/sidebar-order";
   import { portal } from "$lib/utils/portal";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import {
@@ -75,9 +101,23 @@
     | { type: "group"; group: ProjectGroup }
     | { type: "project"; kind: View; project: Project }
     | { type: "channel"; projectId: string; channel: ChatChannelRead }
+    | { type: "archived-channel"; projectId: string; channel: ChatChannelRead }
     | { type: "page"; projectId: string; page: NotesPage; title: string }
+    | { type: "archived-page"; projectId: string; page: NotesPage; title: string }
     | { type: "folder"; projectId: string; folder: NotesFolder }
   );
+
+  /** The inline form a level's footer shows in place of its create buttons. */
+  type LauncherCreator =
+    | { type: "folder" }
+    | { type: "group" }
+    | { type: "project"; groupId: string | null };
+
+  /** A failed launcher action, with raw detail for the copy button. */
+  interface LauncherFailure {
+    message: string;
+    detail: string | undefined;
+  }
 
   /** A listed entry: a row, a section label, or a status line in place of rows still loading or missing. */
   type LauncherEntry =
@@ -89,12 +129,17 @@
   const ICON_SIZE = 13;
   const ICON_STROKE_WIDTH = 1.6;
   const EMOJI_SCALE = 0.94;
+  const HEADER_BUTTON_CLASS =
+    "flex size-6 shrink-0 items-center justify-center rounded text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground";
+  const FOOTER_BUTTON_CLASS =
+    "flex min-h-8 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-floating-item px-1 text-popover-foreground transition-colors hover:bg-accent hover:text-accent-foreground";
 
   const tabs = getWorkspaceTabs();
   const projects = useProjects();
   const chat = getChat();
   const chatSidebarOrder = getChatSidebarOrder();
   const notes = getNotes();
+  const preferences = getPreferences();
   const { t } = getLocalization();
   const kinds = availableAppViews();
   const rowIdPrefix = `tab-launcher-${Math.random().toString(36).slice(2)}`;
@@ -105,6 +150,19 @@
   let query = $state("");
   let highlightKey = $state<string | null>(null);
   let loadFailure = $state<string | null>(null);
+  let footer: HTMLDivElement | undefined = $state();
+  let folderInput: HTMLInputElement | undefined = $state();
+  let creator = $state<LauncherCreator | null>(null);
+  let folderDraft = $state("");
+  let groupDraft = $state("");
+  let groupIcon = $state(DEFAULT_PROJECT_GROUP_ICON);
+  let projectDraft = $state("");
+  let projectIcon = $state(DEFAULT_PROJECT_ICON);
+  /** The name the backend refused as taken, so the form keeps saying so until the name changes. */
+  let refusedProjectName = $state<string | null>(null);
+  let actionFailure = $state<LauncherFailure | null>(null);
+  let archivedChannelsError = $state<string | null>(null);
+  let busy = false;
   const requestedChildPageIds = new SvelteSet<string>();
   const loadingChildPageIds = new SvelteSet<string>();
 
@@ -125,6 +183,30 @@
         ? t("notes.searchPlaceholder")
         : t("calendar.eventPanel.searchProjects"),
   );
+  /** The project pickers hide their create buttons while searching; the Notes and Chat pickers keep theirs. */
+  const footerShown = $derived(level.type === "channels" || level.type === "pages" || (level.type === "projects" && !query.trim()));
+  const projectDraftError = $derived.by(() => {
+    if (creator?.type !== "project") return null;
+    const taken = isProjectNameTaken(projects.projects, creator.groupId, projectDraft)
+      || (projectNameKey(projectDraft) !== "" && refusedProjectName === projectNameKey(projectDraft));
+    if (!taken) return null;
+    return creator.groupId === null ? t("projects.navigator.ungroupedProjectNameTaken") : t("projects.navigator.projectNameTaken");
+  });
+
+  $effect(() => {
+    if (level.type === "pages" && notes.showArchivedInPickers) untrack(() => notes.ensurePickerArchivedPages());
+  });
+
+  $effect(() => {
+    archivedChannelsError = null;
+    if (level.type !== "channels" || !chat.showArchivedChannelsInPickers) return;
+    const projectId = level.projectId;
+    let cancelled = false;
+    untrack(() => chat.loadArchivedChannelsForPicker(projectId)).catch((error: unknown) => {
+      if (!cancelled) archivedChannelsError = chatErrorMessage(error, t("chatErrors.actions.loadArchivedChannels"));
+    });
+    return () => { cancelled = true; };
+  });
 
   $effect(() => {
     if (level.type === "kinds") return;
@@ -202,12 +284,20 @@
     if (status) return [...list, ...status];
     if (!chat.loaded) return [...list, { type: "loading", key: "loading" }];
     const normalizedQuery = normalizeChatChannelSearch(query);
-    const channels = chatSidebarOrder.sortChannels(projectId, chat.channelsForProject(projectId))
-      .filter((channel) => chatChannelMatchesSearch(channel, normalizedQuery));
-    for (const channel of channels) {
+    const showArchived = chat.showArchivedChannelsInPickers;
+    const { active, archived } = chatChannelPickerRows(
+      chatSidebarOrder.sortChannels(projectId, chat.channelsForProject(projectId)),
+      showArchived ? chat.archivedChannelsForProject(projectId) : [],
+      showArchived,
+      normalizedQuery,
+    );
+    for (const channel of active) {
       list.push(row({ type: "channel", key: `channel:${channel.id}`, numbered: true, canDrill: false, projectId, channel }));
     }
-    if (channels.length === 0) {
+    for (const channel of archived) {
+      list.push(row({ type: "archived-channel", key: `archived-channel:${channel.id}`, numbered: true, canDrill: false, projectId, channel }));
+    }
+    if (active.length + archived.length === 0) {
       list.push({ type: "status", key: "status:empty", text: normalizedQuery ? t("chat.channels.noResults") : t("chat.channels.empty") });
     }
     return list;
@@ -232,12 +322,15 @@
       customOrderKeys: notes.customOrderForProject(projectId),
     };
     const normalizedQuery = query.trim().toLocaleLowerCase();
+    const archivedPages = notes.showArchivedInPickers ? notesPagesForProject(notes.pickerArchivedPages, projectId) : [];
+    const activePageIds = new Set(notes.allPages.map((page) => page.id));
     const nodes = notesHierarchyChildren(
       notesPagesForProject(notes.allPages, projectId),
       notesFoldersForProject(notes.folders, projectId),
       parent,
       untitled,
-      notes.sidebarPageIdsWithChildren,
+      // Notes holding only archived children still open a level while archived notes are listed.
+      [...notes.sidebarPageIdsWithChildren, ...notesArchivedParentPageIds(archivedPages, activePageIds)],
       order,
     );
     let listed = 0;
@@ -250,6 +343,13 @@
         if (normalizedQuery && !title.toLocaleLowerCase().includes(normalizedQuery)) continue;
         list.push(row({ type: "page", key: node.key, numbered: true, canDrill: node.hasChildren, projectId, page: node.page, title }));
       }
+      listed += 1;
+    }
+    for (const node of notesHierarchyArchivedChildren(archivedPages, activePageIds, parent, untitled, order)) {
+      if (node.kind !== "page") continue;
+      const title = notesPageTitle(node.page, untitled);
+      if (normalizedQuery && !title.toLocaleLowerCase().includes(normalizedQuery)) continue;
+      list.push(row({ type: "archived-page", key: `archived-${node.key}`, numbered: true, canDrill: false, projectId, page: node.page, title }));
       listed += 1;
     }
     if (listed > 0) return list;
@@ -265,8 +365,12 @@
       case "here": return value.label;
       case "group": return value.group.name;
       case "project": return value.project.name;
-      case "channel": return value.channel.name;
-      case "page": return value.title;
+      case "channel":
+      case "archived-channel":
+        return value.channel.name;
+      case "page":
+      case "archived-page":
+        return value.title;
       case "folder": return value.folder.name;
     }
   }
@@ -289,6 +393,8 @@
     query = "";
     highlightKey = null;
     loadFailure = null;
+    creator = null;
+    actionFailure = null;
   }
 
   async function focusLevel(): Promise<void> {
@@ -343,6 +449,7 @@
         }
         return;
       case "channel":
+      case "archived-channel":
         open(() => tabs.openLocation("item", {
           kind: "chat",
           projectId: value.projectId,
@@ -351,6 +458,9 @@
         return;
       case "page":
         openPage(value.projectId, value.page.id);
+        return;
+      case "archived-page":
+        void restoreArchivedPage(value.projectId, value.page.id);
         return;
       case "folder":
         void enter({ type: "folder", folderId: value.folder.id, label: value.folder.name });
@@ -367,6 +477,148 @@
     }
     loadPageChildren(value.page.id);
     void enter({ type: "page", pageId: value.page.id, label: value.title });
+  }
+
+  /** Run one launcher action at a time, showing its failure above the rows. */
+  async function runAction(action: () => Promise<void>, fallback: (error: unknown) => LauncherFailure): Promise<void> {
+    if (busy) return;
+    busy = true;
+    actionFailure = null;
+    try {
+      await action();
+    } catch (error: unknown) {
+      console.error("tab launcher action failed", error);
+      actionFailure = fallback(error);
+    } finally {
+      busy = false;
+    }
+  }
+
+  /** Archived notes cannot open as they are, so picking one restores it and opens it in a new tab. */
+  async function restoreArchivedPage(projectId: string, pageId: string): Promise<void> {
+    await runAction(async () => {
+      await notes.unarchivePage(pageId);
+      openPage(projectId, pageId);
+    }, (error) => notesFailure(error, t("notes.archivedNoteRestoreFailed")));
+  }
+
+  /** Highlight a row a creator just added and keep it in view. */
+  async function highlightCreated(key: string): Promise<void> {
+    query = "";
+    highlightKey = key;
+    await focusLevel();
+    const index = rows.findIndex((candidate) => candidate.key === key);
+    if (index >= 0) document.getElementById(rowId(index))?.scrollIntoView?.({ block: "nearest" });
+  }
+
+  function openCreator(next: LauncherCreator): void {
+    creator = next;
+    actionFailure = null;
+    refusedProjectName = null;
+    if (next.type === "group") {
+      groupDraft = "";
+      groupIcon = DEFAULT_PROJECT_GROUP_ICON;
+    } else if (next.type === "project") {
+      projectDraft = "";
+      projectIcon = DEFAULT_PROJECT_ICON;
+    } else {
+      folderDraft = nextFolderName();
+      void tick().then(() => {
+        folderInput?.focus();
+        folderInput?.select();
+      });
+    }
+  }
+
+  function closeCreator(): void {
+    creator = null;
+    actionFailure = null;
+    void focusLevel();
+  }
+
+  function nextFolderName(): string {
+    if (level.type !== "pages") return t("notes.defaultFolderName");
+    const parentFolderId = level.parent.kind === "folder" ? level.parent.id : null;
+    const baseName = t("notes.defaultFolderName");
+    const siblingNames = new Set(
+      notesFoldersForProject(notes.folders, level.projectId)
+        .filter((folder) => folder.parent_folder_id === parentFolderId)
+        .map((folder) => folder.name.trim().toLocaleLowerCase()),
+    );
+    if (!siblingNames.has(baseName.toLocaleLowerCase())) return baseName;
+    let suffix = 2;
+    while (siblingNames.has(`${baseName} ${suffix}`.toLocaleLowerCase())) suffix += 1;
+    return `${baseName} ${suffix}`;
+  }
+
+  async function submitFolder(): Promise<void> {
+    if (level.type !== "pages" || level.parent.kind === "page") return;
+    const name = folderDraft.trim();
+    if (!name) return;
+    const { projectId, parent } = level;
+    await runAction(async () => {
+      const folder = await notes.createFolder(projectId, name, parent.kind === "folder" ? parent.id : null);
+      creator = null;
+      await highlightCreated(`folder:${folder.id}`);
+    }, (error) => notesFailure(error, t("notes.folderActionFailed")));
+  }
+
+  /** Create a note at this level and open it in a new tab, leaving the current tab where it is. */
+  async function createPage(): Promise<void> {
+    if (level.type !== "pages") return;
+    const { projectId, parent } = level;
+    await runAction(async () => {
+      const pageId = parent.kind === "page"
+        ? await notes.createPageInBackground("", parent.id)
+        : await notes.createPageInBackground("", null, { projectId, folderId: parent.kind === "folder" ? parent.id : null });
+      openPage(projectId, pageId);
+    }, (error) => notesFailure(error, t("notes.pageCreationFailed")));
+  }
+
+  /** Open the project in a Chat tab of its own, then start a channel there with the Chat view's own dialog. */
+  async function createChannel(): Promise<void> {
+    if (level.type !== "channels") return;
+    const projectId = level.projectId;
+    onClose();
+    tabs.openLocation("project", { kind: "chat", projectId, item: null });
+    await tabs.whenRestored();
+    await tick();
+    chatPaneEvents(tabs.paneScope(tabs.activeTabId)).dispatchEvent(new Event("ganbaru:chat-new-channel"));
+  }
+
+  async function submitGroup(): Promise<void> {
+    const name = groupDraft.trim();
+    if (!name) return;
+    await runAction(async () => {
+      const groupId = await projects.addGroup(name, groupIcon);
+      creator = null;
+      if (groupId) await highlightCreated(`group:${groupId}`);
+    }, (error) => notesFailure(error, t("projects.navigator.groupSaveFailed")));
+  }
+
+  /** Create a project without moving any pane to it, and highlight it so it can be opened from here. */
+  async function submitProject(): Promise<void> {
+    if (creator?.type !== "project") return;
+    const { groupId } = creator;
+    const name = projectDraft.trim();
+    if (!name || projectDraftError) return;
+    await runAction(async () => {
+      let projectId: string | undefined;
+      try {
+        projectId = await projects.addProjectWithoutSelecting(groupId, name, projectIcon);
+      } catch (error: unknown) {
+        if (!isProjectNameTakenError(error)) throw error;
+        refusedProjectName = projectNameKey(name);
+        return;
+      }
+      creator = null;
+      if (projectId) await highlightCreated(`project:${projectId}`);
+    }, (error) => notesFailure(error, t("projects.navigator.projectCreateFailed")));
+  }
+
+  /** What the shortcut modifier with N creates on this level, the way it makes a new note in the Notes view. */
+  function createFromShortcut(): void {
+    if (level.type === "pages") void createPage();
   }
 
   function loadPageChildren(pageId: string): void {
@@ -390,6 +642,15 @@
 
   function handleKeydown(event: KeyboardEvent): void {
     if ((event.key === "Enter" || event.key === " ") && event.target instanceof HTMLButtonElement) return;
+    if (creator && event.target instanceof Node && footer?.contains(event.target)) {
+      // An open create form keeps the keyboard; Escape cancels it before going back a level.
+      if (event.key === "Escape" && !event.isComposing) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeCreator();
+      }
+      return;
+    }
     const action = tabLauncherKeyAction(event, {
       query,
       searchable,
@@ -397,6 +658,7 @@
       rows,
       highlight,
       caretAtEnd: caretAtEnd(),
+      createShortcut: level.type === "pages",
     });
     if (!action) return;
     event.preventDefault();
@@ -406,7 +668,7 @@
         const target = rows[action.index];
         if (!target) return;
         highlightKey = target.key;
-        void tick().then(() => document.getElementById(rowId(action.index))?.scrollIntoView({ block: "nearest" }));
+        void tick().then(() => document.getElementById(rowId(action.index))?.scrollIntoView?.({ block: "nearest" }));
         return;
       }
       case "pick": {
@@ -429,6 +691,9 @@
       case "close":
         finish();
         return;
+      case "create":
+        createFromShortcut();
+        return;
     }
   }
 
@@ -445,6 +710,37 @@
     menu?.focus();
   });
 </script>
+
+{#snippet orderMenu(order: SidebarSortOrder, override: SidebarSortOrder | null, allowGlobal: boolean, label: string, onSelect: (order: SidebarSortOrder | null) => void)}
+  <SidebarOrderMenu
+    {order}
+    {override}
+    {allowGlobal}
+    {label}
+    buttonClass={HEADER_BUTTON_CLASS}
+    activeClass="bg-accent text-accent-foreground"
+    iconSize={ICON_SIZE}
+    iconStrokeWidth={ICON_STROKE_WIDTH}
+    menuZIndexClass="z-90"
+    {onSelect}
+  />
+{/snippet}
+
+{#snippet eyeButton(pressed: boolean, label: string, toggle: () => void)}
+  <button type="button" class={HEADER_BUTTON_CLASS} aria-pressed={pressed} aria-label={label} title={label} onclick={toggle}>
+    {#if pressed}
+      <EyeOff size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
+    {:else}
+      <Eye size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
+    {/if}
+  </button>
+{/snippet}
+
+{#snippet archivedMarker(label: string)}
+  <span role="img" class="shrink-0 text-popover-foreground/60" aria-label={label}>
+    <Archive size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
+  </span>
+{/snippet}
 
 <div
   bind:this={menu}
@@ -489,6 +785,36 @@
           spellcheck="false"
           class="field-bare text-popover-foreground"
         />
+        {#if level.type === "projects"}
+          {@render orderMenu(preferences.projectsSidebarOrder, null, false, t("projects.navigator.sortGroupsAndProjects"), (order) => {
+            if (order) preferences.setProjectsSidebarOrder(order);
+          })}
+          {@render eyeButton(
+            projects.showInactiveProjects,
+            projects.showInactiveProjects ? t("projects.navigator.hideInactive") : t("projects.navigator.showInactive"),
+            () => { projects.showInactiveProjects = !projects.showInactiveProjects; },
+          )}
+        {:else if level.type === "channels"}
+          {@const projectId = level.projectId}
+          {@render orderMenu(chatSidebarOrder.orderForProject(projectId), chatSidebarOrder.orderOverride(projectId), true, t("chat.channels.sort"), (order) => {
+            chatSidebarOrder.setProjectOrder(projectId, order);
+          })}
+          {@render eyeButton(
+            chat.showArchivedChannelsInPickers,
+            chat.showArchivedChannelsInPickers ? t("chat.channels.hideArchived") : t("chat.channels.showArchived"),
+            () => { chat.showArchivedChannelsInPickers = !chat.showArchivedChannelsInPickers; },
+          )}
+        {:else if level.type === "pages"}
+          {@const projectId = level.projectId}
+          {@render orderMenu(notes.sidebarOrderForProject(projectId), notes.sidebarOrderOverride(projectId), true, t("notes.sortExplorer"), (order) => {
+            notes.setProjectSidebarOrder(projectId, order);
+          })}
+          {@render eyeButton(
+            notes.showArchivedInPickers,
+            notes.showArchivedInPickers ? t("notes.hideArchivedNotes") : t("notes.showArchivedNotes"),
+            () => { notes.showArchivedInPickers = !notes.showArchivedInPickers; },
+          )}
+        {/if}
       </div>
     </div>
   {/if}
@@ -500,6 +826,20 @@
     aria-label={atKinds ? undefined : breadcrumb}
     use:scrollEdgeFadeAction
   >
+    {#if actionFailure}
+      <Notice class="px-3 py-2" message={actionFailure.message} copy={actionFailure.detail} onDismiss={() => (actionFailure = null)} />
+    {/if}
+    {#if level.type === "pages" && notes.showArchivedInPickers && notes.pickerArchiveError}
+      <Notice
+        class="px-3 py-2"
+        message={t("notes.archivedNotesLoadFailed")}
+        copy={notes.pickerArchiveError}
+        onRetry={() => notes.reloadPickerArchivedPages()}
+      />
+    {/if}
+    {#if level.type === "channels" && archivedChannelsError}
+      <Notice class="px-3 py-2" message={archivedChannelsError} />
+    {/if}
     {#each entries as entry (entry.type === "row" ? entry.row.key : entry.key)}
       {#if entry.type === "label"}
         {#if entry.key === "label:tabs"}<div role="separator" class="menu-separator"></div>{/if}
@@ -520,6 +860,8 @@
             role={item.type === "tab" ? "menuitemradio" : "menuitem"}
             aria-checked={item.type === "tab" ? item.tab.id === tabs.activeTabId : undefined}
             aria-keyshortcuts={number === null ? undefined : String(number)}
+            aria-label={item.type === "archived-page" ? t("notes.archivedNoteRestore", label) : undefined}
+            title={item.type === "archived-page" ? t("notes.archivedNoteRestore", label) : undefined}
             tabindex="-1"
             class="menu-item"
             data-highlighted={index === highlight || undefined}
@@ -545,6 +887,8 @@
               <StarredIconBadge starred={chatSidebarOrder.isChannelStarred(item.channel.id)}>
                 <Hash size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} />
               </StarredIconBadge>
+            {:else if item.type === "archived-channel"}
+              <Hash size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} class="shrink-0" />
             {:else if item.type === "folder"}
               <Folder size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} class="shrink-0" />
             {:else if item.page.icon}
@@ -553,6 +897,11 @@
               <FileText size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} class="shrink-0" />
             {/if}
             <span class="min-w-0 flex-1 truncate">{label}</span>
+            {#if item.type === "archived-channel"}
+              {@render archivedMarker(t("chat.channels.archivedChannel"))}
+            {:else if item.type === "archived-page"}
+              {@render archivedMarker(t("notes.archivedNote"))}
+            {/if}
             {#if item.type === "project" && item.project.status !== "active"}
               <ProjectLifecycleIcon status={item.project.status} size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} class="text-popover-foreground/60" />
             {/if}
@@ -589,4 +938,100 @@
       {/if}
     {/each}
   </div>
+
+  {#if footerShown}
+    <div bind:this={footer} class="relative z-10 shrink-0 bg-popover p-1.5">
+      <div class="pointer-events-none absolute left-1.5 right-1.5 top-0 border-t border-border/70"></div>
+      {#if level.type === "pages"}
+        {#if creator?.type === "folder"}
+          <form class="flex gap-1" onsubmit={(event) => { event.preventDefault(); void submitFolder(); }}>
+            <input
+              bind:this={folderInput}
+              bind:value={folderDraft}
+              placeholder={t("notes.defaultFolderName")}
+              aria-label={t("notes.newFolder")}
+              class="field min-w-0 flex-1 text-popover-foreground"
+            />
+            <button type="submit" class="min-h-8 rounded-floating-item bg-primary px-2 text-panel-detail font-medium text-primary-foreground">
+              {t("common.save")}
+            </button>
+          </form>
+        {:else}
+          <div class="flex min-h-8 items-center">
+            {#if level.parent.kind !== "page"}
+              <button type="button" class={FOOTER_BUTTON_CLASS} onclick={() => openCreator({ type: "folder" })}>
+                <FolderPlus size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
+                <span class="truncate">{t("notes.newFolder")}</span>
+              </button>
+              <div class="mx-1 h-5 border-l border-border/70" aria-hidden="true"></div>
+            {/if}
+            <button
+              type="button"
+              class={FOOTER_BUTTON_CLASS}
+              aria-keyshortcuts="Control+N Meta+N"
+              onclick={() => void createPage()}
+            >
+              <SquarePen size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
+              <span class="truncate">{t("notes.newPage")}</span>
+            </button>
+          </div>
+        {/if}
+      {:else if level.type === "channels"}
+        <button type="button" class="menu-item justify-center gap-1.5 text-popover-foreground" onclick={() => void createChannel()}>
+          <Plus size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
+          <span>{t("chat.channels.createTitle")}</span>
+        </button>
+      {:else if level.type === "projects"}
+        {@const groupId = level.groupId}
+        {#if creator?.type === "group"}
+          <ProjectNameDraftForm
+            bind:name={groupDraft}
+            bind:icon={groupIcon}
+            placeholder={t("projects.navigator.groupNamePlaceholder")}
+            iconStrokeWidth={ICON_STROKE_WIDTH}
+            onSubmit={() => void submitGroup()}
+            onCancel={closeCreator}
+          />
+        {:else if creator?.type === "project"}
+          <ProjectNameDraftForm
+            bind:name={projectDraft}
+            bind:icon={projectIcon}
+            placeholder={t("projects.navigator.projectNamePlaceholder")}
+            error={projectDraftError}
+            iconStrokeWidth={ICON_STROKE_WIDTH}
+            onSubmit={() => void submitProject()}
+            onCancel={closeCreator}
+          />
+        {:else if groupId === null}
+          <div class="grid grid-cols-2 gap-1">
+            <button
+              type="button"
+              class="menu-item min-w-0 justify-center"
+              aria-label={t("calendar.eventPanel.createGroup")}
+              title={t("calendar.eventPanel.createGroup")}
+              onclick={() => openCreator({ type: "group" })}
+            >
+              <Plus size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} class="shrink-0" aria-hidden="true" />
+              <span class="truncate">{t("calendar.eventPanel.createGroupShort")}</span>
+            </button>
+            <button
+              type="button"
+              class="menu-item min-w-0 justify-center"
+              aria-label={t("calendar.eventPanel.createProject")}
+              title={t("calendar.eventPanel.createProject")}
+              onclick={() => openCreator({ type: "project", groupId: null })}
+            >
+              <Plus size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} class="shrink-0" aria-hidden="true" />
+              <span class="truncate">{t("calendar.eventPanel.createProjectShort")}</span>
+            </button>
+          </div>
+        {:else}
+          <button type="button" class="menu-item justify-center" onclick={() => openCreator({ type: "project", groupId })}>
+            <Plus size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
+            <span>{t("calendar.eventPanel.createProject")}</span>
+          </button>
+        {/if}
+      {/if}
+    </div>
+  {/if}
 </div>

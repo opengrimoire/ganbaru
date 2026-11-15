@@ -102,6 +102,7 @@ export const shell = {
     selectGroupIcon: (icon: string) => `Select ${icon} group icon`,
     groupNameRequired: "Group name is required.",
     groupSaveFailed: "Could not save group.",
+    projectCreateFailed: "Could not create project.",
     groupDeleteFailed: "Could not delete group.",
     deleteGroup: (group: string) => `Delete group ${group}`,
     deleteGroupTitle: (group: string) => `Delete ${group}?`,

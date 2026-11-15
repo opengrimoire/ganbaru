@@ -33,8 +33,15 @@
   let rowObserver: ResizeObserver | null = null;
   const channel = $derived(chat.selectedChannel);
   const destination = $derived(channel ? `channel:${channel.id}` : "channel:none");
-  /** Whether the loaded history belongs to the selected channel; a switch shows no rows until it does. */
-  const messagesReady = $derived(channel !== null && chat.channelMessagesChannelId === channel.id);
+  /**
+   * Whether the loaded history belongs to the selected channel and the composer knows its scheduled message summary;
+   * a switch shows no rows until both settle, so the summary never pushes the restored timeline up.
+   */
+  const messagesReady = $derived(
+    channel !== null
+    && chat.channelMessagesChannelId === channel.id
+    && (channel.archivedAt !== null || chat.knownScheduledMessages(destination) !== null),
+  );
   const messages = $derived(messagesReady ? chat.channelMessages : []);
   const unreadStart = $derived(unreadMessageStartIndex(
     messages,

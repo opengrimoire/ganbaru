@@ -215,7 +215,7 @@
   let scheduleMenuLoad = $state<Promise<void> | null>(null);
   let scheduledFor = $state<string | null>(initialDraft.scheduledFor);
   let scheduledRecurrence = $state<ChatRecurrenceSpec | null>(initialDraft.recurrence);
-  let scheduledMessages = $state<ChatScheduledMessageRead[]>([]);
+  let scheduledMessages = $state<ChatScheduledMessageRead[]>(untrack(() => chat.knownScheduledMessages(destination) ?? []));
   let scheduledMessagesRequest = 0;
   let alsoSendToChannel = $state(false);
   let sending = $state(false);
@@ -1240,8 +1240,8 @@
         alsoSendToChannel: threadComposer && alsoSendToChannel,
         recurrence: scheduledRecurrence,
       });
-      scheduledMessages = scheduledMessages.map((message) => message.id === updated.id ? updated : message)
-        .sort((left, right) => left.scheduledFor.localeCompare(right.scheduledFor));
+      updateScheduledMessages(scheduledMessages.map((message) => message.id === updated.id ? updated : message)
+        .sort((left, right) => left.scheduledFor.localeCompare(right.scheduledFor)));
       restoreDraftAfterScheduledEdit();
     } catch (cause: unknown) {
       const code = chatErrorCode(cause);
@@ -1662,8 +1662,8 @@
         const scheduled = await chat.scheduleOrganizationalMessage(destination, scheduledFor, {
           alsoSendToChannel: threadComposer && alsoSendToChannel,
         });
-        scheduledMessages = [...scheduledMessages.filter((message) => message.id !== scheduled.id), scheduled]
-          .sort((left, right) => left.scheduledFor.localeCompare(right.scheduledFor));
+        updateScheduledMessages([...scheduledMessages.filter((message) => message.id !== scheduled.id), scheduled]
+          .sort((left, right) => left.scheduledFor.localeCompare(right.scheduledFor)));
       } else {
         const routing = routesFollowups ? followupRouting : null;
         const result = await chat.postOrganizationalMessage(destination, {
@@ -1885,6 +1885,7 @@
 
   function updateScheduledMessages(messages: ChatScheduledMessageRead[]): void {
     scheduledMessages = messages;
+    chat.rememberScheduledMessages(destination, messages);
     if (messages.length === 0) scheduledMessagesOpen = false;
   }
 

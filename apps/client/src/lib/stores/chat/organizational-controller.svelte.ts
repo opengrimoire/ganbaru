@@ -51,6 +51,8 @@ export class ChatOrganizationalController {
   drafts = $state<Record<string, ChatOrganizationalDraft>>({});
   scrollPositions = $state<Record<string, number>>({});
   scheduledMessagesVersion = $state(0);
+  /** The last scheduled messages read for each destination, so a composer opens with its summary instead of adding it later. */
+  scheduledMessagesByDestination = $state<Record<string, ChatScheduledMessageRead[]>>({});
   /** Bumped when channel notes or note proposal states may have changed, so open note views reread. */
   channelNotesVersion = $state(0);
   /** Bumped when push request states may have changed, including pushes that ran without a person, so open cards reread. */
@@ -61,6 +63,7 @@ export class ChatOrganizationalController {
   reset(): void {
     this.drafts = {};
     this.scrollPositions = {};
+    this.scheduledMessagesByDestination = {};
     this.scheduledMessagesVersion += 1;
     this.channelNotesVersion += 1;
     this.pushRequestsVersion += 1;
@@ -132,10 +135,28 @@ export class ChatOrganizationalController {
     return scheduled;
   }
 
-  listScheduled(destination: string): Promise<ChatScheduledMessageRead[]> {
+  /**
+   * Reads a destination's scheduled messages and remembers them as its summary.
+   *
+   * @param destination - The channel or reply thread destination.
+   * @returns The scheduled messages; a failed read rejects and records an empty summary only when none is known.
+   */
+  async listScheduled(destination: string): Promise<ChatScheduledMessageRead[]> {
     const channel = this.options.selectedChannel();
-    if (!channel) return Promise.resolve([]);
-    return chatApi.listScheduledChatMessages(channel.id, destinationReplyThreadId(destination));
+    if (!channel) return [];
+    try {
+      const messages = await chatApi.listScheduledChatMessages(channel.id, destinationReplyThreadId(destination));
+      this.rememberScheduled(destination, messages);
+      return messages;
+    } catch (error: unknown) {
+      if (!(destination in this.scheduledMessagesByDestination)) this.rememberScheduled(destination, []);
+      throw error;
+    }
+  }
+
+  /** Records the scheduled messages a destination shows in its summary. */
+  rememberScheduled(destination: string, messages: ChatScheduledMessageRead[]): void {
+    this.scheduledMessagesByDestination = { ...this.scheduledMessagesByDestination, [destination]: messages };
   }
 
   async cancelScheduled(id: ChatScheduledMessageId): Promise<void> {

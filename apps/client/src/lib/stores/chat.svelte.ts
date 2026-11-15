@@ -827,6 +827,16 @@ export class ChatStore {
     return this.organizationalController.listScheduled(destination);
   }
 
+  /** The last scheduled messages read for a destination, or `null` before the first read settles. */
+  knownScheduledMessages(destination: string): ChatScheduledMessageRead[] | null {
+    return this.organizationalController.scheduledMessagesByDestination[destination] ?? null;
+  }
+
+  /** Records the scheduled messages a composer changed, so its summary reopens as it was left. */
+  rememberScheduledMessages(destination: string, messages: ChatScheduledMessageRead[]): void {
+    this.organizationalController.rememberScheduled(destination, messages);
+  }
+
   async cancelScheduledOrganizationalMessage(id: ChatScheduledMessageId): Promise<void> {
     const channelId = this.selectedChannelId;
     await this.organizationalController.cancelScheduled(id);

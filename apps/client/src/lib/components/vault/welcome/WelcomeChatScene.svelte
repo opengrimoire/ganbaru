@@ -18,7 +18,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import ArrowUp from "@lucide/svelte/icons/arrow-up";
-  import Bold from "@lucide/svelte/icons/bold";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Clock3 from "@lucide/svelte/icons/clock-3";
   import Feather from "@lucide/svelte/icons/feather";
@@ -26,7 +25,6 @@
   import Folder from "@lucide/svelte/icons/folder";
   import Hash from "@lucide/svelte/icons/hash";
   import Heart from "@lucide/svelte/icons/heart";
-  import Italic from "@lucide/svelte/icons/italic";
   import MessageCircle from "@lucide/svelte/icons/message-circle";
   import MessageSquareShare from "@lucide/svelte/icons/message-square-share";
   import MessagesSquare from "@lucide/svelte/icons/messages-square";
@@ -255,8 +253,6 @@
   <div class="composer-footer">
     <div class="composer-tools">
       <span class={cn("tool-button", hovered(`${prefix}:attach`) && "hovered")} data-scene-hover={`${prefix}:attach`}><Plus size={16} /></span>
-      <span class={cn("tool-button", hovered(`${prefix}:bold`) && "hovered")} data-scene-hover={`${prefix}:bold`}><Bold size={15} /></span>
-      <span class={cn("tool-button", hovered(`${prefix}:italic`) && "hovered")} data-scene-hover={`${prefix}:italic`}><Italic size={15} /></span>
       <span class={cn("tool-button", hovered(`${prefix}:schedule`) && "hovered")} data-scene-hover={`${prefix}:schedule`}><Clock3 size={15} /></span>
       {#if inThread}
         <span class={cn("tool-button", hovered(`${prefix}:share`) && "hovered")} data-scene-hover={`${prefix}:share`}><MessageSquareShare size={15} /></span>

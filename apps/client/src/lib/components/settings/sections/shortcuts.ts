@@ -91,6 +91,7 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = Object.freeze([
       { keys: ["Mod + Shift + 8"], action: "Bulleted list in Chat" },
       { keys: ["Mod + Shift + 9"], action: "Quote in Chat" },
       { keys: ["Mod + Alt + Shift + C"], action: "Code block in Chat" },
+      { keys: ["Alt + F10"], action: "Focus Chat formatting toolbar" },
       { keys: ["Mod + Shift + P"], action: "Open Chat command menu" },
     ],
   },
@@ -180,6 +181,8 @@ function localizedAction(action: string, t: Translate): string {
       return t("settings.shortcuts.action.quoteChatText");
     case "Code block in Chat":
       return t("settings.shortcuts.action.chatCodeBlock");
+    case "Focus Chat formatting toolbar":
+      return t("settings.shortcuts.action.focusChatFormattingToolbar");
     case "Open Chat command menu":
       return t("settings.shortcuts.action.openChatCommandMenu");
     case "Toggle Quick notes":

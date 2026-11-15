@@ -90,6 +90,7 @@ export const focusAndShortcuts = {
       bulletedChatList: "Bulleted list in Chat",
       quoteChatText: "Quote in Chat",
       chatCodeBlock: "Code block in Chat",
+      focusChatFormattingToolbar: "Focus Chat formatting toolbar",
       openChatCommandMenu: "Open Chat command menu",
       toggleMusicPanel: "Open or close music panel",
       toggleQuickNotes: "Open or close Quick notes",

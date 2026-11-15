@@ -15,6 +15,7 @@
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import ChatFormattingToolbar from "./ChatFormattingToolbar.svelte";
 
   let {
     editorRoot = $bindable(),
@@ -110,6 +111,18 @@
   let meterElement: HTMLElement | undefined = $state();
   let removedHiddenCharacters = $state(0);
   let pasteRefusal = $state<string | null>(null);
+  let composing = $state(false);
+  let formattingToolbar: ChatFormattingToolbar | undefined = $state();
+
+  function handleKeydown(event: KeyboardEvent): void {
+    if (formattingToolbar?.handleEditorKeydown(event)) return;
+    onKeydown(event);
+  }
+
+  function setComposing(next: boolean): void {
+    composing = next;
+    onCompositionChange?.(next);
+  }
 
   onMount(() => {
     const selectionChanged = () => {
@@ -225,13 +238,14 @@
         onblur={(event) => { const target = event.currentTarget; queueMicrotask(() => { if (target.isConnected) onFocusChange?.(false); }); }}
         oninput={() => editor()?.handleInput()}
         onbeforeinput={(event) => editor()?.handleBeforeInput(event)}
-        onkeydown={onKeydown}
+        onkeydown={handleKeydown}
         onpaste={handlePaste}
         oncopy={onCopy}
-        oncompositionstart={() => { onCompositionChange?.(true); editor()?.handleCompositionStart(); }}
-        oncompositionend={() => { onCompositionChange?.(false); editor()?.handleCompositionEnd(); }}
+        oncompositionstart={() => { setComposing(true); editor()?.handleCompositionStart(); }}
+        oncompositionend={() => { setComposing(false); editor()?.handleCompositionEnd(); }}
       ></div>
     </div>
+    <ChatFormattingToolbar bind:this={formattingToolbar} {editorRoot} {editor} {disabled} {menuOpen} {composing} />
     {@render menu?.()}
     <div class="composer-toolbar">
       <div class="toolbar-left">{@render leading?.()}</div>

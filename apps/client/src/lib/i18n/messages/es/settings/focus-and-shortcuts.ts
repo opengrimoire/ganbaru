@@ -100,6 +100,7 @@ export const focusAndShortcuts = {
       bulletedChatList: "Lista con viñetas en Chat",
       quoteChatText: "Cita en Chat",
       chatCodeBlock: "Bloque de código en Chat",
+      focusChatFormattingToolbar: "Enfocar la barra de formato de Chat",
       openChatCommandMenu: "Abrir menú de comandos de Chat",
       toggleMusicPanel: "Abrir o cerrar el panel de música",
       toggleQuickNotes: "Abrir o cerrar Notas rápidas",

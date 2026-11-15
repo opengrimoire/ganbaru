@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount, tick, untrack } from "svelte";
   import ArrowUp from "@lucide/svelte/icons/arrow-up";
-  import Bold from "@lucide/svelte/icons/bold";
   import CircleAlert from "@lucide/svelte/icons/circle-alert";
   import Clock3 from "@lucide/svelte/icons/clock-3";
   import FileIcon from "@lucide/svelte/icons/file";
@@ -10,7 +9,6 @@
   import GitBranch from "@lucide/svelte/icons/git-branch";
   import Hash from "@lucide/svelte/icons/hash";
   import Image from "@lucide/svelte/icons/image";
-  import Italic from "@lucide/svelte/icons/italic";
   import MessageSquareShare from "@lucide/svelte/icons/message-square-share";
   import Plus from "@lucide/svelte/icons/plus";
   import AtSign from "@lucide/svelte/icons/at-sign";
@@ -58,7 +56,6 @@
     replaceChatComposerText,
     parseChatComposerDocument,
     type ChatComposerDocument,
-    type ChatComposerMark,
     type ChatComposerSelection,
   } from "$lib/chat/composer/rich-text";
   import {
@@ -199,8 +196,6 @@
   let attachmentIds = $state([...initialDraft.attachmentIds]);
   let selectionStart = $state(initialDraft.selectionStart);
   let selectionEnd = $state(initialDraft.selectionEnd);
-  let isBoldActive = $state(false);
-  let isItalicActive = $state(false);
   let composing = $state(false);
   let pickerOpen = $state(false);
   let pickerTrigger = $state<ChatReferenceTrigger | null>(null);
@@ -565,11 +560,9 @@
     updateTokenMenus(change.plainText, editorController?.selection() ?? { start: end, end }, change.references);
   }
 
-  function handleEditorSelectionChange(selection: ChatComposerSelection, marks: ChatComposerMark[]): void {
+  function handleEditorSelectionChange(selection: ChatComposerSelection): void {
     selectionStart = selection.start;
     selectionEnd = selection.end;
-    isBoldActive = marks.includes("bold");
-    isItalicActive = marks.includes("italic");
     persist();
     updateTokenMenus(editorController?.plainText() ?? "", selection, editorController?.messageReferences() ?? editorReferences);
   }
@@ -2088,8 +2081,6 @@
       {/snippet}
       {#snippet leading()}
         {#if localExecutionAvailable}<button type="button" class="tool-button" disabled={editLockReason !== null} aria-label={t("chat.composer.attachImages")} title={editLockReason ?? t("chat.composer.attachImages")} onclick={() => void pickImages()}><Plus size={16} /></button>{/if}
-        <button type="button" class="tool-button" class:active={isBoldActive} aria-label={t("chat.organization.bold")} aria-pressed={isBoldActive} onclick={() => editorController?.toggleMark("bold")}><Bold size={15} /></button>
-        <button type="button" class="tool-button" class:active={isItalicActive} aria-label={t("chat.organization.italic")} aria-pressed={isItalicActive} onclick={() => editorController?.toggleMark("italic")}><Italic size={15} /></button>
         <div bind:this={scheduleMenuAnchor} class="menu-anchor">
           <button type="button" class="tool-button" class:active={scheduleMenuOpen || Boolean(scheduledFor)} aria-label={scheduledFor ? t("chat.organization.scheduleSelected", formatScheduledInstant(scheduledFor)) : t("chat.organization.scheduleMessage")} aria-haspopup="dialog" aria-expanded={scheduleMenuOpen} disabled={editLockReason !== null} aria-pressed={Boolean(scheduledFor)} title={editLockReason ?? (scheduledFor ? t("chat.organization.scheduleSelected", formatScheduledInstant(scheduledFor)) : t("chat.organization.scheduleMessage"))} onpointerenter={() => { void loadScheduleMenu(); }} onfocus={() => { void loadScheduleMenu(); }} onclick={toggleScheduleMenu}><Clock3 size={15} /></button>
           {#if scheduleMenuOpen}

@@ -21,11 +21,9 @@
   import Archive from "@lucide/svelte/icons/archive";
   import ArrowUp from "@lucide/svelte/icons/arrow-up";
   import AtSign from "@lucide/svelte/icons/at-sign";
-  import Bold from "@lucide/svelte/icons/bold";
   import FileText from "@lucide/svelte/icons/file-text";
   import FolderX from "@lucide/svelte/icons/folder-x";
   import ImagePlus from "@lucide/svelte/icons/image-plus";
-  import Italic from "@lucide/svelte/icons/italic";
   import ListChecks from "@lucide/svelte/icons/list-checks";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import Paperclip from "@lucide/svelte/icons/paperclip";
@@ -36,7 +34,7 @@
   import * as chatApi from "$lib/api/chat";
   import type { ChatPromptCatalogEntry, ChatThreadId, McpStatusRead, ProjectWorkingFolderId, ProjectWorkingFolderPathRead, ProviderCapabilities, ProviderInstanceId, SafetyMode } from "$lib/chat/contracts";
   import { ChatComposerEditor, type ChatComposerEditorChange } from "$lib/chat/composer/editor";
-  import { parseChatComposerDocument, type ChatComposerMark, type ChatComposerSelection } from "$lib/chat/composer/rich-text";
+  import { parseChatComposerDocument, type ChatComposerSelection } from "$lib/chat/composer/rich-text";
   import {
     CHAT_IMAGE_LIMIT,
     composerActionState,
@@ -87,8 +85,6 @@
   let editorRoot: HTMLDivElement | undefined = $state();
   let editorController: ChatComposerEditor | undefined;
   let editorFocused = false;
-  let isBoldActive = $state(false);
-  let isItalicActive = $state(false);
   let fileInput: HTMLInputElement | undefined = $state();
   let attachmentMenu: HTMLDetailsElement | undefined = $state();
   let menuEntries = $state<(ProjectWorkingFolderPathRead | ChatPromptCatalogEntry)[]>([]);
@@ -252,11 +248,9 @@
     void updateMenu(change.plainText, editorController?.selection().start ?? change.plainText.length);
   }
 
-  function handleEditorSelectionChange(selection: ChatComposerSelection, activeMarks: ChatComposerMark[]): void {
+  function handleEditorSelectionChange(selection: ChatComposerSelection): void {
     restoreSelectionStart = selection.start;
     restoreSelectionEnd = selection.end;
-    isBoldActive = activeMarks.includes("bold");
-    isItalicActive = activeMarks.includes("italic");
   }
 
   async function updateMenu(text: string, cursor: number): Promise<void> {
@@ -904,8 +898,6 @@
         <span>{visibleComposerMode.label}</span>
       </button>
     {/if}
-    <button type="button" class="format-action" class:active={isBoldActive} aria-label={t("chat.composer.bold")} aria-pressed={isBoldActive} title={`${t("chat.composer.bold")} (Ctrl+B)`} disabled={composerDisabled} onpointerdown={(event) => event.preventDefault()} onclick={() => editorController?.toggleMark("bold")}><Bold size={14} /></button>
-    <button type="button" class="format-action" class:active={isItalicActive} aria-label={t("chat.composer.italic")} aria-pressed={isItalicActive} title={`${t("chat.composer.italic")} (Ctrl+I)`} disabled={composerDisabled} onpointerdown={(event) => event.preventDefault()} onclick={() => editorController?.toggleMark("italic")}><Italic size={14} /></button>
   {/snippet}
   {#snippet trailing()}
     <div class="execution-controls"><ChatWorkingFolderControl /><ChatModelControls /></div>
@@ -926,10 +918,9 @@
 <style>
   .execution-controls { display: flex; min-width: 0; align-items: center; gap: 0.25rem; }
   .attachment-menu { position: relative; flex: 0 0 auto; }
-  .attachment-menu summary, .round-action, .format-action { display: inline-flex; width: 1.9rem; height: 1.9rem; cursor: pointer; list-style: none; align-items: center; justify-content: center; border-radius: 0.5rem; color: var(--muted-foreground); }
+  .attachment-menu summary, .round-action {display: inline-flex; width: 1.9rem; height: 1.9rem; cursor: pointer; list-style: none; align-items: center; justify-content: center; border-radius: 0.5rem; color: var(--muted-foreground); }
   .attachment-menu summary::-webkit-details-marker { display: none; }
-  .attachment-menu summary:hover, .round-action:hover, .format-action:hover, .format-action.active { background: var(--accent); color: var(--foreground); }
-  .format-action:disabled { cursor: default; opacity: 0.45; }
+  .attachment-menu summary:hover, .round-action:hover { background: var(--accent); color: var(--foreground); }
   .mode-divider { width: 1px; height: 1.25rem; flex: 0 0 auto; background: color-mix(in srgb, var(--border) 78%, transparent); margin-inline: 0.1rem; }
   .composer-mode { display: inline-flex; min-width: 0; height: 1.9rem; flex: 0 1 auto; align-items: center; gap: 0.35rem; border-radius: 0.45rem; padding-inline: 0.4rem; color: var(--muted-foreground); font-size: calc(0.733333rem * var(--type-scale)); }
   .composer-mode:hover { background: var(--accent); color: var(--foreground); }
@@ -950,5 +941,4 @@
   .retained-note { max-width: 18rem; color: var(--muted-foreground); font-size: calc(0.666667rem * var(--type-scale)); }
   .request-panel-shell { margin-bottom: 0.75rem; }
   @container chat-composer (max-width: 640px) { .retained-note { max-width: 8rem; } }
-  @container chat-composer (max-width: 460px) { .format-action { display: none; } }
 </style>

@@ -530,29 +530,6 @@ describe("ChatDirectStartComposer", () => {
     expect(lines[1]?.querySelector("[data-chat-composer-sentinel]")).not.toBeNull();
   });
 
-  it("formats a visible selection and serializes it as Markdown", async () => {
-    const chat = getChat();
-    vi.spyOn(chat, "setComposerRichContent").mockImplementation((text, richContent) => {
-      chat.composer = { ...chat.composer, text, richContent };
-    });
-    const { target, editor } = setup(false);
-    await tick();
-    editor.focus();
-    setEditorSelection(editor, 11, 19);
-    expect(document.getSelection()?.toString()).toBe("calendar");
-    document.dispatchEvent(new Event("selectionchange"));
-    const bold = target.querySelector<HTMLButtonElement>('button[aria-label="Bold"]');
-    expect(bold).not.toBeNull();
-    bold?.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
-    bold?.click();
-    await tick();
-
-    expect(chat.composer.text).toBe("Review the **calendar** implementation");
-    expect(editor.querySelector("strong")?.textContent).toBe("calendar");
-    expect(bold?.getAttribute("aria-pressed")).toBe("true");
-    expect(target.querySelector('button[aria-label="Italic"]')).not.toBeNull();
-  });
-
   it("keeps the simplified composer actions directly discoverable", () => {
     const { target } = setup(false);
     expect(target.querySelector("[data-chat-model-trigger]")).not.toBeNull();
@@ -811,6 +788,142 @@ describe("ChatDirectStartComposer", () => {
     expect(target.querySelector('[role="alert"]')).toBeNull();
   });
 
+  describe("formatting toolbar", () => {
+    const rangeRect = Object.getOwnPropertyDescriptor(Range.prototype, "getBoundingClientRect");
+
+    beforeEach(() => {
+      Object.defineProperty(Range.prototype, "getBoundingClientRect", {
+        configurable: true,
+        value: () => new DOMRect(40, 320, 80, 20),
+      });
+    });
+
+    afterEach(() => {
+      if (rangeRect) Object.defineProperty(Range.prototype, "getBoundingClientRect", rangeRect);
+      else Reflect.deleteProperty(Range.prototype, "getBoundingClientRect");
+    });
+
+    async function selectText(start: number, end: number): Promise<HTMLDivElement> {
+      const chat = getChat();
+      chat.composer = { ...composer(), text: "Example text" };
+      vi.spyOn(chat, "setComposerRichContent").mockImplementation((text, richContent) => {
+        chat.composer = { ...chat.composer, text, richContent };
+      });
+      const { editor } = setup(false);
+      await tick();
+      vi.spyOn(editor, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 300, 600, 100));
+      editor.focus();
+      setEditorSelection(editor, start, end);
+      document.dispatchEvent(new Event("selectionchange"));
+      await tick();
+      await tick();
+      return editor;
+    }
+
+    function toolbar(): HTMLElement | null {
+      return document.querySelector<HTMLElement>("[data-chat-format-toolbar]");
+    }
+
+    it("shows above a selection with every action named with its shortcut", async () => {
+      await selectText(0, 7);
+
+      const bar = toolbar();
+      expect(bar?.getAttribute("role")).toBe("toolbar");
+      expect(bar?.classList.contains("placed")).toBe(true);
+      expect(bar?.dataset.side).toBe("above");
+      const buttons = [...(bar?.querySelectorAll("button") ?? [])];
+      expect(buttons.map((button) => button.getAttribute("aria-label"))).toEqual([
+        "Bold", "Italic", "Strikethrough", "Numbered list", "Bulleted list", "Quote", "Code", "Code block",
+      ]);
+      expect(buttons[0]?.dataset.appTooltip).toBe("Bold (Ctrl + B)");
+      expect(buttons.filter((button) => button.tabIndex === 0)).toHaveLength(1);
+    });
+
+    it("formats without moving the selection and marks the active format as pressed", async () => {
+      const editor = await selectText(0, 7);
+      const bold = toolbar()?.querySelector<HTMLButtonElement>('button[aria-label="Bold"]');
+      const press = new MouseEvent("pointerdown", { bubbles: true, cancelable: true });
+      bold?.dispatchEvent(press);
+      bold?.click();
+      await tick();
+
+      expect(press.defaultPrevented).toBe(true);
+      expect(getChat().composer.text).toBe("**Example** text");
+      expect(editor.querySelector("strong")?.textContent).toBe("Example");
+      expect(document.activeElement).toBe(editor);
+      expect(document.getSelection()?.toString()).toBe("Example");
+      expect(toolbar()?.querySelector('button[aria-label="Bold"]')?.getAttribute("aria-pressed")).toBe("true");
+    });
+
+    it("dismisses on Escape without clearing the draft until the selection changes", async () => {
+      const editor = await selectText(0, 7);
+      const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+      const outer = vi.fn();
+      window.addEventListener("keydown", outer);
+      editor.dispatchEvent(escape);
+      window.removeEventListener("keydown", outer);
+      await tick();
+
+      expect(escape.defaultPrevented).toBe(true);
+      expect(outer).not.toHaveBeenCalled();
+      expect(toolbar()).toBeNull();
+      expect(getChat().composer.text).toBe("Example text");
+
+      setEditorSelection(editor, 0, 4);
+      document.dispatchEvent(new Event("selectionchange"));
+      await tick();
+      await tick();
+      expect(toolbar()).not.toBeNull();
+    });
+
+    it("hides when the selection collapses or an autocomplete menu opens", async () => {
+      const editor = await selectText(0, 7);
+      setEditorSelection(editor, 3, 3);
+      document.dispatchEvent(new Event("selectionchange"));
+      await tick();
+      expect(toolbar()).toBeNull();
+
+      setEditorSelection(editor, 0, 12);
+      document.dispatchEvent(new Event("selectionchange"));
+      await tick();
+      expect(toolbar()).not.toBeNull();
+      editor.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+      await tick();
+      expect(toolbar()).toBeNull();
+    });
+
+    it("leaves a touch selection to the platform selection menu", async () => {
+      getChat().composer = { ...composer(), text: "Example text" };
+      const { editor } = setup(false);
+      await tick();
+      const touch = new MouseEvent("pointerdown", { bubbles: true });
+      Object.defineProperty(touch, "pointerType", { value: "touch" });
+      editor.dispatchEvent(touch);
+      editor.focus();
+      setEditorSelection(editor, 0, 7);
+      document.dispatchEvent(new Event("selectionchange"));
+      await tick();
+
+      expect(toolbar()).toBeNull();
+    });
+
+    it("moves focus into the toolbar with Alt+F10 and back to the selection with Escape", async () => {
+      const editor = await selectText(0, 7);
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "F10", altKey: true, bubbles: true, cancelable: true }));
+      const buttons = [...(toolbar()?.querySelectorAll("button") ?? [])];
+      expect(document.activeElement).toBe(buttons[0]);
+
+      buttons[0]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }));
+      await tick();
+      expect(document.activeElement).toBe(buttons[7]);
+      expect(toolbar()).not.toBeNull();
+
+      buttons[7]?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      await tick();
+      expect(document.activeElement).toBe(editor);
+      expect(document.getSelection()?.toString()).toBe("Example");
+    });
+  });
 });
 
 describe("ChatDirectStartComposer model controls", () => {

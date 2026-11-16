@@ -117,6 +117,7 @@
     showEmoji = true,
     showUpload = true,
     showRemove = true,
+    showCustomEmoji = true,
     showIconColor = true,
     nested = false,
     initiallyOpen = false,
@@ -133,6 +134,8 @@
     showEmoji?: boolean;
     showUpload?: boolean;
     showRemove?: boolean;
+    /** Offer the custom emoji and their recents; off where a value must be a native emoji, such as message text. */
+    showCustomEmoji?: boolean;
     /** Offer an icon color; without it, icons keep the automatic color and the saved default color is ignored. */
     showIconColor?: boolean;
     /** Keep the panels inside the nearest floating root, so the menu or panel that hosts the picker treats them as its own. */
@@ -264,10 +267,10 @@
     return projectIconDisplayLabel(parsedValue);
   });
   const emojiRecentValues = $derived(
-    projectIconEmojiRecentValues(recentValues),
+    projectIconEmojiRecentValues(recentValues).filter((recent) => showCustomEmoji || parseProjectIcon(recent).kind === "emoji"),
   );
   const lucideRecentValues = $derived(projectIconLucideRecentValues(recentValues));
-  const visibleCustomEmojis = $derived(iconPickerVisibleCustomEmojis(projects.customEmojis, emojiQuery));
+  const visibleCustomEmojis = $derived(showCustomEmoji ? iconPickerVisibleCustomEmojis(projects.customEmojis, emojiQuery) : []);
   const visibleEmojiCategories = $derived(
     iconPickerVisibleEmojiCategories(t("projects.iconPicker.symbolsAndFlags")),
   );
@@ -1245,7 +1248,7 @@
               bind:skinTonePanelOpen
               bind:iconColorPanelOpen
               bind:customEmojiPanelOpen
-              allowCustomEmojiCreate={showUpload}
+              allowCustomEmojiCreate={showUpload && showCustomEmoji}
               {gridScrollable}
               {gridCanScrollUp}
               {gridCanScrollDown}

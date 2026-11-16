@@ -576,6 +576,7 @@ export const chat = {
     forceStop: "Force stop session",
     forceStopDescription: "The provider did not stop in time. Force stopping preserves received output, but the next message may need to resume the session.",
     attachImages: "Attach images",
+    insertEmoji: "Insert emoji",
     imagePickerTitle: "Choose Chat images",
     removeAttachment: (name: string) => `Remove ${name}`,
     previewAttachment: (name: string) => `Preview ${name}`,

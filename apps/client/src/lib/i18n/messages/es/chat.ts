@@ -579,6 +579,7 @@ export const chat = {
     forceStop: "Forzar detención de sesión",
     forceStopDescription: "El proveedor no se detuvo a tiempo. La detención forzada conserva la salida recibida, pero el siguiente mensaje podría tener que reanudar la sesión.",
     attachImages: "Adjuntar imágenes",
+    insertEmoji: "Insertar emoji",
     imagePickerTitle: "Elegir imágenes de Chat",
     removeAttachment: (name: string) => `Quitar ${name}`,
     previewAttachment: (name: string) => `Vista previa de ${name}`,

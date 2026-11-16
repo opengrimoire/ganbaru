@@ -12,6 +12,7 @@
   import MessageSquareShare from "@lucide/svelte/icons/message-square-share";
   import Pencil from "@lucide/svelte/icons/pencil";
   import Plus from "@lucide/svelte/icons/plus";
+  import Smile from "@lucide/svelte/icons/smile";
   import AtSign from "@lucide/svelte/icons/at-sign";
   import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
@@ -71,6 +72,7 @@
   import { parseChatMessageReference } from "$lib/chat/validation";
   import { formatDateTime, formatList } from "$lib/i18n/formatters";
   import { budgetStoppedAt, providerLimitNotice } from "$lib/chat/budgets/budget-model";
+  import { parseProjectIcon } from "$lib/projects/icons/values";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
   import { useChat, type ChatOrganizationalDraft } from "$lib/stores/chat.svelte";
@@ -92,6 +94,7 @@
   import { chatReferencePickerPosition } from "./reference-picker-position";
 
   type ScheduleMenuComponent = typeof import("./ChatMessageScheduleMenu.svelte").default;
+  type EmojiPickerComponent = typeof import("$lib/components/icon-picker/IconPicker.svelte").default;
 
   type ReferenceCandidate =
     | {
@@ -213,6 +216,7 @@
   let scheduledMessagesAnchor = $state<HTMLDivElement | null>(null);
   let ScheduleMenu = $state<ScheduleMenuComponent | null>(null);
   let scheduleMenuLoad = $state<Promise<void> | null>(null);
+  let EmojiPicker = $state<EmojiPickerComponent | null>(null);
   let scheduledFor = $state<string | null>(initialDraft.scheduledFor);
   let scheduledRecurrence = $state<ChatRecurrenceSpec | null>(initialDraft.recurrence);
   let scheduledMessages = $state<ChatScheduledMessageRead[]>(untrack(() => chat.knownScheduledMessages(destination) ?? []));
@@ -1847,6 +1851,30 @@
     return scheduleMenuLoad;
   }
 
+  /** Loads the emoji picker on first use; it then mounts already open. */
+  async function openEmojiPicker(): Promise<void> {
+    if (EmojiPicker) return;
+    try {
+      EmojiPicker = (await import("$lib/components/icon-picker/IconPicker.svelte")).default;
+    } catch (cause: unknown) {
+      error = chatErrorMessage(cause);
+    }
+  }
+
+  /** Puts a picked native emoji in place of the draft selection and keeps the caret after it. */
+  function insertEmoji(value: string): void {
+    const icon = parseProjectIcon(value);
+    if (icon.kind !== "emoji") return;
+    const next = replaceChatComposerText(editorDocument, { start: selectionStart, end: selectionEnd }, icon.emoji);
+    editorDocument = next.document;
+    normalizedMarkdown = chatComposerMarkdown(next.document);
+    selectionStart = next.selection.end;
+    selectionEnd = next.selection.end;
+    editorController?.setDocument(editorDocument, editorReferences);
+    editorController?.focus({ start: selectionStart, end: selectionEnd });
+    persist();
+  }
+
   function toggleScheduleMenu(): void {
     scheduleMenuOpen = !scheduleMenuOpen;
     scheduledMessagesOpen = false;
@@ -2202,6 +2230,15 @@
       {/snippet}
       {#snippet leading()}
         {#if localExecutionAvailable}<button type="button" class="tool-button" disabled={editLockReason !== null} aria-label={t("chat.composer.attachImages")} title={editLockReason ?? t("chat.composer.attachImages")} onclick={() => void pickImages()}><Plus size={16} /></button>{/if}
+        {#if EmojiPicker}
+          <EmojiPicker value="none" onChange={insertEmoji} ariaLabel={t("chat.composer.insertEmoji")} showIcons={false} showUpload={false} showRemove={false} showCustomEmoji={false} panelAlign="start" initiallyOpen>
+            {#snippet trigger({ open, toggle, panelId })}
+              <button type="button" class="tool-button" class:active={open} aria-label={t("chat.composer.insertEmoji")} aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId} disabled={editLockReason !== null} title={editLockReason ?? t("chat.composer.insertEmoji")} onclick={toggle}><Smile size={15} /></button>
+            {/snippet}
+          </EmojiPicker>
+        {:else}
+          <button type="button" class="tool-button" aria-label={t("chat.composer.insertEmoji")} aria-haspopup="dialog" aria-expanded="false" disabled={editLockReason !== null} title={editLockReason ?? t("chat.composer.insertEmoji")} onclick={() => void openEmojiPicker()}><Smile size={15} /></button>
+        {/if}
         <div bind:this={scheduleMenuAnchor} class="menu-anchor">
           <button type="button" class="tool-button" class:active={scheduleMenuOpen || Boolean(scheduledFor)} aria-label={scheduledFor ? t("chat.organization.scheduleSelected", formatScheduledInstant(scheduledFor)) : t("chat.organization.scheduleMessage")} aria-haspopup="dialog" aria-expanded={scheduleMenuOpen} disabled={editLockReason !== null} aria-pressed={Boolean(scheduledFor)} title={editLockReason ?? (scheduledFor ? t("chat.organization.scheduleSelected", formatScheduledInstant(scheduledFor)) : t("chat.organization.scheduleMessage"))} onpointerenter={() => { void loadScheduleMenu(); }} onfocus={() => { void loadScheduleMenu(); }} onclick={toggleScheduleMenu}><Clock3 size={15} /></button>
           {#if scheduleMenuOpen}

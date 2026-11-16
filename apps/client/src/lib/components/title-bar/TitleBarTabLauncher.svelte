@@ -66,6 +66,7 @@
     tabLauncherKindDrills,
     tabLauncherLevel,
     tabLauncherProjectRows,
+    tabLauncherNumberKey,
     tabLauncherRowNumbers,
     tabLauncherCreateKinds,
     type TabLauncherCreateKind,
@@ -919,7 +920,7 @@
             id={rowId(index)}
             role={item.type === "tab" ? "menuitemradio" : "menuitem"}
             aria-checked={item.type === "tab" ? item.tab.id === tabs.activeTabId : undefined}
-            aria-keyshortcuts={number === null ? undefined : String(number)}
+            aria-keyshortcuts={number === null ? undefined : tabLauncherNumberKey(number)}
             aria-label={item.type === "archived-page" ? t("notes.archivedNoteRestore", label) : undefined}
             title={item.type === "archived-page" ? t("notes.archivedNoteRestore", label) : undefined}
             tabindex="-1"
@@ -968,7 +969,7 @@
               <ProjectLifecycleIcon status={item.project.status} size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} class="text-popover-foreground/60" />
             {/if}
             {#if number !== null}
-              <span class="shrink-0 text-panel-detail text-muted-foreground tabular-nums">{t("common.pressKey", String(number))}</span>
+              <span class="shrink-0 text-panel-detail text-muted-foreground tabular-nums">{t("common.pressKey", tabLauncherNumberKey(number))}</span>
             {/if}
             {#if item.type === "tab" && item.tab.id === tabs.activeTabId}
               <Check class="size-3.5 shrink-0" aria-hidden="true" />

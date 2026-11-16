@@ -9,6 +9,7 @@ import {
   tabLauncherKindDrills,
   tabLauncherLevel,
   tabLauncherProjectRows,
+  tabLauncherNumberKey,
   tabLauncherRowNumbers,
   type TabLauncherKeyContext,
   type TabLauncherKeyInput,
@@ -130,9 +131,15 @@ describe("tabLauncherCreateKinds", () => {
 });
 
 describe("tabLauncherRowNumbers", () => {
-  it("numbers only numbered rows, from 1 up to 9", () => {
-    const rows = [here, ...Array.from({ length: 10 }, () => leaf)];
-    expect(tabLauncherRowNumbers(rows, true)).toEqual([null, 1, 2, 3, 4, 5, 6, 7, 8, 9, null]);
+  it("numbers only numbered rows, from 1 up to 10", () => {
+    const rows = [here, ...Array.from({ length: 11 }, () => leaf)];
+    expect(tabLauncherRowNumbers(rows, true)).toEqual([null, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, null]);
+  });
+
+  it("labels the tenth row with the 0 key", () => {
+    expect(tabLauncherNumberKey(1)).toBe("1");
+    expect(tabLauncherNumberKey(9)).toBe("9");
+    expect(tabLauncherNumberKey(10)).toBe("0");
   });
 
   it("shows no numbers while digits type into the search", () => {
@@ -202,6 +209,12 @@ describe("tabLauncherKeyAction", () => {
     expect(tabLauncherKeyAction(key("2"), context())).toEqual({ type: "pick", index: 2 });
     expect(tabLauncherKeyAction(key("1"), context({ query: "a" }))).toBeNull();
     expect(tabLauncherKeyAction(key("1", { ctrlKey: true }), context())).toBeNull();
+  });
+
+  it("picks the tenth numbered row with 0", () => {
+    const rows = [here, ...Array.from({ length: 10 }, () => leaf)];
+    expect(tabLauncherKeyAction(key("0"), context({ rows }))).toEqual({ type: "pick", index: 10 });
+    expect(tabLauncherKeyAction(key("0"), context())).toBeNull();
   });
 
   it("lets a digit without a row type into the search", () => {

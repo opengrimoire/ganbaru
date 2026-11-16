@@ -116,11 +116,21 @@ export interface TabLauncherRowShape {
   create?: { primary: boolean };
 }
 
-/** The highest row number a digit key can pick. */
-export const TAB_LAUNCHER_MAX_NUMBER = 9;
+/** The highest row number a digit key can pick: 1 to 9, then 0 for the tenth. */
+export const TAB_LAUNCHER_MAX_NUMBER = 10;
 
 /**
- * The 1-based number each row shows, or `null`. Numbered rows count from 1 in order up to 9, and only while digits
+ * The digit key that picks a numbered row, which is 0 for the tenth row.
+ *
+ * @param number The row's 1-based number.
+ * @returns The key to press.
+ */
+export function tabLauncherNumberKey(number: number): string {
+  return String(number % 10);
+}
+
+/**
+ * The 1-based number each row shows, or `null`. Numbered rows count from 1 in order up to 10, and only while digits
  * pick rows: always on a level without search, and only while the search is empty otherwise.
  */
 export function tabLauncherRowNumbers(rows: readonly TabLauncherRowShape[], digitsPick: boolean): (number | null)[] {

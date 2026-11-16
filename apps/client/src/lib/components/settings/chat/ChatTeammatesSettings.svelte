@@ -54,7 +54,6 @@
   import Notice from "$lib/components/ui/Notice.svelte";
   import ChatChannelAccessPicker from "./ChatChannelAccessPicker.svelte";
   import ChatPushApprovalsList from "./ChatPushApprovalsList.svelte";
-  import ChatTeammateUsageList from "./ChatTeammateUsageList.svelte";
   import { UNGROUPED_PROJECT_LIST_KEY } from "$lib/projects/lists";
   import ChatChannelScopeControls from "./ChatChannelScopeControls.svelte";
   type ChatAccessProfilesManagerComponent = typeof import("./ChatAccessProfilesManager.svelte").default;
@@ -804,10 +803,6 @@
                   <div class="form-field execution-model-field"><span>{t("settings.chat.teammates.model")}<i class="required-marker" aria-hidden="true">*</i></span><ChatModelControls value={{ providerInstanceId: editor.providerId || null, modelId: editor.modelId || null, providerManaged: editor.providerManagedModel, options: editor.modelOptions }} disabled={editor.archivedMode} onChange={editor.selectExecution} /></div>
                   <div class="form-field execution-approval-field"><span>{t("settings.chat.teammates.approval")}</span><ChatAccessControl value={editor.safetyMode} providerInstanceId={editor.providerId || null} workingFolderId={permissionWorkingFolderId} disabled={editor.archivedMode} onChange={(value) => { editor.safetyMode = value; }} /></div>
                 </div></section>
-
-                {#if editor.selected && !editor.creating}
-                  <section class="editor-section"><div class="section-heading"><h4>{t("settings.chat.teammates.usageSection")}</h4></div><ChatTeammateUsageList teammateId={editor.selected.participant.id} /></section>
-                {/if}
 
                 <section class="editor-section access-section">
                   <div class="access-section-heading">

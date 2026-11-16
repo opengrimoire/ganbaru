@@ -70,7 +70,7 @@
   import { chatErrorCode, chatErrorMessage, chatErrorReason } from "$lib/chat/error-presentation";
   import { parseChatMessageReference } from "$lib/chat/validation";
   import { formatDateTime, formatList } from "$lib/i18n/formatters";
-  import { providerLimitNotice } from "$lib/chat/usage/usage-model";
+  import { providerLimitNotice } from "$lib/chat/usage/provider-limit";
   import { parseProjectIcon } from "$lib/projects/icons/values";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChatPaneEvents } from "$lib/chat/pane-events";

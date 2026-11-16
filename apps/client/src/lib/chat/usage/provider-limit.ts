@@ -1,12 +1,4 @@
-import type { AppLocale } from "$lib/i18n/locales";
-import { formatList, formatNumber } from "$lib/i18n/formatters";
 import type { ChatMessageRead, ChatWorkAssignmentId, UtcTimestamp } from "$lib/chat/contracts";
-
-const SECONDS_PER_MINUTE = 60;
-const MINUTES_PER_HOUR = 60;
-
-/** Days of teammate usage that teammate settings show, today included. */
-export const TEAMMATE_USAGE_DAYS = 7;
 
 /** Assignment state reason the executing device writes when a provider usage limit stopped the work. */
 export const PROVIDER_USAGE_LIMIT_REASON = "provider_usage_limit";
@@ -27,41 +19,6 @@ export interface LimitNoticeAssignment {
 export interface LiveRateLimit {
   limited: boolean;
   resetsAt: UtcTimestamp | null;
-}
-
-/** Formats a token count compactly in the locale, such as 12K or 1.2M. */
-export function formatTokenCount(locale: AppLocale, value: number): string {
-  return formatNumber(locale, value, { notation: "compact", maximumFractionDigits: 1 });
-}
-
-/** Formats working time in hours and minutes in the locale, or seconds below one minute. */
-export function formatWorkingDuration(locale: AppLocale, seconds: number): string {
-  const whole = Math.max(0, Math.floor(seconds));
-  if (whole < SECONDS_PER_MINUTE) {
-    return formatNumber(locale, whole, { style: "unit", unit: "second", unitDisplay: "short" });
-  }
-  const totalMinutes = Math.floor(whole / SECONDS_PER_MINUTE);
-  const hours = Math.floor(totalMinutes / MINUTES_PER_HOUR);
-  const minutes = totalMinutes % MINUTES_PER_HOUR;
-  const parts: string[] = [];
-  if (hours > 0) {
-    parts.push(formatNumber(locale, hours, { style: "unit", unit: "hour", unitDisplay: "short" }));
-  }
-  if (minutes > 0 || hours === 0) {
-    parts.push(formatNumber(locale, minutes, { style: "unit", unit: "minute", unitDisplay: "short" }));
-  }
-  return formatList(locale, parts, { type: "unit", style: "narrow" });
-}
-
-/** Returns the inclusive local date range of the last `days` days ending on `today`. */
-export function teammateUsageRange(
-  today: Temporal.PlainDate,
-  days: number = TEAMMATE_USAGE_DAYS,
-): { fromDate: string; toDate: string } {
-  return {
-    fromDate: today.subtract({ days: Math.max(1, days) - 1 }).toString(),
-    toDate: today.toString(),
-  };
 }
 
 /**

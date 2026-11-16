@@ -1,12 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ChatMessageRead, UtcTimestamp } from "$lib/chat/contracts";
-import {
-  formatTokenCount,
-  formatWorkingDuration,
-  latestProviderLimitStop,
-  providerLimitNotice,
-  teammateUsageRange,
-} from "./usage-model";
+import { latestProviderLimitStop, providerLimitNotice } from "./provider-limit";
 
 function reply(itemId: string, value: unknown): ChatMessageRead {
   return {
@@ -68,37 +62,6 @@ describe("latestProviderLimitStop", () => {
       failure("1", "assignment:a", { code: "timeout" }),
     ], "assignment:a")).toBeNull();
     expect(latestProviderLimitStop([failure("1", "assignment:a", "text")], "assignment:a")).toBeNull();
-  });
-});
-
-describe("formatting", () => {
-  it("formats token counts compactly", () => {
-    expect(formatTokenCount("en", 950)).toBe("950");
-    expect(formatTokenCount("en", 20_000)).toBe("20K");
-    expect(formatTokenCount("en", 1_250_000)).toBe("1.3M");
-  });
-
-  it("formats working time in hours and minutes", () => {
-    expect(formatWorkingDuration("en", 45)).toBe("45 sec");
-    expect(formatWorkingDuration("en", 60)).toBe("1 min");
-    expect(formatWorkingDuration("en", 3_600)).toBe("1 hr");
-    expect(formatWorkingDuration("en", 5_430)).toBe("1 hr 30 min");
-  });
-});
-
-describe("teammateUsageRange", () => {
-  it("covers seven days ending today", () => {
-    expect(teammateUsageRange(Temporal.PlainDate.from("2026-03-02"))).toEqual({
-      fromDate: "2026-02-24",
-      toDate: "2026-03-02",
-    });
-  });
-
-  it("covers at least today", () => {
-    expect(teammateUsageRange(Temporal.PlainDate.from("2026-11-12"), 0)).toEqual({
-      fromDate: "2026-11-12",
-      toDate: "2026-11-12",
-    });
   });
 });
 

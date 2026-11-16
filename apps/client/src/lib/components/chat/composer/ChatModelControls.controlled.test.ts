@@ -184,7 +184,7 @@ describe("ChatModelControls controlled mode", () => {
     expect(picker.classList.contains("below")).toBe(false);
   });
 
-  it("ports advanced flyouts above scroll containers and prefers the right side", async () => {
+  it("ports the model list above scroll containers and prefers the right side", async () => {
     const target = document.createElement("div");
     document.body.append(target);
     const component = mount(ChatModelControls, {
@@ -202,18 +202,15 @@ describe("ChatModelControls controlled mode", () => {
 
     target.querySelector<HTMLButtonElement>("[data-chat-model-trigger]")?.click();
     await tick();
-    document.querySelector<HTMLButtonElement>(".model-popover .advanced-toggle")?.click();
-    await tick();
-    const modelRow = [...document.querySelectorAll<HTMLButtonElement>(".model-popover .advanced-list button")]
-      .find((button) => button.textContent?.startsWith("Model"));
-    modelRow?.dispatchEvent(new MouseEvent("pointerenter"));
+    const modelRow = document.querySelector<HTMLButtonElement>(".model-popover .model-toggle");
+    modelRow?.click();
     await tick();
 
     const picker = document.querySelector<HTMLElement>(".model-popover");
     const flyout = document.querySelector<HTMLElement>(".model-flyout");
     expect(picker?.parentElement).toBe(document.body);
     expect(flyout?.parentElement).toBe(document.body);
-    if (!picker || !modelRow || !flyout) throw new Error("Advanced model flyout did not render");
+    if (!picker || !modelRow || !flyout) throw new Error("Model list did not render");
     vi.spyOn(picker, "getBoundingClientRect").mockReturnValue(domRect(400, 80, 300, 220));
     vi.spyOn(modelRow, "getBoundingClientRect").mockReturnValue(domRect(410, 100, 280, 32));
     vi.spyOn(flyout, "getBoundingClientRect").mockReturnValue(domRect(0, 0, 200, 180));
@@ -227,7 +224,7 @@ describe("ChatModelControls controlled mode", () => {
     expect(flyout.style.top).toBe("96px");
   });
 
-  it("keeps the open flyout while the pointer crosses other rows toward it", async () => {
+  it("toggles the model list from the Model button", async () => {
     const target = document.createElement("div");
     document.body.append(target);
     const component = mount(ChatModelControls, {
@@ -245,26 +242,18 @@ describe("ChatModelControls controlled mode", () => {
 
     target.querySelector<HTMLButtonElement>("[data-chat-model-trigger]")?.click();
     await tick();
-    document.querySelector<HTMLButtonElement>(".model-popover .advanced-toggle")?.click();
-    await tick();
-    const rows = [...document.querySelectorAll<HTMLButtonElement>(".model-popover .advanced-list button[aria-expanded]")];
-    const modelRow = rows.find((button) => button.textContent?.startsWith("Model"));
-    const otherRow = rows.find((button) => button !== modelRow);
-    if (!modelRow || !otherRow) throw new Error("Advanced rows did not render");
-    modelRow.dispatchEvent(new MouseEvent("pointerenter"));
-    await tick();
-    const flyout = document.querySelector<HTMLElement>(".model-flyout");
-    if (!flyout) throw new Error("Advanced model flyout did not render");
-    vi.spyOn(modelRow, "getBoundingClientRect").mockReturnValue(domRect(410, 100, 280, 32));
-    vi.spyOn(flyout, "getBoundingClientRect").mockReturnValue(domRect(696, 96, 280, 240));
+    const modelToggle = document.querySelector<HTMLButtonElement>(".model-popover .model-toggle");
+    expect(modelToggle?.textContent).toContain("Model");
+    expect(document.querySelector(".model-flyout")).toBeNull();
 
-    otherRow.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 600, clientY: 140 }));
+    modelToggle?.click();
     await tick();
-    expect(modelRow.getAttribute("aria-expanded")).toBe("true");
+    expect(modelToggle?.getAttribute("aria-expanded")).toBe("true");
+    expect(document.querySelector(".model-flyout")).not.toBeNull();
 
-    otherRow.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 540, clientY: 140 }));
+    modelToggle?.click();
     await tick();
-    expect(modelRow.getAttribute("aria-expanded")).toBe("false");
-    expect(otherRow.getAttribute("aria-expanded")).toBe("true");
+    expect(modelToggle?.getAttribute("aria-expanded")).toBe("false");
+    expect(document.querySelector(".model-flyout")).toBeNull();
   });
 });

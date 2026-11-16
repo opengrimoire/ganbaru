@@ -1018,22 +1018,10 @@ describe("ChatDirectStartComposer model controls", () => {
     expect(trigger?.textContent).toContain("Light");
     expect(target.querySelectorAll<HTMLButtonElement>(".effort-options button")[0]?.getAttribute("aria-pressed")).toBe("true");
     expect(effortKnob?.style.left).toContain("0% + 0.875rem");
-    const advanced = target.querySelector<HTMLButtonElement>(".advanced-toggle");
-    expect(advanced?.textContent).toContain("Advanced");
-    advanced?.click();
-    await tick();
-    expect(target.querySelector(".advanced-view.active")).not.toBeNull();
-    expect(target.querySelector<HTMLElement>(".overview-view")?.inert).toBe(true);
-    const advancedRows = [...target.querySelectorAll<HTMLButtonElement>(".advanced-list button")];
-    expect(advancedRows.some((button) => button.textContent?.includes("EffortLight"))).toBe(true);
-    expect(advancedRows.some((button) => button.textContent?.includes("SpeedStandard"))).toBe(true);
-    const speedRow = advancedRows.find((button) => button.textContent?.includes("SpeedStandard"));
-    speedRow?.dispatchEvent(new MouseEvent("pointerenter"));
-    await tick();
-    expect(document.querySelector(".model-flyout")?.textContent).toContain("Standard");
-    expect(document.querySelector(".model-flyout")?.textContent).toContain("Fast");
-    const modelRow = advancedRows.find((button) => button.textContent?.startsWith("Model"));
-    modelRow?.dispatchEvent(new MouseEvent("pointerenter"));
+    expect(target.querySelector(".option-rows")).toBeNull();
+    const modelToggle = target.querySelector<HTMLButtonElement>(".model-toggle");
+    expect(modelToggle?.textContent).toContain("Model");
+    modelToggle?.click();
     await tick();
     expect(document.querySelector(".model-flyout.positioned")).not.toBeNull();
     expect(document.querySelector(".provider-rail")).toBeNull();
@@ -1083,7 +1071,7 @@ describe("ChatDirectStartComposer model controls", () => {
     expect(target.querySelector(".model-popover")).toBeNull();
     trigger?.click();
     await tick();
-    expect(target.querySelector(".advanced-view.active")).not.toBeNull();
+    expect(target.querySelector(".effort-ladder")).not.toBeNull();
     expect(document.querySelector(".model-flyout")).toBeNull();
   });
 
@@ -1111,17 +1099,28 @@ describe("ChatDirectStartComposer model controls", () => {
     target.querySelector<HTMLButtonElement>("[data-chat-model-trigger]")?.click();
     await tick();
 
-    expect(target.querySelector(".advanced-toggle")?.textContent).toContain("Advanced");
+    expect(target.querySelector(".model-toggle")?.textContent).toContain("Model");
     expect(target.querySelector(".fast-button")).toBeNull();
-    target.querySelector<HTMLButtonElement>(".advanced-toggle")?.click();
-    await tick();
-    expect([...target.querySelectorAll<HTMLButtonElement>(".advanced-list button")]
-      .some((button) => button.textContent?.startsWith("Speed"))).toBe(false);
+    expect(target.querySelector(".option-rows")).toBeNull();
   });
 
   it("keeps an option flyout open after selecting a value", async () => {
     const chat = getChat();
-    chat.settings = modelSettings();
+    const settings = modelSettings();
+    const sol = settings.providerInstances[0]?.modelCatalog?.models.find((model) => model.id === "gpt-5.6-sol");
+    if (!sol) throw new Error("Model settings require 5.6 Sol");
+    sol.options = [...sol.options, {
+      kind: "choice",
+      key: "context_window",
+      label: "Context window",
+      description: null,
+      defaultValue: "standard",
+      options: [
+        { value: "standard", label: "Standard", description: null },
+        { value: "extended", label: "Extended", description: null },
+      ],
+    }];
+    chat.settings = settings;
     chat.composer = {
       ...composer(),
       providerInstanceId: "codex-local",
@@ -1136,20 +1135,19 @@ describe("ChatDirectStartComposer model controls", () => {
     const { target } = setup(false);
     target.querySelector<HTMLButtonElement>("[data-chat-model-trigger]")?.click();
     await tick();
-    target.querySelector<HTMLButtonElement>(".advanced-toggle")?.click();
+    const optionRow = [...target.querySelectorAll<HTMLButtonElement>(".option-rows button")]
+      .find((button) => button.textContent?.startsWith("Context window"));
+    expect(optionRow).toBeDefined();
+    optionRow?.click();
     await tick();
-    const speedRow = [...target.querySelectorAll<HTMLButtonElement>(".advanced-list button")]
-      .find((button) => button.textContent?.startsWith("Speed"));
-    speedRow?.click();
-    await tick();
-    const fastChoice = [...document.querySelectorAll<HTMLButtonElement>(".option-list > button")]
-      .find((button) => button.textContent?.startsWith("Fast"));
-    fastChoice?.click();
+    const extendedChoice = [...document.querySelectorAll<HTMLButtonElement>(".option-list > button")]
+      .find((button) => button.textContent?.startsWith("Extended"));
+    extendedChoice?.click();
     await tick();
     expect(document.querySelector(".model-flyout")).not.toBeNull();
     expect(readComposerModelSelection(chat.composer.modelSelection).options).toContainEqual({
-      key: "service_tier",
-      value: { kind: "choice", value: "fast" },
+      key: "context_window",
+      value: { kind: "choice", value: "extended" },
     });
   });
 
@@ -1173,10 +1171,7 @@ describe("ChatDirectStartComposer model controls", () => {
     const { target } = setup(false);
     target.querySelector<HTMLButtonElement>("[data-chat-model-trigger]")?.click();
     await tick();
-    target.querySelector<HTMLButtonElement>(".advanced-toggle")?.click();
-    await tick();
-    [...target.querySelectorAll<HTMLButtonElement>(".advanced-list button")]
-      .find((button) => button.textContent?.startsWith("Model"))?.click();
+    target.querySelector<HTMLButtonElement>(".model-toggle")?.click();
     await tick();
     expect(document.querySelector('[data-model-company="openai"]')).not.toBeNull();
     expect(document.querySelector('[data-model-company="anthropic"]')).not.toBeNull();
@@ -1212,10 +1207,7 @@ describe("ChatDirectStartComposer model controls", () => {
     const { target } = setup(false);
     target.querySelector<HTMLButtonElement>("[data-chat-model-trigger]")?.click();
     await tick();
-    target.querySelector<HTMLButtonElement>(".advanced-toggle")?.click();
-    await tick();
-    [...target.querySelectorAll<HTMLButtonElement>(".advanced-list button")]
-      .find((button) => button.textContent?.startsWith("Model"))?.click();
+    target.querySelector<HTMLButtonElement>(".model-toggle")?.click();
     await tick();
 
     const providerModelRow = [...document.querySelectorAll<HTMLElement>('[data-model-company="openai"] .model-row')]
@@ -1379,14 +1371,10 @@ describe("ChatDirectStartComposer model controls", () => {
     await tick();
     await tick();
 
-    expect(target.querySelector(".advanced-view.active")).not.toBeNull();
-    expect(target.querySelector(".advanced-list")?.textContent).toContain("Model");
-    const rows = [...target.querySelectorAll<HTMLButtonElement>(".advanced-list button")];
-    expect(rows[0]?.disabled).toBe(false);
-    expect(rows[1]?.disabled).toBe(true);
-    expect(rows[2]?.disabled).toBe(true);
-    target.querySelector<HTMLButtonElement>(".advanced-heading")?.click();
-    await tick();
+    const modelToggle = target.querySelector<HTMLButtonElement>(".model-toggle");
+    expect(modelToggle?.disabled).toBe(false);
+    expect(modelToggle?.getAttribute("aria-expanded")).toBe("true");
+    expect(document.querySelector(".model-flyout")).not.toBeNull();
     const dummyLadder = target.querySelector<HTMLElement>(".effort-ladder.dummy");
     expect(dummyLadder?.getAttribute("aria-disabled")).toBe("true");
     expect(dummyLadder?.querySelectorAll(".effort-stop")).toHaveLength(5);

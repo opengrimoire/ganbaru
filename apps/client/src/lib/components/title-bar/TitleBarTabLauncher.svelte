@@ -844,7 +844,7 @@
           aria-activedescendant={highlight >= 0 ? rowId(highlight) : undefined}
           autocomplete="off"
           spellcheck="false"
-          class="field-bare text-popover-foreground"
+          class="field-bare text-popover-foreground [&::-webkit-search-cancel-button]:hidden"
         />
         {#if level.type === "projects"}
           {@render orderMenu(preferences.projectsSidebarOrder, null, false, t("projects.navigator.sortGroupsAndProjects"), (order) => {

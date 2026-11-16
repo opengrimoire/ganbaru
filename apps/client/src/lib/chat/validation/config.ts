@@ -1,10 +1,13 @@
 import {
+  CHAT_INSPECTOR_WIDTH_BOUNDS,
+  CHAT_REPLY_THREAD_WIDTH_BOUNDS,
   CHAT_SEND_KEYS,
   CHAT_TIMELINE_DENSITIES,
   INTERACTION_MODES,
   SAFETY_MODES,
   type ChatBehaviorPreferences,
   type ChatPanelPreferences,
+  type ChatPanelWidthBounds,
   type ChatPortableProviderConfig,
   type ChatConfiguration,
   type RememberedComposerSelection,
@@ -32,7 +35,10 @@ const MAX_LABEL_BYTES = 160;
 const MAX_ARGUMENT_BYTES = 4_096;
 const MAX_ENVIRONMENT_VALUE_BYTES = 16_384;
 
-const DEFAULT_PANELS: ChatPanelPreferences = { inspectorWidthPx: 520 };
+const DEFAULT_PANELS: ChatPanelPreferences = {
+  inspectorWidthPx: CHAT_INSPECTOR_WIDTH_BOUNDS.default,
+  replyThreadWidthPx: CHAT_REPLY_THREAD_WIDTH_BOUNDS.default,
+};
 const DEFAULT_BEHAVIOR: ChatBehaviorPreferences = {
   sendKey: "enter",
   restoreLastSelectedThread: true,
@@ -129,12 +135,20 @@ function parseRememberedSelection(value: unknown, label: string): RememberedComp
 
 function parsePanels(value: unknown, label: string): ChatPanelPreferences {
   const record = readRecord(value, label);
-  const inspectorWidthPx = readNonNegativeSafeInteger(
-    record.inspectorWidthPx,
-    `${label}.inspectorWidthPx`,
-  );
-  if (inspectorWidthPx < 240 || inspectorWidthPx > 960) throw new Error(`${label}.inspectorWidthPx is out of range`);
-  return { inspectorWidthPx };
+  return {
+    inspectorWidthPx: readPanelWidth(record.inspectorWidthPx, CHAT_INSPECTOR_WIDTH_BOUNDS, `${label}.inspectorWidthPx`),
+    replyThreadWidthPx: readPanelWidth(
+      record.replyThreadWidthPx,
+      CHAT_REPLY_THREAD_WIDTH_BOUNDS,
+      `${label}.replyThreadWidthPx`,
+    ),
+  };
+}
+
+function readPanelWidth(value: unknown, bounds: ChatPanelWidthBounds, label: string): number {
+  const width = readNonNegativeSafeInteger(value, label);
+  if (width < bounds.minimum || width > bounds.maximum) throw new Error(`${label} is out of range`);
+  return width;
 }
 
 function parseBehavior(value: unknown, label: string): ChatBehaviorPreferences {

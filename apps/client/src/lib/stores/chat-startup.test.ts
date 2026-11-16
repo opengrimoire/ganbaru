@@ -34,7 +34,7 @@ function settings(sendKey: "enter" | "mod_enter" = "enter"): ChatSettingsRead {
   return {
     configuration: {
       providers: [], automaticProviderSetupDisabled: [], rememberedSelections: [],
-      workingFolderProviderPreferences: {}, panels: { inspectorWidthPx: 320 },
+      workingFolderProviderPreferences: {}, panels: { inspectorWidthPx: 320, replyThreadWidthPx: 440 },
       behavior: {
         sendKey, restoreLastSelectedThread: true, showReasoningSummaries: true,
         automaticallyFoldSettledWork: true, timelineDensity: "comfortable", terminalScrollbackLines: 1_000,

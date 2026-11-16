@@ -8,6 +8,7 @@ export const chat = {
   clearSearch: "Borrar búsqueda",
   collapseRail: "Contraer barra lateral",
   resizeInspector: "Cambiar tamaño del panel secundario",
+  resizeReplyThread: "Cambiar tamaño del hilo de respuestas",
   resizeBottomPanel: "Cambiar tamaño del panel inferior",
   resizeFileTree: "Cambiar tamaño del árbol de archivos",
   resizeChangedFileList: "Cambiar tamaño de la lista de archivos modificados",

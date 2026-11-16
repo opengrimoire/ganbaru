@@ -26,6 +26,8 @@ const MAX_ARGUMENT_BYTES: usize = 4_096;
 const MAX_ENVIRONMENT_VALUE_BYTES: usize = 16_384;
 const MIN_INSPECTOR_WIDTH_PX: u32 = 240;
 const MAX_INSPECTOR_WIDTH_PX: u32 = 960;
+const MIN_REPLY_THREAD_WIDTH_PX: u32 = 280;
+const MAX_REPLY_THREAD_WIDTH_PX: u32 = 800;
 /// Smallest terminal scrollback the Chat behavior accepts.
 pub const MIN_TERMINAL_SCROLLBACK_LINES: u32 = 1_000;
 /// Largest terminal scrollback the Chat behavior accepts.
@@ -41,6 +43,10 @@ pub const CHAT_TIMELINE_DENSITY_VALUES: &[&str] = &["comfortable", "compact"];
 
 fn default_inspector_width_px() -> u32 {
     520
+}
+
+fn default_reply_thread_width_px() -> u32 {
+    440
 }
 
 fn default_terminal_scrollback_lines() -> u32 {
@@ -110,13 +116,19 @@ where
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatPanelPreferences {
+    /// Width of the column workspace inspector, in CSS pixels.
     pub inspector_width_px: u32,
+    /// Width of the reply thread column beside the channel feed, in CSS pixels. A stored entry without it
+    /// reads the default width.
+    #[serde(default = "default_reply_thread_width_px")]
+    pub reply_thread_width_px: u32,
 }
 
 impl Default for ChatPanelPreferences {
     fn default() -> Self {
         Self {
             inspector_width_px: default_inspector_width_px(),
+            reply_thread_width_px: default_reply_thread_width_px(),
         }
     }
 }
@@ -250,6 +262,12 @@ impl ChatDeviceConfig {
             MIN_INSPECTOR_WIDTH_PX,
             MAX_INSPECTOR_WIDTH_PX,
             "chat.panels.inspectorWidthPx",
+        )?;
+        validate_range(
+            self.panels.reply_thread_width_px,
+            MIN_REPLY_THREAD_WIDTH_PX,
+            MAX_REPLY_THREAD_WIDTH_PX,
+            "chat.panels.replyThreadWidthPx",
         )
     }
 

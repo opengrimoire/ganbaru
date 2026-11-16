@@ -218,7 +218,7 @@ export function modelSettings(): ChatSettingsRead {
       automaticProviderSetupDisabled: [],
       rememberedSelections: [],
       workingFolderProviderPreferences: {},
-      panels: { inspectorWidthPx: 520 },
+      panels: { inspectorWidthPx: 520, replyThreadWidthPx: 440 },
       behavior: {
         sendKey: "enter",
         restoreLastSelectedThread: true,

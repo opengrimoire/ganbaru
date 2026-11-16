@@ -626,7 +626,7 @@ describe("Chat provider contracts", () => {
 describe("Chat configuration", () => {
   it("uses explicit safe defaults that parse as a complete read", () => {
     const defaults = defaultChatConfiguration();
-    expect(defaults.panels).toEqual({ inspectorWidthPx: 520 });
+    expect(defaults.panels).toEqual({ inspectorWidthPx: 520, replyThreadWidthPx: 440 });
     expect(defaults.behavior.sendKey).toBe("enter");
     expect(defaults.behavior.timelineDensity).toBe("comfortable");
     expect(parseChatConfiguration(defaults)).toEqual(defaults);
@@ -678,7 +678,7 @@ describe("Chat configuration", () => {
         interactionMode: "build",
       }],
       workingFolderProviderPreferences: {},
-      panels: { inspectorWidthPx: 420 },
+      panels: { inspectorWidthPx: 420, replyThreadWidthPx: 520 },
       behavior: {
         sendKey: "enter",
         restoreLastSelectedThread: true,
@@ -781,6 +781,16 @@ describe("Chat configuration", () => {
       ...defaultChatConfiguration(),
       panels: {},
     })).toThrow("inspectorWidthPx");
+    expect(() => parseChatConfiguration({
+      ...defaultChatConfiguration(),
+      panels: { inspectorWidthPx: 520 },
+    })).toThrow("replyThreadWidthPx");
+    for (const replyThreadWidthPx of [279, 801]) {
+      expect(() => parseChatConfiguration({
+        ...defaultChatConfiguration(),
+        panels: { inspectorWidthPx: 520, replyThreadWidthPx },
+      })).toThrow("replyThreadWidthPx is out of range");
+    }
 
     for (const field of Object.keys(defaultChatConfiguration().behavior)) {
       const behavior: Record<string, unknown> = { ...defaultChatConfiguration().behavior };

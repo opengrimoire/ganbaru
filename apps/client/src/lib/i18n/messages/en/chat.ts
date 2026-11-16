@@ -5,6 +5,7 @@ export const chat = {
   clearSearch: "Clear search",
   collapseRail: "Collapse sidebar",
   resizeInspector: "Resize secondary panel",
+  resizeReplyThread: "Resize reply thread",
   resizeBottomPanel: "Resize bottom panel",
   resizeFileTree: "Resize file tree",
   resizeChangedFileList: "Resize changed-file list",

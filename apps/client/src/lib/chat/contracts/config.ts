@@ -42,8 +42,23 @@ export interface RememberedComposerSelection {
   interactionMode: InteractionMode;
 }
 
+/** Smallest, default, and largest width, in CSS pixels, of a resizable Chat side column. */
+export interface ChatPanelWidthBounds {
+  minimum: number;
+  default: number;
+  maximum: number;
+}
+
+/** Width bounds of the column workspace inspector. */
+export const CHAT_INSPECTOR_WIDTH_BOUNDS: ChatPanelWidthBounds = { minimum: 240, default: 520, maximum: 960 };
+
+/** Width bounds of the reply thread column beside the channel feed. */
+export const CHAT_REPLY_THREAD_WIDTH_BOUNDS: ChatPanelWidthBounds = { minimum: 280, default: 440, maximum: 800 };
+
+/** Device-local widths of the resizable Chat side columns, in CSS pixels. */
 export interface ChatPanelPreferences {
   inspectorWidthPx: number;
+  replyThreadWidthPx: number;
 }
 
 /**

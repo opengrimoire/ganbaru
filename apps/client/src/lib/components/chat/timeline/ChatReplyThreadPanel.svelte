@@ -527,7 +527,7 @@
   </div>
 
   {#if composerDocked}
-    <div class="thread-dock" use:chatComposerDock={{ onMeasure: reserveDockSpace }}>
+    <div class="thread-dock" use:chatComposerDock={{ onMeasure: reserveDockSpace, scroller }}>
       {#if chat.interaction?.pendingRequest}<div class="thread-request"><ChatRequestPanel pending={chat.interaction.pendingRequest} /></div>{/if}
       {#if localExecutionAvailable && chat.openReplyThreadId}
         <div class="thread-secrets"><ChatSecretRequests replyThreadId={chat.openReplyThreadId} refreshKey={page} teammateName={executionTeammateName} /></div>

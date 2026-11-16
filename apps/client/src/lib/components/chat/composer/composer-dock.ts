@@ -39,15 +39,34 @@ export function chatComposerDockMetrics(geometry: ChatComposerDockGeometry): Cha
   return { height, backdropTop: Math.min(height, Math.max(0, cornerEnd)) };
 }
 
+/**
+ * Measures the width a scroll container's vertical scrollbar takes from its content, which is zero for overlay
+ * scrollbars.
+ *
+ * @param scroller The scroll container.
+ * @returns The scrollbar width in CSS pixels.
+ */
+function chatScrollbarWidth(scroller: HTMLElement): number {
+  const style = getComputedStyle(scroller);
+  const borders = (Number.parseFloat(style.borderLeftWidth) || 0) + (Number.parseFloat(style.borderRightWidth) || 0);
+  return Math.max(0, scroller.offsetWidth - scroller.clientWidth - borders);
+}
+
 /** Options for {@link chatComposerDock}. */
 export interface ChatComposerDockOptions {
   /** Receives the dock metrics after every size change, starting with the first measurement. */
   onMeasure: (metrics: ChatComposerDockMetrics) => void;
+  /**
+   * The timeline the dock floats over. The dock leaves out the width of its scrollbar, so the dock content is centered
+   * on the same width as the timeline rows and both line up.
+   */
+  scroller: HTMLElement | null;
 }
 
 /**
  * Keeps a composer dock's backdrop start in sync with its composer and reports the height its timeline must reserve.
- * Every change inside the dock that moves the composer also resizes the dock, so observing the dock alone is enough.
+ * Every change inside the dock that moves the composer also resizes the dock, so observing the dock and its timeline is
+ * enough.
  *
  * @param node The dock element, positioned over the end of its timeline.
  * @param initial Receives the measured metrics.
@@ -65,14 +84,22 @@ export function chatComposerDock(node: HTMLElement, initial: ChatComposerDockOpt
       cornerRadius: frame ? Number.parseFloat(getComputedStyle(frame).borderTopLeftRadius) || 0 : 0,
     });
     node.style.setProperty(CHAT_COMPOSER_DOCK_BACKDROP_TOP_PROPERTY, `${metrics.backdropTop}px`);
+    node.style.right = `${options.scroller ? chatScrollbarWidth(options.scroller) : 0}px`;
     options.onMeasure(metrics);
   };
   const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
   observer?.observe(node);
+  let observedScroller = options.scroller;
+  if (observedScroller) observer?.observe(observedScroller);
   measure();
   return {
     update(next: ChatComposerDockOptions) {
       options = next;
+      if (next.scroller === observedScroller) return;
+      if (observedScroller) observer?.unobserve(observedScroller);
+      observedScroller = next.scroller;
+      if (observedScroller) observer?.observe(observedScroller);
+      measure();
     },
     destroy() {
       observer?.disconnect();

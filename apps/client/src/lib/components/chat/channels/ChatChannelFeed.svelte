@@ -311,7 +311,7 @@
     </div>
   </div>
   {#if channel && !channel.archivedAt}
-    <div class="channel-composer-dock" use:chatComposerDock={{ onMeasure: reserveDockSpace }}>
+    <div class="channel-composer-dock" use:chatComposerDock={{ onMeasure: reserveDockSpace, scroller: feed }}>
       {#key destination}
         <ChatMessageComposer {destination} placeholder={t("chat.organization.messageChannel")} onRequestScrollToBottom={scrollToBottomForUserAction} />
       {/key}

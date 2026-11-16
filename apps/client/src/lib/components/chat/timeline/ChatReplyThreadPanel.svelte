@@ -562,24 +562,22 @@
   .scratch-inspector { display:grid; min-width:2rem; min-height:2rem; place-items:center; border-radius:0.42rem; color:var(--muted-foreground); }
   .scratch-inspector:hover { background:var(--accent); color:var(--foreground); }
   .thread-scroll { min-height:0; flex:1; overflow-y:scroll; overscroll-behavior:contain; padding-block:0.4rem calc(var(--chat-composer-dock-height,0px) + 0.4rem); }
-  .date-divider { display:flex; align-items:center; gap:0.5rem; margin:0.75rem; color:var(--muted-foreground); font-size: calc(0.65rem * var(--type-scale)); }
+  .date-divider { display:flex; align-items:center; gap:0.5rem; margin:0.75rem 0; color:var(--muted-foreground); font-size: calc(0.65rem * var(--type-scale)); }
   .date-divider::before,.date-divider::after { height:1px; flex:1; background:var(--border); content:""; }
-  .run-restart,.run-location { margin:0.25rem 0.75rem; color:var(--muted-foreground); font-size: calc(0.65rem * var(--type-scale)); }
+  .run-restart,.run-location { margin:0.25rem 0; color:var(--muted-foreground); font-size: calc(0.65rem * var(--type-scale)); }
   /* The dock floats over the thread end: entries show around the surfaces above the composer and inside its rounded top corners, and the backdrop hides them below the corner curve. Only the surfaces take pointer input. */
   .thread-dock { position:absolute; inset:auto 0 0; z-index:1; display:flex; flex-direction:column; background:linear-gradient(to bottom,transparent var(--chat-composer-dock-backdrop-top,0px),var(--cal-bg) var(--chat-composer-dock-backdrop-top,0px)); pointer-events:none; }
-  .thread-request { flex:0 0 auto; border-top:1px solid var(--border); background:var(--cal-bg); padding:0.5rem; pointer-events:auto; }
-  .thread-secrets { flex:0 0 auto; background:var(--cal-bg); padding:0 0.5rem; pointer-events:auto; }
+  .thread-request { flex:0 0 auto; border-top:1px solid var(--border); background:var(--cal-bg); padding-block:0.5rem; pointer-events:auto; }
+  .thread-secrets { flex:0 0 auto; background:var(--cal-bg); pointer-events:auto; }
   .thread-secrets:empty { display:none; }
-  .thread-composer { display:flex; flex:0 0 auto; justify-content:center; padding:0.5rem 0.5rem 0.75rem; }
+  .thread-composer { display:flex; flex:0 0 auto; justify-content:center; padding:0.5rem var(--chat-conversation-gutter,1rem) 0.75rem; }
   .reply-thread-panel :global(.thread-error) { padding:0.6rem; font-size: calc(0.7rem * var(--type-scale)); }
   .thread-failure { height:100%; font-size: calc(0.7rem * var(--type-scale)); }
   .load-older { display:block; margin:0.3rem auto 0.6rem; border-radius:0.4rem; padding:0.3rem 0.5rem; color:var(--muted-foreground); font-size: calc(0.68rem * var(--type-scale)); }.load-older:hover { background:var(--accent); }
-  [data-presentation="main"] .thread-canvas { --chat-message-row-padding-inline:0rem; width:min(calc(100% - var(--chat-conversation-gutter,1rem) - var(--chat-conversation-gutter,1rem)),var(--chat-conversation-max-width,60rem)); margin-inline:auto; }
-  [data-presentation="main"] .date-divider { margin:0.75rem 0; }
-  [data-presentation="main"] .run-restart,[data-presentation="main"] .run-location { margin-inline:0; }
-  [data-presentation="main"] .thread-composer { padding-inline:var(--chat-conversation-gutter,1rem); }
-  [data-presentation="main"] .thread-request,[data-presentation="main"] .thread-secrets { padding-inline:max(var(--chat-conversation-gutter,1rem),calc((100% - var(--chat-conversation-max-width,60rem)) / 2)); }
-  @container chat-shell (max-width:440px) { [data-presentation="main"] { --chat-conversation-gutter:0.5rem; } }
+  /* Every presentation lays entries and the composer on the channel feed's gutters and width, so their edges line up the same way. */
+  .thread-canvas { --chat-message-row-padding-inline:0rem; width:min(calc(100% - var(--chat-conversation-gutter,1rem) - var(--chat-conversation-gutter,1rem)),var(--chat-conversation-max-width,60rem)); margin-inline:auto; }
+  .thread-request,.thread-secrets { padding-inline:max(var(--chat-conversation-gutter,1rem),calc((100% - var(--chat-conversation-max-width,60rem)) / 2)); }
+  @container chat-shell (max-width:440px) { .reply-thread-panel { --chat-conversation-gutter:0.5rem; } }
   @media (pointer:coarse) { .scratch-inspector { min-width:2.75rem; min-height:2.75rem; } }
   @media (hover:none) { .tab-close { opacity:1; } }
 </style>

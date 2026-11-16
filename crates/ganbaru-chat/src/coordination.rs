@@ -3,8 +3,6 @@
 pub mod acceptance;
 pub mod access;
 pub mod access_profiles;
-#[cfg(feature = "native-runtime")]
-pub mod budgets;
 pub mod contracts;
 pub mod delegation;
 #[cfg(feature = "native-runtime")]

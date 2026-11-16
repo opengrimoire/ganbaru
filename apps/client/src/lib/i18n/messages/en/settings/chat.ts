@@ -44,8 +44,6 @@ export const chatSettings = {
     model: "Model",
     effort: "Reasoning",
     approval: "Approval behavior",
-    defaultTokenLimit: "Default token limit for new work",
-    defaultTokenLimitInvalid: (minimum: string, maximum: string) => `Enter a token limit from ${minimum} to ${maximum}, or leave it empty for no limit`,
     usageSection: "Usage in the last 7 days",
     usageDay: (tokens: string, time: string, runs: number) => `${tokens} tokens, ${time} working, ${runs} ${runs === 1 ? "run" : "runs"}`,
     usageEmpty: "No work in the last 7 days",

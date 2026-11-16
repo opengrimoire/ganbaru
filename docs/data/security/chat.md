@@ -152,7 +152,7 @@ Projection changes commit before the frontend is notified, and notifications car
 
 Daily teammate usage summaries replicate counts and dates only, never prompts, provider payloads, or costs. A summary's key names the device that counted it, and a receiver holds a summary signed by any other device, so one device cannot rewrite another device's usage.
 
-Assignment budgets replicate limits and counted amounts only. Any device may set or clear the limits of any assignment, since they only bound spend; a post carries no budget, so limits come from defaults or an explicit set. A delegated child's budget is clamped to what its parent has left, so delegation cannot widen spend past the parent's limits. The executing device enforces a reached limit in the same transaction as the provider event that reaches it and stops the provider session after commit; because working time passes without events, it also checks its working runs every 30 seconds. Nothing retries automatically after a budget or provider limit stop.
+Work carries no spend limit. Nothing retries automatically after a provider usage limit stop.
 
 ## Attachments and context
 

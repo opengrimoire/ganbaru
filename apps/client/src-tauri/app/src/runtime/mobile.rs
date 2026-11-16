@@ -126,8 +126,6 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::organization::chat_set_assignment_input_held,
             chat::organization::chat_steer_assignment_input,
             chat::organization::chat_reorder_assignment_inputs,
-            chat::organization::chat_set_assignment_budget,
-            chat::organization::chat_clear_assignment_budget,
             music::player::media_player_probe,
             music::path_authority::music_confirm_local_sources,
             music::session::runtime::music_session_start,

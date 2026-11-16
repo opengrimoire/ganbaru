@@ -20,7 +20,6 @@
     ChatAiTeammateRead,
     ChatAttachmentRead,
     ChatAssignmentInputRead,
-    ChatAssignmentBudgetInput,
     ChatAssignmentReviewRequest,
     ChatAssignmentTargetRead,
     ChatChannelRead,
@@ -71,7 +70,7 @@
   import { chatErrorCode, chatErrorMessage, chatErrorReason } from "$lib/chat/error-presentation";
   import { parseChatMessageReference } from "$lib/chat/validation";
   import { formatDateTime, formatList } from "$lib/i18n/formatters";
-  import { budgetStoppedAt, providerLimitNotice } from "$lib/chat/budgets/budget-model";
+  import { providerLimitNotice } from "$lib/chat/usage/usage-model";
   import { parseProjectIcon } from "$lib/projects/icons/values";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
@@ -82,7 +81,6 @@
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
-  import ChatAssignmentBudgetBar from "$lib/components/chat/timeline/ChatAssignmentBudgetBar.svelte";
   import ChatAssignmentReviewCard from "./ChatAssignmentReviewCard.svelte";
   import ChatComposerFrame from "./ChatComposerFrame.svelte";
   import ChatComposerInfoPanel from "./ChatComposerInfoPanel.svelte";
@@ -294,10 +292,6 @@
     const assignment = threadComposer ? chat.replyThread?.assignment : null;
     return assignment && STOPPABLE_ASSIGNMENT_STATES.has(assignment.state) ? assignment : null;
   });
-  const failedAssignment = $derived.by(() => {
-    const assignment = threadComposer ? chat.replyThread?.assignment : null;
-    return assignment?.state === "failed" ? assignment : null;
-  });
   const assignmentAwaitingStart = $derived.by(() => {
     const assignment = threadComposer ? chat.replyThread?.assignment : null;
     return assignment?.localAcceptance ? assignment : null;
@@ -385,8 +379,6 @@
     : editingScheduled ? t("chat.organization.saveScheduledMessage")
     : scheduledFor ? t("chat.organization.scheduleMessage")
     : t("chat.composer.sendTooltip", "Enter"));
-  /** The limit a failed assignment of this thread stopped at, when its budget stopped it. */
-  const budgetStop = $derived(threadAssignment ? budgetStoppedAt(threadAssignment, chat.replyThread?.replies ?? []) : null);
   /** The provider limit that stopped or holds the work of this thread, with its reset time when known. */
   const providerLimit = $derived(threadComposer
     ? providerLimitNotice(threadAssignment, chat.replyThread?.replies ?? [], interactionState?.rateLimitStatus ?? null)
@@ -1701,16 +1693,10 @@
     }
   }
 
-  /** Saves new limits for the work of this thread; `null` removes its budget. */
-  async function saveThreadBudget(assignmentId: ChatWorkAssignmentId, budget: ChatAssignmentBudgetInput | null): Promise<void> {
-    if (budget) await chat.setAssignmentBudget(assignmentId, budget);
-    else await chat.clearAssignmentBudget(assignmentId);
-  }
-
   function providerLimitMessage(resetsAt: string | null): string {
     return resetsAt === null
-      ? t("chat.composer.budget.providerLimitUntimed")
-      : t("chat.composer.budget.providerLimit", formatDateTime(localization.locale, Date.parse(resetsAt), { hour: "numeric", minute: "2-digit" }));
+      ? t("chat.composer.providerLimitUntimed")
+      : t("chat.composer.providerLimit", formatDateTime(localization.locale, Date.parse(resetsAt), { hour: "numeric", minute: "2-digit" }));
   }
 
   async function focusBlocker(): Promise<void> {
@@ -1729,22 +1715,6 @@
       error = chatErrorMessage(cause, t("chatErrors.actions.workAction"));
     } finally {
       stopping = false;
-    }
-  }
-
-  async function retryFailedAssignment(): Promise<void> {
-    const assignment = failedAssignment;
-    if (!assignment || retryingAssignment) return;
-    retryingAssignment = true;
-    error = null;
-    try {
-      await chat.retryAssignment(assignment.id);
-      onRequestScrollToBottom();
-    } catch (cause: unknown) {
-      error = chatErrorMessage(cause, t("chatErrors.actions.workAction"));
-      throw cause;
-    } finally {
-      retryingAssignment = false;
     }
   }
 
@@ -2111,10 +2081,6 @@
 
 <div class="composer-stack">
   <span class="sr-only" aria-live="polite">{announcement}</span>
-  {#if threadAssignment?.budget}
-    {@const budgetedAssignmentId = threadAssignment.id}
-    <ChatAssignmentBudgetBar budget={threadAssignment.budget} teammateName={threadAssignment.teammate.displayName} stoppedAt={budgetStop} onSaveLimits={(budget) => saveThreadBudget(budgetedAssignmentId, budget)} onRetry={retryFailedAssignment} />
-  {/if}
   {#if providerLimit}
     <Notice class="assignment-notice" role="status" tone="warning" message={providerLimitMessage(providerLimit.resetsAt)} copy={false} />
   {/if}

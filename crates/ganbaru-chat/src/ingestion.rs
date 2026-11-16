@@ -1,11 +1,9 @@
 use crate::events::{CanonicalEvent, CanonicalRuntimeEvent, NotificationEvent};
 use crate::models::{
     ChatChangeNotification, ChatError, ChatErrorCode, ChatEventId, ChatResult, ChatTurnId,
-    ChatWorkAssignmentId, ContentStreamKind,
+    ContentStreamKind,
 };
-use crate::repository::events::{
-    AppendCanonicalEventRequest, AppendCanonicalEventResult, append_canonical_event,
-};
+use crate::repository::events::{AppendCanonicalEventRequest, append_canonical_event};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
@@ -43,12 +41,6 @@ pub const LIVE_DELTA_FLUSH_INTERVAL: Duration = Duration::from_millis(75);
 
 pub trait ChatChangeEmitter: Send + Sync {
     fn emit(&self, notification: &ChatChangeNotification) -> ChatResult<()>;
-
-    /// Called after a committed event stopped `assignment_id` at its budget limit, so the host
-    /// stops the provider session of its run. Hosts without sessions ignore it.
-    fn budget_limit_reached(&self, _assignment_id: &ChatWorkAssignmentId) -> ChatResult<()> {
-        Ok(())
-    }
 }
 
 /// Source of the time the idle flush measures held deltas against; tests inject a manual one.
@@ -345,7 +337,7 @@ impl ChatEventIngestor {
             match append_canonical_event(&self.pool, request.clone()).await {
                 Ok(result) => {
                     self.pending_since = None;
-                    self.announce(&result)?
+                    self.emitter.emit(&result.notification)?
                 }
                 Err(error) => {
                     self.pending_delta = Some(request);
@@ -375,18 +367,7 @@ impl ChatEventIngestor {
 
     async fn append_and_notify(&self, request: AppendCanonicalEventRequest) -> ChatResult<()> {
         let result = append_canonical_event(&self.pool, request).await?;
-        self.announce(&result)
-    }
-
-    /// Announces a committed event and hands any budget stop it caused to the host, even when
-    /// the announcement fails, so a delivery failure never leaves a stopped run working.
-    fn announce(&self, result: &AppendCanonicalEventResult) -> ChatResult<()> {
-        let emitted = self.emitter.emit(&result.notification);
-        let stopped = match &result.budget_stop {
-            Some(assignment_id) => self.emitter.budget_limit_reached(assignment_id),
-            None => Ok(()),
-        };
-        emitted.and(stopped)
+        self.emitter.emit(&result.notification)
     }
 }
 

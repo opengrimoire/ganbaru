@@ -35,7 +35,6 @@ function draft(overrides: Partial<ChatTeammateStudioDraft> = {}): ChatTeammateSt
       modelOptions: [],
       effort: "medium",
       speed: null,
-      defaultAssignmentTokenLimit: null,
       providerOptions: { schemaVersion: 1, value: {} },
     },
     channels: [channel("channel:general")],
@@ -93,25 +92,5 @@ describe("teammate access conflict recovery", () => {
       "channel:remote",
       "channel:local",
     ]);
-  });
-});
-
-describe("teammate default assignment token limit", () => {
-  it("keeps a durable default when the local draft did not change it", () => {
-    const baseline = draft();
-    const local = draft({ profile: { ...baseline.profile, role: "Reviewer" } });
-    const durable = draft({ profile: { ...baseline.profile, defaultAssignmentTokenLimit: 200_000 } });
-
-    const rebased = rebaseChatTeammateStudioDraft(baseline, local, durable);
-
-    expect(rebased.profile.defaultAssignmentTokenLimit).toBe(200_000);
-    expect(rebased.profile.role).toBe("Reviewer");
-  });
-
-  it("counts a changed default as a policy difference", () => {
-    const durable = draft();
-    const local = draft({ profile: { ...durable.profile, defaultAssignmentTokenLimit: 50_000 } });
-
-    expect(compareChatTeammateStudioDrafts(local, durable).policyChanged).toBe(true);
   });
 });

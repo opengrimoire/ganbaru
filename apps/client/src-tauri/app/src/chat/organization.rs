@@ -30,7 +30,6 @@ const MAX_SEARCH_RESULTS: u32 = 100;
 pub mod access;
 #[cfg(desktop)]
 mod assignments;
-mod budgets;
 mod channel_notes;
 mod common;
 #[cfg(desktop)]
@@ -56,7 +55,7 @@ mod workflow;
 #[cfg(desktop)]
 pub(crate) use assignments::{
     continue_queued_replies_after_turn, deliver_delegation_outcomes_of_assignments,
-    deliver_delegation_outcomes_of_thread, end_settled_work, resume_answered_work_of_thread,
+    deliver_delegation_outcomes_of_thread, resume_answered_work_of_thread,
     start_synced_assignment_work,
 };
 use common::{
@@ -1447,38 +1446,6 @@ pub async fn chat_reorder_assignment_inputs(
     ordered_input_ids: Vec<ChatAssignmentInputId>,
 ) -> ChatResult<Vec<ChatAssignmentInputRead>> {
     inputs::reorder_assignment_inputs_command(app, db_url, assignment_id, ordered_input_ids).await
-}
-
-/// Sets the token and working time limits of an assignment as the person here, keeping what
-/// its work already used. Any device can set them, including on work a limit stopped.
-#[tauri::command]
-pub async fn chat_set_assignment_budget(
-    app: tauri::AppHandle,
-    db_url: String,
-    assignment_id: ChatWorkAssignmentId,
-    token_limit: Option<u64>,
-    working_seconds_limit: Option<u64>,
-) -> ChatResult<ChatAssignmentBudgetRead> {
-    budgets::set_assignment_budget_command(
-        app,
-        db_url,
-        assignment_id,
-        ChatAssignmentBudgetInput {
-            token_limit,
-            working_seconds_limit,
-        },
-    )
-    .await
-}
-
-/// Clears the budget of an assignment, so its work runs without a limit.
-#[tauri::command]
-pub async fn chat_clear_assignment_budget(
-    app: tauri::AppHandle,
-    db_url: String,
-    assignment_id: ChatWorkAssignmentId,
-) -> ChatResult<()> {
-    budgets::clear_assignment_budget_command(app, db_url, assignment_id).await
 }
 
 /// Starts the work of a mention whose post recorded no assignment, running it on this device.

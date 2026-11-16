@@ -844,10 +844,7 @@ mod projection {
         let organizational = project_provider_event_in_transaction(&mut transaction, &usage)
             .await
             .unwrap();
-        assert!(
-            !organizational.projected,
-            "usage changes no organizational state"
-        );
+        assert!(!organizational, "usage changes no organizational state");
         transaction.rollback().await.unwrap();
         assert_eq!(counted_tokens(&pool).await, None, "the counters roll back");
 
@@ -904,7 +901,7 @@ mod projection {
         .await
         .unwrap();
         transaction.commit().await.unwrap();
-        assert!(!organizational.projected);
+        assert!(!organizational);
         assert_eq!(counted_tokens(&pool).await, None);
     }
 }

@@ -16,7 +16,7 @@ Chat is Ganbaru's project communication and coding-work surface. It combines dur
 | Private scratch execution with explicit promotion and cleanup | Partial; the native target exists, but no composer surface starts scratch work |
 | Structured delegation | Implemented |
 | Repeating schedules and quiet periods | Implemented |
-| Budgets and task-linked assignments | Planned |
+| Task-linked assignments | Planned |
 | Direct messages and task discussions | Planned; the schema reserves these conversation kinds |
 | Human members, invitations, and encrypted sync | Planned; the experience is designed in [Contacts and invitations](../collaboration/README.md) |
 

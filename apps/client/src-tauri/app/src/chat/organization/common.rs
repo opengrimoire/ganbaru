@@ -270,7 +270,6 @@ pub(super) fn validate_policy(
             return Err(ChatError::validation("speed", "Teammate speed is invalid"));
         }
     }
-    super::budgets::validate_default_token_limit(policy.default_assignment_token_limit)?;
     super::super::settings_commands::read_provider(app, &policy.provider_instance_id)?;
     Ok(())
 }

@@ -234,31 +234,6 @@ fn fold_usage_keeps_one_cost_currency() {
     assert_eq!(usage.tokens.counted(), 4, "tokens still count");
 }
 
-#[test]
-fn budget_threshold_boundaries() {
-    let limit = 1_000;
-    for (used, expected) in [
-        (0, BudgetThreshold::None),
-        (749, BudgetThreshold::None),
-        (750, BudgetThreshold::Warning75),
-        (899, BudgetThreshold::Warning75),
-        (900, BudgetThreshold::Warning90),
-        (999, BudgetThreshold::Warning90),
-        (1_000, BudgetThreshold::Reached),
-        (5_000, BudgetThreshold::Reached),
-    ] {
-        assert_eq!(budget_threshold(used, limit), expected, "{used} of {limit}");
-    }
-    // 74.9 percent of a limit that does not divide evenly stays below the warning.
-    assert_eq!(budget_threshold(2_246, 3_000), BudgetThreshold::None);
-    assert_eq!(budget_threshold(2_250, 3_000), BudgetThreshold::Warning75);
-    assert_eq!(
-        budget_threshold(u64::MAX, u64::MAX),
-        BudgetThreshold::Reached,
-        "the products do not overflow"
-    );
-}
-
 const RUN: &str = "run:usage-1";
 const EARLIER_RUN: &str = "run:usage-0";
 const THREAD: &str = "thread:usage";

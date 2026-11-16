@@ -464,8 +464,6 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::organization::chat_set_assignment_input_held,
             chat::organization::chat_steer_assignment_input,
             chat::organization::chat_reorder_assignment_inputs,
-            chat::organization::chat_set_assignment_budget,
-            chat::organization::chat_clear_assignment_budget,
             chat::organization::chat_review_assignment,
             chat::organization::chat_retry_assignment,
             chat::organization::chat_start_mentioned_assignment,
@@ -1090,7 +1088,6 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::revocation::start_job_drain(app.handle());
             chat::cleanup_service::start(app.handle());
             chat::usage_summaries::start(app.handle());
-            chat::budget_enforcement::start(app.handle());
             #[cfg(target_os = "linux")]
             tauri::async_runtime::spawn(ganbaru_chat_providers::process::probe_resource_scope());
             music::setup_youtube_host(app.handle())?;

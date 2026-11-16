@@ -749,7 +749,7 @@ pub(super) async fn cancel_assignment(
 /// cancels the work it delegated, delivers the delegation outcomes the settle queued, and stops
 /// the provider session of its latest run. `stop_label` prefixes the stop command id, so
 /// repeated stops for one reason share an id.
-pub(crate) async fn end_settled_work(
+async fn end_settled_work(
     app: &tauri::AppHandle,
     db_url: &str,
     pool: &SqlitePool,
@@ -900,21 +900,6 @@ pub(super) async fn persist_retry(
     }
     require_executing_device(pool, assignment_id, device.id).await?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
-    // The same assignment keeps its budget and what it used, so retrying work that reached a
-    // limit would stop again at once; the limit has to rise first.
-    if ganbaru_chat::coordination::budgets::assignment_budget_reached(
-        &mut transaction,
-        assignment_id.as_str(),
-        now.as_str(),
-    )
-    .await?
-    {
-        return Err(ChatError::new(
-            ChatErrorCode::Conflict,
-            "This work reached its budget limit; raise the limit to retry it",
-            true,
-        ));
-    }
     let updated = sqlx::query(
         "UPDATE chat_work_assignments
          SET state = 'queued', state_reason = NULL, settled_at = NULL,

@@ -366,10 +366,8 @@ pub(super) async fn read_policy(
         "SELECT numbered.id, numbered.revision, numbered.provider_instance_id,
                 numbered.safety_mode, numbered.model_selection_data, numbered.effort,
                 numbered.speed, numbered.provider_options_schema_version,
-                numbered.provider_options_data, numbered.created_at,
-                revision.default_assignment_token_limit
+                numbered.provider_options_data, numbered.created_at
          FROM chat_teammate_policy_revisions_numbered numbered
-         JOIN chat_teammate_policy_revisions revision ON revision.id = numbered.id
          WHERE numbered.teammate_id = ? AND numbered.id = ?",
     )
     .bind(teammate_id.as_str())
@@ -420,11 +418,6 @@ pub(super) async fn read_policy(
                     .map_err(persistence_error)?,
             )?,
         },
-        default_assignment_token_limit: row
-            .try_get::<Option<i64>, _>("default_assignment_token_limit")
-            .map_err(persistence_error)?
-            .map(u64_value)
-            .transpose()?,
         created_at: timestamp(row.try_get("created_at").map_err(persistence_error)?)?,
     })
 }
@@ -816,10 +809,6 @@ pub(super) async fn read_assignment(
         updated_at: timestamp(row.try_get("updated_at").map_err(persistence_error)?)?,
         review: read_assignment_review(&row)?,
         local_acceptance: None,
-        budget: {
-            let mut connection = pool.acquire().await.map_err(persistence_error)?;
-            super::budgets::read_assignment_budget(&mut connection, assignment_id).await?
-        },
     })
 }
 

@@ -278,13 +278,9 @@ describe("failure updates", () => {
     });
   });
 
-  it("reads launch failures, provider limits, and budget stops", () => {
+  it("reads launch failures and provider limits", () => {
     expect(cause(failure({ launchFailure: true }, null))).toEqual({ kind: "launch" });
     expect(cause(failure({ code: "provider_usage_limit", resetsAt: null }))).toEqual({ kind: "provider_limit" });
-    expect(cause(failure({ code: "budget_limit_reached", limit: "tokens", used: 10, limitValue: 10 })))
-      .toEqual({ kind: "budget", limit: "tokens" });
-    expect(cause(failure({ code: "budget_limit_reached", limit: "working_time", used: 10, limitValue: 10 })))
-      .toEqual({ kind: "budget", limit: "workingTime" });
   });
 
   it("falls back to an unknown cause for codes and payloads this build does not know", () => {

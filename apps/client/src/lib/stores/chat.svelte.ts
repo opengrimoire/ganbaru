@@ -19,7 +19,6 @@ import type {
   ChatScheduledMessageRead,
   ChatAiTeammateRead,
   ChatWorkAssignmentId,
-  ChatAssignmentBudgetInput,
   ChatAssignmentReviewRequest,
   ChatAttachmentRead,
   ChatDraftMention,
@@ -1148,20 +1147,6 @@ export class ChatStore {
     await chatApi.retryChatAssignment(assignmentId, expectedRevision);
     this.publishChannelChange(this.selectedChannelId);
     this.refreshReviewQueue();
-    if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
-  }
-
-  /** Sets the limits of an assignment, keeping what its work used, and rereads the reply thread that shows it. */
-  async setAssignmentBudget(assignmentId: ChatWorkAssignmentId, budget: ChatAssignmentBudgetInput): Promise<void> {
-    await chatApi.setChatAssignmentBudget(assignmentId, budget);
-    this.publishChannelChange(this.selectedChannelId);
-    if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
-  }
-
-  /** Removes the budget of an assignment and rereads the open reply thread. */
-  async clearAssignmentBudget(assignmentId: ChatWorkAssignmentId): Promise<void> {
-    await chatApi.clearChatAssignmentBudget(assignmentId);
-    this.publishChannelChange(this.selectedChannelId);
     if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
   }
 

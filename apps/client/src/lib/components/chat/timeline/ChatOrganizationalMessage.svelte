@@ -68,18 +68,14 @@
   function failureMessage(cause: ChatAgentFailureCause): string {
     switch (cause.kind) {
       case "error": return chatErrorMessage({ code: cause.code });
-      case "provider_limit": return t("chat.composer.budget.providerLimitUntimed");
-      case "budget": return cause.limit === "tokens"
-        ? t("chat.composer.budget.tokenReached", authorDisplayName)
-        : t("chat.composer.budget.workingTimeReached", authorDisplayName);
+      case "provider_limit": return t("chat.composer.providerLimitUntimed");
       case "launch":
       case "unknown": return t("chatErrors.generic");
     }
   }
 
-  /** The lead-in naming the teammate, left out when the message already names it. */
-  function failureTitle(cause: ChatAgentFailureCause): string | undefined {
-    if (cause.kind === "budget") return undefined;
+  /** The lead-in naming the teammate and whether it failed before or after output. */
+  function failureTitle(cause: ChatAgentFailureCause): string {
     return cause.kind === "launch"
       ? t("chat.runs.outcome.failedBeforeOutput", authorDisplayName)
       : t("chat.runs.outcome.failedAfterOutput", authorDisplayName);

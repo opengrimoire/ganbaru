@@ -152,26 +152,6 @@ export interface ChatAccessProfileRead {
   archivedAt: UtcTimestamp | null;
 }
 
-/** Token and working time limits of one assignment with what its executing device recorded as used. */
-export interface ChatAssignmentBudgetRead {
-  assignmentId: ChatWorkAssignmentId;
-  tokenLimit: number | null;
-  workingSecondsLimit: number | null;
-  /** The person who set the limits; null when a teammate default or a delegating parent gave them. */
-  setByParticipantId: ChatParticipantId | null;
-  setAt: UtcTimestamp;
-  /** Input, cache write, and output tokens, leaving out cache reads. */
-  usedCountedTokens: number;
-  /** Seconds runs spent working, leaving out time waiting for a person. */
-  usedWorkingSeconds: number;
-}
-
-/** Token and working time limits for one assignment; at least one is set. */
-export interface ChatAssignmentBudgetInput {
-  tokenLimit: number | null;
-  workingSecondsLimit: number | null;
-}
-
 /** One local day of a teammate's usage, summed across the devices that ran it. */
 export interface ChatTeammateUsageDayRead {
   /** The day in `YYYY-MM-DD` form. */
@@ -594,8 +574,6 @@ export interface ChatTeammatePolicyRead {
   effort: string | null;
   speed: string | null;
   providerOptions: VersionedJson;
-  /** Token limit a new assignment of this teammate starts with when its post sets no budget. */
-  defaultAssignmentTokenLimit: number | null;
   createdAt: UtcTimestamp;
 }
 
@@ -759,8 +737,6 @@ export interface ChatWorkAssignmentRead {
   localAcceptance: ChatAssignmentAcceptanceOfferRead | null;
   /** Chat thread of the newest run of this reply thread on the reading device, used to show its usage; null when none ran here. */
   latestRunProviderThreadId: ChatThreadId | null;
-  /** Token and working time limits of this work with what it used; null when it runs without a limit. */
-  budget: ChatAssignmentBudgetRead | null;
 }
 
 /** Where delegated work came from and what it was asked to return. */
@@ -962,8 +938,6 @@ export interface ChatTeammatePolicyInput {
   effort: string | null;
   speed: string | null;
   providerOptions: VersionedJson;
-  /** Token limit a new assignment starts with when its post sets no budget; null for none. */
-  defaultAssignmentTokenLimit: number | null;
 }
 
 export interface CreateChatTeammateRequest {

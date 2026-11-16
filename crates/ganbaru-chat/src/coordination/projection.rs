@@ -8,7 +8,6 @@ use super::super::models::{
     ChatError, ChatErrorCode, ChatParticipantId, ChatReplyThreadId, ChatResult, ChatTurnId,
     ChatWorkAssignmentId,
 };
-use super::budgets::{BudgetCheck, PROVIDER_USAGE_LIMIT_REASON, check_assignment_budget};
 use super::reports::{
     TeammateUpdate, insert_teammate_update, run_asked_host_question, run_result_report,
 };
@@ -18,15 +17,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{Row, Sqlite, SqliteConnection, Transaction};
 
-/// What projecting one provider event changed.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ProviderEventProjection {
-    /// Whether organizational rows changed.
-    pub projected: bool,
-    /// The assignment the event stopped at a budget limit; the caller stops its provider
-    /// session after commit.
-    pub budget_stop: Option<ChatWorkAssignmentId>,
-}
+/// State reason of an assignment whose run ended because the provider's usage limit was reached.
+pub const PROVIDER_USAGE_LIMIT_REASON: &str = "provider_usage_limit";
 
 fn persistence_error(_error: sqlx::Error) -> ChatError {
     ChatError::new(
@@ -52,7 +44,7 @@ fn identifier_error(_error: String) -> ChatError {
 pub async fn project_provider_event_in_transaction(
     transaction: &mut Transaction<'_, Sqlite>,
     runtime: &CanonicalRuntimeEvent,
-) -> ChatResult<ProviderEventProjection> {
+) -> ChatResult<bool> {
     let run = sqlx::query(
         "SELECT run.id AS run_id, run.state AS run_state, run.assignment_id,
                 assignment.reply_thread_id, assignment.teammate_id
@@ -72,11 +64,11 @@ pub async fn project_provider_event_in_transaction(
     .await
     .map_err(persistence_error)?;
     let Some(run) = run else {
-        return Ok(ProviderEventProjection::default());
+        return Ok(false);
     };
     let run_state: String = run.try_get("run_state").map_err(persistence_error)?;
     if SETTLED_RUN_STATES.contains(&run_state.as_str()) {
-        return Ok(ProviderEventProjection::default());
+        return Ok(false);
     }
     let run_id: String = run.try_get("run_id").map_err(persistence_error)?;
     let assignment_id = ChatWorkAssignmentId::new(
@@ -117,44 +109,7 @@ pub async fn project_provider_event_in_transaction(
         )
         .await?;
     }
-    let projected = project_event_arms(transaction, runtime, &target).await?;
-    let budget_stop = check_budget_after_event(
-        transaction,
-        &assignment_id,
-        &run_id,
-        runtime.created_at.as_str(),
-        usage.is_some(),
-    )
-    .await?;
-    Ok(ProviderEventProjection {
-        projected: projected || budget_stop.is_some(),
-        budget_stop,
-    })
-}
-
-/// Checks the budget of the run's assignment after its event applied. A run that settled
-/// records what it used; a run still going whose usage changed stops at a reached limit. A
-/// turn that completes with the usage that crossed the limit therefore completes normally.
-async fn check_budget_after_event(
-    transaction: &mut Transaction<'_, Sqlite>,
-    assignment_id: &ChatWorkAssignmentId,
-    run_id: &str,
-    occurred_at: &str,
-    usage_changed: bool,
-) -> ChatResult<Option<ChatWorkAssignmentId>> {
-    let run_state: String = sqlx::query_scalar("SELECT state FROM chat_agent_runs WHERE id = ?")
-        .bind(run_id)
-        .fetch_one(&mut **transaction)
-        .await
-        .map_err(persistence_error)?;
-    let kind = if SETTLED_RUN_STATES.contains(&run_state.as_str()) {
-        BudgetCheck::Settled
-    } else if usage_changed {
-        BudgetCheck::Running
-    } else {
-        return Ok(None);
-    };
-    check_assignment_budget(transaction, assignment_id, run_id, occurred_at, kind).await
+    project_event_arms(transaction, runtime, &target).await
 }
 
 /// Applies the organizational effect of the event in `runtime` on the run in `target`,

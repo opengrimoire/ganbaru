@@ -200,7 +200,6 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_agent_run_delivered_sources",
             "chat_agent_run_usage",
             "chat_teammate_usage_daily",
-            "chat_assignment_budgets",
             "chat_secret_requests",
             "chat_agent_run_attempt_immutable",
             "chat_assignment_dispatch_jobs",
@@ -1970,78 +1969,32 @@ fn run_usage_schema_starts_with_the_run_checks_counts_and_follows_its_run() {
 }
 
 #[test]
-fn assignment_budgets_need_a_bounded_limit_and_follow_their_assignment() {
+fn chat_work_carries_no_token_or_working_time_limits() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
-        load_project_chat_graph(&pool).await;
-        let insert = |id: &str, tokens: Option<i64>, seconds: Option<i64>| {
-            sqlx::query(
-                "INSERT INTO chat_assignment_budgets
-                     (id, assignment_id, token_limit, working_seconds_limit, set_at)
-                 VALUES (?, 'assignment-1', ?, ?, '2026-11-13T00:00:00.000Z')",
-            )
-            .bind(id.to_owned())
-            .bind(tokens)
-            .bind(seconds)
-            .execute(&pool)
-        };
-        assert!(insert("budget-none", None, None).await.is_err());
-        assert!(insert("budget-small", Some(999), None).await.is_err());
-        assert!(insert("budget-short", None, Some(59)).await.is_err());
-        assert!(insert("budget-long", None, Some(8_640_001)).await.is_err());
-        insert("budget-1", Some(1_000), None).await.unwrap();
-        assert!(
-            insert("budget-2", None, Some(60)).await.is_err(),
-            "one budget per assignment"
-        );
-        for invalid in [
-            "UPDATE chat_assignment_budgets SET token_limit = NULL WHERE id = 'budget-1'",
-            "UPDATE chat_assignment_budgets SET used_counted_tokens = -1 WHERE id = 'budget-1'",
-            "UPDATE chat_assignment_budgets SET used_working_seconds = 8640001
-             WHERE id = 'budget-1'",
-        ] {
-            assert!(
-                sqlx::query(AssertSqlSafe(invalid))
-                    .execute(&pool)
-                    .await
-                    .is_err(),
-                "{invalid}"
-            );
-        }
-        let used: (i64, i64) = sqlx::query_as(
-            "SELECT used_counted_tokens, used_working_seconds
-             FROM chat_assignment_budgets WHERE id = 'budget-1'",
+        let budget_tables: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM sqlite_master WHERE name = 'chat_assignment_budgets'",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(used, (0, 0));
-
-        let policy_limit = |limit: i64| {
-            sqlx::query(
-                "INSERT INTO chat_teammate_policy_revisions
-                     (id, teammate_id, provider_instance_id, model_selection_data, created_at,
-                      default_assignment_token_limit)
-                 SELECT 'policy-limit-' || ?, teammate_id, provider_instance_id,
-                        model_selection_data, created_at, ?
-                 FROM chat_teammate_policy_revisions LIMIT 1",
-            )
-            .bind(limit)
-            .bind(limit)
-            .execute(&pool)
-        };
-        assert!(policy_limit(999).await.is_err());
-        policy_limit(20_000).await.unwrap();
-
-        sqlx::query("DELETE FROM chat_work_assignments WHERE id = 'assignment-1'")
-            .execute(&pool)
-            .await
-            .unwrap();
-        let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_assignment_budgets")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(remaining, 0);
+        assert_eq!(budget_tables, 0);
+        let limit_columns: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pragma_table_info('chat_teammate_policy_revisions')
+             WHERE name = 'default_assignment_token_limit'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(limit_columns, 0);
+        let budget_bookkeeping: i64 = sqlx::query_scalar(
+            "SELECT (SELECT count(*) FROM sync_rows WHERE table_id = 398)
+                  + (SELECT count(*) FROM sync_seeded_tables WHERE table_id = 398)",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(budget_bookkeeping, 0);
     });
 }
 

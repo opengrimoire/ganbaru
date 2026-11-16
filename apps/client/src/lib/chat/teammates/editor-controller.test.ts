@@ -42,7 +42,7 @@ function teammate(id = "participant:atlas", revision = 1): ChatAiTeammateRead {
       id: "policy:atlas", teammateId: id, revision,
       providerInstanceId: "provider:codex", safetyMode: "ask_for_approval",
       providerManagedModel: false, modelId: "model:test", modelOptions: [],
-      effort: null, speed: null, defaultAssignmentTokenLimit: null,
+      effort: null, speed: null,
       providerOptions: { schemaVersion: 1, value: {} },
       createdAt: CREATED_AT,
     },

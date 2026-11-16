@@ -3,7 +3,7 @@
 //! Provider usage reports follow one convention (input excludes cache reads and writes, output
 //! includes reasoning) and name what their counts cover. [`fold_usage`] turns each report into
 //! the run's running counters; reports with no documented scope are never counted, since a
-//! guessed count could stop work wrongly once budgets apply.
+//! guessed count would misreport what the work used.
 
 use crate::events::{ThreadUsageUpdatedEvent, UsageCountScope};
 use crate::models::{ChatError, ChatErrorCode, ChatResult};
@@ -133,39 +133,6 @@ impl UsageCountError {
             Self::TotalWentBackwards => "usage_total_went_backwards",
             Self::SummaryOverflow => "usage_summary_overflow",
         }
-    }
-}
-
-/// Percentages of a budget limit at which the reply thread warns, in increasing order.
-pub const BUDGET_WARNING_PERCENTS: [u8; 2] = [75, 90];
-/// Percentage of a budget limit at which the executing device stops the work.
-pub const BUDGET_STOP_PERCENT: u8 = 100;
-
-/// How far usage has come toward one budget limit, ordered from no threshold to the limit.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum BudgetThreshold {
-    None,
-    /// At least the first of [`BUDGET_WARNING_PERCENTS`].
-    Warning75,
-    /// At least the second of [`BUDGET_WARNING_PERCENTS`].
-    Warning90,
-    /// At least [`BUDGET_STOP_PERCENT`].
-    Reached,
-}
-
-/// The highest threshold `used` has crossed toward `limit`, in exact integer math
-/// (`used * 100 >= limit * percent`). A zero limit counts as reached.
-pub fn budget_threshold(used: u64, limit: u64) -> BudgetThreshold {
-    let crossed = |percent: u8| u128::from(used) * 100 >= u128::from(limit) * u128::from(percent);
-    let [first_warning, second_warning] = BUDGET_WARNING_PERCENTS;
-    if crossed(BUDGET_STOP_PERCENT) {
-        BudgetThreshold::Reached
-    } else if crossed(second_warning) {
-        BudgetThreshold::Warning90
-    } else if crossed(first_warning) {
-        BudgetThreshold::Warning75
-    } else {
-        BudgetThreshold::None
     }
 }
 

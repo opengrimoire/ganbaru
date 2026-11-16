@@ -6,7 +6,7 @@
     formatTokenCount,
     formatWorkingDuration,
     teammateUsageRange,
-  } from "$lib/chat/budgets/budget-model";
+  } from "$lib/chat/usage/usage-model";
   import { formatDateLabel } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";

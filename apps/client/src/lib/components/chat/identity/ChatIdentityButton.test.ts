@@ -59,7 +59,6 @@ const teammate: ChatAiTeammateRead = {
     effort: "low",
     speed: "fast",
     providerOptions: { schemaVersion: 1, value: {} },
-    defaultAssignmentTokenLimit: null,
     createdAt: "2026-08-16T12:00:00.000Z",
   },
   channelCount: 1,

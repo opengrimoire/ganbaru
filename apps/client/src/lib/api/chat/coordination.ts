@@ -7,8 +7,6 @@ import type {
   ChatParticipantId,
   ChatReplyThreadId,
   ChatWorkAssignmentId,
-  ChatAssignmentBudgetInput,
-  ChatAssignmentBudgetRead,
   ChatTeammateUsageDayRead,
   ChatAssignmentInputEditRequest,
   ChatAssignmentInputId,
@@ -60,7 +58,6 @@ import type {
 } from "$lib/chat/contracts";
 import {
   parseChatChannel,
-  parseChatAssignmentBudget,
   parseChatTeammateUsageDay,
   parseChatChannels,
   parseChatAiTeammate,
@@ -607,24 +604,6 @@ export async function reorderChatAssignmentInputs(
   return parseChatAssignmentInputs(await invoke<unknown>("chat_reorder_assignment_inputs", {
     dbUrl: await ensureDbUrl(), assignmentId, orderedInputIds,
   }));
-}
-
-/** Sets the token and working time limits of an assignment, keeping what its work already used. */
-export async function setChatAssignmentBudget(
-  assignmentId: ChatWorkAssignmentId,
-  budget: ChatAssignmentBudgetInput,
-): Promise<ChatAssignmentBudgetRead> {
-  return parseChatAssignmentBudget(await invoke<unknown>("chat_set_assignment_budget", {
-    dbUrl: await ensureDbUrl(),
-    assignmentId,
-    tokenLimit: budget.tokenLimit,
-    workingSecondsLimit: budget.workingSecondsLimit,
-  }));
-}
-
-/** Clears the budget of an assignment, so its work runs without a limit. */
-export async function clearChatAssignmentBudget(assignmentId: ChatWorkAssignmentId): Promise<void> {
-  await invoke<unknown>("chat_clear_assignment_budget", { dbUrl: await ensureDbUrl(), assignmentId });
 }
 
 /** Reads a teammate's usage per local day from `fromDate` to `toDate` (`YYYY-MM-DD`, both included). */

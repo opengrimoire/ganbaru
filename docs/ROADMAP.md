@@ -81,7 +81,7 @@ Saved desktop environments that prepare applications, browser resources, Music, 
 
 ### Structured project delegation
 
-Reviewable planning proposals, task-linked agent runs, assignment and review workflows, budgets, and sustainable work-in-progress limits on top of Projects and Chat. A person approves commitments before Projects or Calendar change. See [Guided planning and review](features/projects/guided-planning.md) and [Agents and coordination](features/chat/agents-and-coordination.md).
+Reviewable planning proposals, task-linked agent runs, assignment and review workflows, and sustainable work-in-progress limits on top of Projects and Chat. A person approves commitments before Projects or Calendar change. See [Guided planning and review](features/projects/guided-planning.md) and [Agents and coordination](features/chat/agents-and-coordination.md).
 
 ## Later outcomes
 

@@ -844,8 +844,6 @@ pub struct ChatTeammatePolicyRead {
     pub effort: Option<String>,
     pub speed: Option<String>,
     pub provider_options: VersionedJson,
-    /// Token limit a new assignment of this teammate starts with when its post sets no budget.
-    pub default_assignment_token_limit: Option<u64>,
     pub created_at: UtcTimestamp,
 }
 
@@ -1072,26 +1070,6 @@ pub struct ChatWorkAssignmentRead {
     /// the composer can show its usage; absent when no run of the thread executed here. Computed
     /// on read from device-local runs and never persisted.
     pub latest_run_provider_thread_id: Option<ChatThreadId>,
-    /// Token and working time limits of this work with what it used, absent when it runs
-    /// without a limit.
-    pub budget: Option<ChatAssignmentBudgetRead>,
-}
-
-/// The budget of one assignment: its limits and what its executing device recorded as used.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatAssignmentBudgetRead {
-    pub assignment_id: ChatWorkAssignmentId,
-    pub token_limit: Option<u64>,
-    pub working_seconds_limit: Option<u64>,
-    /// The person who set the limits; `None` when a teammate default or a delegating parent
-    /// gave them.
-    pub set_by_participant_id: Option<ChatParticipantId>,
-    pub set_at: UtcTimestamp,
-    /// Input, cache write, and output tokens, leaving out cache reads.
-    pub used_counted_tokens: u64,
-    /// Seconds runs spent working, leaving out time waiting for a person.
-    pub used_working_seconds: u64,
 }
 
 /// One folder a waiting assignment would run in, with the access it would hold there.

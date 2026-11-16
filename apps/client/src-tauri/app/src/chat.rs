@@ -3,7 +3,6 @@
 
 pub(crate) mod authority_epoch;
 #[cfg(desktop)]
-pub(crate) mod budget_enforcement;
 pub mod channels;
 #[cfg(desktop)]
 pub mod checkpoint_commands;

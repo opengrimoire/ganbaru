@@ -2,7 +2,6 @@
 
 #[cfg(desktop)]
 use super::assignments::read_assignment_subject;
-use super::budgets::{NewAssignmentBudget, write_new_assignment_budget};
 use super::common::{
     AttachmentSource, ScheduledPostIds, assignment_input_id, conversation_item_id,
     has_thread_eligible_mention, insert_revision_attachments, json_object, message_revision_id,
@@ -638,19 +637,6 @@ pub(super) async fn create_assignment(
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
-    write_new_assignment_budget(
-        transaction,
-        NewAssignmentBudget {
-            assignment_id: &assignment_id,
-            teammate_id: assignment.teammate_id,
-            delegating_parent_id: assignment
-                .delegation
-                .map(|delegation| delegation.parent_assignment_id),
-            previous_id,
-        },
-        now,
-    )
-    .await?;
     let trigger_input_id = assignment_input_id(assignment.message_item_id.as_str())?;
     // A reply that waited for the previous turn enters the thread when it starts this work.
     let trigger_waited: bool = sqlx::query_scalar(
@@ -1718,8 +1704,8 @@ pub(super) async fn insert_policy_revision(
              safety_mode,
              model_selection_schema_version, model_selection_data, effort, speed,
              provider_options_schema_version, provider_options_data,
-             interaction_mode, created_at, default_assignment_token_limit)
-         VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 'build', ?, ?)",
+             interaction_mode, created_at)
+         VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 'build', ?)",
     )
     .bind(policy_revision_id.as_str())
     .bind(teammate_id.as_str())
@@ -1731,12 +1717,6 @@ pub(super) async fn insert_policy_revision(
     .bind(i64::from(policy.provider_options.schema_version))
     .bind(json_object(&policy.provider_options, "providerOptions")?)
     .bind(now.as_str())
-    .bind(
-        policy
-            .default_assignment_token_limit
-            .map(i64_value)
-            .transpose()?,
-    )
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;

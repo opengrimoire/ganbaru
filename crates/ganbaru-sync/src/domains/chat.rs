@@ -38,7 +38,7 @@ use crate::codec;
 use crate::domains::distractions::is_usage_date;
 use crate::manifest::OwnedTable;
 use crate::manifest::vault::chat::{
-    ADAPTER, ASSIGNMENT_BUDGETS_TABLE, ASSIGNMENTS_TABLE, ATTACHMENT_REFERENCES, ATTACHMENTS_CLASS,
+    ADAPTER, ASSIGNMENTS_TABLE, ATTACHMENT_REFERENCES, ATTACHMENTS_CLASS,
     CHANNEL_MEMBERSHIPS_TABLE, CHANNEL_NOTES_TABLE, CHANNEL_TARGETS_TABLE, CHANNELS_TABLE,
     CONVERSATION_CURSORS_TABLE, CONVERSATIONS_TABLE, ENVIRONMENT_TARGETS_TABLE,
     FOLDER_GRANTS_TABLE, FOLDER_TARGETS_TABLE, INPUTS_TABLE, ITEMS_TABLE, MEMBERSHIPS_TABLE,
@@ -46,7 +46,7 @@ use crate::manifest::vault::chat::{
     POLICY_REVISIONS_TABLE, PROFILE_REVISIONS_TABLE, PROFILES_TABLE, PUSH_APPROVALS_TABLE,
     RECURRENCES_TABLE, REFERENCES_TABLE, REPLY_CURSORS_TABLE, REPLY_THREADS_TABLE, REVISIONS_TABLE,
     SCHEDULED_ATTACHMENT_REFERENCES, SCHEDULED_REFERENCES, SCHEDULED_TABLE, SEMANTIC_UPDATES_TABLE,
-    TEAMMATE_USAGE_DAILY_TABLE, TEAMMATES_TABLE, assignment_group, budget_group, channel_group,
+    TEAMMATE_USAGE_DAILY_TABLE, TEAMMATES_TABLE, assignment_group, channel_group,
     channel_membership_group, channel_note_group, conversation_group, folder_grant_group,
     input_group, item_group, membership_group, message_group, participant_group,
     policy_revision_group, profile_group, profile_revision_group, push_approval_group,
@@ -422,7 +422,6 @@ fn validate_policy_revision(group: GroupId, fields: &[Field]) -> Result<(), Adap
                 mode,
                 created_at,
                 safety,
-                _default_token_limit,
             ],
         ) => {
             bounded(
@@ -684,22 +683,6 @@ fn validate_channel_note(group: GroupId, fields: &[Field]) -> Result<(), Adapter
         (channel_note_group::LIFECYCLE, [deleted_at]) => optional_timestamp(deleted_at),
         (channel_note_group::UPDATED, [at]) => timestamp(at),
         _ => Err(AdapterError("chat channel note value")),
-    }
-}
-
-/// The limits of an assignment budget set at least one limit; their bounds and the used amounts
-/// are bounded by the manifest.
-fn validate_budget(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
-    match (group, fields) {
-        (budget_group::IDENTITY, [_]) | (budget_group::EXISTS, []) => Ok(()),
-        (budget_group::LIMITS, [tokens, seconds, _set_by, set_at]) => {
-            if matches!(tokens, Field::Null) && matches!(seconds, Field::Null) {
-                return Err(AdapterError("chat assignment budget sets no limit"));
-            }
-            timestamp(set_at)
-        }
-        (budget_group::USED_TOKENS | budget_group::USED_WORKING, [_used]) => Ok(()),
-        _ => Err(AdapterError("chat assignment budget value")),
     }
 }
 
@@ -1814,8 +1797,6 @@ impl DomainAdapter for ChatAdapter {
             validate_input(group, fields)
         } else if table == SEMANTIC_UPDATES_TABLE {
             validate_semantic_update(group, fields)
-        } else if table == ASSIGNMENT_BUDGETS_TABLE {
-            validate_budget(group, fields)
         } else if table == TEAMMATE_USAGE_DAILY_TABLE {
             validate_teammate_usage(group, fields)
         } else {
@@ -1984,7 +1965,6 @@ mod tests {
             t("build"),
             t(AT),
             t(safety),
-            Field::Null,
         ])
     }
 

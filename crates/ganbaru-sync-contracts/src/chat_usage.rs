@@ -21,18 +21,6 @@ pub const MAX_DAILY_WORKING_SECONDS: i64 = 8_640_000;
 /// Runs one device records for one teammate on one local day.
 pub const MAX_DAILY_RUNS: i64 = 100_000;
 
-/// Prefix of an assignment budget key, derived from the assignment id, so devices that set a
-/// budget on one assignment concurrently create one row.
-pub const ASSIGNMENT_BUDGET_KEY_PREFIX: &str = "budget";
-/// Smallest token limit a budget may set.
-pub const MIN_TOKEN_LIMIT: i64 = 1_000;
-/// Largest token limit a budget may set, and the most it records as used.
-pub const MAX_TOKEN_LIMIT: i64 = MAX_DAILY_COUNTED_TOKENS;
-/// Smallest working time limit, in seconds, a budget may set.
-pub const MIN_WORKING_SECONDS_LIMIT: i64 = 60;
-/// Largest working time limit, in seconds, a budget may set, and the most it records as used.
-pub const MAX_WORKING_SECONDS_LIMIT: i64 = MAX_DAILY_WORKING_SECONDS;
-
 /// The replicated key of `device_id`'s usage of `teammate_id` on `local_date`: the owner tag of
 /// the device, which lets every replica refuse a summary from another device, followed by the
 /// digest derived from the three values.

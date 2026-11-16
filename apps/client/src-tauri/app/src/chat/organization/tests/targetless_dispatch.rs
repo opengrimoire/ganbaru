@@ -95,7 +95,6 @@ async fn create_channel_teammate_with(
                     schema_version: 1,
                     value: json!({}),
                 },
-                default_assignment_token_limit: None,
             },
         },
         HOME_DEVICE,

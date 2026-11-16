@@ -34,7 +34,6 @@ function assignmentWire(overrides: Record<string, unknown>): Record<string, unkn
     localAcceptance: null,
     delegation: null,
     latestRunProviderThreadId: null,
-    budget: null,
     ...overrides,
   };
 }
@@ -56,20 +55,6 @@ describe("parseChatWorkAssignment", () => {
 
   it("reads work without a review", () => {
     expect(parseChatWorkAssignment(assignmentWire({ state: "ready_for_review", settledAt: null })).review).toBeNull();
-  });
-
-  it("reads the budget of work with what it used, and refuses a budget with a negative amount", () => {
-    const budget = {
-      assignmentId: "assignment:review",
-      tokenLimit: 20_000,
-      workingSecondsLimit: null,
-      setByParticipantId: "participant:local",
-      setAt: TIMESTAMP,
-      usedCountedTokens: 15_000,
-      usedWorkingSeconds: 300,
-    };
-    expect(parseChatWorkAssignment(assignmentWire({ budget })).budget).toEqual(budget);
-    expect(() => parseChatWorkAssignment(assignmentWire({ budget: { ...budget, usedCountedTokens: -1 } }))).toThrow();
   });
 
   it("refuses a review on work that is not completed", () => {

@@ -33,8 +33,7 @@
     type ChatTeammateAccessConfirmationImpact,
     type ChatChannelCapabilityPreset,
   } from "$lib/chat/teammates/access";
-  import { formatList, formatNumber } from "$lib/i18n/formatters";
-  import { MAX_TOKEN_LIMIT, MIN_TOKEN_LIMIT } from "$lib/chat/budgets/budget-model";
+  import { formatList } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
@@ -804,7 +803,6 @@
                 <section class="editor-section"><div class="section-heading"><h4>{t("settings.chat.teammates.executionSection")}</h4></div><div class="field-grid execution-fields">
                   <div class="form-field execution-model-field"><span>{t("settings.chat.teammates.model")}<i class="required-marker" aria-hidden="true">*</i></span><ChatModelControls value={{ providerInstanceId: editor.providerId || null, modelId: editor.modelId || null, providerManaged: editor.providerManagedModel, options: editor.modelOptions }} disabled={editor.archivedMode} onChange={editor.selectExecution} /></div>
                   <div class="form-field execution-approval-field"><span>{t("settings.chat.teammates.approval")}</span><ChatAccessControl value={editor.safetyMode} providerInstanceId={editor.providerId || null} workingFolderId={permissionWorkingFolderId} disabled={editor.archivedMode} onChange={(value) => { editor.safetyMode = value; }} /></div>
-                  <div class="form-field full"><span id="teammate-token-limit-label">{t("settings.chat.teammates.defaultTokenLimit")}</span><input value={editor.defaultTokenLimitText} inputmode="numeric" autocomplete="off" aria-labelledby="teammate-token-limit-label" aria-describedby={editor.defaultTokenLimitInvalid ? "teammate-token-limit-error" : undefined} aria-invalid={editor.defaultTokenLimitInvalid ? "true" : undefined} placeholder={t("chat.composer.budget.noLimit")} disabled={editor.archivedMode} oninput={(event) => editor.editDefaultTokenLimit(event.currentTarget.value)} />{#if editor.defaultTokenLimitInvalid}<small id="teammate-token-limit-error" class="field-error" role="alert">{t("settings.chat.teammates.defaultTokenLimitInvalid", formatNumber(localization.locale, MIN_TOKEN_LIMIT), formatNumber(localization.locale, MAX_TOKEN_LIMIT))}</small>{/if}</div>
                 </div></section>
 
                 {#if editor.selected && !editor.creating}

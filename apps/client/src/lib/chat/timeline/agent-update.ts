@@ -40,7 +40,7 @@ export type ChatAgentUpdatePresentation =
     /** The run that failed, or `null` when the work failed before a run started. */
     agentRunId: string | null;
     cause: ChatAgentFailureCause;
-    /** The stored code, such as `timeout` or `budget_limit_reached`, for the technical detail only. */
+    /** The stored code, such as `timeout` or `provider_usage_limit`, for the technical detail only. */
     code: string | null;
   };
 
@@ -48,7 +48,6 @@ export type ChatAgentUpdatePresentation =
 export type ChatAgentFailureCause =
   | { kind: "error"; code: ChatErrorCode }
   | { kind: "provider_limit" }
-  | { kind: "budget"; limit: "tokens" | "workingTime" }
   | { kind: "launch" }
   | { kind: "unknown" };
 
@@ -117,11 +116,6 @@ function failure(
 function failureCause(code: string | null, payload: Record<string, unknown>): ChatAgentFailureCause {
   if (payload.launchFailure === true) return { kind: "launch" };
   if (code === "provider_usage_limit") return { kind: "provider_limit" };
-  if (code === "budget_limit_reached") {
-    if (payload.limit === "tokens") return { kind: "budget", limit: "tokens" };
-    if (payload.limit === "working_time") return { kind: "budget", limit: "workingTime" };
-    return { kind: "unknown" };
-  }
   const errorCode = CHAT_ERROR_CODES.find((candidate) => candidate === code);
   return errorCode ? { kind: "error", code: errorCode } : { kind: "unknown" };
 }

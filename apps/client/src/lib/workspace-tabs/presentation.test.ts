@@ -3,14 +3,12 @@ import { describe, expect, it } from "vitest";
 import { translate } from "$lib/i18n/translator.svelte";
 import { kindLocation } from "./model";
 import {
-  shortWorkspaceTabProject,
   workspaceTabFullLabel,
   workspaceTabIcon,
   workspaceTabKindIcon,
   workspaceTabLabel,
   workspaceTabPositionShortcut,
   workspaceTabProject,
-  workspaceTabProjectHint,
 } from "./presentation";
 
 describe("workspace tab icons", () => {
@@ -69,13 +67,11 @@ describe("workspace tab project names", () => {
 
   it("labels a project tab with its project alone, leaving the kind to its icon", () => {
     expect(workspaceTabLabel({ location: notes, title: null, projectTitle: "Alpha" }, translate)).toBe("Alpha");
-    expect(workspaceTabProjectHint({ location: notes, title: null, projectTitle: "Alpha" })).toBeNull();
   });
 
-  it("labels an item tab with its item and keeps the project as a hint", () => {
-    const tab = { location: notes, title: "Roadmap", projectTitle: "Alpha" };
-    expect(workspaceTabLabel(tab, translate)).toBe("Roadmap");
-    expect(workspaceTabProjectHint(tab)).toBe("Alpha");
+  it("labels an item tab with its project alone, and with its item when the project is unknown", () => {
+    expect(workspaceTabLabel({ location: notes, title: "Roadmap", projectTitle: "Alpha" }, translate)).toBe("Alpha");
+    expect(workspaceTabLabel({ location: notes, title: "Roadmap", projectTitle: null }, translate)).toBe("Roadmap");
   });
 
   it("falls back to the kind name for Calendar and tabs outside a project", () => {
@@ -83,19 +79,5 @@ describe("workspace tab project names", () => {
     expect(workspaceTabLabel(calendar, translate)).toBe("Calendar");
     expect(workspaceTabLabel({ location: kindLocation("notes"), title: null, projectTitle: null }, translate)).toBe("Notes");
     expect(workspaceTabLabel({ location: notes, title: null, projectTitle: null }, translate)).toBe("Notes");
-  });
-
-  it("keeps short project names whole", () => {
-    expect(shortWorkspaceTabProject("Alpha", 5)).toBe("Alpha");
-    expect(shortWorkspaceTabProject("  Alpha  ", 5)).toBe("Alpha");
-  });
-
-  it("cuts long project names at the limit with an ellipsis and no trailing space", () => {
-    expect(shortWorkspaceTabProject("Alpha Beta Gamma", 7)).toBe("Alpha…");
-    expect(shortWorkspaceTabProject("Abcdefgh", 4)).toBe("Abc…");
-  });
-
-  it("counts characters rather than code units", () => {
-    expect(shortWorkspaceTabProject("😀😀😀😀", 3)).toBe("😀😀…");
   });
 });

@@ -6,7 +6,6 @@ export const titleBar = {
     chat: "Chat",
     withShortcut: (label: string, shortcut: string) => `${label} (${shortcut})`,
     withProject: (label: string, project: string) => `${label} (${project})`,
-    projectHint: (project: string) => `(${project})`,
     newTab: "New tab",
     closeTab: "Close tab",
     reopenClosedTab: "Reopen",

@@ -623,6 +623,7 @@ mod tests {
                 "updatedAt": "2026-11-12T10:00:00.000Z"
             }],
             "total": 201,
+            "failureCount": 4,
             "truncated": true
         });
 

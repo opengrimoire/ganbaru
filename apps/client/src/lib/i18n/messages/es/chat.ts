@@ -120,8 +120,6 @@ export const chat = {
     sectionName: "Nombre de la sección",
     add: "Agregar",
     newSection: "Agregar sección",
-    directMessages: "Mensajes directos",
-    newDirectMessage: "Nuevo mensaje directo",
     emptyDirectMessages: "Aún no hay mensajes directos.",
     archive: "Archivo de canales",
     moveTo: "Mover a",
@@ -140,7 +138,6 @@ export const chat = {
     noTopic: "Sin tema",
     changeFolderDraftWarning: "Cambiar la carpeta de trabajo elimina los adjuntos y menciones de archivos de este borrador.",
     changeFolderConfirm: "Cambiar carpeta",
-    startDirectMessage: "Iniciar conversación",
   },
   channelNotes: {
     title: "Notas del canal",

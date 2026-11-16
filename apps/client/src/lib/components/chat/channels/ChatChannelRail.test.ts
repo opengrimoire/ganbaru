@@ -6,7 +6,6 @@ import type { ChatChannelRead, ChatReviewQueueItemRead, ChatReviewQueueKind } fr
 import { readChatSidebarSections, saveChatSidebarSections } from "$lib/chat/channel-sections";
 import { chatPaneEvents } from "$lib/chat/pane-events";
 import { getChat } from "$lib/stores/chat.svelte";
-import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
 import { setActiveVaultIdentity } from "$lib/vault/active-vault";
 import { SUBMENU_CLOSE_DELAY_MS } from "$lib/utils/menu-aim";
 import { TOUCH_LONG_PRESS_MS } from "$lib/utils/touch-hold";
@@ -75,7 +74,6 @@ describe("ChatChannelRail", () => {
     expect(toggles.map((toggle) => toggle.textContent?.trim())).toEqual([
       "Channels",
       "Design",
-      "Direct messages",
     ]);
     for (const toggle of toggles) {
       expect(toggle.firstElementChild?.tagName).toBe("SPAN");
@@ -85,11 +83,9 @@ describe("ChatChannelRail", () => {
 
     toggles[0]?.click();
     toggles[1]?.click();
-    toggles[2]?.click();
     await tick();
 
     expect(toggles.map((toggle) => toggle.getAttribute("aria-expanded"))).toEqual([
-      "false",
       "false",
       "false",
     ]);
@@ -193,7 +189,7 @@ describe("ChatChannelRail", () => {
     });
     await tick();
     const labels = [...target.querySelectorAll<HTMLElement>(".section-toggle > span")];
-    expect(labels.map((label) => label.textContent)).toEqual(["Channels", "Design", "Direct messages"]);
+    expect(labels.map((label) => label.textContent)).toEqual(["Channels", "Design"]);
 
     for (const label of labels) {
       let renderedWidth = 80;
@@ -235,7 +231,7 @@ describe("ChatChannelRail", () => {
     await tick();
     expect(target.querySelector("form")).toBeNull();
     expect(document.activeElement).toBe(trigger);
-    expect([...target.querySelectorAll(".section-toggle")].map((toggle) => toggle.textContent?.trim())).toEqual(["Channels", "Design", "Direct messages"]);
+    expect([...target.querySelectorAll(".section-toggle")].map((toggle) => toggle.textContent?.trim())).toEqual(["Channels", "Design"]);
     trigger?.click();
     await tick();
     target.querySelector<HTMLButtonElement>(".section-context-menu button")?.click();
@@ -283,26 +279,6 @@ describe("ChatChannelRail", () => {
     await tick();
     document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
     await tick();
-    expect(target.querySelector(".section-context-menu")).toBeNull();
-  });
-
-  it("opens contacts and invitations from the direct messages header menu", async () => {
-    const open = vi.spyOn(getSettingsLauncher(), "open").mockImplementation(() => undefined);
-    component = mount(ChatChannelRail, {
-      target,
-      props: { expanded: true, showCollapsedStrip: true, onExpand: vi.fn(), onCollapse: vi.fn() },
-    });
-    await tick();
-    const trigger = target.querySelector<HTMLButtonElement>("[data-chat-direct-messages] .section-heading .explorer-row-action");
-    expect(trigger).not.toBeNull();
-    trigger?.click();
-    await tick();
-    const menu = target.querySelector<HTMLElement>(".section-context-menu");
-    expect([...menu?.querySelectorAll('[role="menuitem"]') ?? []].map((item) => item.textContent?.trim())).toEqual(["Contacts", "Invitations"]);
-    expect(trigger?.getAttribute("aria-expanded")).toBe("true");
-    menu?.querySelector<HTMLButtonElement>("[data-chat-invitations]")?.click();
-    await tick();
-    expect(open).toHaveBeenCalledWith("contacts", { contactsTab: "invitations" });
     expect(target.querySelector(".section-context-menu")).toBeNull();
   });
 

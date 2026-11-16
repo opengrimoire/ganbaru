@@ -51,7 +51,7 @@ An invitation names one space, one role, and one history boundary: the entire re
 
 Invitations can only be addressed to contacts with the invite permission, so the participant picker never offers strangers. Inviting someone who is not yet a contact starts with the contact card exchange.
 
-An invitation is pending until it is accepted, declined, revoked by the sender, or expires after a bounded period. Pending invitations are visible to both sides: the recipient in the Chat sidebar and Settings, the sender in the member list of the space with a pending marker. Declining sends no reason, and the sender is told only that the invitation was declined.
+An invitation is pending until it is accepted, declined, revoked by the sender, or expires after a bounded period. Pending invitations are visible to both sides: the recipient in Settings > Contacts, the sender in the member list of the space with a pending marker. Declining sends no reason, and the sender is told only that the invitation was declined.
 
 Acceptance depends on the space, because consent is given once at the level where it matters:
 
@@ -102,7 +102,7 @@ An agent executes only on devices of the person who owns it. Other members of a 
 ## Where people appear
 
 - **Chat channels:** the channel dialog edits name, topic, section, and members together, and the header opens a details panel with the topic and members. Both use the shared picker and access step. See [Conversations](../chat/conversations.md).
-- **Chat sidebar:** a Direct messages section whose more-options menu opens Contacts and Invitations in Settings > Contacts.
+- **Chat sidebar:** no direct messages or contacts entry; direct messages are planned as a separate tab, and contacts and invitations stay in Settings > Contacts.
 - **Settings > Contacts:** the person's contact card (until pressed, the QR and code show a blurred placeholder that is not derived from the real identity, so a shared screen leaks nothing), contacts with their trust scopes and expiry, pending received and sent invitations, and blocked contacts. AI agents stay under Settings > Chat while they are only usable in Chat.
 - **Projects:** a Members list in project settings with roles, and the shared picker for task assignees and reviewers, limited to project members. Groups have the same Members list. See [Projects](../projects/README.md).
 - **Calendar:** attendees chosen with the shared picker, each with a response chip, next to imported attendees that stay read-only. See [Event editing](../calendar/event-editing.md#meeting-metadata).

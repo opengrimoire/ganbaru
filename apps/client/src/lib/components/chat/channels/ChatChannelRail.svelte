@@ -10,14 +10,12 @@
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import ChevronsLeft from "@lucide/svelte/icons/chevrons-left";
   import ChevronsRight from "@lucide/svelte/icons/chevrons-right";
-  import ContactRound from "@lucide/svelte/icons/contact-round";
   import EllipsisVertical from "@lucide/svelte/icons/ellipsis-vertical";
   import Folder from "@lucide/svelte/icons/folder";
   import FolderInput from "@lucide/svelte/icons/folder-input";
   import FolderPlus from "@lucide/svelte/icons/folder-plus";
   import Hash from "@lucide/svelte/icons/hash";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
-  import Mail from "@lucide/svelte/icons/mail";
   import Pencil from "@lucide/svelte/icons/pencil";
   import Plus from "@lucide/svelte/icons/plus";
   import Star from "@lucide/svelte/icons/star";
@@ -43,7 +41,6 @@
   import { getChatSidebarOrder } from "$lib/stores/chat/sidebar-order.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { useProjects } from "$lib/stores/projects.svelte";
-  import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { onActiveVaultIdentityChange } from "$lib/vault/active-vault";
   import { openInNewTabIntent, preventMiddleClickAutoscroll, type OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
@@ -61,14 +58,11 @@
   import { suppressClickAfterRelease } from "$lib/utils/click-suppression";
   import { TouchHoldArbiter } from "$lib/utils/touch-hold";
 
-  /** Which header opened the section menu: the default Channels group, a custom section, or Direct messages. */
+  /** Which header opened the section menu: the default Channels group or a custom section. */
   type SectionMenuTarget =
     | { kind: "channels" }
-    | { kind: "section"; section: ChatSidebarSection }
-    | { kind: "directMessages" };
+    | { kind: "section"; section: ChatSidebarSection };
   type ChatChannelSetupDialogComponent = typeof import("./ChatChannelSetupDialog.svelte").default;
-  type ParticipantPickerComponent =
-    typeof import("$lib/components/contacts/ParticipantPicker.svelte").default;
   /** A pending custom order drop: the dragged channel lands before or after `targetId`. */
   interface RailReorder {
     targetId: string;
@@ -102,15 +96,11 @@
   const chatSidebarOrder = getChatSidebarOrder();
   const preferences = getPreferences();
   const projects = useProjects();
-  const settings = getSettingsLauncher();
   const tabs = getWorkspaceTabs();
   /** The phone panel leaves out new tabs; the docked rail opens channels in them. */
   const canOpenChannelTabs = $derived(tabs.canOpenTabs && !panel);
   const { t } = getLocalization();
   let query = $state("");
-  let directMessagesCollapsed = $state(false);
-  let directMessageButton = $state<HTMLButtonElement | null>(null);
-  let directMessagePickerOpen = $state(false);
   let railElement = $state<HTMLElement | null>(null);
   let expandButton = $state<HTMLButtonElement>();
   let collapseButton = $state<HTMLButtonElement>();
@@ -136,8 +126,6 @@
   let setupSectionId = $state<string | null>(null);
   let SetupDialog = $state<ChatChannelSetupDialogComponent | null>(null);
   let setupDialogLoad: Promise<void> | null = null;
-  let DirectMessagePicker = $state<ParticipantPickerComponent | null>(null);
-  let directMessagePickerLoad: Promise<void> | null = null;
   let sections = $state<ChatSidebarSection[]>([]);
   let loadedProjectId = $state<string | null>(null);
   let newSectionName = $state("");
@@ -408,11 +396,6 @@
     const section = contextMenuSection();
     closeSectionContextMenu();
     if (section) deleteSectionCandidate = section;
-  }
-
-  function openContactsFromContextMenu(contactsTab: "contacts" | "invitations"): void {
-    closeSectionContextMenu();
-    settings.open("contacts", { contactsTab });
   }
 
   function moveChannel(channelId: string, sectionId: string | null): void {
@@ -730,24 +713,6 @@
     return setupDialogLoad;
   }
 
-  /** Load the direct message picker only when the rail approaches or opens it. */
-  function loadDirectMessagePicker(): Promise<void> {
-    if (DirectMessagePicker) return Promise.resolve();
-    directMessagePickerLoad ??= import("$lib/components/contacts/ParticipantPicker.svelte")
-      .then((module) => { DirectMessagePicker = module.default; })
-      .catch((cause: unknown) => {
-        railError = chatErrorMessage(cause, t("chatErrors.actions.channelAction"));
-        directMessagePickerOpen = false;
-      })
-      .finally(() => { directMessagePickerLoad = null; });
-    return directMessagePickerLoad;
-  }
-
-  function openDirectMessagePicker(): void {
-    directMessagePickerOpen = true;
-    void loadDirectMessagePicker();
-  }
-
   function openCreate(sectionId: string | null = null): void {
     onExpand();
     setupChannel = null;
@@ -1009,20 +974,6 @@
             {/if}
           </section>
         {/each}
-
-        {#if !query.trim()}
-          <section class="channel-section" role="group" data-chat-direct-messages>
-            <div class="section-heading">
-              <button type="button" class="section-toggle" class:collapsed={directMessagesCollapsed} aria-label={sectionToggleLabel(t("chat.channels.directMessages"), directMessagesCollapsed)} aria-expanded={!directMessagesCollapsed} onclick={() => { directMessagesCollapsed = !directMessagesCollapsed; }}>
-                <span use:overflowTooltip={t("chat.channels.directMessages")}>{t("chat.channels.directMessages")}</span>
-                {#if directMessagesCollapsed}<ChevronRight class="section-chevron" size={13} />{:else}<ChevronDown class="section-chevron" size={13} />{/if}
-              </button>
-              <button bind:this={directMessageButton} type="button" class="section-create-action" aria-label={t("chat.channels.newDirectMessage")} data-app-tooltip={t("chat.channels.newDirectMessage")} aria-haspopup="dialog" aria-expanded={directMessagePickerOpen} onpointerenter={() => { void loadDirectMessagePicker(); }} onfocus={() => { void loadDirectMessagePicker(); }} onclick={openDirectMessagePicker}><Plus size={13} /></button>
-              <button type="button" class="explorer-icon explorer-row-action" aria-label={`${t("chat.moreActions")}: ${t("chat.channels.directMessages")}`} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={sectionContextMenu?.target.kind === "directMessages"} onclick={(event) => void toggleSectionContextMenu(event, { kind: "directMessages" })}><EllipsisVertical size={14} /></button>
-            </div>
-          </section>
-        {/if}
-
       </div>
 {/snippet}
 
@@ -1046,9 +997,6 @@
   >
     {#if sectionContextMenu.target.kind === "channels"}
       <button type="button" role="menuitem" disabled={!projects.selectedProjectId} class="menu-item" onclick={createSectionFromContextMenu}><FolderPlus class="size-4" /><span>{t("chat.channels.newSection")}</span></button>
-    {:else if sectionContextMenu.target.kind === "directMessages"}
-      <button type="button" role="menuitem" class="menu-item" onclick={() => openContactsFromContextMenu("contacts")}><ContactRound class="size-4" /><span>{t("contacts.tabs.contacts")}</span></button>
-      <button type="button" role="menuitem" class="menu-item" data-chat-invitations onclick={() => openContactsFromContextMenu("invitations")}><Mail class="size-4" /><span>{t("contacts.tabs.invitations")}</span></button>
     {:else}
       {@const sectionStarred = sectionContextMenu.target.section.starred === true}
       <button type="button" role="menuitem" class="menu-item" onclick={renameSectionFromContextMenu}><Pencil class="size-4" /><span>{t("chat.rename")}</span></button>
@@ -1151,19 +1099,6 @@
 {#if setupChannel !== undefined && SetupDialog}
   {@const LoadedSetupDialog = SetupDialog}
   <LoadedSetupDialog channel={setupChannel} sections={orderedSections} initialSectionId={setupSectionId} onSaved={savedChannel} onCancel={() => { setupChannel = undefined; setupSectionId = null; }} />
-{/if}
-
-{#if directMessagePickerOpen && DirectMessagePicker}
-  {@const LoadedDirectMessagePicker = DirectMessagePicker}
-  <LoadedDirectMessagePicker
-    anchor={directMessageButton}
-    title={t("chat.channels.newDirectMessage")}
-    includeContacts
-    includeTeammates={false}
-    horizontalAlign="start"
-    confirmLabel={t("chat.channels.startDirectMessage")}
-    onClose={() => { directMessagePickerOpen = false; }}
-  />
 {/if}
 
 {#if archiveCandidate}<ConfirmDialog title={t("chat.channels.archiveConfirmTitle", archiveCandidate.name)} message={t("chat.channels.archiveConfirmMessage")} confirmLabel={t("chat.archive")} cancelLabel={t("chat.cancel")} onConfirm={() => void confirmArchive()} onCancel={() => { archiveCandidate = null; }} />{/if}

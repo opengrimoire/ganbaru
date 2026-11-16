@@ -117,8 +117,6 @@ export const chat = {
     sectionName: "Section name",
     add: "Add",
     newSection: "Add section",
-    directMessages: "Direct messages",
-    newDirectMessage: "New direct message",
     emptyDirectMessages: "No direct messages yet.",
     archive: "Channel archive",
     moveTo: "Move to",
@@ -137,7 +135,6 @@ export const chat = {
     noTopic: "No topic",
     changeFolderDraftWarning: "Changing the working folder removes the attachments and file mentions of this draft.",
     changeFolderConfirm: "Change folder",
-    startDirectMessage: "Start conversation",
   },
   channelNotes: {
     title: "Channel notes",

@@ -111,6 +111,7 @@ describe("ChatIdentityButton", () => {
   const chat = getChat();
   const settings = getSettingsLauncher();
   const originalDisplayName = preferences.profileDisplayName;
+  const originalFullName = preferences.profileFullName;
   const originalSettings = chat.settings;
   const originalTeammates = chat.teammates;
   const originalArchivedTeammates = chat.archivedTeammates;
@@ -123,6 +124,7 @@ describe("ChatIdentityButton", () => {
     component = undefined;
     target = undefined;
     preferences.setProfileDisplayName(originalDisplayName);
+    preferences.setProfileFullName(originalFullName);
     chat.settings = originalSettings;
     chat.teammates = originalTeammates;
     chat.archivedTeammates = originalArchivedTeammates;
@@ -133,8 +135,9 @@ describe("ChatIdentityButton", () => {
     vi.useRealTimers();
   });
 
-  it("opens local identity details and links to profile settings", async () => {
-    preferences.setProfileDisplayName("Alice Smith");
+  it("opens local identity details with the full name and links to profile settings", async () => {
+    preferences.setProfileDisplayName("Alice");
+    preferences.setProfileFullName("Alice Smith");
     target = document.createElement("div");
     document.body.append(target);
     component = mount(ChatIdentityButton, {
@@ -145,9 +148,9 @@ describe("ChatIdentityButton", () => {
     target.querySelector<HTMLButtonElement>(".identity-trigger")?.click();
     await tick();
     const card = document.body.querySelector<HTMLElement>(".identity-card");
-    expect(card?.textContent).toContain("Alice Smith");
-    expect(card?.querySelector(".identity-name-line strong")?.textContent).toBe("Alice Smith (You)");
-    expect(card?.textContent).toContain("Private local identity");
+    expect(card?.querySelector(".identity-name-line strong")?.textContent).toBe("Alice (You)");
+    expect(card?.querySelector(".identity-heading small")?.textContent).toBe("Alice Smith");
+    expect(card?.querySelector(".identity-body")).toBeNull();
 
     card?.querySelector<HTMLButtonElement>("footer button")?.click();
     expect(settings.isOpen).toBe(true);

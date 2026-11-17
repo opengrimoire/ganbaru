@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onDestroy, tick } from "svelte";
-  import LockKeyhole from "@lucide/svelte/icons/lock-keyhole";
   import Settings from "@lucide/svelte/icons/settings";
   import Zap from "@lucide/svelte/icons/zap";
   import * as chatApi from "$lib/api/chat";
@@ -55,6 +54,8 @@
   const closeDelayMs = 140;
   const viewportInsetPx = 8;
   const cardGapPx = 7;
+  /** Card height assumed before the card has rendered once. */
+  const fallbackCardHeightPx = 260;
   const cardWidthPx = FLOATING_WIDTH.lg;
   let triggerElement = $state<HTMLButtonElement | null>(null);
   let cardElement = $state<HTMLElement | null>(null);
@@ -86,6 +87,8 @@
       t("chat.timeline.you"),
     )
     : model?.displayName ?? "");
+  /** The user's full name from their profile, shown under the display name on their own card. */
+  const localFullName = $derived(preferences.profileFullName.trim());
   const visibleTriggerLabel = $derived(triggerLabel
     ?? (presentation === "mention" ? `@${displayName}` : displayName));
   const cardModel = $derived(teammateModel ?? model);
@@ -155,11 +158,18 @@
       triggerElement?.focus();
     };
     void tick().then(reposition);
+    // Context usage and plan limits arrive after the card opens, so a taller card is placed again.
+    const resizeObserver = cardElement ? new ResizeObserver(reposition) : null;
+    if (cardElement) {
+      resizeObserver?.observe(cardElement);
+      for (const child of cardElement.children) resizeObserver?.observe(child);
+    }
     window.addEventListener("pointerdown", closeFromOutside, true);
     window.addEventListener("keydown", closeFromKeyboard, true);
     window.addEventListener("resize", reposition);
     window.addEventListener("scroll", reposition, true);
     return () => {
+      resizeObserver?.disconnect();
       window.removeEventListener("pointerdown", closeFromOutside, true);
       window.removeEventListener("keydown", closeFromKeyboard, true);
       window.removeEventListener("resize", reposition);
@@ -233,22 +243,32 @@
     pinned = false;
   }
 
+  /**
+   * Opens the card below its trigger when it fits there, above when it fits there, and otherwise
+   * on the roomier side with its height capped to that space. The height is the card's full
+   * content, so a capped card that scrolls still measures what it needs.
+   */
   function positionCard(): void {
     if (!open || !triggerElement) return;
     const triggerBounds = triggerElement.getBoundingClientRect();
-    const cardBounds = cardElement?.getBoundingClientRect();
-    const cardHeight = cardBounds?.height ?? 260;
-    const cardWidth = cardBounds?.width ?? cardWidthPx;
-    const availableBelow = window.innerHeight - triggerBounds.bottom - viewportInsetPx;
-    const top = availableBelow >= cardHeight + cardGapPx
-      ? triggerBounds.bottom + cardGapPx
-      : Math.max(viewportInsetPx, triggerBounds.top - cardHeight - cardGapPx);
+    const cardWidth = cardElement?.getBoundingClientRect().width ?? cardWidthPx;
+    const cardHeight = cardElement
+      ? cardElement.scrollHeight + cardElement.offsetHeight - cardElement.clientHeight
+      : fallbackCardHeightPx;
+    const availableBelow = Math.max(0, window.innerHeight - triggerBounds.bottom - cardGapPx - viewportInsetPx);
+    const availableAbove = Math.max(0, triggerBounds.top - cardGapPx - viewportInsetPx);
+    const openAbove = cardHeight > availableBelow
+      && (cardHeight <= availableAbove || availableAbove > availableBelow);
+    const maxHeight = openAbove ? availableAbove : availableBelow;
+    const top = openAbove
+      ? Math.max(viewportInsetPx, triggerBounds.top - cardGapPx - Math.min(cardHeight, maxHeight))
+      : triggerBounds.bottom + cardGapPx;
     const idealLeft = triggerBounds.left;
     const left = Math.min(
       Math.max(viewportInsetPx, idealLeft),
       Math.max(viewportInsetPx, window.innerWidth - cardWidth - viewportInsetPx),
     );
-    cardStyle = `left:${Math.round(left)}px;top:${Math.round(top)}px;visibility:visible`;
+    cardStyle = `left:${Math.round(left)}px;top:${Math.round(top)}px;max-height:${Math.round(maxHeight)}px;visibility:visible`;
   }
 
   function teammateStatus(): string {
@@ -359,16 +379,15 @@
             ></span>
           {/if}
         </div>
-        {#if participant?.kind === "local_user"}<small>{t("chat.organization.localProfile")}</small>
+        {#if participant?.kind === "local_user"}
+          {#if localFullName && localFullName !== displayName}<small>{localFullName}</small>{/if}
         {:else if participant?.kind === "ai_teammate" && teammate?.role}<small>{teammate.role}</small>
         {/if}
       </div>
     </div>
 
-    <div class="identity-body">
-      {#if participant?.kind === "local_user"}
-        <div class="privacy-note"><LockKeyhole size={14} /><span>{t("chat.organization.localProfileDetail")}</span></div>
-      {:else if cardModel}
+    {#if participant?.kind !== "local_user"}<div class="identity-body">
+      {#if cardModel}
         <div class="identity-settings-summary">
           <span class="identity-settings-label">{currentResponseSettings ? t("chat.organization.currentResponseSettings") : t("chat.organization.defaultSettings")}</span>
           <div class="identity-model-row">
@@ -391,8 +410,8 @@
           {#if usageState.automaticCompactionReported || usageMeter?.warning}<small>{t("chat.composer.contextCompaction")}</small>{/if}
         </div>
       {/if}
-      {#if cardProvider && participant?.kind !== "local_user"}<ProviderPlanLimits provider={cardProvider} />{/if}
-    </div>
+      {#if cardProvider}<ProviderPlanLimits provider={cardProvider} />{/if}
+    </div>{/if}
 
     {#if participant?.kind === "local_user" || participant?.kind === "ai_teammate"}
       <footer>
@@ -430,9 +449,6 @@
   .identity-approval { overflow:hidden; min-width:0; color:var(--foreground); text-overflow:ellipsis; white-space:nowrap; }
   .identity-context { display:grid; min-width:0; gap:0.22rem; font-size:var(--panel-font-size); }
   .identity-context small { color:var(--muted-foreground); font-size:var(--panel-detail-font-size); }
-  .privacy-note { display:grid; grid-template-columns:1rem minmax(0,1fr); gap:0.55rem; align-items:start; color:var(--muted-foreground); }
-  .privacy-note :global(svg) { margin-top:0.1rem; color:color-mix(in srgb,var(--primary) 70%,var(--foreground)); }
-  .privacy-note span { font-size:var(--panel-detail-font-size); line-height:1rem; }
   footer { display:flex; justify-content:flex-end; padding:0.25rem 0.65rem 0.5rem; }
   footer button { display:inline-flex; min-height:1.75rem; align-items:center; gap:0.35rem; border-radius:var(--floating-item-radius); padding:0.25rem 0.45rem; color:var(--muted-foreground); font-size:var(--panel-detail-font-size); }
   footer button:hover,footer button:focus-visible { background:var(--accent); color:var(--foreground); }

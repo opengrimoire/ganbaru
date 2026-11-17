@@ -836,7 +836,7 @@
                   : t("settings.agents.setup.testFailed", providerProbeMessage(testResult.probe.state))}
               </span>
               {#if facts.length > 0}
-                <small>{#each facts as fact, index (index)}{#if index > 0}<span aria-hidden="true"> · </span>{/if}{fact}{/each}</small>
+                <small class="test-result-facts">{#each facts as fact, index (index)}<span>{fact}</span>{/each}</small>
               {/if}
             </span>
           </div>
@@ -908,7 +908,7 @@
   .test-result[data-state="success"] .test-result-icon { color:var(--action-confirm-signal); }
   .test-result-icon :global(svg) { width:1.1em; height:1.1em; }
   .test-result-text { display:flex; min-width:0; flex-direction:column; overflow-wrap:anywhere; }
-  .test-result small { color:var(--muted-foreground); font-size:inherit; }
+  .test-result-facts { display:flex; flex-wrap:wrap; gap:0.125rem 1rem; color:var(--muted-foreground); font-size:inherit; }
   .footer-content { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:0.6rem; border-top:1px solid var(--border); padding-top:0.75rem; }
   .footer-message { min-width:0; flex:1; font-size:calc(0.75rem * var(--type-scale)); }
   .footer-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:0.45rem; }

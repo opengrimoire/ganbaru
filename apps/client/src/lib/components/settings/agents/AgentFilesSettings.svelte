@@ -302,7 +302,7 @@
                   <ChatModelAvatar familyId={family.familyId} label={family.displayName} size={32} />
                   <span class="directory-summary">
                     <strong>{family.displayName}</strong>
-                    <small>{familyStatus(family)}</small>
+                    <small class="unconfigured-state"><i></i>{familyStatus(family)}</small>
                   </span>
                 </button>
               {/each}
@@ -452,6 +452,8 @@
   .directory-summary strong,.directory-summary small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .directory-summary strong { font-size:calc(0.8rem * var(--type-scale)); font-weight:600; }
   .directory-summary small { margin-top:0.05rem; color:var(--muted-foreground); font-size:calc(0.65rem * var(--type-scale)); }
+  .unconfigured-state { display:flex; align-items:center; gap:0.3rem; }
+  .unconfigured-state i { width:0.38rem; height:0.38rem; flex:0 0 auto; border-radius:50%; background:var(--destructive); }
   .detail-panel { position:relative; z-index:2; min-width:0; min-height:0; border-left:1px solid var(--border); padding-left:1rem; }
   .detail-scroll { display:grid; grid-template-columns:minmax(0,1fr); align-content:start; gap:1.25rem; padding:0.2rem 0.75rem 1rem 0; }
   .editor-heading { display:grid; min-width:0; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:0.65rem; padding-inline:0.25rem; }

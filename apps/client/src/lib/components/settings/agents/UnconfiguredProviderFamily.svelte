@@ -49,7 +49,6 @@
 </script>
 
 <section class="flex flex-col items-start gap-3 px-1 text-[0.8rem] text-muted-foreground">
-  <p>{t("settings.agents.providers.noConfigurations", family.displayName)}</p>
   {#if family.installGuide}
     <ProviderInstallSteps
       {family}

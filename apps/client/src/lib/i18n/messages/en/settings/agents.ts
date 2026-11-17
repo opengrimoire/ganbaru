@@ -386,7 +386,6 @@ export const agentsSettings = {
     noIntegrations: "No coding-agent integrations are available.",
     familyTabs: "Coding-agent providers",
     configurations: "Configurations",
-    noConfigurations: (provider: string) => `No ${provider} configuration on this device.`,
     setUp: (provider: string) => `Set up ${provider}`,
     setUpAdvanced: (provider: string) => `Set up ${provider} (advanced)`,
     install: {

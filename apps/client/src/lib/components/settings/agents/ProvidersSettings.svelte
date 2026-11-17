@@ -888,7 +888,7 @@
   .directory-summary small i,.editor-state i { width:0.38rem; height:0.38rem; flex:0 0 auto; border-radius:50%; background:var(--status-tentative); }
   .directory-summary small[data-state="healthy"] i,.editor-state[data-state="healthy"] i { background:var(--action-confirm-signal); }
   .directory-summary small[data-state="disabled"] i,.editor-state[data-state="disabled"] i { background:var(--muted-foreground); opacity:0.7; }
-  .directory-summary small[data-state="unconfigured"] i,.editor-state[data-state="unconfigured"] i { border:1px solid currentColor; background:transparent; }
+  .directory-summary small[data-state="unconfigured"] i,.editor-state[data-state="unconfigured"] i { background:var(--destructive); }
   .detail-panel { position:relative; z-index:2; min-width:0; min-height:0; border-left:1px solid var(--border); padding-left:1rem; }
   .detail-scroll { display:grid; grid-template-columns:minmax(0,1fr); align-content:start; gap:1rem; padding:0.2rem 0.75rem 1rem 0; }
   .editor-heading { display:grid; min-width:0; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:0.65rem; padding-inline:0.25rem; }

@@ -389,7 +389,6 @@ export const agentsSettings = {
     noIntegrations: "No hay integraciones de agentes de programación disponibles.",
     familyTabs: "Proveedores de agentes de programación",
     configurations: "Configuraciones",
-    noConfigurations: (provider: string) => `No hay una configuración de ${provider} en este dispositivo.`,
     setUp: (provider: string) => `Configurar ${provider}`,
     setUpAdvanced: (provider: string) => `Configurar ${provider} (avanzado)`,
     install: {

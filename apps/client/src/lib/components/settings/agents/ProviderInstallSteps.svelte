@@ -108,14 +108,14 @@
         <CommandBox class="mt-2 text-[0.75rem]" command={guide.signInCommand} {prompt} />
       </div>
     </NumberedStep>
-    <NumberedStep number={total} {total}>
-      <div class="min-w-0 flex-1 pt-0.5">
+    <NumberedStep number={total} {total} beside={onRefresh ? "field" : "text"}>
+      <div class={onRefresh ? "min-w-0 flex-1" : "min-w-0 flex-1 pt-0.5"}>
         {#if !onRefresh}
           <p class="text-[0.8rem] leading-5 text-foreground">{t("settings.agents.providers.install.finishSetUp")}</p>
         {:else}
           <button
             type="button"
-            class="inline-flex min-h-[1.9rem] items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-[0.733333rem] font-semibold whitespace-nowrap text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+            class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-[0.733333rem] font-semibold whitespace-nowrap text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
             disabled={refreshing}
             onclick={() => void refresh()}
           >

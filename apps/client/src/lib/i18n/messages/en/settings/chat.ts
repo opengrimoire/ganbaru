@@ -462,7 +462,7 @@ export const chatSettings = {
       cursorUserRules: "Cursor keeps User Rules in your Cursor account under Cursor Settings > Rules, and teammates also load each project's AGENTS.md, CLAUDE.md, and .cursor/rules.",
       grokPrivateHome: (paths: string) => `This instance keeps its own Grok folder, so the instructions, rules, and config.toml in ${paths} don't apply to it.`,
       grokRules: (paths: string) => `Grok also loads the Markdown files in ${paths}.`,
-      grokSkippedHomeInstructions: (paths: string) => `Teammates skip ${paths}, which Grok also reads in a terminal, so keep shared rules in this AGENTS.md.`,
+      grokOtherHomeInstructions: (paths: string) => `Grok also loads ${paths}, and teammates receive them as text.`,
       codexOverride: (paths: string) => `Codex uses ${paths} instead of AGENTS.md while that file has content.`,
       opencodeClaudeFallback: (paths: string) => `Until this AGENTS.md exists, OpenCode uses ${paths} instead.`,
       opencodeInstructions: (paths: string) => `OpenCode also loads the files listed under instructions in ${paths}.`,

@@ -113,7 +113,7 @@ export const PROVIDER_FILE_NOTE_KINDS = [
   "cursor_user_rules",
   "grok_private_home",
   "grok_rules",
-  "grok_skipped_home_instructions",
+  "grok_other_home_instructions",
   "codex_override",
   "opencode_claude_fallback",
   "opencode_instructions",

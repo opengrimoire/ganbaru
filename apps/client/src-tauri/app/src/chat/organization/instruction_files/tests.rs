@@ -114,6 +114,34 @@ fn claude_falls_back_to_agents_md_only_without_a_claude_file() {
 }
 
 #[test]
+fn grok_reads_claude_and_cursor_home_files_before_project_files() {
+    let home = TempDir::new();
+    home.write(".claude/CLAUDE.md", "Claude home memory");
+    home.write(".claude/rules/one.md", "Claude home rule");
+    home.write(".claude/rules/deeper/two.md", "Not scanned");
+    home.write(".claude/settings.json", "{}");
+    home.write(".cursor/AGENTS.md", "Cursor home agents");
+    home.write(".cursor/rules/three.md", "Cursor home rule");
+    home.write(".grok/AGENTS.md", "Loaded natively");
+    let folder = TempDir::new();
+    folder.write("AGENTS.md", "Project agents");
+
+    let files =
+        collect_instruction_files(InstructionFileFamily::Grok, Some(&home.0), Some(&folder.0));
+
+    assert_eq!(
+        labels(&files),
+        vec![
+            (InstructionScope::User, ".claude/CLAUDE.md"),
+            (InstructionScope::User, ".claude/rules/one.md"),
+            (InstructionScope::User, ".cursor/AGENTS.md"),
+            (InstructionScope::User, ".cursor/rules/three.md"),
+            (InstructionScope::Project, "AGENTS.md"),
+        ]
+    );
+}
+
+#[test]
 fn grok_reads_every_supported_name_and_top_level_rules() {
     let folder = TempDir::new();
     folder.write("AGENTS.md", "Agents");

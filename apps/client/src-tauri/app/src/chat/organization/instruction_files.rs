@@ -4,7 +4,8 @@
 //! OpenCode then skip some of the instruction files a direct run loads: Claude's restricted mode
 //! drops every `CLAUDE.md` and rule, OpenCode's disabled project configuration drops the project
 //! `AGENTS.md`, and Grok loads project files at startup only in folders the user trusted in
-//! Grok. Dispatch reads those files itself, bounded and without leaving the working folder, and
+//! Grok and cannot read the Claude and Cursor homes under the sandbox. Dispatch reads those
+//! files itself, bounded and without leaving the working folder or those homes, and
 //! appends them to the run's instructions, so the continuation key changes whenever a file
 //! does. Codex and Cursor load the same files natively in teammate runs and get nothing here.
 
@@ -34,6 +35,16 @@ const MAX_RULES_DIRECTORY_ENTRIES: usize = 256;
 
 /// Deepest rules subfolder read where the provider reads rules recursively.
 const MAX_RULES_DEPTH: usize = 4;
+
+/// Instruction filenames Grok loads from a project or home folder, in its order.
+const GROK_INSTRUCTION_NAMES: &[&str] = &[
+    "Agents.md",
+    "Claude.md",
+    "CLAUDE.md",
+    "CLAUDE.local.md",
+    "AGENT.md",
+    "AGENTS.md",
+];
 
 /// Room kept for the note that counts the files left out.
 const OMISSION_NOTE_RESERVE_BYTES: usize = 128;
@@ -72,7 +83,7 @@ impl InstructionFileFamily {
 /// Where an instruction file lives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum InstructionScope {
-    /// The provider home, which applies to every folder.
+    /// A home folder the provider reads, which applies to every folder.
     User,
     /// The working folder the run executes in.
     Project,
@@ -109,11 +120,15 @@ pub(super) async fn with_instruction_files(
     else {
         return instructions.to_string();
     };
-    let provider_home = match family {
+    let user_folder = match family {
         InstructionFileFamily::Claude => {
             crate::chat::provider_files::provider_home(&provider.configuration).ok()
         }
-        InstructionFileFamily::Grok | InstructionFileFamily::OpenCode => None,
+        // Grok loads its own home natively, and the Claude and Cursor homes it also reads only
+        // where the sandbox does not hide them.
+        InstructionFileFamily::Grok => ganbaru_chat_providers::teammates_run_confined()
+            .then(crate::chat::provider_files::user_home),
+        InstructionFileFamily::OpenCode => None,
     };
     let working_folder = match working_folder_id {
         Some(working_folder_id) => {
@@ -122,7 +137,7 @@ pub(super) async fn with_instruction_files(
         None => None,
     };
     let files = tauri::async_runtime::spawn_blocking(move || {
-        collect_instruction_files(family, provider_home.as_deref(), working_folder.as_deref())
+        collect_instruction_files(family, user_folder.as_deref(), working_folder.as_deref())
     })
     .await
     .unwrap_or_default();
@@ -157,7 +172,10 @@ async fn execution_folder(
 }
 
 /// Reads the instruction files `family` skips in teammate runs, in the order the provider
-/// loads them: user files from `provider_home`, then project files from `working_folder`.
+/// loads them: user files from `user_folder`, then project files from `working_folder`.
+///
+/// `user_folder` is Claude's provider home, or for Grok the user's home folder, whose
+/// `.claude` and `.cursor` instruction files and top-level rules Grok also loads.
 ///
 /// Project files must resolve inside the working folder through real directories; a symlinked
 /// file may point at another file in the folder, such as `CLAUDE.md` at `AGENTS.md`. Files
@@ -165,15 +183,19 @@ async fn execution_folder(
 /// files natively and are left out, and `@` imports are sent as written.
 pub(super) fn collect_instruction_files(
     family: InstructionFileFamily,
-    provider_home: Option<&Path>,
+    user_folder: Option<&Path>,
     working_folder: Option<&Path>,
 ) -> Vec<InstructionFile> {
     let mut collector = Collector::default();
-    if family == InstructionFileFamily::Claude
-        && let Some(home) = provider_home
-    {
-        collector.read_user(home, Path::new("CLAUDE.md"));
-        collector.read_rules(&RulesLocation::user(home), Path::new("rules"), true, 0);
+    if let Some(home) = user_folder {
+        match family {
+            InstructionFileFamily::Claude => {
+                collector.read_user(home, Path::new("CLAUDE.md"));
+                collector.read_rules(&RulesLocation::user(home), Path::new("rules"), true, 0);
+            }
+            InstructionFileFamily::Grok => collector.read_grok_vendor_homes(home),
+            InstructionFileFamily::OpenCode => {}
+        }
     }
     let Some(root) = working_folder.and_then(|folder| fs::canonicalize(folder).ok()) else {
         return collector.files;
@@ -284,20 +306,32 @@ impl Collector {
     /// Project files Grok loads from the working folder in a trusted folder: every supported
     /// name in its order, Claude's project memory files, and the top level of each rules folder.
     fn read_grok_project(&mut self, root: &Path) {
-        for name in [
-            "Agents.md",
-            "Claude.md",
-            "CLAUDE.md",
-            "CLAUDE.local.md",
-            "AGENT.md",
-            "AGENTS.md",
-            ".claude/CLAUDE.md",
-            ".claude/CLAUDE.local.md",
-        ] {
+        for name in GROK_INSTRUCTION_NAMES
+            .iter()
+            .copied()
+            .chain([".claude/CLAUDE.md", ".claude/CLAUDE.local.md"])
+        {
             self.read_project(root, Path::new(name));
         }
         for rules in [".grok/rules", ".claude/rules", ".cursor/rules"] {
             self.read_rules(&RulesLocation::project(root), Path::new(rules), false, 0);
+        }
+    }
+
+    /// The Claude and Cursor home files Grok loads besides its own home: every supported
+    /// name, then the top level of the rules folder, in `.claude` before `.cursor`.
+    fn read_grok_vendor_homes(&mut self, user_home: &Path) {
+        for vendor in [".claude", ".cursor"] {
+            let folder = Path::new(vendor);
+            for name in GROK_INSTRUCTION_NAMES {
+                self.read_user(user_home, &folder.join(name));
+            }
+            self.read_rules(
+                &RulesLocation::user(user_home),
+                &folder.join("rules"),
+                false,
+                0,
+            );
         }
     }
 
@@ -316,7 +350,7 @@ impl Collector {
         if self.reads >= MAX_INSTRUCTION_FILES {
             return;
         }
-        // The provider home is the user's own configuration, which the provider itself reads
+        // A home folder holds the user's own configuration, which the provider itself reads
         // through symlinks, so a file linked from elsewhere loads as it does natively.
         let Ok(bytes) = read_regular_file_capped(
             &home.join(relative),

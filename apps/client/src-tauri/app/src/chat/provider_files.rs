@@ -493,7 +493,8 @@ fn process_environment(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn user_home() -> PathBuf {
+/// The user's home folder, from `HOME` or `USERPROFILE`.
+pub(crate) fn user_home() -> PathBuf {
     #[cfg(windows)]
     let names = ["USERPROFILE", "HOME"];
     #[cfg(not(windows))]
@@ -1077,7 +1078,7 @@ mod tests {
             [
                 ProviderFileNoteKind::GrokPrivateHome,
                 ProviderFileNoteKind::GrokRules,
-                ProviderFileNoteKind::GrokSkippedHomeInstructions,
+                ProviderFileNoteKind::GrokOtherHomeInstructions,
             ]
         );
         assert_eq!(read.notes[0].paths, [display_path(&own_home)]);

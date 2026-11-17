@@ -27,6 +27,14 @@ pub use ganbaru_chat_contracts::models::ProviderAuthoritySupport;
 pub use registry::ProviderDriverRegistry;
 pub use unsupported::*;
 
+/// Whether teammate processes on this device run under an enforcing sandbox helper, which
+/// keeps them from reading the user's home folders outside their provider home.
+///
+/// Without one, the teammates that run at all run unconfined and read those folders natively.
+pub fn teammates_run_confined() -> bool {
+    confinement::sandbox_helper().is_some()
+}
+
 #[cfg(test)]
 pub(crate) fn test_block_on<F>(future: F) -> F::Output
 where

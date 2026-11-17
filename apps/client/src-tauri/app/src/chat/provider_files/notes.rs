@@ -36,8 +36,8 @@ pub enum ProviderFileNoteKind {
     GrokPrivateHome,
     /// Grok loads the Markdown files of the rules folder in its home.
     GrokRules,
-    /// Grok reads Claude and Cursor home instructions in a terminal, which teammates skip.
-    GrokSkippedHomeInstructions,
+    /// Grok also loads Claude and Cursor home instructions, which teammates receive as text.
+    GrokOtherHomeInstructions,
     /// Codex uses a non-empty `AGENTS.override.md` instead of `AGENTS.md`.
     CodexOverride,
     /// OpenCode uses Claude Code's user `CLAUDE.md` while its global `AGENTS.md` is missing.
@@ -131,7 +131,7 @@ fn grok_notes(folders: &NoteFolders<'_>, notes: &mut Vec<ProviderFileNote>) {
         .collect();
     if !skipped.is_empty() {
         notes.push(note(
-            ProviderFileNoteKind::GrokSkippedHomeInstructions,
+            ProviderFileNoteKind::GrokOtherHomeInstructions,
             skipped,
         ));
     }

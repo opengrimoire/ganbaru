@@ -1131,7 +1131,7 @@
   .chat-process-step-label { display: inline-flex; width: fit-content; min-width: 0; max-width: 100%; align-items: flex-start; gap: 0.25rem; justify-self: start; }
   .chat-process-step-label > span { min-width: 0; overflow-wrap: anywhere; }
   .chat-file-change-counts { display: inline-flex; flex: 0 0 auto; gap: 0.25rem; font-size: calc(0.7rem * var(--type-scale)); }
-  .chat-file-change-counts .additions { color: var(--action-confirm); }
+  .chat-file-change-counts .additions { color: var(--action-confirm-signal); }
   .chat-file-change-counts .deletions { color: var(--destructive); }
   .chat-process-step-label :global(svg) { flex: 0 0 auto; margin-top: calc((var(--chat-process-line-height, calc(1.1875rem * var(--type-scale))) - 0.875rem) / 2); }
   .chat-process-step.active, .chat-process-toggle.active { color: color-mix(in srgb, var(--muted-foreground) 78%, var(--foreground)); }

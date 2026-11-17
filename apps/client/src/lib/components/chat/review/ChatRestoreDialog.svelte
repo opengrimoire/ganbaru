@@ -204,7 +204,7 @@
   .restore-files { overflow: hidden; border: 1px solid var(--border); border-radius: 0.8rem; background: color-mix(in srgb, var(--muted) 24%, var(--background)); }
   .restore-files-header { display: flex; min-width: 0; align-items: center; gap: 0.45rem; padding: 0.55rem 0.65rem; }
   .restore-files-header strong { font-size: calc(0.78rem * var(--type-scale)); font-weight: 600; }
-  .additions { color: var(--action-confirm); }
+  .additions { color: var(--action-confirm-signal); }
   .deletions { color: var(--destructive); }
   .restore-files-list { display: grid; max-height: 12rem; overflow: auto; border-top: 1px solid var(--border); padding: 0.25rem; }
   .restore-files-list li { display: flex; min-width: 0; align-items: center; gap: 0.4rem; padding: 0.3rem 0.4rem; }

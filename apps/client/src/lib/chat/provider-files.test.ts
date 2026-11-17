@@ -6,6 +6,7 @@ import {
   PROVIDER_FILE_NOTE_NAMES,
   PROVIDER_PREFERENCE_NAMES,
   PROVIDER_PREFERENCE_OPTION_NAMES,
+  providerFilesFolder,
   providerFilesNote,
   providerPreferenceInputValue,
   providerPreferenceName,
@@ -126,6 +127,19 @@ describe("provider files", () => {
     ]);
     expect(groups.instructions.map((entry) => entry.fileId)).toEqual(["instructions"]);
     expect(groups.configuration.map((entry) => entry.fileId)).toEqual(["configuration", "global_configuration"]);
+  });
+
+  it("names the deepest folder that holds every provider file", () => {
+    expect(providerFilesFolder([{ path: "/home/user/.claude/CLAUDE.md" }, { path: "/home/user/.claude/settings.json" }])).toBe("/home/user/.claude");
+    expect(providerFilesFolder([{ path: "/home/user/.config/opencode/AGENTS.md" }, { path: "/home/user/.claude/CLAUDE.md" }])).toBe("/home/user");
+    expect(providerFilesFolder([{ path: "C:\\Users\\user\\.codex\\AGENTS.md" }, { path: "C:\\Users\\user\\.codex\\config.toml" }])).toBe("C:\\Users\\user\\.codex");
+    expect(providerFilesFolder([{ path: "/etc/a.json" }, { path: "/home/b.json" }])).toBe("/");
+  });
+
+  it("names no folder without files or without a shared folder", () => {
+    expect(providerFilesFolder([])).toBeNull();
+    expect(providerFilesFolder([{ path: "C:\\a\\x.md" }, { path: "D:\\a\\y.md" }])).toBeNull();
+    expect(providerFilesFolder([{ path: "AGENTS.md" }])).toBeNull();
   });
 });
 

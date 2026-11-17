@@ -948,7 +948,7 @@
   .toolbar-group button, .review-toolbar > button, .search-toolbar > button, .file-toolbar button { display: inline-grid; width: 1.7rem; height: 1.7rem; flex: 0 0 auto; place-items: center; border-radius: 0.3rem; color: var(--foreground); }
   .toolbar-group button:hover, .toolbar-group button.active, .review-toolbar > button:hover, .review-toolbar > button.active, .file-toolbar button:hover, .search-toolbar > button:hover { background: var(--accent); }
   .diff-stats { display: flex; margin-left: auto; gap: 0.3rem; font-family: "SF Mono", "SFMono-Regular", Consolas, monospace; font-size: calc(0.633333rem * var(--type-scale)); }
-  .diff-stats span:first-child { color: var(--action-confirm); }
+  .diff-stats span:first-child { color: var(--action-confirm-signal); }
   .diff-stats span:last-child { color: var(--destructive); }
   .comments-toggle { display: inline-flex !important; width: auto !important; padding-inline: 0.35rem; gap: 0.25rem; font-size: calc(0.633333rem * var(--type-scale)); }
   .search-toolbar { min-height: 2.35rem; }

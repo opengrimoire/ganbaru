@@ -11,6 +11,7 @@
     PROVIDER_DOC_LINKS,
     PROVIDER_FILE_NOTE_LINKS,
     PROVIDER_FILE_NOTE_NAMES,
+    providerFilesFolder,
     providerFilesNote,
     providerPreferencesAllowlisted,
     splitProviderFiles,
@@ -51,6 +52,7 @@
   const familyId = $derived(selectedProvider?.configuration.familyId ?? null);
   const dirty = $derived(instructionsDirty || configurationDirty);
   const groups = $derived(splitProviderFiles(files));
+  const filesFolder = $derived(providerFilesFolder(files));
   const preferenceFile = $derived(groups.configuration.find((file) => file.preferences !== null) ?? null);
   const note = $derived(familyId ? providerFilesNote(familyId) : null);
   const preferencesAllowlisted = $derived(familyId ? providerPreferencesAllowlisted(familyId) : false);
@@ -225,7 +227,7 @@
                 <ChatModelAvatar familyId={selectedProvider.configuration.familyId} label={familyDisplayName(selectedProvider.configuration.familyId)} size={38} />
                 <div class="min-w-0">
                   <h3>{selectedProvider.configuration.label}</h3>
-                  <p>{familyDisplayName(selectedProvider.configuration.familyId)}</p>
+                  <p class="font-mono" title={filesFolder ?? undefined}>{filesFolder ?? "\u00a0"}</p>
                 </div>
               </div>
             {/if}

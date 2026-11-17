@@ -890,7 +890,7 @@
   .environment-warning { display:flex; flex-wrap:wrap; grid-column:1/-1; align-items:center; gap:0.4rem; color:var(--muted-foreground); font-size:calc(0.68rem * var(--type-scale)); }
   .environment-warning button { color:var(--foreground); text-decoration:underline; }
   .test-result { display:flex; flex-wrap:wrap; align-items:center; gap:0.4rem 0.65rem; border-block:1px solid var(--border); padding:0.65rem 0.25rem; color:var(--status-tentative); font-size:calc(0.75rem * var(--type-scale)); }
-  .test-result[data-state="success"] { color:var(--action-confirm); }
+  .test-result[data-state="success"] { color:var(--action-confirm-signal); }
   .test-result > i { display:grid; width:1rem; height:1rem; place-items:center; border:1px solid currentColor; border-radius:999px; }
   .test-result small { color:var(--muted-foreground); }
   .footer-content { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:0.6rem; border-top:1px solid var(--border); padding-top:0.75rem; }

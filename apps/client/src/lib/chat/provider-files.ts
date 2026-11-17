@@ -222,3 +222,23 @@ export function splitProviderFiles(files: readonly ProviderFileRead[]): {
     configuration: files.filter((file) => file.kind === "configuration"),
   };
 }
+
+/**
+ * The deepest folder that holds every file a provider reads, written with the separator the
+ * paths use, or `null` when there are no files or they share no folder (different drives).
+ */
+export function providerFilesFolder(files: readonly Pick<ProviderFileRead, "path">[]): string | null {
+  const folders = files.map((file) => file.path.split(/[\\/]/).slice(0, -1));
+  const [first, ...rest] = folders;
+  if (!first || first.length === 0) return null;
+  let length = first.length;
+  for (const folder of rest) {
+    let shared = 0;
+    while (shared < Math.min(length, folder.length) && folder[shared] === first[shared]) shared += 1;
+    length = shared;
+  }
+  if (length === 0) return null;
+  const separator = /[\\/]/.exec(files[0]?.path ?? "")?.[0] ?? "/";
+  const common = first.slice(0, length);
+  return common.length === 1 && common[0] === "" ? separator : common.join(separator);
+}

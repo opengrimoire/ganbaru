@@ -446,7 +446,7 @@
   .identity-heading strong { overflow:hidden; font-size:calc(0.9rem * var(--type-scale)); font-weight:650; line-height:1.2rem; text-overflow:ellipsis; white-space:nowrap; }
   .identity-heading small { overflow:hidden; color:var(--muted-foreground); font-size:var(--panel-detail-font-size); text-overflow:ellipsis; white-space:nowrap; }
   .identity-status-dot { width:0.42rem; height:0.42rem; flex:0 0 auto; border-radius:999px; background:var(--status-tentative); }
-  .identity-status-dot.available { background:var(--action-confirm); }
+  .identity-status-dot.available { background:var(--action-confirm-signal); }
   .identity-body { display:grid; gap:0.65rem; padding:0.3rem 0.8rem 0.7rem; }
   .identity-description { overflow-wrap:anywhere; font-size:var(--panel-font-size); line-height:1.1rem; }
   .identity-settings-summary { display:grid; min-width:0; gap:0.18rem; }

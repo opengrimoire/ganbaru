@@ -68,7 +68,7 @@
         <span class="min-w-0 flex-1 truncate text-left">{node.name}</span>
         {#if node.file.previousRelativePath}<span class="max-w-20 truncate text-[0.583333rem] text-muted-foreground" title={node.file.previousRelativePath}>← {node.file.previousRelativePath}</span>{/if}
         {#if node.file.binary}<span class="text-[0.583333rem]">B</span>{/if}
-        {#if node.file.additions !== null}<span class="text-[0.583333rem] text-action-confirm">+{formatNumber(localization.locale, node.file.additions)}</span>{/if}
+        {#if node.file.additions !== null}<span class="text-[0.583333rem] text-action-confirm-signal">+{formatNumber(localization.locale, node.file.additions)}</span>{/if}
         {#if node.file.deletions !== null}<span class="text-[0.583333rem] text-destructive">−{formatNumber(localization.locale, node.file.deletions)}</span>{/if}
         <span class="file-status">{statusLabel(node.file)}</span>
       </button>

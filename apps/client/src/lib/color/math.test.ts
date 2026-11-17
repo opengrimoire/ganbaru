@@ -15,6 +15,7 @@ import {
   pickReadableBorder,
   pickReadableForeground,
   pickReadableMuted,
+  pickReadableSignal,
   relativeLuminance,
   rgbaToHex,
   rgbToHex,
@@ -499,6 +500,37 @@ describe("pickReadableBorder", () => {
     // Mid gray: best achievable border is one of the endpoints.
     const ratio = contrastRatio("#808080", border);
     expect(ratio).toBeGreaterThan(1);
+  });
+});
+
+describe("pickReadableSignal", () => {
+  const hue = (hex: string) => {
+    const lab = hexToOklab(hex)!;
+    return Math.atan2(lab.b, lab.a);
+  };
+
+  it("keeps a signal that already reads on the surface", () => {
+    expect(pickReadableSignal("#059669", "#F4F4F7")).toBe("#059669");
+  });
+
+  it("lifts a deep fill on a dark canvas to a vivid shade of the same hue", () => {
+    const signal = pickReadableSignal("#065F46", "#27282A", 4.5);
+    expect(contrastRatio(signal, "#27282A")).toBeGreaterThanOrEqual(4.5);
+    expect(hexToOklab(signal)!.L).toBeGreaterThan(hexToOklab("#065F46")!.L);
+    expect(Math.abs(hue(signal) - hue("#065F46"))).toBeLessThan(0.1);
+    const chroma = (hex: string) => Math.hypot(hexToOklab(hex)!.a, hexToOklab(hex)!.b);
+    expect(chroma(signal)).toBeGreaterThan(chroma("#065F46"));
+  });
+
+  it("darkens a pale signal on a light canvas", () => {
+    const signal = pickReadableSignal("#A7F3D0", "#FFFFFF", 4.5);
+    expect(contrastRatio(signal, "#FFFFFF")).toBeGreaterThanOrEqual(4.5);
+    expect(hexToOklab(signal)!.L).toBeLessThan(hexToOklab("#A7F3D0")!.L);
+  });
+
+  it("falls back to a readable endpoint when the hue cannot reach the target", () => {
+    const signal = pickReadableSignal("#777777", "#767676", 7);
+    expect(contrastRatio(signal, "#767676")).toBeGreaterThan(1);
   });
 });
 

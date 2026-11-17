@@ -168,7 +168,7 @@
   <section class="flex flex-col gap-4">
     <h2 class="px-1 text-[0.866667rem] font-semibold text-foreground">{t("settings.chat.behavior.diagnosticsHeading")}</h2>
     {#if error}<Notice class="px-1 text-[0.733333rem]" message={error} onRetry={diagnostics ? undefined : retryDiagnostics} />{/if}
-    {#if status}<p role="status" class="px-1 text-[0.8rem] text-action-confirm">{status}</p>{/if}
+    {#if status}<p role="status" class="px-1 text-[0.8rem] text-action-confirm-signal">{status}</p>{/if}
     {#if diagnostics}
       <div class="@container px-1">
         <div class="grid gap-3 @md:grid-cols-2">

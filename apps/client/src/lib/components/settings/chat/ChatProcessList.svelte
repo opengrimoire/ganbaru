@@ -92,7 +92,7 @@
     <button type="button" class={SETTINGS_ICON_BUTTON_CLASS} disabled={busy} aria-label={t("settings.chat.behavior.refreshProcesses")} title={t("settings.chat.behavior.refreshProcesses")} onclick={() => void refresh()}><RotateCw size={13} aria-hidden="true" /></button>
   </div>
   {#if error}<Notice class="px-1 text-[0.733333rem]" message={error} />{/if}
-  {#if status}<p role="status" class="px-1 text-[0.8rem] text-action-confirm">{status}</p>{/if}
+  {#if status}<p role="status" class="px-1 text-[0.8rem] text-action-confirm-signal">{status}</p>{/if}
   {#if processes}
     {#if processes.roots.length === 0}
       <p class="px-1 text-[0.8rem] text-muted-foreground">{t("settings.chat.behavior.processesEmpty")}</p>

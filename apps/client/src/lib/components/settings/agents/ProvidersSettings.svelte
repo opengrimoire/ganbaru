@@ -904,7 +904,7 @@
   .directory-summary strong { font-size:calc(0.8rem * var(--type-scale)); font-weight:600; }
   .directory-summary small { display:flex; min-width:0; align-items:center; gap:0.3rem; margin-top:0.05rem; color:var(--muted-foreground); font-size:calc(0.65rem * var(--type-scale)); }
   .directory-summary small i,.editor-state i { width:0.38rem; height:0.38rem; flex:0 0 auto; border-radius:50%; background:var(--status-tentative); }
-  .directory-summary small[data-state="healthy"] i,.editor-state[data-state="healthy"] i { background:var(--action-confirm); }
+  .directory-summary small[data-state="healthy"] i,.editor-state[data-state="healthy"] i { background:var(--action-confirm-signal); }
   .directory-summary small[data-state="disabled"] i,.editor-state[data-state="disabled"] i { background:var(--muted-foreground); opacity:0.7; }
   .directory-summary small[data-state="unconfigured"] i,.editor-state[data-state="unconfigured"] i { border:1px solid currentColor; background:transparent; }
   .detail-panel { position:relative; z-index:2; min-width:0; min-height:0; border-left:1px solid var(--border); padding-left:1rem; }
@@ -921,7 +921,7 @@
   .editor-account { display:inline-grid; width:1rem; height:1rem; flex:0 0 auto; place-items:center; border-radius:0.2rem; color:var(--muted-foreground); }
   .editor-account:hover,.editor-account:focus-visible { color:var(--foreground); }
   .header-actions { display:flex; flex-shrink:0; align-items:center; gap:0.3rem; }
-  .refresh-summary { border-left:2px solid var(--action-confirm); padding:0.15rem 0.25rem 0.15rem 0.65rem; font-size:calc(0.68rem * var(--type-scale)); }
+  .refresh-summary { border-left:2px solid var(--action-confirm-signal); padding:0.15rem 0.25rem 0.15rem 0.65rem; font-size:calc(0.68rem * var(--type-scale)); }
   .detail-scroll > :global(.operation-error) { padding:0.15rem 0.25rem 0.15rem 0.65rem; font-size:calc(0.68rem * var(--type-scale)); }
   .refresh-summary { color:var(--muted-foreground); }
   .refresh-summary.attention,.catalog-warning,.provider-notice { color:var(--status-tentative); }

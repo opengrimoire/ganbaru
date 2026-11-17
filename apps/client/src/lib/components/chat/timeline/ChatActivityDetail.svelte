@@ -174,7 +174,7 @@
   .file-change-region.expanded > div { transform: translateY(0); }
   .file-path { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: "SF Mono", "SFMono-Regular", Consolas, monospace; }
   .file-changes small { color: var(--muted-foreground); }
-  .additions { color: var(--action-confirm); }
+  .additions { color: var(--action-confirm-signal); }
   .deletions { color: var(--destructive); }
   .file-diff { max-height: 20rem; border-top: 1px solid var(--border); padding: 0.7rem; color: var(--muted-foreground); }
   .generic-detail { max-height: 18rem; border-left: 1px solid var(--border); padding: 0.2rem 0.75rem; color: var(--muted-foreground); }

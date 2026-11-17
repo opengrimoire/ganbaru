@@ -107,7 +107,7 @@
   .changed-files-header { display:flex; width:100%; min-width:0; align-items:center; gap:0.45rem; padding:0.55rem 0.65rem; text-align:left; }
   .changed-files-header:hover { background: color-mix(in srgb, var(--accent) 45%, transparent); }
   .changed-files-header strong { font-size: calc(0.78rem * var(--type-scale)); font-weight: 600; }
-  .additions { color: var(--action-confirm); }
+  .additions { color: var(--action-confirm-signal); }
   .deletions { color: var(--destructive); }
   .view-diff { display: inline-flex; margin-left: auto; align-items: center; gap: 0.15rem; color: var(--muted-foreground); font-size: calc(0.7rem * var(--type-scale)); }
   .changed-files-list { display:grid; max-height:12rem; overflow:auto; border-top:1px solid var(--border); padding:0.25rem; }

@@ -253,6 +253,12 @@ fn organizational_config(access: CodexOrganizationalAccess) -> Value {
         "default_permissions": profile,
         "allow_login_shell": false,
         "web_search": "disabled",
+        "notify": [],
+        "otel": {
+            "exporter": "none",
+            "trace_exporter": "none",
+            "metrics_exporter": "none"
+        },
         "shell_environment_policy": {
             "inherit": "core",
             "ignore_default_excludes": false,

@@ -296,6 +296,10 @@ fn organizational_launch_arguments_follow_the_scope_access() {
         assert!(has(arguments, "features.code_mode.enabled=false"));
         assert!(has(arguments, "features.multi_agent=false"));
         assert!(has(arguments, "web_search=\"disabled\""));
+        assert!(has(arguments, "notify=[]"));
+        assert!(has(arguments, "otel.exporter=\"none\""));
+        assert!(has(arguments, "otel.trace_exporter=\"none\""));
+        assert!(has(arguments, "otel.metrics_exporter=\"none\""));
         assert!(has(arguments, "allow_login_shell=false"));
         assert!(
             !arguments
@@ -408,6 +412,27 @@ fn verify_config(config: Value, access: CodexOrganizationalAccess) -> ChatResult
         Some(("ganbaru-chat", "http://127.0.0.1:41827/mcp")),
         access,
     )
+}
+
+#[test]
+fn organizational_config_requires_notify_and_telemetry_to_read_back_off() {
+    for access in ALL_ACCESSES {
+        let mut absent_notify = organizational_config(access);
+        absent_notify.as_object_mut().unwrap().remove("notify");
+        assert!(verify_config(absent_notify, access).is_ok());
+        let mut notify = organizational_config(access);
+        notify["notify"] = json!(["/usr/bin/notify-send"]);
+        assert!(verify_config(notify, access).is_err());
+        for exporter in ["exporter", "trace_exporter", "metrics_exporter"] {
+            let mut exporting = organizational_config(access);
+            exporting["otel"][exporter] =
+                json!({ "otlp-http": { "endpoint": "https://example.test" } });
+            assert!(verify_config(exporting, access).is_err(), "{exporter}");
+        }
+        let mut no_otel = organizational_config(access);
+        no_otel.as_object_mut().unwrap().remove("otel");
+        assert!(verify_config(no_otel, access).is_err());
+    }
 }
 
 #[test]

@@ -58,6 +58,9 @@ const DISABLED_ORGANIZATIONAL_FEATURES: &[&str] = &[
     "view_image",
     "workspace_dependencies",
 ];
+/// OpenTelemetry exporters an organizational run turns off. They send turn activity to a
+/// destination the user configured for their own sessions, outside the scope a teammate holds.
+const DISABLED_TELEMETRY_EXPORTERS: &[&str] = &["exporter", "trace_exporter", "metrics_exporter"];
 /// Codex features that load a shell tool, off unless the scope runs commands.
 const SHELL_FEATURES: &[&str] = &["shell_tool", "unified_exec"];
 
@@ -224,6 +227,11 @@ pub(super) fn append_organizational_base_arguments(
     push_config(arguments, format!("default_permissions=\"{profile}\""));
     push_config(arguments, "allow_login_shell=false".to_string());
     push_config(arguments, "web_search=\"disabled\"".to_string());
+    // `notify` runs a configured program outside the sandbox with each turn's content.
+    push_config(arguments, "notify=[]".to_string());
+    for exporter in DISABLED_TELEMETRY_EXPORTERS {
+        push_config(arguments, format!("otel.{exporter}=\"none\""));
+    }
     push_config(
         arguments,
         format!("shell_environment_policy={ORGANIZATIONAL_SHELL_ENVIRONMENT_TOML}"),
@@ -308,6 +316,7 @@ pub(super) fn verify_organizational_effective_config(
         return Err(organizational_configuration_error("hosted tool boundary"));
     }
     verify_organizational_profile(config, access)?;
+    verify_disabled_side_channels(config)?;
     verify_organizational_shell_environment(config)?;
     verify_disabled_features(config, access)?;
     verify_effective_mcp_servers(config, internal_mcp)
@@ -453,6 +462,27 @@ fn verify_organizational_profile(
         != Some(false)
     {
         return Err(organizational_permission_error());
+    }
+    Ok(())
+}
+
+/// Requires the turn notification program and every telemetry exporter to read back as off.
+fn verify_disabled_side_channels(config: &serde_json::Map<String, Value>) -> ChatResult<()> {
+    let notify_off = match config.get("notify") {
+        None | Some(Value::Null) => true,
+        Some(Value::Array(command)) => command.is_empty(),
+        Some(_) => false,
+    };
+    let otel = config.get("otel").and_then(Value::as_object);
+    let exporters_off = DISABLED_TELEMETRY_EXPORTERS.iter().all(|exporter| {
+        otel.and_then(|otel| otel.get(*exporter))
+            .and_then(Value::as_str)
+            == Some("none")
+    });
+    if !notify_off || !exporters_off {
+        return Err(organizational_configuration_error(
+            "notification and telemetry boundary",
+        ));
     }
     Ok(())
 }

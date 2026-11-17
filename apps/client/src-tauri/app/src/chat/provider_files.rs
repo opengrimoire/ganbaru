@@ -260,7 +260,14 @@ fn opencode_config_path(value: &str) -> ChatResult<PathBuf> {
     Ok(path)
 }
 
-fn provider_home(configuration: &ProviderInstanceConfig) -> ChatResult<PathBuf> {
+/// The folder that holds a provider's user configuration and instruction files: the instance's
+/// provider home, then the provider's own home variable, then its default under the user home.
+///
+/// # Errors
+///
+/// Returns an unsupported error for a family without documented files, or a validation error
+/// when the resolved path is not absolute.
+pub(crate) fn provider_home(configuration: &ProviderInstanceConfig) -> ChatResult<PathBuf> {
     let family = configuration.family_id.as_str();
     let configured = configuration
         .provider_home

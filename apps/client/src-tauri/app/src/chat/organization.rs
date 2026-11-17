@@ -42,6 +42,8 @@ mod delegation;
 mod dispatch;
 mod inputs;
 #[cfg(desktop)]
+mod instruction_files;
+#[cfg(desktop)]
 mod primary_folder;
 mod push_approvals;
 #[cfg(desktop)]

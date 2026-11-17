@@ -9,6 +9,7 @@ use super::context;
 use super::continuation::{self, CandidateRun, ContinuationKey, TransitionInput};
 use super::delegation;
 use super::inputs::place_delivered_reply;
+use super::instruction_files;
 use super::reads::read_policy;
 use super::{chat_pool, identifier_error, now_timestamp, persistence_error, u64_value};
 use ganbaru_chat::agent_runs::{
@@ -501,6 +502,17 @@ async fn dispatch_claimed_assignment(
     .fetch_one(pool)
     .await
     .map_err(persistence_error)?;
+    // Instruction files join before the key is computed, so a changed file starts a fresh
+    // native session that receives it.
+    let instructions = instruction_files::with_instruction_files(
+        &app,
+        pool,
+        &policy.provider_instance_id,
+        working_folder_id.as_ref(),
+        execution_environment_id.as_deref(),
+        &claim.instructions,
+    )
+    .await;
     let key = ContinuationKey {
         authorization_scope_digest: authorization_scope_digest.clone(),
         provider_instance_id: policy.provider_instance_id.as_str().to_string(),
@@ -509,7 +521,7 @@ async fn dispatch_claimed_assignment(
             policy.model_id.as_ref(),
             &policy.model_options,
         )?,
-        instructions_sha256: continuation::instructions_sha256(&claim.instructions),
+        instructions_sha256: continuation::instructions_sha256(&instructions),
     };
     let answered = if run_ordinal > 1 {
         let mut connection = pool.acquire().await.map_err(persistence_error)?;
@@ -596,7 +608,7 @@ async fn dispatch_claimed_assignment(
     } else {
         Vec::new()
     };
-    let developer_instructions = claim.instructions.clone();
+    let developer_instructions = instructions;
     let project_id: String = row.try_get("project_id").map_err(persistence_error)?;
     let context_package_id: String = row
         .try_get("context_package_id")

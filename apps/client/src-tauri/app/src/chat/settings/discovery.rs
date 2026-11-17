@@ -21,7 +21,9 @@ use ganbaru_chat_providers::executable_search::PLATFORM_EXECUTABLE_DIRECTORIES;
 use ganbaru_chat_providers::executable_search::{
     is_safe_executable_candidate, path_search_directories,
 };
-use ganbaru_chat_providers::{ProviderDriverFactory, ProviderDriverRegistry};
+use ganbaru_chat_providers::{
+    InstallRoots, ProviderDriverFactory, ProviderDriverRegistry, installer_executable_directories,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -104,6 +106,13 @@ pub(crate) fn executable_search_directories() -> Vec<PathBuf> {
         .unwrap_or_default();
     if let Some(home) = platform_user_home() {
         directories.extend(fallback_executable_directories(&home));
+        let local_app_data = absolute_environment_directory("LOCALAPPDATA");
+        let roaming_app_data = absolute_environment_directory("APPDATA");
+        directories.extend(installer_executable_directories(&InstallRoots {
+            home: &home,
+            local_app_data: local_app_data.as_deref(),
+            roaming_app_data: roaming_app_data.as_deref(),
+        }));
     }
     let mut seen = BTreeSet::new();
     directories
@@ -196,6 +205,13 @@ fn platform_user_home() -> Option<PathBuf> {
     std::env::var_os(variable)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+}
+
+/// A folder named by an environment variable, ignored unless it is an absolute path.
+fn absolute_environment_directory(variable: &str) -> Option<PathBuf> {
+    std::env::var_os(variable)
+        .map(PathBuf::from)
+        .filter(|directory| directory.is_absolute())
 }
 
 fn fallback_executable_directories(home: &Path) -> Vec<PathBuf> {

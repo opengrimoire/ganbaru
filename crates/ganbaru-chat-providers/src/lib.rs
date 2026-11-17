@@ -24,6 +24,7 @@ pub mod runtime_review;
 pub mod teammate_preferences;
 mod unsupported;
 
+pub use cli_install::{InstallRoots, installer_executable_directories};
 pub use driver::*;
 pub use ganbaru_chat_contracts::models::ProviderAuthoritySupport;
 pub use registry::ProviderDriverRegistry;

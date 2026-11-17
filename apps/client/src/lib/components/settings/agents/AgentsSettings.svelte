@@ -722,6 +722,9 @@
                 <span class="directory-summary"><strong>{agent.participant.displayName}</strong><small>{agent.role}</small></span>
               </button>
             {/each}
+            {#if !editor.loadingDirectory && !editor.creating && filteredDirectoryAgents.length > 0}
+              <button type="button" class="directory-row add-row" disabled={editor.dirty || lifecycleBusy} onclick={() => editor.beginCreate(null)}><span class="draft-avatar"><Plus size={15} /></span><span><strong>{t("settings.agents.agents.add")}</strong></span></button>
+            {/if}
             {#if editor.loadingDirectory}<Loading layout="rows" rows={3} class="col-span-full" />{:else if !editor.creating && filteredDirectoryAgents.length === 0}<p class="empty-copy">{t("settings.agents.agents.empty")}</p>{/if}
           </nav>
         </div>
@@ -964,6 +967,8 @@
   .directory-row small { color:var(--muted-foreground); font-size:calc(0.65rem * var(--type-scale)); }
   .draft-avatar { display:grid; width:1.9rem; height:1.9rem; place-items:center; border:1px dashed var(--border); border-radius:0.45rem; color:var(--muted-foreground); }
   .draft-avatar.large { width:2.4rem; height:2.4rem; }
+  .add-row { color:var(--muted-foreground); }
+  .add-row:hover:not(:disabled) { color:var(--accent-foreground); }
   .empty-copy { padding:0.7rem; color:var(--muted-foreground); font-size:calc(0.7rem * var(--type-scale)); }
   .detail-panel { min-width:0; min-height:0; }
   .editor { display:grid; height:100%; min-height:0; grid-template-rows:minmax(0,1fr) auto; }

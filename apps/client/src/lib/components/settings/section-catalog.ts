@@ -6,7 +6,7 @@ import Calendar from "@lucide/svelte/icons/calendar";
 import BriefcaseBusiness from "@lucide/svelte/icons/briefcase-business";
 import Book from "@lucide/svelte/icons/book";
 import MessageSquare from "@lucide/svelte/icons/message-square";
-import Bot from "@lucide/svelte/icons/bot";
+import Sparkles from "@lucide/svelte/icons/sparkles";
 import GlobeOff from "@lucide/svelte/icons/globe-off";
 import Info from "@lucide/svelte/icons/info";
 import Keyboard from "@lucide/svelte/icons/keyboard";
@@ -36,7 +36,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   { id: "projects", labelKey: "settings.section.projects", icon: BriefcaseBusiness },
   { id: "notes", labelKey: "settings.section.notes", icon: Book },
   { id: "chat", labelKey: "settings.section.chat", icon: MessageSquare },
-  { id: "agents", labelKey: "settings.section.agents", icon: Bot },
+  { id: "agents", labelKey: "settings.section.agents", icon: Sparkles },
   { id: "focus", labelKey: "settings.section.focus", icon: Timer },
   { id: "music", labelKey: "settings.section.music", icon: Music },
   { id: "distractions", labelKey: "settings.section.distractions", icon: GlobeOff },

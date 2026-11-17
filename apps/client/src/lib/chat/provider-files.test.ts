@@ -5,9 +5,12 @@ import {
   PROVIDER_FILE_NOTE_LINKS,
   PROVIDER_FILE_NOTE_NAMES,
   PROVIDER_PREFERENCE_NAMES,
+  PROVIDER_PREFERENCE_OPTION_NAMES,
   providerFilesNote,
   providerPreferenceInputValue,
   providerPreferenceName,
+  providerPreferenceOptionName,
+  providerPreferencesAllowlisted,
   splitProviderFiles,
 } from "./provider-files";
 
@@ -23,6 +26,10 @@ const desktopCapability = readFileSync(
   fileURLToPath(new NodeUrl("../../../src-tauri/capabilities/desktop.json", import.meta.url).href),
   "utf8",
 );
+const preferenceCatalogs = readFileSync(
+  fileURLToPath(new NodeUrl("../../../src-tauri/app/src/chat/provider_files/preferences/catalogs.rs", import.meta.url).href),
+  "utf8",
+);
 
 function preference(overrides: Partial<ProviderPreferenceRead>): ProviderPreferenceRead {
   return {
@@ -34,6 +41,7 @@ function preference(overrides: Partial<ProviderPreferenceRead>): ProviderPrefere
     maxBytes: 64,
     multiline: false,
     emptyAllowed: false,
+    options: [],
     ...overrides,
   };
 }
@@ -68,6 +76,37 @@ describe("provider files", () => {
     expect(providerPreferenceName("FUTURE_SETTING")).toBeNull();
     const names = Object.values(PROVIDER_PREFERENCE_NAMES);
     expect(new Set(names).size).toBe(names.length);
+  });
+
+  it("labels every preference and option the Codex, Grok, and OpenCode catalogs offer", () => {
+    const ids = [...preferenceCatalogs.matchAll(/setting\(\s*&\[([^\]]+)\]/g)].map(([, path]) =>
+      [...path.matchAll(/"([^"]+)"/g)].map(([, key]) => key).join("."));
+    const options = [...preferenceCatalogs.matchAll(/Choice\(&\[([^\]]+)\]\)/g)].flatMap(([, values]) =>
+      [...values.matchAll(/"([^"]+)"/g)].map(([, value]) => value));
+
+    expect(ids).toContain("web_search");
+    expect(ids).toContain("toolset.bash.timeout_secs");
+    expect(ids).toContain("compaction.keep.tokens");
+    expect(ids.filter((id) => providerPreferenceName(id) === null)).toEqual([]);
+    expect(options).toContain("save-all");
+    expect(options.filter((option) => providerPreferenceOptionName(option) === null)).toEqual([]);
+  });
+
+  it("labels choice values by meaning and leaves unknown ones unlabeled", () => {
+    expect(providerPreferenceOptionName("save-all")).toBe("saveAll");
+    expect(providerPreferenceOptionName("disabled")).toBe("off");
+    expect(providerPreferenceOptionName("disable")).toBe("off");
+    expect(providerPreferenceOptionName("hasOwnProperty")).toBeNull();
+    expect(providerPreferenceOptionName("future")).toBeNull();
+    expect(Object.keys(PROVIDER_PREFERENCE_OPTION_NAMES)).toContain("notify");
+  });
+
+  it("marks only families whose teammates keep an allowlist of preferences", () => {
+    expect(providerPreferencesAllowlisted("claude")).toBe(true);
+    expect(providerPreferencesAllowlisted("cursor")).toBe(true);
+    expect(providerPreferencesAllowlisted("codex")).toBe(false);
+    expect(providerPreferencesAllowlisted("grok")).toBe(false);
+    expect(providerPreferencesAllowlisted("opencode")).toBe(false);
   });
 
   it("explains how each family's teammates use their files", () => {

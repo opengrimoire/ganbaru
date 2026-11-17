@@ -16,10 +16,13 @@ pub enum PreferenceType {
     Switch,
     /// A JSON boolean.
     Boolean,
-    /// A count of tokens, milliseconds, or characters.
+    /// A count of tokens, milliseconds, or characters. A setting holds a positive TOML or JSON
+    /// integer; a variable may also hold zero.
     Count,
     /// A share from 1 to 100.
     Percentage,
+    /// One of a fixed list of strings.
+    Choice(&'static [&'static str]),
     /// A JSON string of at most `max_bytes` bytes.
     Text {
         /// Longest value kept.
@@ -61,12 +64,18 @@ impl TeammatePreference {
 
 /// Longest variable value kept.
 const MAX_VARIABLE_BYTES: usize = 32;
+/// Largest count setting kept, the largest integer TOML holds.
+const MAX_SETTING_COUNT: u64 = i64::MAX as u64;
 /// Longest response language name kept.
 const MAX_LANGUAGE_BYTES: usize = 64;
 /// Longest attribution text kept.
 const MAX_ATTRIBUTION_BYTES: usize = 4096;
 
-const fn setting(path: &'static [&'static str], value_type: PreferenceType) -> TeammatePreference {
+/// A preference at the key path `path` of the configuration document.
+pub const fn setting(
+    path: &'static [&'static str],
+    value_type: PreferenceType,
+) -> TeammatePreference {
     TeammatePreference {
         location: PreferenceLocation::Setting(path),
         value_type,
@@ -167,7 +176,7 @@ pub fn checked_variable(value_type: PreferenceType, value: &str) -> bool {
         PreferenceType::Percentage => value
             .parse::<u8>()
             .is_ok_and(|share| (1..=100).contains(&share)),
-        PreferenceType::Boolean | PreferenceType::Text { .. } => false,
+        PreferenceType::Boolean | PreferenceType::Text { .. } | PreferenceType::Choice(_) => false,
     }
 }
 
@@ -195,7 +204,21 @@ pub fn checked_setting(value_type: PreferenceType, value: &Value) -> Option<Valu
                 && (empty_allowed || !text.trim().is_empty());
             fits.then(|| Value::String(text.to_string()))
         }
-        PreferenceType::Switch | PreferenceType::Count | PreferenceType::Percentage => None,
+        PreferenceType::Count => value
+            .as_u64()
+            .filter(|count| (1..=MAX_SETTING_COUNT).contains(count))
+            .map(Value::from),
+        PreferenceType::Percentage => value
+            .as_u64()
+            .filter(|share| (1..=100).contains(share))
+            .map(Value::from),
+        PreferenceType::Choice(options) => {
+            let choice = value.as_str()?;
+            options
+                .contains(&choice)
+                .then(|| Value::String(choice.to_string()))
+        }
+        PreferenceType::Switch => None,
     }
 }
 
@@ -331,6 +354,30 @@ mod tests {
             checked_setting(PreferenceType::Boolean, &json!("true")),
             None
         );
+    }
+
+    #[test]
+    fn numeric_and_choice_settings_keep_values_in_bounds_only() {
+        let count = PreferenceType::Count;
+        assert_eq!(checked_setting(count, &json!(8000)), Some(json!(8000)));
+        for rejected in [
+            json!(0),
+            json!(-1),
+            json!(1.5),
+            json!("8000"),
+            json!(u64::MAX),
+        ] {
+            assert_eq!(checked_setting(count, &rejected), None, "{rejected}");
+        }
+        let share = PreferenceType::Percentage;
+        assert_eq!(checked_setting(share, &json!(85)), Some(json!(85)));
+        assert_eq!(checked_setting(share, &json!(0)), None);
+        assert_eq!(checked_setting(share, &json!(101)), None);
+        let choice = PreferenceType::Choice(&["low", "high"]);
+        assert_eq!(checked_setting(choice, &json!("low")), Some(json!("low")));
+        assert_eq!(checked_setting(choice, &json!("LOW")), None);
+        assert_eq!(checked_setting(choice, &json!(1)), None);
+        assert!(!checked_variable(choice, "low"));
     }
 
     #[test]

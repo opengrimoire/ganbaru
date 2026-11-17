@@ -7,7 +7,6 @@ use super::settings_commands::read_provider;
 use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ProviderInstanceConfig, ProviderInstanceId,
 };
-use ganbaru_chat_providers::teammate_preferences::{TeammatePreference, teammate_preferences};
 pub use notes::ProviderFileNote;
 pub use preferences::ProviderPreferencesRead;
 use serde::{Deserialize, Serialize};
@@ -101,8 +100,8 @@ struct ProviderFileSpec {
     path: PathBuf,
     /// Whether saving may create missing parent folders. Only paths in the provider home may.
     create_parent: bool,
-    /// Teammate preferences this file holds; empty when it holds none Ganbaru edits.
-    preferences: &'static [TeammatePreference],
+    /// Preferences this file holds that the page edits, when its provider has a catalog.
+    preferences: Option<preferences::PreferenceCatalog>,
 }
 
 #[tauri::command]
@@ -180,9 +179,12 @@ pub fn chat_save_provider_preference(
         &request.file_id,
         &request.expected_revision,
         |spec| {
+            let catalog = spec.preferences.ok_or_else(|| {
+                ChatError::validation("fileId", "This file has no preferences to change here")
+            })?;
             let contents = preferences::apply_preference(
                 spec.contents,
-                spec.preferences,
+                catalog,
                 &request.preference_id,
                 &request.value,
             )?;
@@ -195,7 +197,7 @@ pub fn chat_save_provider_preference(
 /// The current text and preferences of the file a save edits.
 struct SaveTarget<'a> {
     contents: &'a str,
-    preferences: &'static [TeammatePreference],
+    preferences: Option<preferences::PreferenceCatalog>,
 }
 
 /// Writes the contents `edit` derives from the current file, after checking that the file still
@@ -284,10 +286,9 @@ fn provider_file_specs(
             ));
         }
     };
-    let preferences = teammate_preferences(family);
     for spec in &mut specs {
-        if spec.kind == ProviderFileKind::Configuration && spec.format == ProviderFileFormat::Json {
-            spec.preferences = preferences;
+        if spec.kind == ProviderFileKind::Configuration {
+            spec.preferences = preferences::file_preferences(family, spec.format);
         }
     }
     specs.sort_by(|left, right| left.file_id.cmp(&right.file_id));
@@ -321,7 +322,7 @@ fn configuration_spec(
         format,
         path,
         create_parent: true,
-        preferences: &[],
+        preferences: None,
     }
 }
 
@@ -332,7 +333,7 @@ fn instructions_spec(path: PathBuf) -> ProviderFileSpec {
         format: ProviderFileFormat::Markdown,
         path,
         create_parent: true,
-        preferences: &[],
+        preferences: None,
     }
 }
 
@@ -533,8 +534,9 @@ fn read_provider_file(spec: ProviderFileSpec) -> ChatResult<ProviderFileRead> {
     } else {
         String::new()
     };
-    let preferences = (!spec.preferences.is_empty())
-        .then(|| preferences::read_preferences(&contents, spec.preferences));
+    let preferences = spec
+        .preferences
+        .map(|catalog| preferences::read_preferences(&contents, catalog));
     Ok(ProviderFileRead {
         file_id: spec.file_id,
         name: spec
@@ -819,7 +821,7 @@ mod tests {
             specs[0].path,
             root.path().join("chosen").join("cli-config.json")
         );
-        assert!(!specs[0].preferences.is_empty());
+        assert!(specs[0].preferences.is_some());
 
         cursor.environment.remove("CURSOR_CONFIG_DIR");
         fs::create_dir_all(xdg.join("cursor")).unwrap();
@@ -837,7 +839,6 @@ mod tests {
         )
         .unwrap();
         assert!(specs.iter().all(|spec| spec.path.starts_with(private)));
-        assert!(specs.iter().all(|spec| spec.preferences.is_empty()));
     }
 
     #[test]
@@ -870,20 +871,21 @@ mod tests {
     }
 
     #[test]
-    fn only_claude_and_cursor_json_configuration_carries_preferences() {
+    fn configuration_files_carry_preferences_and_instructions_do_not() {
         let root = PathBuf::from("/provider-home");
-        let claude = provider_file_specs(&configuration("claude", &root), None).unwrap();
-        for spec in &claude {
-            assert_eq!(
-                spec.preferences.is_empty(),
-                spec.kind == ProviderFileKind::Instructions
-            );
-        }
-        for family in ["codex", "grok", "opencode"] {
+        for family in ["claude", "cursor", "codex", "grok", "opencode"] {
             let specs = provider_file_specs(&configuration(family, &root), None).unwrap();
-            assert!(specs.iter().all(|spec| spec.preferences.is_empty()));
+            for spec in &specs {
+                assert_eq!(
+                    spec.preferences.is_some(),
+                    spec.kind == ProviderFileKind::Configuration,
+                    "{family} {}",
+                    spec.file_id
+                );
+            }
         }
     }
+
     #[test]
     fn opencode_honors_its_config_directory_and_explicit_config_file() {
         let root = TestDirectory::new("opencode");

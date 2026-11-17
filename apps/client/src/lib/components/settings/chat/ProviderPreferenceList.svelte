@@ -1,21 +1,28 @@
 <script lang="ts">
   import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import type { ProviderPreferenceRead, ProviderPreferencesRead } from "$lib/chat/contracts";
-  import { providerPreferenceInputValue, providerPreferenceName } from "$lib/chat/provider-files";
+  import {
+    providerPreferenceInputValue,
+    providerPreferenceName,
+    providerPreferenceOptionName,
+  } from "$lib/chat/provider-files";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import Switch from "$lib/components/ui/Switch.svelte";
 
   /**
-   * Typed controls for the allowlisted teammate preferences of one provider configuration file.
+   * Typed controls for the catalog preferences of one provider configuration file.
    * Each change saves the single entry through `onSave`; a null value removes it.
    */
   let {
     preferences,
+    allowlisted,
     disabled,
     onSave,
   }: {
     preferences: ProviderPreferencesRead;
+    /** Whether teammate runs skip values that fail their check, which decides the warning shown. */
+    allowlisted: boolean;
     disabled: boolean;
     onSave: (preferenceId: string, value: boolean | string | null) => Promise<void>;
   } = $props();
@@ -42,6 +49,22 @@
     if (entry.value === true) return "on";
     if (entry.value === false) return "off";
     return "default";
+  }
+
+  const DEFAULT_CHOICE = "";
+
+  function choiceOptions(entry: ProviderPreferenceRead): { value: string; label: string }[] {
+    return [
+      { value: DEFAULT_CHOICE, label: t("settings.chat.permissions.preferenceDefault") },
+      ...entry.options.map((option) => {
+        const name = providerPreferenceOptionName(option);
+        return { value: option, label: name ? t(`settings.chat.permissions.preferenceOptions.${name}`) : option };
+      }),
+    ];
+  }
+
+  function saveChoice(entry: ProviderPreferenceRead, choice: string): void {
+    void onSave(entry.id, choice === DEFAULT_CHOICE ? null : choice);
   }
 
   function saveBoolean(entry: ProviderPreferenceRead, choice: string): void {
@@ -75,7 +98,7 @@
     {/if}
     <code class="mt-0.5 block break-all font-mono text-[0.666667rem] text-muted-foreground">{entry.variable ? `env.${entry.id}` : entry.id}</code>
     {#if entry.ignored}
-      <p class="mt-0.5 text-[0.733333rem] text-status-tentative">{t("settings.chat.permissions.preferenceIgnored")}</p>
+      <p class="mt-0.5 text-[0.733333rem] text-status-tentative">{t(allowlisted ? "settings.chat.permissions.preferenceIgnored" : "settings.chat.permissions.preferenceInvalid")}</p>
     {/if}
   </div>
 {/snippet}
@@ -105,6 +128,11 @@
       <div class="flex items-center justify-between gap-4 px-1 py-1 max-[480px]:flex-col max-[480px]:items-stretch max-[480px]:gap-2">
         {@render details(entry, null)}
         <Select inline value={booleanValue(entry)} options={booleanOptions} disabled={locked} ariaLabel={label(entry)} onChange={(choice) => saveBoolean(entry, choice)} />
+      </div>
+    {:else if entry.valueType === "choice"}
+      <div class="flex items-center justify-between gap-4 px-1 py-1 max-[480px]:flex-col max-[480px]:items-stretch max-[480px]:gap-2">
+        {@render details(entry, null)}
+        <Select inline value={typeof entry.value === "string" ? entry.value : DEFAULT_CHOICE} options={choiceOptions(entry)} disabled={locked} ariaLabel={label(entry)} onChange={(choice) => saveChoice(entry, choice)} />
       </div>
     {:else if entry.multiline}
       <div class="flex flex-col gap-2 px-1 py-1">

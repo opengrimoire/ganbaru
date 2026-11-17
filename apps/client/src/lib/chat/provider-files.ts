@@ -25,6 +25,36 @@ export const PROVIDER_PREFERENCE_NAMES = {
   "network.useHttp1ForAgent": "http1",
   "attribution.attributeCommitsToAgent": "cursorCommitAttribution",
   "attribution.attributePRsToAgent": "cursorPullRequestAttribution",
+  model_reasoning_summary: "codexReasoningSummary",
+  model_verbosity: "codexVerbosity",
+  web_search: "codexWebSearch",
+  "history.persistence": "codexHistory",
+  hide_agent_reasoning: "codexHideReasoning",
+  show_raw_agent_reasoning: "codexRawReasoning",
+  check_for_update_on_startup: "codexUpdateCheck",
+  "analytics.enabled": "codexAnalytics",
+  "feedback.enabled": "codexFeedback",
+  model_context_window: "codexContextWindow",
+  model_auto_compact_token_limit: "codexAutoCompactLimit",
+  tool_output_token_limit: "codexToolOutputLimit",
+  project_doc_max_bytes: "codexProjectDocBytes",
+  "session.auto_compact_threshold_percent": "grokAutoCompactPercentage",
+  "toolset.bash.timeout_secs": "grokCommandTimeout",
+  "toolset.bash.max_timeout_secs": "grokCommandMaxTimeout",
+  "toolset.bash.output_byte_limit": "grokCommandOutputLimit",
+  "tools.respect_gitignore": "grokRespectGitignore",
+  "features.web_fetch": "grokWebFetch",
+  "subagents.enabled": "grokSubagents",
+  "memory.enabled": "grokMemory",
+  "cli.auto_update": "grokAutoUpdate",
+  "ui.show_thinking_blocks": "grokThinkingBlocks",
+  share: "opencodeShare",
+  update: "opencodeUpdate",
+  snapshots: "opencodeSnapshots",
+  "compaction.auto": "opencodeAutoCompact",
+  "compaction.keep.tokens": "opencodeCompactionKeepTokens",
+  "tool_output.max_lines": "opencodeToolOutputLines",
+  "tool_output.max_bytes": "opencodeToolOutputBytes",
 } as const;
 
 export type ProviderPreferenceName = (typeof PROVIDER_PREFERENCE_NAMES)[keyof typeof PROVIDER_PREFERENCE_NAMES];
@@ -76,6 +106,16 @@ export function providerFilesNote(familyId: ProviderFamilyId): ProviderFilesNote
 }
 
 /**
+ * Whether teammate runs keep only the catalog preferences of a family's configuration file, so a
+ * value that fails its check is skipped rather than passed to the provider.
+ *
+ * @param familyId Provider family of the selected instance.
+ */
+export function providerPreferencesAllowlisted(familyId: ProviderFamilyId): boolean {
+  return familyId === "claude" || familyId === "cursor";
+}
+
+/**
  * The catalog name of a preference, or null for an ID this build has no description for.
  *
  * @param id Dotted settings path or variable name the backend reports.
@@ -86,6 +126,41 @@ export function providerPreferenceName(id: string): ProviderPreferenceName | nul
 
 function isDescribedPreference(id: string): id is keyof typeof PROVIDER_PREFERENCE_NAMES {
   return Object.hasOwn(PROVIDER_PREFERENCE_NAMES, id);
+}
+
+/** Catalog names of the values choice preferences offer; values that mean the same share a name. */
+export const PROVIDER_PREFERENCE_OPTION_NAMES = {
+  auto: "automatic",
+  concise: "concise",
+  detailed: "detailed",
+  none: "none",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  disabled: "off",
+  disable: "off",
+  cached: "cached",
+  indexed: "indexed",
+  live: "live",
+  "save-all": "saveAll",
+  manual: "manual",
+  notify: "notify",
+} as const;
+
+export type ProviderPreferenceOptionName =
+  (typeof PROVIDER_PREFERENCE_OPTION_NAMES)[keyof typeof PROVIDER_PREFERENCE_OPTION_NAMES];
+
+/**
+ * The catalog name of a choice value, or null for a value this build has no label for.
+ *
+ * @param value Option the backend reports for a choice preference.
+ */
+export function providerPreferenceOptionName(value: string): ProviderPreferenceOptionName | null {
+  return isDescribedOption(value) ? PROVIDER_PREFERENCE_OPTION_NAMES[value] : null;
+}
+
+function isDescribedOption(value: string): value is keyof typeof PROVIDER_PREFERENCE_OPTION_NAMES {
+  return Object.hasOwn(PROVIDER_PREFERENCE_OPTION_NAMES, value);
 }
 
 /**

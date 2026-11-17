@@ -19,6 +19,7 @@
     PROVIDER_FILE_NOTE_LINKS,
     PROVIDER_FILE_NOTE_NAMES,
     providerFilesNote,
+    providerPreferencesAllowlisted,
     splitProviderFiles,
   } from "$lib/chat/provider-files";
   import { formatList } from "$lib/i18n/formatters";
@@ -62,6 +63,7 @@
   const groups = $derived(splitProviderFiles(files));
   const preferenceFile = $derived(groups.configuration.find((file) => file.preferences !== null) ?? null);
   const note = $derived(familyId ? providerFilesNote(familyId) : null);
+  const preferencesAllowlisted = $derived(familyId ? providerPreferencesAllowlisted(familyId) : false);
   const docLinks = $derived(familyId ? PROVIDER_DOC_LINKS[familyId] ?? [] : []);
   const providerOptions = $derived(providers.map((provider) => ({
     value: provider.configuration.instanceId,
@@ -299,7 +301,10 @@
 
         {#if preferenceFile?.preferences}
           <div class="flex flex-col gap-2">
-            {@render sectionHeading(t("settings.chat.permissions.preferencesHeading"), t("settings.chat.permissions.preferencesDescription"))}
+            {@render sectionHeading(
+              t("settings.chat.permissions.preferencesHeading"),
+              t(preferencesAllowlisted ? "settings.chat.permissions.preferencesDescription" : "settings.chat.permissions.preferencesNativeDescription"),
+            )}
             {#if !preferenceFile.preferences.editable}
               <Notice class="px-1 text-[0.733333rem]" tone="warning" role="status" copy={false} message={t("settings.chat.permissions.preferencesNotEditable")} />
             {:else if configurationDirty}
@@ -310,6 +315,7 @@
             {/if}
             <ProviderPreferenceList
               preferences={preferenceFile.preferences}
+              allowlisted={preferencesAllowlisted}
               disabled={savingPreference || configurationDirty}
               onSave={savePreference}
             />

@@ -138,8 +138,18 @@ export function parseProviderRefreshResult(value: unknown): ProviderRefreshResul
 function parseProviderPreferenceRead(value: unknown, label: string): ProviderPreferenceRead {
   const record = readRecord(value, label);
   const valueType = readEnum(record.valueType, PROVIDER_PREFERENCE_TYPES, `${label}.valueType`);
-  const readValue = (raw: unknown, valueLabel: string): boolean | string =>
-    valueType === "switch" || valueType === "boolean" ? readBoolean(raw, valueLabel) : readString(raw, valueLabel);
+  const options = readArray(record.options, `${label}.options`, readString);
+  if (valueType === "choice" && options.length === 0) {
+    throw new Error(`${label}.options must list the choices`);
+  }
+  const readValue = (raw: unknown, valueLabel: string): boolean | string => {
+    if (valueType === "switch" || valueType === "boolean") return readBoolean(raw, valueLabel);
+    const text = readString(raw, valueLabel);
+    if (valueType === "choice" && !options.includes(text)) {
+      throw new Error(`${valueLabel} must be one of the options`);
+    }
+    return text;
+  };
   return {
     id: readString(record.id, `${label}.id`),
     valueType,
@@ -149,6 +159,7 @@ function parseProviderPreferenceRead(value: unknown, label: string): ProviderPre
     maxBytes: readNullable(record.maxBytes, `${label}.maxBytes`, readNonNegativeSafeInteger),
     multiline: readBoolean(record.multiline, `${label}.multiline`),
     emptyAllowed: readBoolean(record.emptyAllowed, `${label}.emptyAllowed`),
+    options,
   };
 }
 

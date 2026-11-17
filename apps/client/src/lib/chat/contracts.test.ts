@@ -396,6 +396,7 @@ describe("Chat provider contracts", () => {
       maxBytes: null,
       multiline: false,
       emptyAllowed: false,
+      options: [] as string[],
     };
     const fixture = [{
       fileId: "configuration",
@@ -416,6 +417,42 @@ describe("Chat provider contracts", () => {
     expect(() => parseProviderFiles({ files: [{ ...fixture[0], preferences: { editable: true, entries: [{ ...entry, valueType: "list" }] } }], notes: [] })).toThrow(
       "valueType has an unsupported value",
     );
+  });
+
+  it("keeps choice preferences to the options they list", () => {
+    const choice = {
+      id: "web_search",
+      valueType: "choice",
+      variable: false,
+      value: "live",
+      ignored: false,
+      maxBytes: null,
+      multiline: false,
+      emptyAllowed: false,
+      options: ["disabled", "cached", "live"],
+    };
+    const files = (entry: Record<string, unknown>) => ({
+      files: [{
+        fileId: "configuration",
+        name: "config.toml",
+        kind: "configuration",
+        format: "toml",
+        path: "~/.codex/config.toml",
+        exists: true,
+        contents: "web_search = \"live\"\n",
+        revision: "revision-1",
+        preferences: { editable: true, entries: [entry] },
+      }],
+      notes: [],
+    });
+
+    expect(parseProviderFiles(files(choice)).files[0].preferences?.entries[0]).toEqual(choice);
+    expect(parseProviderFiles(files({ ...choice, value: null })).files[0].preferences?.entries[0].value).toBeNull();
+    expect(() => parseProviderFiles(files({ ...choice, value: "indexed" }))).toThrow("must be one of the options");
+    expect(() => parseProviderFiles(files({ ...choice, options: [] }))).toThrow("options must list the choices");
+    expect(() => parseProviderFiles(files({ ...choice, options: [1] }))).toThrow("options[0] must be a string");
+    const { options: _options, ...withoutOptions } = choice;
+    expect(() => parseProviderFiles(files(withoutOptions))).toThrow("options must be an array");
   });
 
   it("validates internal checkpoint restore audit events", () => {

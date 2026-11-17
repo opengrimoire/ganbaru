@@ -87,6 +87,26 @@ impl ProviderDriver for CursorProviderDriver {
         &self.configuration
     }
 
+    fn cli_command(&self, arguments: &[&str]) -> ChatResult<crate::ProviderCliCommand> {
+        if self.flavor == AcpProviderFlavor::Generic {
+            return Err(ChatError::unsupported(
+                "Generic ACP agents run no maintenance commands",
+            ));
+        }
+        let environment = super::executable::process_environment_for(
+            &self.configuration,
+            self.flavor.display_name(),
+        )?;
+        let executable =
+            super::executable::resolve_executable(&self.configuration.executable, &environment)?;
+        Ok(crate::ProviderCliCommand::new(
+            executable,
+            &[],
+            arguments,
+            environment,
+        ))
+    }
+
     fn capabilities(&self) -> ProviderCapabilities {
         potential_capabilities_for(self.flavor)
     }

@@ -40,6 +40,18 @@ impl ProviderDriver for OpenCodeProviderDriver {
         &self.configuration
     }
 
+    fn cli_command(&self, arguments: &[&str]) -> ChatResult<crate::ProviderCliCommand> {
+        let environment = super::cli::process_environment(&self.configuration)?;
+        let executable =
+            super::cli::resolve_executable(&self.configuration.executable, &environment)?;
+        Ok(crate::ProviderCliCommand::new(
+            executable.executable,
+            &[],
+            arguments,
+            environment,
+        ))
+    }
+
     fn capabilities(&self) -> ProviderCapabilities {
         capabilities()
     }

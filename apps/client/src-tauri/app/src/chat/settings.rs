@@ -35,7 +35,9 @@ pub(crate) use mapping::{
 };
 pub(crate) use picker::{pick_local_path, validate_picker_title};
 pub(crate) use preferences::{remember_composer_selection, set_working_folder_provider_preference};
-pub(crate) use private_home::{configured_private_home, launch_configuration, remove_private_home};
+pub(crate) use private_home::{
+    configured_private_home, launch_configuration, maintenance_configuration, remove_private_home,
+};
 pub(crate) use providers::{apply_provider_probe, operation_context, unique_model_ids};
 pub(crate) use runtime_approval::{
     ProviderRuntimePrompt, ProviderRuntimeReviewRead, RuntimeReceipts, approval_digests,

@@ -73,10 +73,54 @@ pub trait ProviderEventSink: Send + Sync {
     }
 }
 
+/// One resolved provider CLI invocation outside a session.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderCliCommand {
+    pub executable: std::path::PathBuf,
+    /// Launcher prefix arguments followed by the requested ones.
+    pub arguments: Vec<String>,
+    pub environment: std::collections::BTreeMap<String, String>,
+}
+
+impl ProviderCliCommand {
+    /// An invocation of `executable` with `prefix` and then `arguments`.
+    pub(crate) fn new(
+        executable: std::path::PathBuf,
+        prefix: &[String],
+        arguments: &[&str],
+        environment: std::collections::BTreeMap<String, String>,
+    ) -> Self {
+        Self {
+            executable,
+            arguments: prefix
+                .iter()
+                .cloned()
+                .chain(arguments.iter().map(|argument| (*argument).to_string()))
+                .collect(),
+            environment,
+        }
+    }
+}
+
 pub trait ProviderDriver: Send {
     fn metadata(&self) -> ProviderFamilyMetadataRead;
 
     fn instance_configuration(&self) -> &ProviderInstanceConfig;
+
+    /// The provider CLI with `arguments` after any launcher prefix, resolved with the same
+    /// executable search and environment as the driver's own processes, for a maintenance
+    /// command outside a session such as an update.
+    ///
+    /// # Errors
+    ///
+    /// Fails as a probe would when the program is missing or the configuration is invalid, and
+    /// with `Unsupported` for a driver that runs no maintenance commands.
+    fn cli_command(&self, arguments: &[&str]) -> ChatResult<ProviderCliCommand> {
+        let _ = arguments;
+        Err(ChatError::unsupported(
+            "This provider runs no maintenance commands",
+        ))
+    }
 
     fn capabilities(&self) -> ProviderCapabilities;
 

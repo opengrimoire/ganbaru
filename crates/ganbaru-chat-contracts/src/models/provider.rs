@@ -216,6 +216,30 @@ pub enum ProviderVersionAdmission {
     Unreadable,
 }
 
+/// A newer release of a provider CLI than the one the last probe found, inside the family's
+/// supported range.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUpdateRead {
+    pub instance_id: ProviderInstanceId,
+    pub current_version: String,
+    pub latest_version: String,
+    /// The provider's own update command, as the person would type it.
+    pub update_command: String,
+    /// Whether Ganbaru can run the update command; `false` when a package manager or the
+    /// system owns the install and updates it instead.
+    pub runs_in_app: bool,
+}
+
+/// How running a provider's update command ended.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUpdateRunRead {
+    pub successful: bool,
+    /// The last lines the command wrote, kept when it failed so the reason stays visible.
+    pub output: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderProbeResult {

@@ -64,6 +64,24 @@ export interface ProviderInstallGuide {
   docsUrl: string;
 }
 
+/** A newer provider CLI release than the last probe found, inside the family's supported range. */
+export interface ProviderUpdateRead {
+  instanceId: ProviderInstanceId;
+  currentVersion: string;
+  latestVersion: string;
+  /** The provider's own update command, as the person would type it. */
+  updateCommand: string;
+  /** Whether Ganbaru can run the update; `false` when a package manager or the system owns the install. */
+  runsInApp: boolean;
+}
+
+/** How running a provider's update command ended. */
+export interface ProviderUpdateRunRead {
+  successful: boolean;
+  /** The last lines a failed update wrote. */
+  output: string | null;
+}
+
 export interface ProviderFamilyMetadataRead {
   familyId: ProviderFamilyId;
   displayName: string;

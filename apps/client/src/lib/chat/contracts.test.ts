@@ -30,6 +30,8 @@ import {
   parseChatThreadShell,
   parseProjectWorkingFolderRead,
   parseProviderFamilyMetadata,
+  parseProviderUpdateRunRead,
+  parseProviderUpdates,
   parseProviderInstanceConfig,
   parseProviderInstanceRead,
   parseProviderModelCatalog,
@@ -664,6 +666,15 @@ describe("Chat provider contracts", () => {
       .toThrow("installGuide.docsUrl must use https");
     expect(() => parseProviderFamilyMetadata({ ...metadataFixture(), installGuide: { docsUrl: installGuide.docsUrl } }))
       .toThrow("installGuide.command must be a string");
+  });
+
+  it("reads provider updates and their run results", () => {
+    const update = { instanceId: "codex", currentVersion: "0.167.1", latestVersion: "0.169.0", updateCommand: "codex update", runsInApp: false };
+    expect(parseProviderUpdates([update])).toEqual([update]);
+    expect(() => parseProviderUpdates([{ ...update, runsInApp: "yes" }])).toThrow("runsInApp must be a boolean");
+    expect(() => parseProviderUpdates({})).toThrow();
+    expect(parseProviderUpdateRunRead({ successful: false, output: "denied" })).toEqual({ successful: false, output: "denied" });
+    expect(() => parseProviderUpdateRunRead({ successful: true })).toThrow("output");
   });
 
   it("rejects partial metadata and unsupported capability values", () => {

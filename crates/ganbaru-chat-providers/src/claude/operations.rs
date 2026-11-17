@@ -42,6 +42,24 @@ impl ProviderDriver for ClaudeProviderDriver {
         &self.configuration
     }
 
+    fn cli_command(&self, arguments: &[&str]) -> ChatResult<crate::ProviderCliCommand> {
+        let home = super::home::resolve_claude_home(&self.configuration)?;
+        let preferences = super::preferences::user_preferences(&home.config_directory);
+        let environment = super::home::claude_process_environment(
+            &self.configuration,
+            &home,
+            &preferences.environment,
+        )?;
+        let executable =
+            super::home::resolve_claude_executable(&self.configuration.executable, &environment)?;
+        Ok(crate::ProviderCliCommand::new(
+            executable.executable,
+            &executable.prefix_arguments,
+            arguments,
+            environment,
+        ))
+    }
+
     fn capabilities(&self) -> ProviderCapabilities {
         claude_capabilities()
     }

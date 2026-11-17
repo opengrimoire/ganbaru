@@ -12,6 +12,7 @@ mod permissions;
 mod protocol;
 mod support;
 
+pub(crate) use cli::OPENCODE_COMPATIBILITY;
 pub use driver::OpenCodeProviderDriver;
 
 #[cfg(test)]

@@ -220,6 +220,23 @@ impl ProviderDriver for CodexProviderDriver {
         &self.configuration
     }
 
+    fn cli_command(&self, arguments: &[&str]) -> ChatResult<crate::ProviderCliCommand> {
+        let layout = resolve_codex_home_layout(&self.configuration, &self.settings)?;
+        let mut environment = codex_process_environment(&self.configuration, &layout)?;
+        // Maintenance commands act on the person's own Codex home, not a session's shadow.
+        environment.insert(
+            "CODEX_HOME".to_string(),
+            layout.shared_home.to_string_lossy().into_owned(),
+        );
+        let executable = resolve_codex_executable(&self.configuration.executable, &environment)?;
+        Ok(crate::ProviderCliCommand::new(
+            executable.executable,
+            &executable.prefix_arguments,
+            arguments,
+            environment,
+        ))
+    }
+
     fn capabilities(&self) -> ProviderCapabilities {
         codex_capabilities()
     }

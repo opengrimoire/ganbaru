@@ -14,6 +14,7 @@
     ProviderFamilyMetadataRead,
     ProviderInstanceRead,
     ProviderRefreshResult,
+    ProviderUpdateRead,
   } from "$lib/chat/contracts";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { providerFamilyDisplayName } from "$lib/chat/provider-setup";
@@ -31,6 +32,7 @@
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
+  import { getProviderUpdates } from "$lib/stores/chat/provider-updates.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import Switch from "$lib/components/ui/Switch.svelte";
@@ -47,6 +49,7 @@
   const localization = getLocalization();
   const { t } = localization;
   const chat = getChat();
+  const providerUpdates = getProviderUpdates();
   let selectedFamilyId = $state<string | null>(null);
   let selectedProviderId = $state<string | null>(null);
   let search = $state("");
@@ -59,6 +62,7 @@
   let customLabel = $state("");
   let customError = $state<string | null>(null);
   let operationError = $state<string | null>(null);
+  let updateFailure = $state<{ instanceId: string; output: string | null } | null>(null);
   let removeId = $state<string | null>(null);
   let directoryScrollElement = $state<HTMLElement>();
   let detailScrollElement = $state<HTMLElement>();
@@ -199,6 +203,7 @@
     operationError = null;
     try {
       refreshResult = await chat.refreshAllProviders();
+      void providerUpdates.check();
     } catch (error: unknown) {
       operationError = errorMessage(error);
     } finally {
@@ -344,6 +349,7 @@
     if (!provider.configuration.enabled) return t("settings.chat.providers.disabled");
     if (provider.lastProbe?.state === "healthy") {
       if (provider.lastProbe.teammateMinimumVersion) return t("settings.chat.providers.teammatesNeedUpdate");
+      if (availableUpdate(provider)) return t("settings.chat.providers.updateAvailableShort");
       return provider.lastProbe.versionAdmission === "untested_newer"
         ? t("settings.chat.providers.untestedNewer")
         : t("settings.chat.providers.healthy");
@@ -431,6 +437,25 @@
 
   function providerFamilyCliName(family: ProviderFamilyMetadataRead): string {
     return family.defaultExecutableCandidates[0] || family.familyId;
+  }
+
+  /** The newer release found for `provider`, while its last probe still reads the version the check compared. */
+  function availableUpdate(provider: ProviderInstanceRead): ProviderUpdateRead | null {
+    const update = providerUpdates.forInstance(provider.configuration.instanceId);
+    return update && update.currentVersion === provider.lastProbe?.version ? update : null;
+  }
+
+  async function runProviderUpdate(instanceId: string): Promise<void> {
+    operationError = null;
+    updateFailure = null;
+    await perform(instanceId, async () => {
+      const result = await providerUpdates.run(instanceId);
+      if (!result.successful) {
+        updateFailure = { instanceId, output: result.output };
+        return;
+      }
+      await chat.probeProvider(instanceId);
+    });
   }
 
   function providerCliSummary(
@@ -639,6 +664,7 @@
                 {@const instanceId = selectedProvider.configuration.instanceId}
                 {@const selectedBusy = refreshingAll || busyIds.includes(instanceId)}
                 {@const versionNotice = providerVersionNotice(selectedProvider.lastProbe, selectedFamily)}
+                {@const update = availableUpdate(selectedProvider)}
                 <div class="editor-content">
                   {#if versionNotice}
                     <Notice
@@ -646,6 +672,39 @@
                       role="status"
                       message={versionNoticeMessage(versionNotice)}
                       copy={versionNotice.kind === "too_new" ? false : versionNotice.updateCommand ?? false}
+                    />
+                  {/if}
+                  {#if update && !versionNotice}
+                    {@const cliName = providerCliName(selectedFamily, selectedProvider)}
+                    <Notice
+                      tone="neutral"
+                      role="status"
+                      message={update.runsInApp
+                        ? t("settings.chat.providers.updateAvailable", cliName, update.latestVersion, update.currentVersion)
+                        : t("settings.chat.providers.updateAvailableManaged", cliName, update.latestVersion)}
+                      copy={update.runsInApp ? update.updateCommand : false}
+                    >
+                      {#snippet actions()}
+                        {#if update.runsInApp}
+                          <button
+                            type="button"
+                            class="notice-action-text"
+                            disabled={selectedBusy || providerUpdates.running !== null}
+                            onclick={() => void runProviderUpdate(instanceId)}
+                          >{providerUpdates.running === instanceId
+                            ? t("settings.chat.providers.updating")
+                            : t("settings.chat.providers.updateAction")}</button>
+                        {/if}
+                      {/snippet}
+                    </Notice>
+                  {/if}
+                  {#if updateFailure?.instanceId === instanceId}
+                    {@const command = update?.updateCommand ?? selectedFamily.updateCommand ?? ""}
+                    <Notice
+                      tone="warning"
+                      message={t("settings.chat.providers.updateFailed", providerCliName(selectedFamily, selectedProvider), command)}
+                      copy={updateFailure.output ?? command}
+                      onDismiss={() => (updateFailure = null)}
                     />
                   {/if}
                   {#if selectedProvider.lastProbe?.state === "executable_missing"}

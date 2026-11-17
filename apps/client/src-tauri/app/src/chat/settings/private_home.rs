@@ -43,6 +43,23 @@ pub(crate) fn launch_configuration(
     Ok(resolved)
 }
 
+/// Resolves `configuration` for a maintenance command such as a CLI update: the same home a
+/// launch would use, but no secrets, so the credential store is never read and the command
+/// never sees a key.
+///
+/// # Errors
+///
+/// Returns an internal error when the app config folder or the active vault cannot be found.
+pub(crate) fn maintenance_configuration(
+    app: &tauri::AppHandle,
+    configuration: &ProviderInstanceConfig,
+) -> ChatResult<ProviderInstanceConfig> {
+    let mut resolved = configuration.clone();
+    resolved.private_home = configured_private_home(app, configuration)?
+        .map(|home| home.to_string_lossy().into_owned());
+    Ok(resolved)
+}
+
 /// The private home launches of `configuration` use, found without reading its secrets, so
 /// Settings can show the files the provider reads there.
 ///

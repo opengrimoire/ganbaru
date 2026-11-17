@@ -377,6 +377,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::settings_commands::chat_test_provider,
             chat::settings_commands::chat_confirm_provider_runtime,
             chat::settings_commands::chat_probe_provider,
+            chat::provider_updates::chat_check_provider_updates,
+            chat::provider_updates::chat_run_provider_update,
             chat::settings_commands::chat_refresh_all_providers,
             chat::settings_commands::chat_refresh_provider_models,
             chat::settings_commands::chat_update_provider_models,

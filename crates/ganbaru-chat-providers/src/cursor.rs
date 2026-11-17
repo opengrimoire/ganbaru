@@ -19,3 +19,4 @@ mod tests;
 #[cfg(test)]
 pub(crate) use driver::AcpProviderFlavor;
 pub use driver::CursorProviderDriver;
+pub(crate) use protocol::GROK_COMPATIBILITY;

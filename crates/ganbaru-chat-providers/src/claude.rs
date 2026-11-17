@@ -17,6 +17,8 @@ mod transport;
 pub(crate) mod replay;
 
 pub use driver::ClaudeProviderDriver;
+pub(crate) use home::resolve_claude_home;
+pub(crate) use protocol::CLAUDE_COMPATIBILITY;
 
 #[cfg(test)]
 mod tests;

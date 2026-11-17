@@ -24,6 +24,8 @@ import type {
   ProviderFileRead,
   ProviderFilesRead,
   ProviderSetupTestRead,
+  ProviderUpdateRead,
+  ProviderUpdateRunRead,
   RemoveProviderResult,
   RememberedComposerSelection,
 } from "$lib/chat/contracts";
@@ -42,6 +44,8 @@ import {
   parseProviderFileRead,
   parseProviderFiles,
   parseProviderSetupTestRead,
+  parseProviderUpdates,
+  parseProviderUpdateRunRead,
   parseRemoveProviderResult,
 } from "$lib/chat/validation";
 
@@ -190,6 +194,19 @@ export async function testChatProvider(configuration: ProviderInstanceConfig): P
 
 export async function probeChatProvider(instanceId: ProviderInstanceId): Promise<ProviderProbeResult> {
   return parseProviderProbeResult(await invoke<unknown>("chat_probe_provider", { instanceId }));
+}
+
+/** Newer CLI releases for the enabled provider instances, read from each provider's own release source. */
+export async function checkChatProviderUpdates(): Promise<ProviderUpdateRead[]> {
+  return parseProviderUpdates(await invoke<unknown>("chat_check_provider_updates"));
+}
+
+/** Runs the provider's own update command for `instanceId`, installing `targetVersion` where the CLI takes a version. */
+export async function runChatProviderUpdate(
+  instanceId: ProviderInstanceId,
+  targetVersion: string,
+): Promise<ProviderUpdateRunRead> {
+  return parseProviderUpdateRunRead(await invoke<unknown>("chat_run_provider_update", { instanceId, targetVersion }));
 }
 
 export async function refreshChatProviderModels(instanceId: ProviderInstanceId): Promise<ProviderModelCatalog> {

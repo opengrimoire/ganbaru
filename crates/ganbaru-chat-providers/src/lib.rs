@@ -11,6 +11,7 @@ pub mod process;
 
 mod claude;
 mod cli_install;
+pub mod cli_updates;
 mod codex;
 mod confinement;
 mod cursor;

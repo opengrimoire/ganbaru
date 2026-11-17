@@ -33,6 +33,7 @@
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import { getUpdateManager } from "$lib/stores/updates.svelte";
+  import { getProviderUpdates } from "$lib/stores/chat/provider-updates.svelte";
   import { UPDATE_AUTO_CHECK_INTERVAL_MS } from "$lib/stores/update-policy";
   import { getViewport } from "$lib/stores/viewport.svelte";
   import { parseNotesLinkHash } from "$lib/notes/links/block-link";
@@ -129,6 +130,7 @@
   const preferences = getPreferences();
   const settingsLauncher = getSettingsLauncher();
   const updates = getUpdateManager();
+  const providerUpdates = getProviderUpdates();
   const viewport = getViewport();
   const localization = getLocalization();
   const { t } = localization;
@@ -190,6 +192,8 @@
   let unlistenChatChangeForNotifications: UnlistenFn | null = null;
   const NOTES_NOTIFICATION_BODY_MAX_CHARS = 180;
   const AUTOMATIC_UPDATE_CHECK_DELAY_MS = 3_000;
+  /** Provider CLI checks wait until startup work settles, since Grok checks by running its program. */
+  const PROVIDER_UPDATE_CHECK_DELAY_MS = 30_000;
   const FOCUS_NOTIFICATION_COPY_RETRY_MS = 1_000;
 
   interface NotesNotificationOpenPayload {
@@ -342,9 +346,15 @@
         void updates.checkAutomatically({ kind: "startup" });
       }, AUTOMATIC_UPDATE_CHECK_DELAY_MS)
       : null;
+    const providerUpdateCheckTimerId = isMainWindow
+      ? setTimeout(() => {
+        void providerUpdates.checkAutomatically(updates.autoNotifications, "startup");
+      }, PROVIDER_UPDATE_CHECK_DELAY_MS)
+      : null;
     const automaticUpdateCheckIntervalId = isMainWindow
       ? setInterval(() => {
         void updates.checkAutomatically({ kind: "periodic" });
+        void providerUpdates.checkAutomatically(updates.autoNotifications, "periodic");
       }, UPDATE_AUTO_CHECK_INTERVAL_MS + AUTOMATIC_UPDATE_CHECK_DELAY_MS + 1_000)
       : null;
     const handleMusicAssignmentInspection = (event: Event) => {
@@ -609,6 +619,7 @@
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("ganbaru:inspect-music-assignment", handleMusicAssignmentInspection);
       if (automaticUpdateCheckTimerId) clearTimeout(automaticUpdateCheckTimerId);
+      if (providerUpdateCheckTimerId) clearTimeout(providerUpdateCheckTimerId);
       if (automaticUpdateCheckIntervalId) clearInterval(automaticUpdateCheckIntervalId);
       clearTimeout(startupMemoryTimerId);
       unsubscribeHistoryVault?.();

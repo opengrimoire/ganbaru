@@ -20,6 +20,8 @@ import {
   type ProviderModel,
   type ProviderModelCatalog,
   type ProviderProbeResult,
+  type ProviderUpdateRead,
+  type ProviderUpdateRunRead,
 } from "../contracts";
 import {
   readArray,
@@ -144,6 +146,29 @@ export function parseProviderProbeResult(value: unknown, label = "provider probe
       readEnum(entry, PROVIDER_VERSION_ADMISSIONS, entryLabel),
     ),
     teammateMinimumVersion: readNullable(record.teammateMinimumVersion, `${label}.teammateMinimumVersion`, readString),
+  };
+}
+
+export function parseProviderUpdateRead(value: unknown, label = "provider update"): ProviderUpdateRead {
+  const record = readRecord(value, label);
+  return {
+    instanceId: readIdentifier(record.instanceId, `${label}.instanceId`),
+    currentVersion: readString(record.currentVersion, `${label}.currentVersion`),
+    latestVersion: readString(record.latestVersion, `${label}.latestVersion`),
+    updateCommand: readString(record.updateCommand, `${label}.updateCommand`),
+    runsInApp: readBoolean(record.runsInApp, `${label}.runsInApp`),
+  };
+}
+
+export function parseProviderUpdates(value: unknown, label = "provider updates"): ProviderUpdateRead[] {
+  return readArray(value, label, parseProviderUpdateRead);
+}
+
+export function parseProviderUpdateRunRead(value: unknown, label = "provider update run"): ProviderUpdateRunRead {
+  const record = readRecord(value, label);
+  return {
+    successful: readBoolean(record.successful, `${label}.successful`),
+    output: readNullable(record.output, `${label}.output`, readString),
   };
 }
 

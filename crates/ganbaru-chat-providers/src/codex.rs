@@ -14,6 +14,7 @@ mod transport;
 pub(crate) mod replay;
 
 pub use driver::CodexProviderDriver;
+pub(crate) use protocol::CODEX_COMPATIBILITY;
 
 #[cfg(test)]
 mod tests;

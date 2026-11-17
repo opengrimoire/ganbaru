@@ -277,7 +277,7 @@ pub enum ProviderMaturity {
     Experimental,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VersionedJson {
     pub schema_version: u32,

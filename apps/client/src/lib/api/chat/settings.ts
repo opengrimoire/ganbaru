@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { ensureDbUrl } from "$lib/api/db";
 import { translate } from "$lib/i18n/translator.svelte";
 import type {
@@ -235,4 +236,16 @@ export async function pickChatProviderExecutable(title: string): Promise<string 
 
 export async function pickChatProviderHome(title: string): Promise<string | null> {
   return invoke<string | null>("chat_pick_provider_home", { title });
+}
+
+/** Tauri event the app emits after a turn changed a provider's last use or plan limits on this device. */
+const CHAT_PROVIDER_ACTIVITY_EVENT = "chat://provider-activity";
+
+/**
+ * Runs `onActivity` whenever a turn changes a provider's last use or plan limits on this device,
+ * and resolves to a function that stops listening. The event carries no payload: the listener
+ * rereads settings, which already include both values.
+ */
+export function listenForProviderActivity(onActivity: () => void): Promise<() => void> {
+  return listen(CHAT_PROVIDER_ACTIVITY_EVENT, () => onActivity());
 }

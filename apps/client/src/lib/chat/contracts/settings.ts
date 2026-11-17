@@ -1,5 +1,6 @@
 import type { ChatConfiguration } from "./config";
-import type { ChatThreadId } from "./common";
+import type { ChatThreadId, UtcTimestamp } from "./common";
+import type { RateLimitStatusEvent } from "./events";
 import type {
   ProviderFamilyMetadataRead,
   ProviderInstanceConfig,
@@ -23,6 +24,16 @@ export interface ProviderInstanceRead {
   lastProbe: ProviderProbeResult | null;
   lastSuccessfulProbeAt: string | null;
   modelCatalog: ProviderModelCatalog | null;
+  /** The newest usage limits this device saw the provider report, from a probe or a turn. */
+  usageLimits: ProviderUsageLimitsObservation | null;
+  /** When this device last started a turn with the provider. */
+  lastUsedAt: UtcTimestamp | null;
+}
+
+/** Usage limits a provider reported, with when this device observed them. */
+export interface ProviderUsageLimitsObservation {
+  observedAt: UtcTimestamp;
+  status: RateLimitStatusEvent;
 }
 
 export interface ChatSettingsRead {

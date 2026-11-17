@@ -129,6 +129,7 @@ impl ProviderDriver for OpenCodeProviderDriver {
                         checked_at,
                         detail: Some(snapshot.toolchain_detail),
                         version_admission,
+                        usage_limits: None,
                     })
                 }
                 Err(error) if context.is_cancelled() => Err(error),
@@ -146,6 +147,7 @@ impl ProviderDriver for OpenCodeProviderDriver {
                         checked_at,
                         detail: Some(probe_detail(error.code).to_string()),
                         version_admission: refusal.map(|(admission, _)| admission),
+                        usage_limits: None,
                     })
                 }
             }

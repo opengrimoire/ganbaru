@@ -549,6 +549,21 @@ describe("Chat provider contracts", () => {
       ...provider,
       runtimeReview: [{ label: 3, widensPermissions: true }],
     })).toThrow();
+    expect(provider).toMatchObject({ usageLimits: null, lastUsedAt: null });
+    const observed = parseProviderInstanceRead({
+      ...provider,
+      usageLimits: {
+        observedAt: timestamp,
+        status: { limited: false, resetsAt: null, detail: null, providerData: null },
+      },
+      lastUsedAt: timestamp,
+    });
+    expect(observed.usageLimits?.observedAt).toBe(timestamp);
+    expect(observed.lastUsedAt).toBe(timestamp);
+    expect(() => parseProviderInstanceRead({
+      ...provider,
+      usageLimits: { observedAt: "yesterday", status: { limited: false, resetsAt: null, detail: null, providerData: null } },
+    })).toThrow();
   });
 
   it("parses a probe's version admission and refuses unknown admissions", () => {

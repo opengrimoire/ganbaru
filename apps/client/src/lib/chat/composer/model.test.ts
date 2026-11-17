@@ -79,6 +79,8 @@ function provider(
       versionAdmission: null,
     },
     lastSuccessfulProbeAt: state === "healthy" ? "2026-08-01T00:00:00Z" : null,
+    usageLimits: null,
+    lastUsedAt: null,
     modelCatalog: {
       instanceId,
       models,
@@ -345,6 +347,7 @@ describe("Chat composer model", () => {
         usedPercent: 31,
         windowDurationMinutes: 300,
         resetsAtSeconds: 1_730_948_100,
+        accountWide: true,
       },
       {
         id: "codex:secondary",
@@ -352,6 +355,7 @@ describe("Chat composer model", () => {
         usedPercent: 100,
         windowDurationMinutes: 10_080,
         resetsAtSeconds: 1_731_000_000,
+        accountWide: true,
       },
       {
         id: "codex_mini:primary",
@@ -359,6 +363,7 @@ describe("Chat composer model", () => {
         usedPercent: 100,
         windowDurationMinutes: null,
         resetsAtSeconds: null,
+        accountWide: false,
       },
     ]);
     expect(composerRateLimitWindows({
@@ -367,6 +372,50 @@ describe("Chat composer model", () => {
       detail: null,
       providerData: { schemaVersion: 1, value: { primary: { usedPercent: 50 } } },
     })).toEqual([]);
+  });
+
+  it("reads Claude limit types as windows and treats a rejected type without utilization as fully used", () => {
+    expect(composerRateLimitWindows({
+      limited: true,
+      resetsAt: "2030-01-01T00:00:00Z",
+      detail: null,
+      providerData: {
+        schemaVersion: 1,
+        value: {
+          rateLimitsByType: {
+            five_hour: { rateLimitType: "five_hour", status: "allowed_warning", resetsAt: 1_893_456_000, utilization: 0.85 },
+            seven_day: { rateLimitType: "seven_day", status: "allowed", resetsAt: 1_893_900_000 },
+            seven_day_opus: { rateLimitType: "seven_day_opus", status: "rejected", resetsAt: 1_893_900_000 },
+            overage: { rateLimitType: "overage", status: "allowed", resetsAt: null, utilization: 1.4 },
+          },
+        },
+      },
+    })).toEqual([
+      {
+        id: "claude:five_hour",
+        label: "5h",
+        usedPercent: 85,
+        windowDurationMinutes: 300,
+        resetsAtSeconds: 1_893_456_000,
+        accountWide: true,
+      },
+      {
+        id: "claude:seven_day_opus",
+        label: "7d opus",
+        usedPercent: 100,
+        windowDurationMinutes: 10_080,
+        resetsAtSeconds: 1_893_900_000,
+        accountWide: false,
+      },
+      {
+        id: "claude:overage",
+        label: "overage",
+        usedPercent: 100,
+        windowDurationMinutes: null,
+        resetsAtSeconds: null,
+        accountWide: false,
+      },
+    ]);
   });
 
   it("implements send keys and image limits", () => {

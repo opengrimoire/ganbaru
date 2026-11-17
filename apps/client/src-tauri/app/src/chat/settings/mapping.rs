@@ -61,6 +61,8 @@ pub(crate) fn provider_instance_read(
         model_catalog: device
             .and_then(|entry| entry.model_catalog.clone())
             .map(ProviderModelCatalog::without_deprecated_models),
+        usage_limits: device.and_then(|entry| entry.usage_limits.clone()),
+        last_used_at: device.and_then(|entry| entry.last_used_at.clone()),
     }
 }
 
@@ -114,6 +116,8 @@ pub(crate) fn device_configuration(config: &ProviderInstanceConfig) -> ChatProvi
         last_successful_probe_at: None,
         model_catalog: None,
         approved_runtime_items: Default::default(),
+        usage_limits: None,
+        last_used_at: None,
     }
 }
 

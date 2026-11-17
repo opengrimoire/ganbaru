@@ -162,6 +162,7 @@
     modelQuery,
     t("chat.composer.providerManagedModel"),
     localization.locale,
+    Date.now(),
   ));
   const selectedModel = $derived(models.find((model) => model.id === selection.modelId) ?? null);
   const quickAnchorModel = $derived(models.find((model) => model.id === quickAnchorModelId) ?? selectedModel);

@@ -19,6 +19,7 @@
   import { portal } from "$lib/utils/portal";
   import ChatModelAvatar from "./ChatModelAvatar.svelte";
   import ChatParticipantAvatar from "./ChatParticipantAvatar.svelte";
+  import ProviderPlanLimits from "./ProviderPlanLimits.svelte";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
 
   type IdentityPresentation = "avatar" | "name" | "mention";
@@ -74,6 +75,10 @@
       entry.configuration.instanceId === teammate.latestPolicy?.providerInstanceId
     )) ?? null
     : null);
+  /** The provider whose plan limits the card shows: the teammate's, or the one serving the model. */
+  const cardProvider = $derived(teammateProvider ?? (model
+    ? chat.settings?.providerInstances.find((entry) => entry.configuration.familyId === model.providerFamilyId) ?? null
+    : null));
   const displayName = $derived(participant
     ? chatParticipantDisplayName(
       participant,
@@ -379,6 +384,7 @@
       {:else}
         <p class="identity-description">{t("chat.organization.collaboratorIdentity")}</p>
       {/if}
+      {#if cardProvider && participant?.kind !== "local_user"}<ProviderPlanLimits provider={cardProvider} showHeading />{/if}
       {#if usageState}
         <div class="identity-context" data-identity-context>
           <span class="identity-settings-label">{t("chat.composer.contextWindow")}</span>

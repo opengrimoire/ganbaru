@@ -5,6 +5,7 @@
 //! and nullable metadata such as the limit name never clears a known value.
 
 use super::value::{bounded_text, text};
+use crate::events::RateLimitStatusEvent;
 use crate::models::{UtcTimestamp, VersionedJson};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
@@ -201,6 +202,45 @@ impl CodexRateLimits {
                 value: json!({ "rateLimitsByLimitId": buckets }),
             },
         }
+    }
+
+    /// Reads an `account/rateLimits/read` response into the status a turn would report.
+    ///
+    /// The response carries the main allowance in `rateLimits` and every metered limit in
+    /// `rateLimitsByLimitId`, each in the same snapshot shape as the rolling update. Returns
+    /// `None` when the response names no readable limit, as for API key accounts.
+    pub fn status_from_read_response(response: &Value) -> Option<RateLimitStatusEvent> {
+        let object = response.as_object()?;
+        let mut limits = Self::default();
+        if let Some(main) = object.get("rateLimits").and_then(Value::as_object) {
+            limits.merge(main);
+        }
+        if let Some(by_id) = object.get("rateLimitsByLimitId").and_then(Value::as_object) {
+            for (limit_id, snapshot) in by_id {
+                let Some(snapshot) = snapshot.as_object() else {
+                    continue;
+                };
+                let mut snapshot = snapshot.clone();
+                snapshot
+                    .entry("limitId")
+                    .or_insert_with(|| Value::String(limit_id.clone()));
+                limits.merge(&snapshot);
+            }
+        }
+        if limits
+            .snapshots
+            .values()
+            .all(|snapshot| snapshot.windows().next().is_none())
+        {
+            return None;
+        }
+        let projection = limits.projection();
+        Some(RateLimitStatusEvent {
+            limited: projection.limited,
+            resets_at: projection.resets_at,
+            detail: None,
+            provider_data: Some(projection.provider_data),
+        })
     }
 }
 

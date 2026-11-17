@@ -13,6 +13,10 @@ pub(crate) fn apply_provider_probe(
     probe: &ProviderProbeResult,
     model_catalog: Option<ProviderModelCatalog>,
 ) {
+    let mut probe = probe.clone();
+    if let Some(status) = probe.usage_limits.take() {
+        device.observe_usage_limits(status, probe.checked_at.clone());
+    }
     device.last_probe = Some(probe.clone());
     if probe.state == ProbeState::Healthy {
         device.last_successful_probe_at = Some(probe.checked_at.clone());

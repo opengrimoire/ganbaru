@@ -569,6 +569,7 @@ impl ProviderEventSink for DurableChatEventSink {
                 && matches!(&event.event, CanonicalEvent::TurnCompleted(_)))
             .then(|| event.turn_id.clone())
             .flatten();
+            let provider_activity = crate::chat::settings::ProviderActivity::of(&event);
             let ingestion: ChatResult<()> = async {
                 let diagnostic_expires_at =
                     crate::chat::diagnostics_commands::attach_opt_in_diagnostic(
@@ -585,6 +586,15 @@ impl ProviderEventSink for DurableChatEventSink {
                     .await
             }
             .await;
+            if let Some(activity) = provider_activity.filter(|_| ingestion.is_ok()) {
+                if let Ok(observed_at) = now_timestamp() {
+                    crate::chat::settings::record_provider_activity(
+                        &self.app,
+                        activity,
+                        observed_at,
+                    );
+                }
+            }
             let settled_thread = settled_turn
                 .as_ref()
                 .map(|(thread_id, _)| thread_id)

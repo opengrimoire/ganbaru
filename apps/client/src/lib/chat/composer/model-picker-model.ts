@@ -6,6 +6,7 @@ import type {
   ProviderModel,
   RememberedComposerSelection,
 } from "$lib/chat/contracts";
+import { compareProviderReadiness } from "$lib/chat/usage/provider-readiness";
 import { modelOptionRole, rankedModels } from "./model";
 import {
   compareCompanyModels,
@@ -114,6 +115,26 @@ export function buildFavoriteModelEntries(
   return favorites;
 }
 
+/** The most ready provider that serves a section, or `null` for a section that only offers setup. */
+function sectionLeadProvider(section: ModelCompanySection, nowMs: number): ProviderInstanceRead | null {
+  const providers = [...section.models.map((entry) => entry.provider), ...section.managedProviders];
+  return providers.reduce<ProviderInstanceRead | null>((best, provider) => (
+    best === null || compareProviderReadiness(provider, best, nowMs) < 0 ? provider : best
+  ), null);
+}
+
+function compareSectionReadiness(left: ModelCompanySection, right: ModelCompanySection, nowMs: number): number {
+  const leftLead = sectionLeadProvider(left, nowMs);
+  const rightLead = sectionLeadProvider(right, nowMs);
+  if (!leftLead || !rightLead) return Number(leftLead === null) - Number(rightLead === null);
+  return compareProviderReadiness(leftLead, rightLead, nowMs);
+}
+
+/**
+ * Groups every visible model, provider-managed choice, and setup offer by model company. Sections
+ * served by a ready provider come first, then limited ones, then those that need setup; ties keep
+ * the most recently used provider first and then the company order.
+ */
 export function buildModelCompanySections(
   providers: readonly ProviderInstanceRead[],
   setupFamilies: readonly ProviderFamilyMetadataRead[],
@@ -121,6 +142,7 @@ export function buildModelCompanySections(
   query: string,
   providerManagedLabel: string,
   locale: string,
+  nowMs: number,
 ): ModelCompanySection[] {
   const sections = new Map<string, ModelCompanySection>();
   const sectionFor = (company: ModelCompanyIdentity): ModelCompanySection => {
@@ -154,11 +176,13 @@ export function buildModelCompanySections(
     .filter((section) => section.models.length > 0
       || section.managedProviders.length > 0
       || section.setupFamilies.length > 0)
-    .sort((left, right) => left.company.order - right.company.order
+    .sort((left, right) => compareSectionReadiness(left, right, nowMs)
+      || left.company.order - right.company.order
       || left.company.name.localeCompare(right.company.name));
   if (!query.trim()) {
     for (const section of results) {
-      section.models.sort((left, right) => compareCompanyModels(section.company.id, left.model, right.model));
+      section.models.sort((left, right) => compareProviderReadiness(left.provider, right.provider, nowMs)
+        || compareCompanyModels(section.company.id, left.model, right.model));
     }
   }
   return results;

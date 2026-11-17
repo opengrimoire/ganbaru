@@ -23,6 +23,7 @@
     shouldShowModelId,
   } from "$lib/chat/composer/model-company";
   import ChatModelAvatar from "$lib/components/chat/identity/ChatModelAvatar.svelte";
+  import ProviderPlanLimits from "$lib/components/chat/identity/ProviderPlanLimits.svelte";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { formatNumber } from "$lib/i18n/formatters";
@@ -533,6 +534,7 @@
                         </button>
                       {/if}
                     </div>
+                    {#if selectedProvider}<ProviderPlanLimits provider={selectedProvider} />{/if}
                   </div>
                   {#if selectedProvider}
                     {@const headerInstanceId = selectedProvider.configuration.instanceId}

@@ -2,6 +2,7 @@
 
 use ganbaru_chat_contracts::models::{ChatError, ChatErrorCode};
 
+mod activity;
 mod credentials;
 mod discovery;
 mod mapping;
@@ -13,6 +14,7 @@ mod runtime_approval;
 mod store;
 
 pub(crate) use crate::chat::configuration::{config_io_error, read_chat_config};
+pub(crate) use activity::{ProviderActivity, record_provider_activity};
 pub(crate) use credentials::invalidate_provider_state_for_credential;
 #[cfg(all(test, unix))]
 pub(crate) use discovery::installed_provider_executables;

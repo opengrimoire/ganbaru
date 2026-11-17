@@ -198,6 +198,7 @@ impl ProviderDriver for CursorProviderDriver {
                             == Some(ProviderVersionAdmission::UntestedNewer))
                         .then(|| CURSOR_COMPATIBILITY.untested_newer_detail()),
                         version_admission,
+                        usage_limits: None,
                     })
                 }
                 Err(error) if context.is_cancelled() => Err(error),
@@ -215,6 +216,7 @@ impl ProviderDriver for CursorProviderDriver {
                         checked_at,
                         detail: Some(probe_detail(self.flavor, &error)),
                         version_admission: refusal.map(|(admission, _)| admission),
+                        usage_limits: None,
                     })
                 }
             }

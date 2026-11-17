@@ -28,7 +28,7 @@ describe("composerMeterRead", () => {
 
     expect(read.meter).toMatchObject({ usedTokens: 90, maximumTokens: 100, ratio: 0.9, warning: true });
     expect(read.windows).toEqual([
-      { id: "codex:primary", label: "5h codex", usedPercent: 40, windowDurationMinutes: 300, resetsAtSeconds: null },
+      { id: "codex:primary", label: "5h codex", usedPercent: 40, windowDurationMinutes: 300, resetsAtSeconds: null, accountWide: true },
     ]);
   });
 

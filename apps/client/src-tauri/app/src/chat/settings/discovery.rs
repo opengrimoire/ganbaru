@@ -1,8 +1,11 @@
 //! Pure provider discovery configuration and executable resolution.
 
 use super::{
-    config_io_error, device_state_error, discovery_state_error, mapping::portable_configuration,
-    providers::operation_context, read_chat_config, store::mutate_chat_config,
+    config_io_error, device_state_error, discovery_state_error,
+    mapping::portable_configuration,
+    providers::{apply_provider_probe, operation_context},
+    read_chat_config,
+    store::mutate_chat_config,
 };
 use crate::chat::device_state::{ChatProviderDeviceState, update_active_device_scope};
 use crate::chat::settings_commands::ChatSettingsState;
@@ -280,18 +283,14 @@ pub(crate) async fn discover_default_providers(
         }
 
         update_active_device_scope(app, |scope| {
-            scope.provider_instances.insert(
-                configuration.instance_id.clone(),
-                ChatProviderDeviceState {
-                    executable_path: Some(configuration.executable.clone()),
-                    provider_home_path: None,
-                    last_successful_probe_at: (probe.state == ProbeState::Healthy)
-                        .then(|| probe.checked_at.clone()),
-                    last_probe: Some(probe.clone()),
-                    model_catalog,
-                    approved_runtime_items: Default::default(),
-                },
-            );
+            let mut device = ChatProviderDeviceState {
+                executable_path: Some(configuration.executable.clone()),
+                ..ChatProviderDeviceState::default()
+            };
+            apply_provider_probe(&mut device, &probe, model_catalog);
+            scope
+                .provider_instances
+                .insert(configuration.instance_id.clone(), device);
             Ok(())
         })
         .map_err(device_state_error)?;

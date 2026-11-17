@@ -2,13 +2,13 @@
 
 use super::capacity_retry::{CodexCapacityRetry, ensure_no_retry_in_flight};
 use super::home::*;
-use super::normalizer::{CodexEventNormalizer, CodexRouteState};
+use super::normalizer::{CodexEventNormalizer, CodexRateLimits, CodexRouteState};
 use super::organizational::*;
 use super::protocol::*;
 use super::session::*;
 use super::transport::{CodexRpcConnection, CodexRpcFailure};
 use crate::events::{
-    CanonicalEvent, ContentDeltaEvent, ItemLifecycleEvent, NotificationEvent,
+    CanonicalEvent, ContentDeltaEvent, ItemLifecycleEvent, NotificationEvent, RateLimitStatusEvent,
     SessionConfiguredEvent, SessionExitedEvent, SessionStartedEvent, TurnCompletedEvent,
     TurnStartedEvent,
 };
@@ -111,6 +111,7 @@ struct ProbeSnapshot {
     account: AccountReadResponse,
     models: Vec<ProviderModel>,
     authority_support: ProviderAuthoritySupport,
+    usage_limits: Option<RateLimitStatusEvent>,
 }
 
 impl CodexProviderDriver {
@@ -508,6 +509,7 @@ impl ProviderDriver for CodexProviderDriver {
                             Some("Codex requires authentication".to_string())
                         },
                         version_admission,
+                        usage_limits: snapshot.usage_limits,
                     })
                 }
                 Err(error) if context.is_cancelled() => Err(error),
@@ -525,6 +527,7 @@ impl ProviderDriver for CodexProviderDriver {
                         checked_at,
                         detail: Some(probe_detail(error.code).to_string()),
                         version_admission: refusal.map(|(admission, _)| admission),
+                        usage_limits: None,
                     })
                 }
             }

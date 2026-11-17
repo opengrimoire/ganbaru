@@ -140,7 +140,7 @@ function provider(instanceId: string, familyId: string, label: string): Provider
       credentialReferences: {}, visibleModelIds: [], favoriteModelIds: [],
       providerConfig: { schemaVersion: 1, value: {} },
     },
-    lastProbe: null, modelCatalog: null, lastSuccessfulProbeAt: null, runtimeReview: [],
+    lastProbe: null, modelCatalog: null, lastSuccessfulProbeAt: null, runtimeReview: [], usageLimits: null, lastUsedAt: null,
   };
 }
 

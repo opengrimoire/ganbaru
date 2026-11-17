@@ -22,6 +22,10 @@ Discovery is lazy. App startup and vault preparation load cached Chat history an
 
 Rationale: provider probes spawn external processes, so they must not slow startup or block reading local history.
 
+Each device keeps the newest plan limits it observed per provider instance and when it last used that instance. Ganbaru never polls for limits: a signed-in Codex probe reads the account limits once, and Claude limits come from the rate limit events of turns that already run. Settings and the agent profile card show the 5-hour and weekly windows with the share left and the reset time, and say when the reading is older than an hour. Model pickers order providers that are ready first, then providers limited until a future reset, then providers that need setup or sign-in, breaking ties by most recent use; the Settings provider list keeps a stable order.
+
+Rationale: extra provider requests could look automated to the provider and cost memory and battery, so limits are read only where a probe or turn already talks to the provider.
+
 ## Codex
 
 Codex uses its native app-server protocol. Ganbaru owns the process, thread association, event ingestion, interaction requests, cancellation, and workspace authority. The app-server thread identity is an execution detail and never replaces the Chat conversation or agent identity. Provider-supported model, reasoning, approval, and sandbox choices are recorded with the run. Teammate instructions join the thread when it opens or resumes. A checkpoint restore rewinds the native thread to the restored turn, so the provider context matches the restored conversation; a turn Codex no longer has fails the restore before any workspace change. Codex rate limit updates are sparse, so Ganbaru merges them per metered limit and reports every known window together.

@@ -8,9 +8,11 @@ import {
   type ProviderRefreshResult,
   type ProviderRuntimeReviewItem,
   type ProviderSetupTestRead,
+  type ProviderUsageLimitsObservation,
   type RemoveProviderResult,
 } from "../contracts";
 import { parseChatConfiguration } from "./config";
+import { parseRateLimitStatus } from "./events";
 import {
   parseProviderFamilyMetadata,
   parseProviderInstanceConfig,
@@ -41,6 +43,20 @@ export function parseProviderInstanceRead(value: unknown, label = "provider inst
     lastProbe: readNullable(record.lastProbe, `${label}.lastProbe`, parseProviderProbeResult),
     lastSuccessfulProbeAt: readNullable(record.lastSuccessfulProbeAt, `${label}.lastSuccessfulProbeAt`, readUtcTimestamp),
     modelCatalog,
+    usageLimits: record.usageLimits === undefined
+      ? null
+      : readNullable(record.usageLimits, `${label}.usageLimits`, parseProviderUsageLimitsObservation),
+    lastUsedAt: record.lastUsedAt === undefined
+      ? null
+      : readNullable(record.lastUsedAt, `${label}.lastUsedAt`, readUtcTimestamp),
+  };
+}
+
+function parseProviderUsageLimitsObservation(value: unknown, label: string): ProviderUsageLimitsObservation {
+  const record = readRecord(value, label);
+  return {
+    observedAt: readUtcTimestamp(record.observedAt, `${label}.observedAt`),
+    status: parseRateLimitStatus(record.status, `${label}.status`),
   };
 }
 

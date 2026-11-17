@@ -2,6 +2,7 @@
 
 use crate::vault::{active_vault_id, ensure_device_id, read_app_state, update_app_state};
 use ganbaru_chat::scheduling::QuietPeriodPreferences;
+use ganbaru_chat_contracts::events::RateLimitStatusEvent;
 use ganbaru_chat_contracts::models::{
     ChatThreadId, ProjectWorkingFolderId, ProviderInstanceId, ProviderModelCatalog,
     ProviderProbeResult, UtcTimestamp,
@@ -23,6 +24,45 @@ pub struct ChatProviderDeviceState {
     /// Digests of portable runtime values this device confirmed for the instance.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub approved_runtime_items: BTreeSet<String>,
+    /// The newest usage limits the provider reported on this device, from a probe or a turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_limits: Option<ProviderUsageLimitsObservation>,
+    /// When a turn last started on this instance on this device. Only the order across
+    /// instances matters, so it is written only when the instance becomes the most recent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<UtcTimestamp>,
+}
+
+impl ChatProviderDeviceState {
+    /// Stores the usage limits a provider reported unless a newer report is already stored, and
+    /// reports whether it was stored. A probe and a turn can report in either order, so the
+    /// newest observation wins.
+    pub fn observe_usage_limits(
+        &mut self,
+        status: RateLimitStatusEvent,
+        observed_at: UtcTimestamp,
+    ) -> bool {
+        if self
+            .usage_limits
+            .as_ref()
+            .is_some_and(|current| !is_after(&observed_at, &current.observed_at))
+        {
+            return false;
+        }
+        self.usage_limits = Some(ProviderUsageLimitsObservation {
+            observed_at,
+            status,
+        });
+        true
+    }
+}
+
+/// Usage limits a provider reported, with the time this device observed them.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUsageLimitsObservation {
+    pub observed_at: UtcTimestamp,
+    pub status: RateLimitStatusEvent,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -286,6 +326,58 @@ pub fn record_dismissed_schedule_proposal(
     }
 }
 
+/// Orders two stored timestamps by instant; text order differs across fraction precisions.
+fn is_after(candidate: &UtcTimestamp, reference: &UtcTimestamp) -> bool {
+    let instant = |value: &UtcTimestamp| chrono::DateTime::parse_from_rfc3339(value.as_str()).ok();
+    match (instant(candidate), instant(reference)) {
+        (Some(candidate), Some(reference)) => candidate > reference,
+        (Some(_), None) => true,
+        (None, _) => false,
+    }
+}
+
+/// Stores a usage limit report for an instance this device keeps; see
+/// [`ChatProviderDeviceState::observe_usage_limits`].
+pub fn record_provider_usage_limits(
+    scope: &mut ChatDeviceScope,
+    instance_id: &ProviderInstanceId,
+    status: RateLimitStatusEvent,
+    observed_at: UtcTimestamp,
+) -> bool {
+    scope
+        .provider_instances
+        .get_mut(instance_id)
+        .is_some_and(|device| device.observe_usage_limits(status, observed_at))
+}
+
+/// Marks an instance as the most recently used on this device and reports whether the order
+/// across instances changed. An instance that is already the most recent keeps its older
+/// time, so consecutive turns on one provider never rewrite device state.
+pub fn record_provider_use(
+    scope: &mut ChatDeviceScope,
+    instance_id: &ProviderInstanceId,
+    used_at: UtcTimestamp,
+) -> bool {
+    let Some(current) = scope.provider_instances.get(instance_id) else {
+        return false;
+    };
+    let already_most_recent = current.last_used_at.as_ref().is_some_and(|own| {
+        scope
+            .provider_instances
+            .iter()
+            .filter(|(id, _)| *id != instance_id)
+            .filter_map(|(_, other)| other.last_used_at.as_ref())
+            .all(|other| !is_after(other, own))
+    });
+    if already_most_recent {
+        return false;
+    }
+    if let Some(device) = scope.provider_instances.get_mut(instance_id) {
+        device.last_used_at = Some(used_at);
+    }
+    true
+}
+
 pub fn read_active_device_scope<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<ChatDeviceScope, String> {
@@ -474,6 +566,102 @@ mod tests {
             &scope,
             &format!("scheduled:{MAX_SCHEDULED_MESSAGE_CONSENTS}"),
             &format!("digest:{MAX_SCHEDULED_MESSAGE_CONSENTS}")
+        ));
+    }
+
+    fn instance(name: &str) -> ProviderInstanceId {
+        ProviderInstanceId::new(name.to_string()).unwrap()
+    }
+
+    fn scope_with(instances: &[&str]) -> ChatDeviceScope {
+        let mut scope = ChatDeviceScope::default();
+        for name in instances {
+            scope
+                .provider_instances
+                .insert(instance(name), ChatProviderDeviceState::default());
+        }
+        scope
+    }
+
+    fn limits(limited: bool) -> RateLimitStatusEvent {
+        RateLimitStatusEvent {
+            limited,
+            resets_at: None,
+            detail: None,
+            provider_data: None,
+        }
+    }
+
+    #[test]
+    fn usage_limits_keep_the_newest_observation_across_precisions() {
+        let mut scope = scope_with(&["codex"]);
+        let codex = instance("codex");
+        let later = UtcTimestamp::new("2026-08-04T10:00:00.500Z").unwrap();
+        let earlier_without_fraction = UtcTimestamp::new("2026-08-04T10:00:00Z").unwrap();
+
+        assert!(record_provider_usage_limits(
+            &mut scope,
+            &codex,
+            limits(true),
+            later.clone()
+        ));
+        assert!(
+            !record_provider_usage_limits(
+                &mut scope,
+                &codex,
+                limits(false),
+                earlier_without_fraction
+            ),
+            "an older report that arrives late never replaces a newer one"
+        );
+        assert!(!record_provider_usage_limits(
+            &mut scope,
+            &codex,
+            limits(false),
+            later.clone()
+        ));
+        let stored = scope.provider_instances[&codex]
+            .usage_limits
+            .clone()
+            .unwrap();
+        assert!(stored.status.limited);
+        assert_eq!(stored.observed_at, later);
+
+        assert!(record_provider_usage_limits(
+            &mut scope,
+            &codex,
+            limits(false),
+            at(36_001)
+        ));
+        assert!(
+            !record_provider_usage_limits(
+                &mut scope,
+                &instance("removed"),
+                limits(true),
+                at(36_002)
+            ),
+            "a report for an instance this device no longer keeps is dropped"
+        );
+    }
+
+    #[test]
+    fn provider_use_is_written_only_when_the_most_recent_instance_changes() {
+        let mut scope = scope_with(&["claude", "codex"]);
+        let claude = instance("claude");
+        let codex = instance("codex");
+
+        assert!(record_provider_use(&mut scope, &claude, at(10)));
+        assert!(
+            !record_provider_use(&mut scope, &claude, at(20)),
+            "repeated turns on the most recent instance do not rewrite device state"
+        );
+        assert_eq!(scope.provider_instances[&claude].last_used_at, Some(at(10)));
+        assert!(record_provider_use(&mut scope, &codex, at(30)));
+        assert!(record_provider_use(&mut scope, &claude, at(40)));
+        assert!(!record_provider_use(
+            &mut scope,
+            &instance("removed"),
+            at(50)
         ));
     }
 }

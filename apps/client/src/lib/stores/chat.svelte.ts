@@ -1547,7 +1547,8 @@ export class ChatStore {
   }
 
   /**
-   * Starts rereading Chat rows that linked devices changed through sync, once per store. Pane stores live as long as
+   * Starts rereading Chat rows that linked devices changed through sync, and settings after a turn changed a
+   * provider's last use or plan limits, once per store. Pane stores live as long as
    * the WebView, so the listeners are never removed and end with it.
    */
   private listenForSync(): void {
@@ -1566,6 +1567,15 @@ export class ChatStore {
       if (tables.some((table) => CHAT_SYNC_TABLES.includes(table))) refresh();
     }).catch((error: unknown) => {
       console.error("Chat could not listen for sync", error);
+    });
+    if (!this.owner) return;
+    // The window's primary store owns the shared settings, so one listener per window rereads them.
+    void chatApi.listenForProviderActivity(() => {
+      void this.configurationController.refreshSettings().catch((error: unknown) => {
+        console.error("Chat settings refresh after provider activity failed", error);
+      });
+    }).catch((error: unknown) => {
+      console.error("Chat could not listen for provider activity", error);
     });
   }
 

@@ -83,6 +83,8 @@ function provider(state: ProviderInstanceRead["lastProbe"] extends infer _Probe 
       versionAdmission: "supported",
     },
     lastSuccessfulProbeAt: timestamp,
+    usageLimits: null,
+    lastUsedAt: null,
     modelCatalog: null,
   };
 }

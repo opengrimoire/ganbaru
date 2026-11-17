@@ -249,18 +249,41 @@ export interface ComposerRateLimitWindow {
   usedPercent: number;
   windowDurationMinutes: number | null;
   resetsAtSeconds: number | null;
+  /** Whether the window meters the whole account rather than one model. */
+  accountWide: boolean;
 }
 
+/** Limit id of the main Codex allowance. */
+const CODEX_ACCOUNT_LIMIT_ID = "codex";
+/** Window lengths of the Claude limit types that meter the whole account, in minutes. */
+const CLAUDE_ACCOUNT_LIMIT_MINUTES: Readonly<Record<string, number>> = {
+  five_hour: 300,
+  seven_day: 10_080,
+};
+/** Window lengths of the Claude limit types that meter one model family, in minutes. */
+const CLAUDE_MODEL_LIMIT_MINUTES: Readonly<Record<string, number>> = {
+  seven_day_opus: 10_080,
+  seven_day_sonnet: 10_080,
+};
+
 /**
- * Lists the usage windows of every limit in a provider's `rateLimitsByLimitId` status.
+ * Lists the usage windows of every limit in a provider's rate limit status: the Codex
+ * `rateLimitsByLimitId` shape and the Claude `rateLimitsByType` shape.
  *
- * Windows without a readable usage percentage are skipped and percentages are clamped to 0 to 100.
+ * Windows without a readable usage share are skipped and percentages are clamped to 0 to 100.
+ * A rejected Claude limit without a utilization reads as fully used.
  */
 export function composerRateLimitWindows(
   status: RateLimitStatusEvent | null,
 ): ComposerRateLimitWindow[] {
   const root = readJsonRecord(status?.providerData?.value);
-  const bucketRecords = readJsonRecord(root?.rateLimitsByLimitId);
+  return [
+    ...codexRateLimitWindows(readJsonRecord(root?.rateLimitsByLimitId)),
+    ...claudeRateLimitWindows(readJsonRecord(root?.rateLimitsByType)),
+  ];
+}
+
+function codexRateLimitWindows(bucketRecords: Record<string, unknown> | null): ComposerRateLimitWindow[] {
   if (!bucketRecords) return [];
   const windows: ComposerRateLimitWindow[] = [];
   for (const [bucketId, bucketValue] of Object.entries(bucketRecords)) {
@@ -275,13 +298,46 @@ export function composerRateLimitWindows(
       windows.push({
         id: `${bucketId}:${windowName}`,
         label: duration === null ? bucketLabel : `${formatWindowDuration(duration)} ${bucketLabel}`,
-        usedPercent: Math.max(0, Math.min(100, usedPercent)),
+        usedPercent: clampPercent(usedPercent),
         windowDurationMinutes: duration,
         resetsAtSeconds: readJsonNumber(window.resetsAt),
+        accountWide: bucketId === CODEX_ACCOUNT_LIMIT_ID,
       });
     }
   }
   return windows;
+}
+
+function claudeRateLimitWindows(typeRecords: Record<string, unknown> | null): ComposerRateLimitWindow[] {
+  if (!typeRecords) return [];
+  const windows: ComposerRateLimitWindow[] = [];
+  for (const [limitType, entryValue] of Object.entries(typeRecords)) {
+    const entry = readJsonRecord(entryValue);
+    if (!entry) continue;
+    const utilization = readJsonNumber(entry.utilization);
+    const usedPercent = utilization !== null
+      ? utilization * 100
+      : readJsonString(entry.status) === "rejected" ? 100 : null;
+    if (usedPercent === null) continue;
+    const accountMinutes = CLAUDE_ACCOUNT_LIMIT_MINUTES[limitType];
+    const duration = accountMinutes ?? CLAUDE_MODEL_LIMIT_MINUTES[limitType] ?? null;
+    const modelName = limitType.replace(/^seven_day_/, "");
+    windows.push({
+      id: `claude:${limitType}`,
+      label: duration === null
+        ? limitType.replaceAll("_", " ")
+        : accountMinutes === undefined ? `${formatWindowDuration(duration)} ${modelName}` : formatWindowDuration(duration),
+      usedPercent: clampPercent(usedPercent),
+      windowDurationMinutes: duration,
+      resetsAtSeconds: readJsonNumber(entry.resetsAt),
+      accountWide: accountMinutes !== undefined,
+    });
+  }
+  return windows;
+}
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, value));
 }
 
 function readJsonRecord(value: unknown): Record<string, unknown> | null {
@@ -298,7 +354,8 @@ function readJsonNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function formatWindowDuration(minutes: number): string {
+/** Formats a usage window length compactly, such as `5h` or `7d`. */
+export function formatWindowDuration(minutes: number): string {
   if (minutes >= 1_440 && minutes % 1_440 === 0) return `${minutes / 1_440}d`;
   if (minutes >= 60 && minutes % 60 === 0) return `${minutes / 60}h`;
   return `${minutes}m`;

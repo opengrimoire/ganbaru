@@ -35,6 +35,21 @@ impl CodexProviderDriver {
             } else {
                 Vec::new()
             };
+            // One limits read per probe, which already runs only at startup, on a refresh, or
+            // after a setup change; a failure leaves the device's last observation in place.
+            let usage_limits = if account.account.is_some() {
+                client
+                    .request(
+                        "account/rateLimits/read",
+                        json!({ "excludeResetCreditDetails": true }),
+                        context,
+                    )
+                    .await
+                    .ok()
+                    .and_then(|response| CodexRateLimits::status_from_read_response(&response))
+            } else {
+                None
+            };
             let authority_support = self
                 .probe_organizational_authority(&working_directory, context)
                 .await
@@ -44,6 +59,7 @@ impl CodexProviderDriver {
                 account,
                 models,
                 authority_support,
+                usage_limits,
             })
         }
         .await;

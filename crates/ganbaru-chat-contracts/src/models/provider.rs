@@ -217,6 +217,11 @@ pub struct ProviderProbeResult {
     /// without a range or when no version was read.
     #[serde(default)]
     pub version_admission: Option<ProviderVersionAdmission>,
+    /// Usage limits the provider reported during the probe; `None` when it cannot report them
+    /// without a turn. The app keeps them as the device's newest limit observation rather
+    /// than inside the stored probe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_limits: Option<crate::events::RateLimitStatusEvent>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

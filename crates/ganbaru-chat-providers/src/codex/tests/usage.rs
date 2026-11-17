@@ -284,3 +284,46 @@ fn malformed_rate_limit_updates_are_ignored_and_limits_stay_bounded() {
         "an update that changes nothing tracks no limit"
     );
 }
+
+#[test]
+fn limits_read_projects_every_metered_limit_and_skips_accounts_without_windows() {
+    use crate::codex::normalizer::CodexRateLimits;
+
+    let status = CodexRateLimits::status_from_read_response(&json!({
+        "rateLimits": {
+            "limitId": "codex",
+            "primary": { "usedPercent": 7, "windowDurationMins": 300, "resetsAt": 1_784_000_000 },
+            "secondary": { "usedPercent": 1, "windowDurationMins": 10_080, "resetsAt": 1_784_500_000 },
+            "planType": "plus"
+        },
+        "rateLimitsByLimitId": {
+            "codex": {
+                "limitId": "codex",
+                "primary": { "usedPercent": 7, "windowDurationMins": 300, "resetsAt": 1_784_000_000 }
+            },
+            "codex_mini": {
+                "primary": { "usedPercent": 100, "windowDurationMins": 300, "resetsAt": 1_784_100_000 }
+            }
+        }
+    }))
+    .expect("windows produce a status");
+    assert!(status.limited);
+    assert_eq!(
+        status.resets_at.as_ref().map(UtcTimestamp::as_str),
+        Some("2026-07-15T07:20:00Z")
+    );
+    let buckets = &status.provider_data.as_ref().unwrap().value["rateLimitsByLimitId"];
+    assert_eq!(buckets["codex"]["secondary"]["usedPercent"], 1);
+    assert_eq!(buckets["codex_mini"]["limitId"], "codex_mini");
+
+    assert_eq!(
+        CodexRateLimits::status_from_read_response(&json!({
+            "rateLimits": { "limitId": "codex", "primary": null, "secondary": null }
+        })),
+        None
+    );
+    assert_eq!(
+        CodexRateLimits::status_from_read_response(&json!(null)),
+        None
+    );
+}

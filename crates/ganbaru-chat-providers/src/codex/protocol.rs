@@ -34,6 +34,7 @@ pub(super) const CODEX_CLIENT_REQUEST_METHODS: &[&str] = &[
     "initialize",
     "initialized",
     "account/read",
+    "account/rateLimits/read",
     "config/read",
     "config/mcpServer/reload",
     "mcpServerStatus/list",

@@ -71,6 +71,10 @@ pub struct ProviderInstanceRead {
     pub last_probe: Option<ProviderProbeResult>,
     pub last_successful_probe_at: Option<ganbaru_chat_contracts::models::UtcTimestamp>,
     pub model_catalog: Option<ProviderModelCatalog>,
+    /// The newest usage limits this device observed for the instance.
+    pub usage_limits: Option<crate::chat::device_state::ProviderUsageLimitsObservation>,
+    /// When a turn last made the instance the most recently used on this device.
+    pub last_used_at: Option<ganbaru_chat_contracts::models::UtcTimestamp>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -235,6 +239,7 @@ fn save_confirmed_provider(
         existing.approved_runtime_items = approvals.clone();
         if runtime_changed {
             existing.last_probe = None;
+            existing.usage_limits = None;
             if let Some(catalog) = existing.model_catalog.as_mut() {
                 catalog.stale = true;
             }

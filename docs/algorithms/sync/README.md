@@ -183,7 +183,7 @@ If P later renames `t7` concurrently with the repair, the rename is discarded wi
 
 ### Revocation against widening
 
-1. A removes teammate T from channel C while P, offline, widens T's membership in C to full history.
+1. A removes agent T from channel C while P, offline, widens T's membership in C to full history.
 2. Both writes touch the membership's access group. The merge ranks a removal above any widening, whatever the clocks say.
 3. T ends removed on both devices. When the rows apply on T's executing device, it revokes T's active authorizations in C and stops their runs. Re-adding T is an edit made after seeing the removal, so it wins.
 

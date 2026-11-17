@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import ExternalLink from "@lucide/svelte/icons/external-link";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import { openUrl } from "@tauri-apps/plugin-opener";
@@ -44,15 +45,19 @@
   let detailScrollElement = $state<HTMLElement>();
   let savingPreference = $state(false);
   let preferenceError = $state<string | null>(null);
+  /** Folder each provider reads its files from, for the directory rows. */
+  let providerFolders = $state<ReadonlyMap<ProviderInstanceId, string>>(new Map());
+  let folderGeneration = 0;
 
   const providers = $derived(chat.settings?.providerInstances ?? []);
+  const providerIdsKey = $derived(providers.map((provider) => provider.configuration.instanceId).join("\n"));
   const selectedProvider = $derived(
     providers.find((provider) => provider.configuration.instanceId === selectedInstanceId) ?? null,
   );
   const familyId = $derived(selectedProvider?.configuration.familyId ?? null);
   const dirty = $derived(instructionsDirty || configurationDirty);
   const groups = $derived(splitProviderFiles(files));
-  const filesFolder = $derived(providerFilesFolder(files));
+  const filesFolder = $derived((selectedInstanceId ? providerFolders.get(selectedInstanceId) : undefined) ?? providerFilesFolder(files));
   const preferenceFile = $derived(groups.configuration.find((file) => file.preferences !== null) ?? null);
   const note = $derived(familyId ? providerFilesNote(familyId) : null);
   const preferencesAllowlisted = $derived(familyId ? providerPreferencesAllowlisted(familyId) : false);
@@ -79,6 +84,35 @@
     if (instanceId) void loadFiles(instanceId);
   });
 
+  $effect(() => {
+    void providerIdsKey;
+    void loadProviderFolders(untrack(() => providers.map((provider) => provider.configuration.instanceId)));
+  });
+
+  /**
+   * Reads every provider's files once to name the folder under each directory row. A provider whose
+   * read fails shows no folder; selecting it reports the failure in the detail panel.
+   */
+  async function loadProviderFolders(instanceIds: readonly ProviderInstanceId[]): Promise<void> {
+    const generation = ++folderGeneration;
+    const entries = await Promise.all(instanceIds.map(async (instanceId): Promise<[ProviderInstanceId, string | null]> => {
+      try {
+        return [instanceId, providerFilesFolder((await readChatProviderFiles(instanceId)).files)];
+      } catch {
+        return [instanceId, null];
+      }
+    }));
+    if (generation !== folderGeneration) return;
+    providerFolders = new Map(entries.filter((entry): entry is [ProviderInstanceId, string] => entry[1] !== null));
+  }
+
+  function rememberProviderFolder(instanceId: ProviderInstanceId, folder: string | null): void {
+    const next = new Map(providerFolders);
+    if (folder === null) next.delete(instanceId);
+    else next.set(instanceId, folder);
+    providerFolders = next;
+  }
+
   async function loadFiles(instanceId: ProviderInstanceId): Promise<void> {
     const generation = ++loadGeneration;
     loading = true;
@@ -89,6 +123,7 @@
       if (generation !== loadGeneration || instanceId !== selectedInstanceId) return;
       files = next.files;
       fileNotes = next.notes;
+      rememberProviderFolder(instanceId, providerFilesFolder(next.files));
       editorKey += 1;
     } catch (cause: unknown) {
       if (generation !== loadGeneration) return;
@@ -199,6 +234,7 @@
                 {@const instanceId = provider.configuration.instanceId}
                 {@const active = instanceId === selectedInstanceId}
                 {@const familyName = familyDisplayName(provider.configuration.familyId)}
+                {@const folder = providerFolders.get(instanceId)}
                 <button
                   type="button"
                   class="provider-row"
@@ -209,7 +245,7 @@
                   <ChatModelAvatar familyId={provider.configuration.familyId} label={familyName} size={32} />
                   <span class="directory-summary">
                     <strong>{provider.configuration.label}</strong>
-                    <small>{familyName}</small>
+                    <small class="font-mono" title={folder}>{folder ?? "\u00a0"}</small>
                   </span>
                 </button>
               {/each}

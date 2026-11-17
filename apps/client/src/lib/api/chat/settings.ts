@@ -22,6 +22,7 @@ import type {
   ProviderProbeResult,
   ProviderRefreshResult,
   ProviderFileRead,
+  ProviderFilesRead,
   ProviderSetupTestRead,
   RemoveProviderResult,
   RememberedComposerSelection,
@@ -56,7 +57,7 @@ export async function refreshAllChatProviders(): Promise<ProviderRefreshResult> 
   return parseProviderRefreshResult(await invoke<unknown>("chat_refresh_all_providers"));
 }
 
-export async function readChatProviderFiles(instanceId: ProviderInstanceId): Promise<ProviderFileRead[]> {
+export async function readChatProviderFiles(instanceId: ProviderInstanceId): Promise<ProviderFilesRead> {
   return parseProviderFiles(await invoke<unknown>("chat_read_provider_files", { instanceId }));
 }
 

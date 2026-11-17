@@ -5,7 +5,7 @@
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import X from "@lucide/svelte/icons/x";
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import type { ProviderFileRead, ProviderInstanceId } from "$lib/chat/contracts";
+  import type { ProviderFileNote, ProviderFileRead, ProviderInstanceId } from "$lib/chat/contracts";
   import {
     clearBrowserPreviewData,
     readChatProviderFiles,
@@ -14,7 +14,14 @@
     saveChatProviderPreference,
     type PreviewModelOriginGrant,
   } from "$lib/api/chat";
-  import { PROVIDER_DOC_LINKS, providerFilesNote, splitProviderFiles } from "$lib/chat/provider-files";
+  import {
+    PROVIDER_DOC_LINKS,
+    PROVIDER_FILE_NOTE_LINKS,
+    PROVIDER_FILE_NOTE_NAMES,
+    providerFilesNote,
+    splitProviderFiles,
+  } from "$lib/chat/provider-files";
+  import { formatList } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { getChat } from "$lib/stores/chat.svelte";
@@ -24,10 +31,12 @@
   import ProviderFileEditor from "./ProviderFileEditor.svelte";
   import ProviderPreferenceList from "./ProviderPreferenceList.svelte";
 
-  const { t } = getLocalization();
+  const localization = getLocalization();
+  const { t } = localization;
   const chat = getChat();
   let selectedInstanceId = $state<ProviderInstanceId | null>(null);
   let files = $state<ProviderFileRead[]>([]);
+  let fileNotes = $state<ProviderFileNote[]>([]);
   let loading = $state(false);
   let error = $state<string | null>(null);
   let loadGeneration = 0;
@@ -63,6 +72,7 @@
     if (providers.length === 0) {
       selectedInstanceId = null;
       files = [];
+      fileNotes = [];
       return;
     }
     if (!providers.some((provider) => provider.configuration.instanceId === selectedInstanceId)) {
@@ -83,11 +93,13 @@
     try {
       const next = await readChatProviderFiles(instanceId);
       if (generation !== loadGeneration || instanceId !== selectedInstanceId) return;
-      files = next;
+      files = next.files;
+      fileNotes = next.notes;
       editorKey += 1;
     } catch (cause: unknown) {
       if (generation !== loadGeneration) return;
       files = [];
+      fileNotes = [];
       error = errorMessage(cause);
     } finally {
       if (generation === loadGeneration) loading = false;
@@ -145,6 +157,10 @@
     } catch (cause: unknown) {
       error = errorMessage(cause);
     }
+  }
+
+  function fileNoteMessage(fileNote: ProviderFileNote): string {
+    return t(`settings.chat.permissions.fileNotes.${PROVIDER_FILE_NOTE_NAMES[fileNote.kind]}`, formatList(localization.locale, fileNote.paths));
   }
 
   async function loadSiteGrants(): Promise<void> {
@@ -240,12 +256,10 @@
     {#if loading}
       <Loading layout="fill" class="min-h-24" />
     {:else if selectedProvider && selectedInstanceId && files.length > 0}
-      {#if note === "native" || note === "cursor_rules" || docLinks.length > 0}
+      {#if note === "native" || docLinks.length > 0}
         <div class="flex flex-col gap-2 px-1">
           {#if note === "native"}
             <p class="text-[0.733333rem] text-muted-foreground">{t("settings.chat.permissions.nativeNote")}</p>
-          {:else if note === "cursor_rules"}
-            <p class="text-[0.733333rem] text-muted-foreground">{t("settings.chat.permissions.cursorRulesNote")}</p>
           {/if}
           {#if docLinks.length > 0}
             <div class="flex flex-wrap items-center gap-x-3 gap-y-1" role="group" aria-label={t("settings.chat.permissions.docsHeading")}>
@@ -259,6 +273,14 @@
           {/if}
         </div>
       {/if}
+
+      {#each fileNotes as fileNote (fileNote.kind)}
+        <Notice class="px-1 text-[0.733333rem]" tone="warning" role="status" copy={false} message={fileNoteMessage(fileNote)}>
+          {#snippet actions()}
+            <button type="button" class="notice-action-text" onclick={() => void openDocs(PROVIDER_FILE_NOTE_LINKS[fileNote.kind])}>{t("settings.chat.permissions.fileNoteDocs")}</button>
+          {/snippet}
+        </Notice>
+      {/each}
 
       {#key `${selectedInstanceId} ${editorKey}`}
         {#if groups.instructions.length > 0}

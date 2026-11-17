@@ -1,5 +1,6 @@
 //! Bounded access to documented coding-agent configuration and instruction files.
 
+mod notes;
 mod preferences;
 
 use super::settings_commands::read_provider;
@@ -7,6 +8,7 @@ use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ProviderInstanceConfig, ProviderInstanceId,
 };
 use ganbaru_chat_providers::teammate_preferences::{TeammatePreference, teammate_preferences};
+pub use notes::ProviderFileNote;
 pub use preferences::ProviderPreferencesRead;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -61,6 +63,14 @@ pub struct ProviderFileRead {
     pub preferences: Option<ProviderPreferencesRead>,
 }
 
+/// The files of one provider instance and notes about the instruction sources they do not cover.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderFilesRead {
+    pub files: Vec<ProviderFileRead>,
+    pub notes: Vec<ProviderFileNote>,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveProviderFileRequest {
@@ -99,15 +109,43 @@ struct ProviderFileSpec {
 pub fn chat_read_provider_files(
     app: tauri::AppHandle,
     instance_id: ProviderInstanceId,
-) -> ChatResult<Vec<ProviderFileRead>> {
+) -> ChatResult<ProviderFilesRead> {
     let provider = read_provider(&app, &instance_id)?;
     crate::chat::settings::require_runtime_approved_on_device(&app, &provider.configuration)?;
     let private_home =
         crate::chat::settings::configured_private_home(&app, &provider.configuration)?;
-    provider_file_specs(&provider.configuration, private_home.as_deref())?
+    read_provider_files(
+        &provider.configuration,
+        private_home.as_deref(),
+        &user_home(),
+    )
+}
+
+/// Reads the files of one instance and the notes about sources those files do not cover, with
+/// `user_home` as the folder that holds other providers' home folders.
+fn read_provider_files(
+    configuration: &ProviderInstanceConfig,
+    private_home: Option<&Path>,
+    user_home: &Path,
+) -> ChatResult<ProviderFilesRead> {
+    let files = provider_file_specs(configuration, private_home)?
         .into_iter()
         .map(read_provider_file)
-        .collect()
+        .collect::<ChatResult<Vec<_>>>()?;
+    if configuration.family_id.as_str() == "acp" {
+        return Ok(ProviderFilesRead {
+            files,
+            notes: Vec::new(),
+        });
+    }
+    let own_home = provider_home(configuration)?;
+    let folders = notes::NoteFolders {
+        home: private_home.unwrap_or(&own_home),
+        replaced_home: private_home.map(|_| own_home.clone()),
+        user_home,
+    };
+    let notes = notes::provider_file_notes(configuration, &folders, &files);
+    Ok(ProviderFilesRead { files, notes })
 }
 
 #[tauri::command]
@@ -214,7 +252,19 @@ fn provider_file_specs(
         None => provider_home(configuration)?,
     };
     let mut specs = match family {
-        "codex" => standard_pair(&home, "config.toml", ProviderFileFormat::Toml, "AGENTS.md"),
+        "codex" => {
+            let mut specs =
+                standard_pair(&home, "config.toml", ProviderFileFormat::Toml, "AGENTS.md");
+            // Codex reads this file instead of `AGENTS.md` while it has content.
+            let override_path = home.join("AGENTS.override.md");
+            if override_path.exists() {
+                specs.push(ProviderFileSpec {
+                    file_id: notes::CODEX_OVERRIDE_FILE_ID.to_string(),
+                    ..instructions_spec(override_path)
+                });
+            }
+            specs
+        }
         "claude" => standard_pair(
             &home,
             "settings.json",
@@ -669,6 +719,7 @@ fn provider_file_error() -> ChatError {
 
 #[cfg(test)]
 mod tests {
+    use super::notes::ProviderFileNoteKind;
     use super::*;
     use ganbaru_chat_contracts::models::{ProviderFamilyId, VersionedJson};
     use std::collections::BTreeMap;
@@ -975,6 +1026,133 @@ mod tests {
         assert!(shown.starts_with('~'));
         assert!(!shown.contains(user_home().to_string_lossy().as_ref()));
         assert!(shown.ends_with("config.toml"));
+    }
+
+    fn note_kinds(read: &ProviderFilesRead) -> Vec<ProviderFileNoteKind> {
+        read.notes.iter().map(|note| note.kind).collect()
+    }
+
+    #[test]
+    fn codex_shows_its_override_file_and_notes_it_only_while_it_has_content() {
+        let root = TestDirectory::new("codex-override");
+        let codex = configuration("codex", root.path());
+        let read = read_provider_files(&codex, None, root.path()).unwrap();
+        assert!(
+            read.files
+                .iter()
+                .all(|file| file.file_id != "instructions_override")
+        );
+        assert!(read.notes.is_empty());
+
+        fs::write(root.path().join("AGENTS.override.md"), "  \n").unwrap();
+        let read = read_provider_files(&codex, None, root.path()).unwrap();
+        assert!(
+            read.files
+                .iter()
+                .any(|file| file.file_id == "instructions_override")
+        );
+        assert!(read.notes.is_empty());
+
+        fs::write(root.path().join("AGENTS.override.md"), "Use pnpm.").unwrap();
+        let read = read_provider_files(&codex, None, root.path()).unwrap();
+        assert_eq!(note_kinds(&read), [ProviderFileNoteKind::CodexOverride]);
+        assert!(read.notes[0].paths[0].ends_with("AGENTS.override.md"));
+    }
+
+    #[test]
+    fn grok_notes_name_the_replaced_home_its_rules_and_skipped_vendor_homes() {
+        let root = TestDirectory::new("grok-notes");
+        let own_home = root.path().join("grok");
+        let private = root.path().join("private");
+        let user_home = root.path().join("user");
+        fs::create_dir_all(private.join("rules")).unwrap();
+        fs::create_dir_all(user_home.join(".claude")).unwrap();
+        fs::create_dir_all(user_home.join(".cursor").join("rules")).unwrap();
+        fs::write(user_home.join(".claude").join("CLAUDE.md"), "rules").unwrap();
+        let grok = configuration("grok", &own_home);
+
+        let read = read_provider_files(&grok, Some(&private), &user_home).unwrap();
+        assert_eq!(
+            note_kinds(&read),
+            [
+                ProviderFileNoteKind::GrokPrivateHome,
+                ProviderFileNoteKind::GrokRules,
+                ProviderFileNoteKind::GrokSkippedHomeInstructions,
+            ]
+        );
+        assert_eq!(read.notes[0].paths, [display_path(&own_home)]);
+        assert_eq!(read.notes[2].paths.len(), 2);
+
+        let empty_user_home = root.path().join("empty");
+        let read = read_provider_files(&grok, None, &empty_user_home).unwrap();
+        assert!(read.notes.is_empty());
+    }
+
+    #[test]
+    fn opencode_notes_follow_the_claude_fallback_and_listed_instructions() {
+        let root = TestDirectory::new("opencode-notes");
+        let user_home = root.path().join("user");
+        fs::create_dir_all(user_home.join(".claude")).unwrap();
+        fs::write(user_home.join(".claude").join("CLAUDE.md"), "rules").unwrap();
+        let home = root.path().join("opencode");
+        fs::create_dir_all(&home).unwrap();
+        fs::write(
+            home.join("opencode.json"),
+            r#"{"instructions": ["docs/rules.md"]}"#,
+        )
+        .unwrap();
+        let mut opencode = configuration("opencode", &home);
+        opencode.environment.insert(
+            "XDG_CONFIG_HOME".to_string(),
+            root.path().to_string_lossy().into_owned(),
+        );
+
+        let read = read_provider_files(&opencode, None, &user_home).unwrap();
+        assert_eq!(
+            note_kinds(&read),
+            [
+                ProviderFileNoteKind::OpencodeClaudeFallback,
+                ProviderFileNoteKind::OpencodeInstructions,
+            ]
+        );
+
+        opencode.environment.insert(
+            "OPENCODE_DISABLE_CLAUDE_CODE_PROMPT".to_string(),
+            "true".to_string(),
+        );
+        fs::write(home.join("opencode.json"), r#"{"instructions": []}"#).unwrap();
+        let read = read_provider_files(&opencode, None, &user_home).unwrap();
+        assert!(read.notes.is_empty());
+
+        opencode
+            .environment
+            .remove("OPENCODE_DISABLE_CLAUDE_CODE_PROMPT");
+        fs::write(home.join("AGENTS.md"), "rules").unwrap();
+        let read = read_provider_files(&opencode, None, &user_home).unwrap();
+        assert!(read.notes.is_empty());
+    }
+
+    #[test]
+    fn cursor_always_notes_account_rules_and_claude_notes_an_existing_rules_folder() {
+        let root = TestDirectory::new("vendor-notes");
+        let mut cursor = configuration("cursor", root.path());
+        cursor.environment.insert(
+            "CURSOR_CONFIG_DIR".to_string(),
+            root.path().to_string_lossy().into_owned(),
+        );
+        let read = read_provider_files(&cursor, None, root.path()).unwrap();
+        assert_eq!(note_kinds(&read), [ProviderFileNoteKind::CursorUserRules]);
+
+        let claude = configuration("claude", root.path());
+        assert!(
+            read_provider_files(&claude, None, root.path())
+                .unwrap()
+                .notes
+                .is_empty()
+        );
+        fs::create_dir_all(root.path().join("rules")).unwrap();
+        let read = read_provider_files(&claude, None, root.path()).unwrap();
+        assert_eq!(note_kinds(&read), [ProviderFileNoteKind::ClaudeRules]);
     }
 
     #[test]

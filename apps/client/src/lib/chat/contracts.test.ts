@@ -365,13 +365,22 @@ describe("Chat provider contracts", () => {
       preferences: null,
     }];
 
-    expect(parseProviderFiles(fixture)).toEqual(fixture);
-    expect(() => parseProviderFiles([{ ...fixture[0], format: "yaml" }])).toThrow(
+    expect(parseProviderFiles({ files: fixture, notes: [] })).toEqual({ files: fixture, notes: [] });
+    expect(() => parseProviderFiles({ files: [{ ...fixture[0], format: "yaml" }], notes: [] })).toThrow(
       "format has an unsupported value",
     );
-    expect(() => parseProviderFiles([{ ...fixture[0], exists: "yes" }])).toThrow(
+    expect(() => parseProviderFiles({ files: [{ ...fixture[0], exists: "yes" }], notes: [] })).toThrow(
       "exists must be a boolean",
     );
+    const notes = [{ kind: "codex_override", paths: ["~/.codex/AGENTS.override.md"] }];
+    expect(parseProviderFiles({ files: fixture, notes }).notes).toEqual(notes);
+    expect(() => parseProviderFiles({ files: fixture, notes: [{ kind: "future_source", paths: [] }] })).toThrow(
+      "kind has an unsupported value",
+    );
+    expect(() => parseProviderFiles({ files: fixture, notes: [{ kind: "claude_rules", paths: [1] }] })).toThrow(
+      "paths[0] must be a string",
+    );
+    expect(() => parseProviderFiles(fixture)).toThrow("provider files must be an object");
   });
 
   it("validates typed teammate preferences on provider files", () => {
@@ -397,11 +406,11 @@ describe("Chat provider contracts", () => {
       preferences: { editable: true, entries: [entry, { ...entry, id: "language", valueType: "text", variable: false, value: null, maxBytes: 64 }] },
     }];
 
-    expect(parseProviderFiles(fixture)).toEqual(fixture);
-    expect(() => parseProviderFiles([{ ...fixture[0], preferences: { editable: true, entries: [{ ...entry, value: "1" }] } }])).toThrow(
+    expect(parseProviderFiles({ files: fixture, notes: [] })).toEqual({ files: fixture, notes: [] });
+    expect(() => parseProviderFiles({ files: [{ ...fixture[0], preferences: { editable: true, entries: [{ ...entry, value: "1" }] } }], notes: [] })).toThrow(
       "value must be a boolean",
     );
-    expect(() => parseProviderFiles([{ ...fixture[0], preferences: { editable: true, entries: [{ ...entry, valueType: "list" }] } }])).toThrow(
+    expect(() => parseProviderFiles({ files: [{ ...fixture[0], preferences: { editable: true, entries: [{ ...entry, valueType: "list" }] } }], notes: [] })).toThrow(
       "valueType has an unsupported value",
     );
   });

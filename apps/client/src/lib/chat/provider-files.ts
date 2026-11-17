@@ -1,4 +1,4 @@
-import type { ProviderFamilyId, ProviderFileRead, ProviderPreferenceRead } from "./contracts";
+import type { ProviderFamilyId, ProviderFileNoteKind, ProviderFileRead, ProviderPreferenceRead } from "./contracts";
 
 /** Catalog names of the teammate preferences Settings describes, keyed by preference ID. */
 export const PROVIDER_PREFERENCE_NAMES = {
@@ -54,7 +54,7 @@ export const PROVIDER_DOC_LINKS: Readonly<Record<string, readonly ProviderDocLin
 };
 
 /** How teammate runs use a provider family's files, which decides the note Settings shows. */
-export type ProviderFilesNote = "allowlist" | "native" | "cursor_rules" | null;
+export type ProviderFilesNote = "allowlist" | "native" | null;
 
 /**
  * The note Settings shows about how teammates use a provider's files.
@@ -65,9 +65,8 @@ export function providerFilesNote(familyId: ProviderFamilyId): ProviderFilesNote
   switch (familyId) {
     case "claude":
       return "allowlist";
-    case "cursor":
-      return "cursor_rules";
     case "codex":
+    case "cursor":
     case "grok":
     case "opencode":
       return "native";
@@ -107,6 +106,36 @@ export function providerPreferenceInputValue(entry: ProviderPreferenceRead, inpu
   const trimmed = input.trim();
   return trimmed.length > 0 ? trimmed : null;
 }
+
+/** Catalog names of the notes about instruction sources the shown files do not cover. */
+export const PROVIDER_FILE_NOTE_NAMES = {
+  cursor_user_rules: "cursorUserRules",
+  grok_private_home: "grokPrivateHome",
+  grok_rules: "grokRules",
+  grok_skipped_home_instructions: "grokSkippedHomeInstructions",
+  codex_override: "codexOverride",
+  opencode_claude_fallback: "opencodeClaudeFallback",
+  opencode_instructions: "opencodeInstructions",
+  claude_rules: "claudeRules",
+} as const satisfies Record<ProviderFileNoteKind, string>;
+
+const GROK_RULES_DOCS = "https://docs.x.ai/build/features/project-rules";
+const OPENCODE_RULES_DOCS = "https://opencode.ai/docs/rules/";
+
+/**
+ * Official documentation of where each noted instruction source lives. Every URL must also be
+ * listed in the desktop opener scope.
+ */
+export const PROVIDER_FILE_NOTE_LINKS: Readonly<Record<ProviderFileNoteKind, string>> = {
+  cursor_user_rules: "https://cursor.com/docs/rules",
+  grok_private_home: GROK_RULES_DOCS,
+  grok_rules: GROK_RULES_DOCS,
+  grok_skipped_home_instructions: GROK_RULES_DOCS,
+  codex_override: "https://learn.chatgpt.com/docs/agent-configuration/agents-md",
+  opencode_claude_fallback: OPENCODE_RULES_DOCS,
+  opencode_instructions: OPENCODE_RULES_DOCS,
+  claude_rules: "https://code.claude.com/docs/en/memory",
+};
 
 /** Instruction files first, then configuration files, each in backend order. */
 export function splitProviderFiles(files: readonly ProviderFileRead[]): {

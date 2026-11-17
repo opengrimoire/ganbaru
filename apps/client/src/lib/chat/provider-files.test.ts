@@ -1,12 +1,28 @@
-import { describe, expect, it } from "vitest";
-import type { ProviderFileRead, ProviderPreferenceRead } from "./contracts";
+import { describe, expect, it, vi } from "vitest";
+import { PROVIDER_FILE_NOTE_KINDS, type ProviderFileRead, type ProviderPreferenceRead } from "./contracts";
 import {
+  PROVIDER_DOC_LINKS,
+  PROVIDER_FILE_NOTE_LINKS,
+  PROVIDER_FILE_NOTE_NAMES,
   PROVIDER_PREFERENCE_NAMES,
   providerFilesNote,
   providerPreferenceInputValue,
   providerPreferenceName,
   splitProviderFiles,
 } from "./provider-files";
+
+// Load test-only Node APIs without introducing Node globals into the browser type environment.
+const { readFileSync } = await vi.importActual<{
+  readFileSync: (path: string, encoding: "utf8") => string;
+}>("node:fs");
+const { fileURLToPath, URL: NodeUrl } = await vi.importActual<{
+  URL: typeof URL;
+  fileURLToPath: (url: string) => string;
+}>("node:url");
+const desktopCapability = readFileSync(
+  fileURLToPath(new NodeUrl("../../../src-tauri/capabilities/desktop.json", import.meta.url).href),
+  "utf8",
+);
 
 function preference(overrides: Partial<ProviderPreferenceRead>): ProviderPreferenceRead {
   return {
@@ -56,7 +72,7 @@ describe("provider files", () => {
 
   it("explains how each family's teammates use their files", () => {
     expect(providerFilesNote("claude")).toBe("allowlist");
-    expect(providerFilesNote("cursor")).toBe("cursor_rules");
+    expect(providerFilesNote("cursor")).toBe("native");
     expect(providerFilesNote("codex")).toBe("native");
     expect(providerFilesNote("grok")).toBe("native");
     expect(providerFilesNote("opencode")).toBe("native");
@@ -71,5 +87,26 @@ describe("provider files", () => {
     ]);
     expect(groups.instructions.map((entry) => entry.fileId)).toEqual(["instructions"]);
     expect(groups.configuration.map((entry) => entry.fileId)).toEqual(["configuration", "global_configuration"]);
+  });
+});
+
+describe("provider file notes", () => {
+  it("names and links every note kind the backend reports", () => {
+    for (const kind of PROVIDER_FILE_NOTE_KINDS) {
+      expect(PROVIDER_FILE_NOTE_NAMES[kind]).toBeTruthy();
+      expect(PROVIDER_FILE_NOTE_LINKS[kind]).toMatch(/^https:\/\//);
+    }
+    const names = Object.values(PROVIDER_FILE_NOTE_NAMES);
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it("keeps every documentation link inside the desktop opener scope", () => {
+    const urls = [
+      ...Object.values(PROVIDER_DOC_LINKS).flatMap((links) => links.map((link) => link.url)),
+      ...Object.values(PROVIDER_FILE_NOTE_LINKS),
+    ];
+    for (const url of urls) {
+      expect(desktopCapability).toContain(`"url": "${url}"`);
+    }
   });
 });

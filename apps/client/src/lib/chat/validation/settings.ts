@@ -2,9 +2,12 @@ import {
   CREDENTIAL_STORE_AVAILABILITIES,
   PROVIDER_FILE_FORMATS,
   PROVIDER_FILE_KINDS,
+  PROVIDER_FILE_NOTE_KINDS,
   PROVIDER_PREFERENCE_TYPES,
   type ChatSettingsRead,
+  type ProviderFileNote,
   type ProviderFileRead,
+  type ProviderFilesRead,
   type ProviderPreferenceRead,
   type ProviderPreferencesRead,
   type ProviderInstanceRead,
@@ -171,6 +174,18 @@ export function parseProviderFileRead(value: unknown, label = "provider file"): 
   };
 }
 
-export function parseProviderFiles(value: unknown): ProviderFileRead[] {
-  return readArray(value, "provider files", parseProviderFileRead);
+function parseProviderFileNote(value: unknown, label: string): ProviderFileNote {
+  const record = readRecord(value, label);
+  return {
+    kind: readEnum(record.kind, PROVIDER_FILE_NOTE_KINDS, `${label}.kind`),
+    paths: readArray(record.paths, `${label}.paths`, readString),
+  };
+}
+
+export function parseProviderFiles(value: unknown): ProviderFilesRead {
+  const record = readRecord(value, "provider files");
+  return {
+    files: readArray(record.files, "provider files.files", parseProviderFileRead),
+    notes: readArray(record.notes, "provider files.notes", parseProviderFileNote),
+  };
 }

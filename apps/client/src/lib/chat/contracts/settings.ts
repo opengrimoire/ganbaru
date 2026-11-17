@@ -108,3 +108,29 @@ export interface ProviderFileRead {
   /** Teammate preferences of a configuration file whose provider keeps an allowlist. */
   preferences: ProviderPreferencesRead | null;
 }
+
+export const PROVIDER_FILE_NOTE_KINDS = [
+  "cursor_user_rules",
+  "grok_private_home",
+  "grok_rules",
+  "grok_skipped_home_instructions",
+  "codex_override",
+  "opencode_claude_fallback",
+  "opencode_instructions",
+  "claude_rules",
+] as const;
+/** Instruction sources a provider loads that the shown files do not cover. */
+export type ProviderFileNoteKind = (typeof PROVIDER_FILE_NOTE_KINDS)[number];
+
+/** A note about where an instruction source the page cannot show lives. */
+export interface ProviderFileNote {
+  kind: ProviderFileNoteKind;
+  /** Display paths the note names, home-relative when inside the home folder. */
+  paths: string[];
+}
+
+/** The files of one provider instance and notes about the sources they do not cover. */
+export interface ProviderFilesRead {
+  files: ProviderFileRead[];
+  notes: ProviderFileNote[];
+}

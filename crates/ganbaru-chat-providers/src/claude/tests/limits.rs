@@ -352,3 +352,75 @@ fn limit_types_beyond_the_tracked_bound_are_ignored() {
     assert!(reported[0].limited);
     assert_eq!(types(reported[0]).len(), 16);
 }
+
+/// A trimmed `get_usage` reply with the shape the CLI sends for a Claude plan.
+fn usage_reply(five_hour: f64, extra_usage: bool) -> Value {
+    json!({
+        "session": { "total_cost_usd": 0 },
+        "subscription_type": "max",
+        "rate_limits_available": true,
+        "rate_limits": {
+            "five_hour": { "utilization": five_hour, "resets_at": "2026-11-17T01:59:59.656129+00:00" },
+            "seven_day": { "utilization": 2, "resets_at": "2026-11-23T20:59:59.656150+00:00" },
+            "seven_day_opus": null,
+            "promo_credits": { "utilization": 100, "resets_at": "2026-11-18T00:00:00+00:00" },
+            "extra_usage": { "is_enabled": extra_usage, "utilization": 0 }
+        }
+    })
+}
+
+#[test]
+fn usage_reply_reads_plan_windows_in_the_rate_limit_event_shape() {
+    let status = super::super::normalizer::usage_reply_status(&usage_reply(12.0, false))
+        .expect("plan limits");
+    assert!(!status.limited);
+    assert_eq!(status.resets_at, None);
+    assert_eq!(
+        limit_statuses(&status),
+        vec![("five_hour", "allowed"), ("seven_day", "allowed")]
+    );
+    assert_eq!(limit(&status, "five_hour", "utilization"), &json!(0.12));
+    assert_eq!(
+        limit(&status, "five_hour", "resetsAt"),
+        &json!(1_794_880_799)
+    );
+    assert_eq!(
+        limit(&status, "seven_day", "resetsAt"),
+        &json!(1_795_467_599)
+    );
+}
+
+#[test]
+fn usage_reply_marks_a_full_window_limited_unless_extra_usage_runs_requests() {
+    let usage_reply_status = super::super::normalizer::usage_reply_status;
+    let full = usage_reply_status(&usage_reply(100.0, false)).expect("plan limits");
+    assert!(full.limited);
+    assert_eq!(
+        full.resets_at.as_ref().map(UtcTimestamp::as_str),
+        Some("2026-11-17T01:59:59Z")
+    );
+    assert_eq!(limit(&full, "five_hour", "status"), &json!("rejected"));
+
+    let covered = usage_reply_status(&usage_reply(100.0, true)).expect("plan limits");
+    assert!(!covered.limited);
+
+    let over = usage_reply_status(&usage_reply(250.0, false)).expect("plan limits");
+    assert_eq!(limit(&over, "five_hour", "utilization"), &json!(1.0));
+}
+
+#[test]
+fn usage_reply_without_plan_limits_reads_as_no_observation() {
+    let usage_reply_status = super::super::normalizer::usage_reply_status;
+    assert!(
+        usage_reply_status(&json!({ "rate_limits_available": false, "rate_limits": null }))
+            .is_none()
+    );
+    assert!(usage_reply_status(&json!({})).is_none());
+    assert!(
+        usage_reply_status(&json!({
+            "rate_limits_available": true,
+            "rate_limits": { "five_hour": null, "promo_credits": { "utilization": 5 } }
+        }))
+        .is_none()
+    );
+}

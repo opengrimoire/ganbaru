@@ -8,6 +8,7 @@ mod usage;
 
 use blocks::{ClaudeStreamScope, ClaudeStreamState, usable_message_id};
 use limits::ClaudeRateLimitMemory;
+pub(super) use limits::usage_reply_status;
 pub(super) use seen::ClaudePlanSource;
 use seen::{ClaudePlanMemory, ClaudeTurnText};
 use usage::ClaudeUsageTracker;

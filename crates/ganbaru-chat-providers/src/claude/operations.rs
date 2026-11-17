@@ -80,7 +80,7 @@ impl ProviderDriver for ClaudeProviderDriver {
     ) -> DriverFuture<'a, ProviderProbeResult> {
         Box::pin(async move {
             let checked_at = now_utc()?;
-            match self.probe_snapshot(context).await {
+            match self.probe_snapshot(context, true).await {
                 Ok(snapshot) => {
                     let version_admission = Some(admit_version::<ClaudeVersion>(
                         &CLAUDE_COMPATIBILITY,
@@ -125,7 +125,7 @@ impl ProviderDriver for ClaudeProviderDriver {
                             Some(snapshot.home.authentication_hint())
                         },
                         version_admission,
-                        usage_limits: None,
+                        usage_limits: snapshot.usage_limits,
                     })
                 }
                 Err(error) if context.is_cancelled() => Err(error),
@@ -155,7 +155,7 @@ impl ProviderDriver for ClaudeProviderDriver {
         context: &'a DriverOperationContext,
     ) -> DriverFuture<'a, ProviderModelCatalog> {
         Box::pin(async move {
-            let snapshot = self.probe_snapshot(context).await?;
+            let snapshot = self.probe_snapshot(context, false).await?;
             self.cached_commands = snapshot.initialize.commands.clone();
             let catalog = ProviderModelCatalog {
                 instance_id: self.configuration.instance_id.clone(),

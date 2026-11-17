@@ -2,7 +2,7 @@
 
 use super::home::*;
 use super::instructions::{ClaudeSessionInstructions, session_instructions};
-use super::normalizer::{ClaudeEventNormalizer, ClaudeRouteState};
+use super::normalizer::{ClaudeEventNormalizer, ClaudeRouteState, usage_reply_status};
 use super::organizational::{
     ClaudeOrganizationalDeadline, ClaudeOrganizationalPermissions, organizational_route,
     verify_mcp_status,
@@ -16,6 +16,7 @@ use crate::events::*;
 use crate::models::*;
 use crate::process::{ProviderProcessConfig, spawn_provider_process};
 use crate::{DriverOperationContext, ProviderEventSink};
+use serde_json::json;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{
@@ -33,6 +34,9 @@ pub(super) static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 pub(super) static NEXT_UUID: AtomicU64 = AtomicU64::new(1);
 /// Provider name in sandbox errors.
 pub(super) const CLAUDE_PROVIDER_NAME: &str = "Claude";
+/// Longest wait for the plan limits a status probe reads; a CLI that does not answer the
+/// experimental request leaves the probe result unaffected.
+const USAGE_LIMITS_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A started CLI process with its configuration directory, version, and the confined shell
 /// its commands run under, when they are confined.
@@ -97,6 +101,34 @@ pub(super) struct ClaudeProbeSnapshot {
     pub(super) home: ClaudeHome,
     pub(super) initialize: ClaudeInitializeResponse,
     pub(super) models: Vec<ProviderModel>,
+    /// Plan limits read during a status probe, when the account has a Claude plan.
+    pub(super) usage_limits: Option<RateLimitStatusEvent>,
+}
+
+/// Whether the signed-in account has a Claude plan, the only case with plan limits to read.
+fn has_plan(initialize: &ClaudeInitializeResponse) -> bool {
+    initialize
+        .account
+        .as_ref()
+        .is_some_and(|account| account.subscription_type.is_some())
+}
+
+/// Reads the plan limits once over an initialized connection, without starting a turn.
+///
+/// The CLI answers the experimental `get_usage` request from the same usage data its own
+/// `/usage` view reads, and `skip_behaviors` skips its scan of local transcripts. Any failure,
+/// including a CLI that predates the request, leaves the device's last observation in place.
+async fn read_plan_limits(
+    connection: &ClaudeJsonlConnection,
+    context: &DriverOperationContext,
+) -> Option<RateLimitStatusEvent> {
+    let client = connection.client();
+    let request = client.request("get_usage", json!({ "skip_behaviors": true }), context);
+    let reply = tokio::time::timeout(USAGE_LIMITS_READ_TIMEOUT, request)
+        .await
+        .ok()?
+        .ok()?;
+    usage_reply_status(&reply)
 }
 
 impl ClaudeProviderDriver {
@@ -149,6 +181,7 @@ impl ClaudeProviderDriver {
     pub(super) async fn probe_snapshot(
         &self,
         context: &DriverOperationContext,
+        read_usage_limits: bool,
     ) -> ChatResult<ClaudeProbeSnapshot> {
         let workspace = crate::probe_directory::ProbeDirectory::create()?;
         let session_uuid = new_uuid(&self.configuration.instance_id);
@@ -185,11 +218,17 @@ impl ClaudeProviderDriver {
                 },
                 &self.settings.custom_model_labels,
             )?;
+            let usage_limits = if read_usage_limits && has_plan(&initialize) {
+                read_plan_limits(&connection, context).await
+            } else {
+                None
+            };
             Ok(ClaudeProbeSnapshot {
                 version,
                 home,
                 initialize,
                 models,
+                usage_limits,
             })
         }
         .await;

@@ -236,6 +236,89 @@ impl ClaudeEventNormalizer {
     }
 }
 
+/// Plan limit windows read from a `get_usage` reply; Claude also reports promotional and
+/// internal windows there that no surface shows.
+const USAGE_REPLY_LIMIT_TYPES: [&str; 4] = [
+    "five_hour",
+    "seven_day",
+    "seven_day_opus",
+    "seven_day_sonnet",
+];
+/// Utilization `get_usage` reports for a fully used window, in percent.
+const FULL_UTILIZATION_PERCENT: f64 = 100.0;
+
+/// Reads the plan limits of a `get_usage` control reply as the same status a
+/// `rate_limit_event` produces, so a probe and a turn store one shape.
+///
+/// None when plan limits do not apply (API key or third-party credentials) or the reply has no
+/// known window. A fully used window reads as rejected unless extra usage lets requests run.
+pub(in crate::claude) fn usage_reply_status(reply: &Value) -> Option<RateLimitStatusEvent> {
+    if reply.get("rate_limits_available").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let limits = reply.get("rate_limits")?.as_object()?;
+    let extra_usage = limits
+        .get("extra_usage")
+        .and_then(|extra| extra.get("is_enabled"))
+        .and_then(Value::as_bool)
+        == Some(true);
+    let mut memory = ClaudeRateLimitMemory::default();
+    for limit_type in USAGE_REPLY_LIMIT_TYPES {
+        let Some(window) = limits.get(limit_type).and_then(Value::as_object) else {
+            continue;
+        };
+        let Some(percent) = window
+            .get("utilization")
+            .and_then(Value::as_f64)
+            .filter(|value| value.is_finite())
+            .map(|value| value.clamp(0.0, FULL_UTILIZATION_PERCENT))
+        else {
+            continue;
+        };
+        memory.entries.insert(
+            limit_type.to_string(),
+            ClaudeRateLimitEntry {
+                status: if percent >= FULL_UTILIZATION_PERCENT {
+                    "rejected"
+                } else {
+                    "allowed"
+                }
+                .to_string(),
+                resets_at: window
+                    .get("resets_at")
+                    .and_then(Value::as_str)
+                    .and_then(iso_epoch_seconds),
+                overage_status: extra_usage.then(|| "allowed".to_string()),
+                is_using_overage: None,
+                overage_in_use: None,
+                utilization: Some(percent / FULL_UTILIZATION_PERCENT),
+            },
+        );
+    }
+    if memory.entries.is_empty() {
+        return None;
+    }
+    Some(RateLimitStatusEvent {
+        limited: memory.limited(),
+        resets_at: memory.resets_at().and_then(utc_timestamp),
+        detail: None,
+        provider_data: Some(VersionedJson {
+            schema_version: 1,
+            value: memory.projection(),
+        }),
+    })
+}
+
+/// Reads an RFC 3339 reset instant as epoch seconds within the accepted range.
+fn iso_epoch_seconds(value: &str) -> Option<i64> {
+    let seconds = chrono::DateTime::parse_from_rfc3339(value)
+        .ok()?
+        .timestamp();
+    (1..=MAX_RESET_EPOCH_SECONDS)
+        .contains(&seconds)
+        .then_some(seconds)
+}
+
 /// Reads `resetsAt`, which Claude reports in epoch seconds, within the range RFC 3339 can write.
 fn reset_epoch_seconds(value: &Value) -> Option<i64> {
     let seconds = value.as_i64().or_else(|| {

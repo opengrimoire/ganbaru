@@ -37,12 +37,7 @@
 
   function label(entry: ProviderPreferenceRead): string {
     const name = providerPreferenceName(entry.id);
-    return name ? t(`settings.agents.files.preferences.${name}.label`) : entry.id;
-  }
-
-  function description(entry: ProviderPreferenceRead): string | null {
-    const name = providerPreferenceName(entry.id);
-    return name ? t(`settings.agents.files.preferences.${name}.description`) : null;
+    return name ? t(`settings.agents.files.preferences.${name}`) : entry.id;
   }
 
   function booleanValue(entry: ProviderPreferenceRead): string {
@@ -98,10 +93,7 @@
     {:else}
       <div class="text-[0.866667rem] text-foreground">{label(entry)}</div>
     {/if}
-    {#if description(entry)}
-      <div class="mt-0.5 text-[0.8rem] text-muted-foreground">{description(entry)}</div>
-    {/if}
-    <code class="mt-0.5 block break-all font-mono text-[0.666667rem] text-muted-foreground">{entry.variable ? `env.${entry.id}` : entry.id}</code>
+    <code class="mt-0.5 block break-all font-mono text-[0.733333rem] text-muted-foreground">{entry.variable ? `env.${entry.id}` : entry.id}</code>
     {#if entry.ignored}
       <p class="mt-0.5 text-[0.733333rem] text-status-tentative">{t(allowlisted ? "settings.agents.files.preferenceIgnored" : "settings.agents.files.preferenceInvalid")}</p>
     {/if}

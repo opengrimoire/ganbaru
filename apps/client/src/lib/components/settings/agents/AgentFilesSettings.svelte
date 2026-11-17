@@ -245,11 +245,8 @@
   <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>
 {/snippet}
 
-{#snippet sectionHeading(title: string, description: string)}
-  <div class="px-1">
-    <h3 class="text-[0.866667rem] font-semibold text-foreground">{title}</h3>
-    <p class="mt-0.5 text-[0.8rem] text-muted-foreground">{description}</p>
-  </div>
+{#snippet sectionHeading(title: string)}
+  <h3 class="px-1 text-[0.866667rem] font-semibold text-foreground">{title}</h3>
 {/snippet}
 
 <section class="agent-files" data-agents-settings-subsection="files">
@@ -286,7 +283,7 @@
                   <ChatModelAvatar familyId={provider.configuration.familyId} label={familyName} size={32} />
                   <span class="directory-summary">
                     <strong>{provider.configuration.label}</strong>
-                    <small class="font-mono" title={folder}>{folder ?? "\u00a0"}</small>
+                    <small class="font-mono">{folder ?? "\u00a0"}</small>
                   </span>
                 </button>
               {/each}
@@ -333,7 +330,7 @@
                 <ChatModelAvatar familyId={selectedProvider.configuration.familyId} label={familyDisplayName(selectedProvider.configuration.familyId)} size={38} />
                 <div class="min-w-0">
                   <h3>{selectedProvider.configuration.label}</h3>
-                  <p class="font-mono" title={filesFolder ?? undefined}>{filesFolder ?? "\u00a0"}</p>
+                  <p class="font-mono">{filesFolder ?? "\u00a0"}</p>
                 </div>
               </div>
             {/if}
@@ -373,8 +370,8 @@
 
               {#key `${selectedInstanceId} ${editorKey}`}
                 {#if groups.instructions.length > 0}
-                  <section class="flex flex-col gap-3">
-                    {@render sectionHeading(t("settings.agents.files.instructionsHeading"), t("settings.agents.files.instructionsDescription"))}
+                  <section class="flex flex-col gap-4">
+                    {@render sectionHeading(t("settings.agents.files.instructionsHeading"))}
                     <ProviderFileEditor
                       files={groups.instructions}
                       instanceId={selectedInstanceId}
@@ -388,11 +385,8 @@
 
                 {#if preferenceFile?.preferences}
                   {@render separator()}
-                  <section class="flex flex-col gap-3">
-                    {@render sectionHeading(
-                      t("settings.agents.files.preferencesHeading"),
-                      t(preferencesAllowlisted ? "settings.agents.files.preferencesDescription" : "settings.agents.files.preferencesNativeDescription"),
-                    )}
+                  <section class="flex flex-col gap-4">
+                    {@render sectionHeading(t("settings.agents.files.preferencesHeading"))}
                     {#if !preferenceFile.preferences.editable}
                       <Notice class="px-1 text-[0.733333rem]" tone="warning" role="status" copy={false} message={t("settings.agents.files.preferencesNotEditable")} />
                     {:else if configurationDirty}
@@ -412,8 +406,8 @@
 
                 {#if groups.configuration.length > 0}
                   {#if groups.instructions.length > 0 || preferenceFile?.preferences}{@render separator()}{/if}
-                  <section class="flex flex-col gap-3">
-                    {@render sectionHeading(t("settings.agents.files.configurationHeading"), t("settings.agents.files.configurationDescription"))}
+                  <section class="flex flex-col gap-4">
+                    {@render sectionHeading(t("settings.agents.files.configurationHeading"))}
                     <ProviderFileEditor
                       files={groups.configuration}
                       instanceId={selectedInstanceId}
@@ -455,7 +449,7 @@
   .unconfigured-state { display:flex; align-items:center; gap:0.3rem; }
   .unconfigured-state i { width:0.38rem; height:0.38rem; flex:0 0 auto; border-radius:50%; background:var(--destructive); }
   .detail-panel { position:relative; z-index:2; min-width:0; min-height:0; border-left:1px solid var(--border); padding-left:1rem; }
-  .detail-scroll { display:grid; grid-template-columns:minmax(0,1fr); align-content:start; gap:1.25rem; padding:0.2rem 0.75rem 1rem 0; }
+  .detail-scroll { display:grid; grid-template-columns:minmax(0,1fr); align-content:start; gap:1.5rem; padding:0.2rem 0.75rem 1rem 0; }
   .editor-heading { display:grid; min-width:0; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:0.65rem; padding-inline:0.25rem; }
   .editor-heading h3,.editor-heading p { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .editor-heading h3 { font-size:calc(0.833333rem * var(--type-scale)); font-weight:600; }

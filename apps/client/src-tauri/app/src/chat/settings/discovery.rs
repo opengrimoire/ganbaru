@@ -23,6 +23,7 @@ use ganbaru_chat_providers::executable_search::{
 };
 use ganbaru_chat_providers::{
     InstallRoots, ProviderDriverFactory, ProviderDriverRegistry, installer_executable_directories,
+    search_path,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -101,7 +102,7 @@ pub(crate) fn default_provider_configuration(
 }
 
 pub(crate) fn executable_search_directories() -> Vec<PathBuf> {
-    let mut directories = std::env::var_os("PATH")
+    let mut directories = search_path()
         .map(|path| path_search_directories(&path))
         .unwrap_or_default();
     if let Some(home) = platform_user_home() {

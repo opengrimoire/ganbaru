@@ -152,7 +152,7 @@ pub fn claude_process_environment(
     home: &ClaudeHome,
     preferences: &BTreeMap<String, String>,
 ) -> ChatResult<BTreeMap<String, String>> {
-    let mut environment = inherited_environment(|name| std::env::var(name).ok());
+    let mut environment = inherited_environment(crate::host_path::host_variable);
     environment.extend(preferences.clone());
     for (name, value) in &configuration.environment {
         if name.is_empty()

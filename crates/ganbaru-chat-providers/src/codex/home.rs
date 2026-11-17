@@ -244,7 +244,7 @@ pub fn codex_process_environment(
 ) -> ChatResult<BTreeMap<String, String>> {
     let mut environment = BTreeMap::new();
     for name in minimal_inherited_environment_names() {
-        if let Ok(value) = std::env::var(name) {
+        if let Some(value) = crate::host_path::host_variable(name) {
             if !value.contains('\0') {
                 environment.insert((*name).to_string(), value);
             }

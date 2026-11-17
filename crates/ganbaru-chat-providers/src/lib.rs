@@ -16,6 +16,7 @@ mod codex;
 mod confinement;
 mod cursor;
 mod driver;
+mod host_path;
 mod opencode;
 mod registry;
 #[cfg(test)]
@@ -27,6 +28,7 @@ mod unsupported;
 pub use cli_install::{InstallRoots, installer_executable_directories};
 pub use driver::*;
 pub use ganbaru_chat_contracts::models::ProviderAuthoritySupport;
+pub use host_path::{host_variable, search_path};
 pub use registry::ProviderDriverRegistry;
 pub use unsupported::*;
 

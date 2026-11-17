@@ -184,6 +184,7 @@ wayland-client = "0.31.14"
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
 webkit2gtk = "2.0.2"
 webview2-com = "0.38.2"
+windows-registry = "0.6.1"
 windows = { version = "0.61", features = [
   "Foundation",
   "Media",

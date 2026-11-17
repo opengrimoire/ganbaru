@@ -318,9 +318,9 @@ describe("agent editor workflow", () => {
       personApprovedCommands: true,
     };
     const providers = [
-      { configuration: { instanceId: "provider:claude" }, lastProbe: { authoritySupport: authority } },
+      { configuration: { instanceId: "provider:claude", familyId: "claude", favoriteModelIds: [] }, lastProbe: { authoritySupport: authority } },
       {
-        configuration: { instanceId: "provider:cursor" },
+        configuration: { instanceId: "provider:cursor", familyId: "cursor", favoriteModelIds: [] },
         lastProbe: { authoritySupport: { ...authority, networkBoundary: false, personApprovedCommands: false } },
       },
     ] as unknown as ProviderInstanceRead[];
@@ -338,7 +338,7 @@ describe("agent editor workflow", () => {
       workingFolder: { id: "folder:app", projectId: "project:app", kind: "managed", archivedAt: null },
       bindingStatus: "available",
     }] as unknown as ProjectWorkingFolderRead[];
-    const { editor } = setup([], { settings: { providerInstances: providers } as unknown as ChatSettingsRead, workingFolders });
+    const { editor } = setup([], { settings: { providerInstances: providers, configuration: { rememberedSelections: [] } } as unknown as ChatSettingsRead, workingFolders });
     await editor.loadDirectoryData();
     const choose = (providerInstanceId: string) => editor.selectExecution({
       providerInstanceId, modelId: null, providerManaged: true, options: [],

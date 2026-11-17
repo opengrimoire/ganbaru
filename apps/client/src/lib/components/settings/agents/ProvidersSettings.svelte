@@ -24,6 +24,7 @@
     modelCompany,
     shouldShowModelId,
   } from "$lib/chat/composer/model-company";
+  import { familiesInPickerOrder, providersInPickerOrder } from "$lib/chat/composer/model-picker-model";
   import ChatModelAvatar from "$lib/components/chat/identity/ChatModelAvatar.svelte";
   import ProviderInstallSteps from "./ProviderInstallSteps.svelte";
   import ProviderPlanLimitRings from "./ProviderPlanLimitRings.svelte";
@@ -69,11 +70,12 @@
   let removeId = $state<string | null>(null);
   let directoryScrollElement = $state<HTMLElement>();
   let detailScrollElement = $state<HTMLElement>();
-  const families = $derived((chat.settings?.providerFamilies ?? []).map((family) => ({
+  // Providers and families follow the model picker order, so both lists read the same way.
+  const providers = $derived(providersInPickerOrder(chat.settings?.providerInstances ?? [], Date.now()));
+  const families = $derived(familiesInPickerOrder((chat.settings?.providerFamilies ?? []).map((family) => ({
     ...family,
     displayName: providerFamilyDisplayName(family, t("chat.providers.acp.name")),
-  })));
-  const providers = $derived(chat.settings?.providerInstances ?? []);
+  })), providers, Date.now()));
   const selectedFamily = $derived(
     families.find((family) => family.familyId === selectedFamilyId) ?? families[0] ?? null,
   );

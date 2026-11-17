@@ -113,6 +113,7 @@
   let directoryQuery = $state("");
 
   let directoryScrollElement = $state<HTMLElement>();
+  let draftRowElement = $state<HTMLButtonElement>();
   let detailScrollElement = $state<HTMLElement>();
   let saveButtonElement = $state<HTMLButtonElement>();
   let accessPickerOpen = $state(false);
@@ -271,6 +272,11 @@
     }
     if (chat.agents.length === 0) editor.beginCreate(initialChannelId ?? null);
     else editor.selectedId = chat.agents[0]?.participant.id ?? null;
+  });
+
+  // The draft row sits below the directory, so a long list scrolls to show it.
+  $effect(() => {
+    draftRowElement?.scrollIntoView({ block: "nearest" });
   });
 
   $effect(() => {
@@ -713,15 +719,15 @@
       <div class="scroll-frame">
         <div bind:this={directoryScrollElement} data-mobile-scroll-fade class="directory-scroll hide-scrollbar">
           <nav aria-label={t("settings.agents.agents.directoryLabel")} class="directory-list agent-directory">
-            {#if editor.creating}
-              <button type="button" class="directory-row active" aria-current="page"><span class="draft-avatar">{#if draftCompany}<ChatModelAvatar familyId={draftCompany.iconFamilyId} label={draftCompany.name} size={30} />{:else}<Plus size={15} />{/if}</span><span><strong>{editor.displayName.trim() || t("settings.agents.agents.name")}</strong><small>{editor.role.trim() || t("settings.agents.agents.role")}</small></span></button>
-            {/if}
             {#each filteredDirectoryAgents as agent (agent.participant.id)}
               <button type="button" class:active={!editor.creating && editor.selectedId === agent.participant.id} class="directory-row" aria-current={!editor.creating && editor.selectedId === agent.participant.id ? "page" : undefined} disabled={editor.dirty || lifecycleBusy} onclick={() => { editor.creating = false; editor.selectedId = agent.participant.id; }}>
                 <span class="directory-avatar"><ChatParticipantAvatar participant={agent.participant} {agent} size={32} /></span>
                 <span class="directory-summary"><strong>{agent.participant.displayName}</strong><small>{agent.role}</small></span>
               </button>
             {/each}
+            {#if editor.creating}
+              <button bind:this={draftRowElement} type="button" class="directory-row active" aria-current="page"><span class="draft-avatar">{#if draftCompany}<ChatModelAvatar familyId={draftCompany.iconFamilyId} label={draftCompany.name} size={32} />{:else}<Plus size={15} />{/if}</span><span><strong>{editor.displayName.trim() || t("settings.agents.agents.name")}</strong><small>{editor.role.trim() || t("settings.agents.agents.role")}</small></span></button>
+            {/if}
             {#if !editor.loadingDirectory && !editor.creating && filteredDirectoryAgents.length > 0}
               <button type="button" class="directory-row add-row" disabled={editor.dirty || lifecycleBusy} onclick={() => editor.beginCreate(null)}><span class="draft-avatar"><Plus size={15} /></span><span><strong>{t("settings.agents.agents.add")}</strong></span></button>
             {/if}
@@ -965,8 +971,8 @@
   .directory-row strong,.directory-row small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .directory-row strong { font-size:calc(0.766667rem * var(--type-scale)); }
   .directory-row small { color:var(--muted-foreground); font-size:calc(0.65rem * var(--type-scale)); }
-  .draft-avatar { display:grid; width:1.9rem; height:1.9rem; place-items:center; border:1px dashed var(--border); border-radius:0.45rem; color:var(--muted-foreground); }
-  .draft-avatar.large { width:2.4rem; height:2.4rem; }
+  .draft-avatar { display:grid; width:2rem; height:2rem; place-items:center; border:1px dashed var(--border); border-radius:0.45rem; color:var(--muted-foreground); }
+  .draft-avatar.large { width:2.375rem; height:2.375rem; }
   .add-row { color:var(--muted-foreground); }
   .add-row:hover:not(:disabled) { color:var(--accent-foreground); }
   .empty-copy { padding:0.7rem; color:var(--muted-foreground); font-size:calc(0.7rem * var(--type-scale)); }

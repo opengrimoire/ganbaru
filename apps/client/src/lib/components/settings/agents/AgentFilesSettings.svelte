@@ -34,6 +34,7 @@
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { SETTINGS_PRIMARY_BUTTON_CLASS, SETTINGS_SECONDARY_BUTTON_CLASS } from "$lib/components/settings/action-buttons";
+  import { familiesInPickerOrder, providersInPickerOrder } from "$lib/chat/composer/model-picker-model";
   import ChatModelAvatar from "$lib/components/chat/identity/ChatModelAvatar.svelte";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
   import ProviderFileEditor from "./ProviderFileEditor.svelte";
@@ -71,8 +72,9 @@
   let providerFolders = $state<ReadonlyMap<ProviderInstanceId, string>>(new Map());
   let folderGeneration = 0;
 
-  const providers = $derived(chat.settings?.providerInstances ?? []);
-  const providerIdsKey = $derived(providers.map((provider) => provider.configuration.instanceId).join("\n"));
+  // Providers and families follow the model picker order, so every provider list reads the same way.
+  const providers = $derived(providersInPickerOrder(chat.settings?.providerInstances ?? [], Date.now()));
+  const providerIdsKey = $derived(providers.map((provider) => provider.configuration.instanceId).sort().join("\n"));
   const selectedProvider = $derived(
     providers.find((provider) => provider.configuration.instanceId === selectedInstanceId) ?? null,
   );
@@ -87,10 +89,10 @@
   const showInstructions = $derived(groups.instructions.length > 0 || fileNotes.length > 0);
   const showPreferences = $derived(Boolean(preferenceFile?.preferences));
   const showConfiguration = $derived(groups.configuration.length > 0);
-  const families = $derived((chat.settings?.providerFamilies ?? []).map((family): ProviderFamilyMetadataRead => ({
+  const families = $derived(familiesInPickerOrder((chat.settings?.providerFamilies ?? []).map((family): ProviderFamilyMetadataRead => ({
     ...family,
     displayName: providerFamilyDisplayName(family, t("chat.providers.acp.name")),
-  })));
+  })), providers, Date.now()));
   const familyNames = $derived(new Map(families.map((family): [string, string] => [family.familyId, family.displayName])));
   /** Families this device could set up that have no configuration yet, listed after the configured providers. */
   const unconfiguredFamilies = $derived(families.filter((family) => family.implementationStatus === "available"

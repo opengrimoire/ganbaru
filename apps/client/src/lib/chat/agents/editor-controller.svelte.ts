@@ -2,7 +2,7 @@ import * as chatApi from "$lib/api/chat";
 import {
   copyModelOptionSelections,
   copyVersionedJson,
-  resolveDefaultProviderModel,
+  defaultModelOptions,
 } from "$lib/chat/composer/model";
 import type {
   ChatAccessProfileRead,
@@ -28,6 +28,7 @@ import {
 } from "./access";
 import { defaultChannelAccessInput } from "./channel-membership";
 import { providerExecutesWithAsk } from "$lib/chat/composer/provider-authority";
+import { firstPickerChoice } from "$lib/chat/composer/model-picker-model";
 import { preferredProjectWorkingFolder } from "$lib/chat/workspace/working-folder-selection";
 import { agentExecutionSummary, agentInstructionsTooLong, agentProfileDraftSnapshot } from "./draft";
 import {
@@ -350,12 +351,12 @@ export function createAgentEditorController(options: AgentEditorOptions) {
     displayName = "";
     role = "";
     instructions = "";
-    const resolved = resolveDefaultProviderModel(providers);
+    const resolved = firstPickerChoice(providers, chat.settings?.configuration.rememberedSelections ?? [], Date.now());
     providerId = resolved?.provider.configuration.instanceId ?? "";
     safetyMode = "ask_for_approval";
     modelId = resolved?.model?.id ?? "";
     providerManagedModel = resolved?.providerManaged ?? false;
-    modelOptions = copyModelOptionSelections(resolved?.options ?? []);
+    modelOptions = resolved?.model ? defaultModelOptions(resolved.model.options) : [];
     const summary = agentExecutionSummary(modelOptions, resolved?.model ?? null);
     effort = summary.effort;
     speed = summary.speed;

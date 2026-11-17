@@ -23,7 +23,7 @@
     shouldShowModelId,
   } from "$lib/chat/composer/model-company";
   import ChatModelAvatar from "$lib/components/chat/identity/ChatModelAvatar.svelte";
-  import ProviderPlanLimits from "$lib/components/chat/identity/ProviderPlanLimits.svelte";
+  import ProviderPlanLimitRings from "./ProviderPlanLimitRings.svelte";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { formatNumber } from "$lib/i18n/formatters";
@@ -515,6 +515,7 @@
                           data-app-tooltip-keep-on-click="true"
                         ><Mail size={12} strokeWidth={1.8} /></button>
                       {/if}
+                      {#if selectedProvider}<ProviderPlanLimitRings provider={selectedProvider} />{/if}
                       {#if selectedProvider?.lastProbe?.authSource}
                         {@const authSourceLabel = selectedProvider.lastProbe.authSource === "api_key"
                           ? t("settings.chat.providers.authSourceApiKey")
@@ -534,7 +535,6 @@
                         </button>
                       {/if}
                     </div>
-                    {#if selectedProvider}<ProviderPlanLimits provider={selectedProvider} />{/if}
                   </div>
                   {#if selectedProvider}
                     {@const headerInstanceId = selectedProvider.configuration.instanceId}

@@ -384,7 +384,6 @@
       {:else}
         <p class="identity-description">{t("chat.organization.collaboratorIdentity")}</p>
       {/if}
-      {#if cardProvider && participant?.kind !== "local_user"}<ProviderPlanLimits provider={cardProvider} showHeading />{/if}
       {#if usageState}
         <div class="identity-context" data-identity-context>
           <span class="identity-settings-label">{t("chat.composer.contextWindow")}</span>
@@ -392,6 +391,7 @@
           {#if usageState.automaticCompactionReported || usageMeter?.warning}<small>{t("chat.composer.contextCompaction")}</small>{/if}
         </div>
       {/if}
+      {#if cardProvider && participant?.kind !== "local_user"}<ProviderPlanLimits provider={cardProvider} />{/if}
     </div>
 
     {#if participant?.kind === "local_user" || participant?.kind === "ai_teammate"}

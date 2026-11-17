@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import Check from "@lucide/svelte/icons/check";
+  import CircleAlert from "@lucide/svelte/icons/circle-alert";
+  import CircleCheck from "@lucide/svelte/icons/circle-check";
   import Eye from "@lucide/svelte/icons/eye";
   import EyeOff from "@lucide/svelte/icons/eye-off";
   import FolderOpen from "@lucide/svelte/icons/folder-open";
@@ -21,7 +23,6 @@
     type ProviderEnvironmentValueType,
     type ProviderSetupDraft,
   } from "$lib/chat/provider-setup";
-  import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
   import type { ChatProviderSetupTarget } from "$lib/settings/types";
@@ -45,8 +46,7 @@
     onScrollbarInsetsChange?: (insets: { top: number; bottom: number }) => void;
   } = $props();
 
-  const localization = getLocalization();
-  const { t } = localization;
+  const { t } = getLocalization();
   const chat = getChat();
   let draft = $state<ProviderSetupDraft>(createProviderSetupDraft());
   let editorRootEl: HTMLElement | undefined = $state();
@@ -821,16 +821,24 @@
         {#if operationError && family}
           <Notice message={operationError} />
         {:else if testResult}
-          <div class="test-result" data-state={testSucceeded ? "success" : "failure"}>
-            <i>{#if testSucceeded}<Check size={13} />{/if}</i>
-            <span>
-              {testSucceeded
-                ? t("settings.agents.setup.testPassed", formatNumber(localization.locale, testResult.modelCatalog?.models.length ?? 0))
-                : t("settings.agents.setup.testFailed", providerProbeMessage(testResult.probe.state))}
+          {@const ResultIcon = testSucceeded ? CircleCheck : CircleAlert}
+          {@const facts = [
+            ...(!testSucceeded && testResult.probe.detail ? [testResult.probe.detail] : []),
+            ...(testResult.probe.version ? [testResult.probe.version] : []),
+            ...(testResult.probe.accountLabel ? [testResult.probe.accountLabel] : []),
+          ]}
+          <div class="test-result" role="status" data-state={testSucceeded ? "success" : "failure"}>
+            <span class="test-result-icon" aria-hidden="true"><ResultIcon strokeWidth={1.8} aria-hidden="true" /></span>
+            <span class="test-result-text">
+              <span>
+                {testSucceeded
+                  ? t("settings.agents.setup.testPassed")
+                  : t("settings.agents.setup.testFailed", providerProbeMessage(testResult.probe.state))}
+              </span>
+              {#if facts.length > 0}
+                <small>{#each facts as fact, index (index)}{#if index > 0}<span aria-hidden="true"> · </span>{/if}{fact}{/each}</small>
+              {/if}
             </span>
-            {#if !testSucceeded && testResult.probe.detail}<small>{testResult.probe.detail}</small>{/if}
-            {#if testResult.probe.version}<small>{testResult.probe.version}</small>{/if}
-            {#if testResult.probe.accountLabel}<small>{testResult.probe.accountLabel}</small>{/if}
           </div>
         {/if}
       </div>
@@ -895,10 +903,12 @@
   .environment-error { grid-column:1/-1; }
   .environment-warning { display:flex; flex-wrap:wrap; grid-column:1/-1; align-items:center; gap:0.4rem; color:var(--muted-foreground); font-size:calc(0.68rem * var(--type-scale)); }
   .environment-warning button { color:var(--foreground); text-decoration:underline; }
-  .test-result { display:flex; min-width:0; flex-wrap:wrap; align-items:center; gap:0.25rem 0.65rem; color:var(--status-tentative); overflow-wrap:anywhere; }
-  .test-result[data-state="success"] { color:var(--action-confirm-signal); }
-  .test-result > i { display:grid; width:1rem; height:1rem; place-items:center; border:1px solid currentColor; border-radius:999px; }
-  .test-result small { color:var(--muted-foreground); }
+  .test-result { display:flex; min-width:0; align-items:flex-start; gap:0.5em; color:var(--foreground); line-height:1.45; }
+  .test-result-icon { display:flex; height:1lh; flex:0 0 auto; align-items:center; color:var(--status-tentative); }
+  .test-result[data-state="success"] .test-result-icon { color:var(--action-confirm-signal); }
+  .test-result-icon :global(svg) { width:1.1em; height:1.1em; }
+  .test-result-text { display:flex; min-width:0; flex-direction:column; overflow-wrap:anywhere; }
+  .test-result small { color:var(--muted-foreground); font-size:inherit; }
   .footer-content { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:0.6rem; border-top:1px solid var(--border); padding-top:0.75rem; }
   .footer-message { min-width:0; flex:1; font-size:calc(0.75rem * var(--type-scale)); }
   .footer-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:0.45rem; }

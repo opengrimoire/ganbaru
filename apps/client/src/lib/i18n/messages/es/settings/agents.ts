@@ -463,8 +463,6 @@ export const agentsSettings = {
     discardAndReload: "Descartar y recargar",
     unsaved: "Cambios sin guardar",
     saveOrReload: "Guarda o descarta los cambios actuales antes de abrir otro archivo del proveedor.",
-    existingFile: (format: string) => `Archivo ${format} en este dispositivo`,
-    newFile: (format: string) => `Archivo ${format} nuevo. Se creará al guardar.`,
     configurationPlaceholder: "Agrega la configuración del proveedor...",
     instructionsPlaceholder: "Agrega instrucciones globales para este agente...",
     fileLimit: "Texto UTF-8 de hasta 1 MiB, que usan las sesiones nuevas",
@@ -495,7 +493,6 @@ export const agentsSettings = {
       notify: "Solo avisar",
     },
     preferenceReset: (name: string) => `Usar el valor del proveedor para ${name}`,
-    nativeNote: "Los compañeros cargan estos archivos tal como están",
     fileNotes: {
       cursorUserRules: "Cursor guarda las User Rules en tu cuenta de Cursor, en Cursor Settings > Rules, y los compañeros también cargan el AGENTS.md, el CLAUDE.md y las .cursor/rules de cada proyecto.",
       grokPrivateHome: (paths: string) => `Esta instancia tiene su propia carpeta de Grok, así que las instrucciones, las reglas y el config.toml de ${paths} no se le aplican.`,
@@ -507,7 +504,7 @@ export const agentsSettings = {
       claudeRules: (paths: string) => `Los compañeros también reciben las reglas Markdown de ${paths}.`,
     },
     fileNoteDocs: "Más información",
-    docsHeading: "Documentación del proveedor",
+    docsHeading: "Referencias",
     docs: {
       settings: "Referencia de ajustes",
       variables: "Variables de entorno",

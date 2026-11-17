@@ -83,28 +83,6 @@ export const PROVIDER_DOC_LINKS: Readonly<Record<string, readonly ProviderDocLin
   opencode: [{ kind: "settings", url: "https://opencode.ai/docs/config" }],
 };
 
-/** How teammate runs use a provider family's files, which decides the note Settings shows. */
-export type ProviderFilesNote = "allowlist" | "native" | null;
-
-/**
- * The note Settings shows about how teammates use a provider's files.
- *
- * @param familyId Provider family of the selected instance.
- */
-export function providerFilesNote(familyId: ProviderFamilyId): ProviderFilesNote {
-  switch (familyId) {
-    case "claude":
-      return "allowlist";
-    case "codex":
-    case "cursor":
-    case "grok":
-    case "opencode":
-      return "native";
-    default:
-      return null;
-  }
-}
-
 /**
  * Whether teammate runs keep only the catalog preferences of a family's configuration file, so a
  * value that fails its check is skipped rather than passed to the provider.

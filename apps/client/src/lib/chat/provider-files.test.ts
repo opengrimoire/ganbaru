@@ -7,7 +7,6 @@ import {
   PROVIDER_PREFERENCE_NAMES,
   PROVIDER_PREFERENCE_OPTION_NAMES,
   providerFilesFolder,
-  providerFilesNote,
   providerPreferenceInputValue,
   providerPreferenceName,
   providerPreferenceOptionName,
@@ -110,14 +109,6 @@ describe("provider files", () => {
     expect(providerPreferencesAllowlisted("opencode")).toBe(false);
   });
 
-  it("explains how each family's teammates use their files", () => {
-    expect(providerFilesNote("claude")).toBe("allowlist");
-    expect(providerFilesNote("cursor")).toBe("native");
-    expect(providerFilesNote("codex")).toBe("native");
-    expect(providerFilesNote("grok")).toBe("native");
-    expect(providerFilesNote("opencode")).toBe("native");
-    expect(providerFilesNote("acp")).toBeNull();
-  });
 
   it("groups instruction and configuration files in backend order", () => {
     const groups = splitProviderFiles([

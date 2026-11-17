@@ -460,8 +460,6 @@ export const agentsSettings = {
     discardAndReload: "Discard and reload",
     unsaved: "Unsaved changes",
     saveOrReload: "Save or discard the current changes before opening another provider file.",
-    existingFile: (format: string) => `${format} file on this device`,
-    newFile: (format: string) => `New ${format} file. It will be created when you save.`,
     configurationPlaceholder: "Add provider configuration...",
     instructionsPlaceholder: "Add global instructions for this coding agent...",
     fileLimit: "UTF-8 text up to 1 MiB, used by new sessions",
@@ -492,7 +490,6 @@ export const agentsSettings = {
       notify: "Notify only",
     },
     preferenceReset: (name: string) => `Use the provider default for ${name}`,
-    nativeNote: "Teammates load these files as they are",
     fileNotes: {
       cursorUserRules: "Cursor keeps User Rules in your Cursor account under Cursor Settings > Rules, and teammates also load each project's AGENTS.md, CLAUDE.md, and .cursor/rules.",
       grokPrivateHome: (paths: string) => `This instance keeps its own Grok folder, so the instructions, rules, and config.toml in ${paths} don't apply to it.`,
@@ -504,7 +501,7 @@ export const agentsSettings = {
       claudeRules: (paths: string) => `Teammates also receive the Markdown rules in ${paths}.`,
     },
     fileNoteDocs: "Learn more",
-    docsHeading: "Provider documentation",
+    docsHeading: "References",
     docs: {
       settings: "Settings reference",
       variables: "Environment variables",

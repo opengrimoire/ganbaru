@@ -14,7 +14,6 @@
     PROVIDER_FILE_NOTE_LINKS,
     PROVIDER_FILE_NOTE_NAMES,
     providerFilesFolder,
-    providerFilesNote,
     providerPreferencesAllowlisted,
     splitProviderFiles,
   } from "$lib/chat/provider-files";
@@ -70,7 +69,6 @@
   const groups = $derived(splitProviderFiles(files));
   const filesFolder = $derived((selectedInstanceId ? providerFolders.get(selectedInstanceId) : undefined) ?? providerFilesFolder(files));
   const preferenceFile = $derived(groups.configuration.find((file) => file.preferences !== null) ?? null);
-  const note = $derived(familyId ? providerFilesNote(familyId) : null);
   const preferencesAllowlisted = $derived(familyId ? providerPreferencesAllowlisted(familyId) : false);
   const docLinks = $derived(familyId ? PROVIDER_DOC_LINKS[familyId] ?? [] : []);
   const families = $derived((chat.settings?.providerFamilies ?? []).map((family): ProviderFamilyMetadataRead => ({
@@ -342,44 +340,28 @@
             {#if loading && !selectedFamily}
               <Loading layout="fill" class="min-h-24" />
             {:else if selectedProvider && selectedInstanceId && files.length > 0}
-              {#if note === "native" || docLinks.length > 0}
-                <div class="flex flex-col gap-2 px-1">
-                  {#if note === "native"}
-                    <p class="text-[0.8rem] text-muted-foreground">{t("settings.agents.files.nativeNote")}</p>
-                  {/if}
-                  {#if docLinks.length > 0}
-                    <div class="flex flex-wrap items-center gap-x-3 gap-y-1" role="group" aria-label={t("settings.agents.files.docsHeading")}>
-                      {#each docLinks as link (link.url)}
-                        <button type="button" class="inline-flex items-center gap-1 text-[0.8rem] font-medium text-foreground underline-offset-2 hover:underline" onclick={() => void openDocs(link.url)}>
-                          {t(`settings.agents.files.docs.${link.kind}`)}
-                          <ExternalLink size={11} />
-                        </button>
-                      {/each}
-                    </div>
-                  {/if}
-                </div>
-              {/if}
-
-              {#each fileNotes as fileNote (fileNote.kind)}
-                <Notice class="px-1 text-[0.733333rem]" tone="warning" role="status" copy={false} message={fileNoteMessage(fileNote)}>
-                  {#snippet actions()}
-                    <button type="button" class="notice-action-text" onclick={() => void openDocs(PROVIDER_FILE_NOTE_LINKS[fileNote.kind])}>{t("settings.agents.files.fileNoteDocs")}</button>
-                  {/snippet}
-                </Notice>
-              {/each}
-
               {#key `${selectedInstanceId} ${editorKey}`}
-                {#if groups.instructions.length > 0}
+                {#if groups.instructions.length > 0 || fileNotes.length > 0}
+                  {@render separator()}
                   <section class="flex flex-col gap-4">
                     {@render sectionHeading(t("settings.agents.files.instructionsHeading"))}
-                    <ProviderFileEditor
-                      files={groups.instructions}
-                      instanceId={selectedInstanceId}
-                      ariaLabel={t("settings.agents.files.instructionsHeading")}
-                      placeholder={t("settings.agents.files.instructionsPlaceholder")}
-                      onSaved={replaceFile}
-                      bind:dirty={instructionsDirty}
-                    />
+                    {#each fileNotes as fileNote (fileNote.kind)}
+                      <Notice class="px-1 text-[0.733333rem]" tone="warning" role="status" copy={false} message={fileNoteMessage(fileNote)}>
+                        {#snippet actions()}
+                          <button type="button" class="notice-action-text" onclick={() => void openDocs(PROVIDER_FILE_NOTE_LINKS[fileNote.kind])}>{t("settings.agents.files.fileNoteDocs")}</button>
+                        {/snippet}
+                      </Notice>
+                    {/each}
+                    {#if groups.instructions.length > 0}
+                      <ProviderFileEditor
+                        files={groups.instructions}
+                        instanceId={selectedInstanceId}
+                        ariaLabel={t("settings.agents.files.instructionsHeading")}
+                        placeholder={t("settings.agents.files.instructionsPlaceholder")}
+                        onSaved={replaceFile}
+                        bind:dirty={instructionsDirty}
+                      />
+                    {/if}
                   </section>
                 {/if}
 
@@ -405,7 +387,7 @@
                 {/if}
 
                 {#if groups.configuration.length > 0}
-                  {#if groups.instructions.length > 0 || preferenceFile?.preferences}{@render separator()}{/if}
+                  {@render separator()}
                   <section class="flex flex-col gap-4">
                     {@render sectionHeading(t("settings.agents.files.configurationHeading"))}
                     <ProviderFileEditor
@@ -419,6 +401,23 @@
                   </section>
                 {/if}
               {/key}
+
+              {#if docLinks.length > 0}
+                {@render separator()}
+                <section class="flex flex-col gap-4">
+                  {@render sectionHeading(t("settings.agents.files.docsHeading"))}
+                  <ul class="flex flex-col gap-2 px-1">
+                    {#each docLinks as link (link.url)}
+                      <li>
+                        <button type="button" class="inline-flex items-center gap-1 text-[0.8rem] font-medium text-foreground underline-offset-2 hover:underline" onclick={() => void openDocs(link.url)}>
+                          {t(`settings.agents.files.docs.${link.kind}`)}
+                          <ExternalLink size={11} />
+                        </button>
+                      </li>
+                    {/each}
+                  </ul>
+                </section>
+              {/if}
             {/if}
           </div>
           <CalendarScrollbar scrollContainer={detailScrollElement} wheelPassthrough />

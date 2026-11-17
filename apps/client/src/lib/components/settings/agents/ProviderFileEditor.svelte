@@ -94,14 +94,7 @@
         {saving ? t("settings.agents.files.saving") : t("settings.agents.files.save")}
       </button>
     </div>
-    <div class="px-1">
-      <p class="break-all font-mono text-[0.7rem] text-muted-foreground">{selectedFile.path}</p>
-      <p class="mt-1 text-[0.666667rem] text-muted-foreground">
-        {selectedFile.exists
-          ? t("settings.agents.files.existingFile", selectedFile.format.toUpperCase())
-          : t("settings.agents.files.newFile", selectedFile.format.toUpperCase())}
-      </p>
-    </div>
+    <p class="break-all px-1 font-mono text-[0.7rem] text-muted-foreground">{selectedFile.path}</p>
     {#if error}
       <Notice class="px-1 text-[0.733333rem]" message={error} />
     {/if}

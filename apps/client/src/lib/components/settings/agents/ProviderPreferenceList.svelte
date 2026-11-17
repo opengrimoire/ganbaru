@@ -93,9 +93,9 @@
     {:else}
       <div class="text-[0.866667rem] text-foreground">{label(entry)}</div>
     {/if}
-    <code class="mt-0.5 block break-all font-mono text-[0.733333rem] text-muted-foreground">{entry.variable ? `env.${entry.id}` : entry.id}</code>
+    <div class="mt-0.5 wrap-break-word text-[0.8rem] leading-5 text-muted-foreground">{entry.variable ? `env.${entry.id}` : entry.id}</div>
     {#if entry.ignored}
-      <p class="mt-0.5 text-[0.733333rem] text-status-tentative">{t(allowlisted ? "settings.agents.files.preferenceIgnored" : "settings.agents.files.preferenceInvalid")}</p>
+      <p class="mt-0.5 text-[0.8rem] leading-5 text-status-tentative">{t(allowlisted ? "settings.agents.files.preferenceIgnored" : "settings.agents.files.preferenceInvalid")}</p>
     {/if}
   </div>
 {/snippet}

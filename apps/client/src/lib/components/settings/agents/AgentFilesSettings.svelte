@@ -24,6 +24,7 @@
   import { getChat } from "$lib/stores/chat.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { SETTINGS_SECONDARY_BUTTON_CLASS } from "$lib/components/settings/action-buttons";
   import ChatModelAvatar from "$lib/components/chat/identity/ChatModelAvatar.svelte";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
   import ProviderFileEditor from "./ProviderFileEditor.svelte";
@@ -250,9 +251,9 @@
 <section class="agent-files" data-agents-settings-subsection="files">
   <header class="directory-header">
     <div><h2>{t("settings.agents.files.heading")}</h2></div>
-    <button type="button" class="settings-button" disabled={loading || !selectedInstanceId} onclick={reload}>
-      <RefreshCw size={13} />
-      {dirty ? t("settings.agents.files.discardAndReload") : t("settings.agents.files.reload")}
+    <button type="button" class={SETTINGS_SECONDARY_BUTTON_CLASS} disabled={loading || !selectedInstanceId} onclick={reload}>
+      <RefreshCw size={14} strokeWidth={1.9} class="shrink-0" />
+      <span>{dirty ? t("settings.agents.files.discardAndReload") : t("settings.agents.files.reload")}</span>
     </button>
   </header>
 
@@ -281,7 +282,7 @@
                   <ChatModelAvatar familyId={provider.configuration.familyId} label={familyName} size={32} />
                   <span class="directory-summary">
                     <strong>{provider.configuration.label}</strong>
-                    <small class="font-mono">{folder ?? "\u00a0"}</small>
+                    <small>{folder ?? "\u00a0"}</small>
                   </span>
                 </button>
               {/each}
@@ -315,7 +316,7 @@
                 <ChatModelAvatar familyId={selectedFamily.familyId} label={selectedFamily.displayName} size={38} />
                 <div class="min-w-0">
                   <h3>{selectedFamily.displayName}</h3>
-                  <p class="font-mono">{selectedFamily.defaultExecutableCandidates[0] || selectedFamily.familyId}</p>
+                  <p>{selectedFamily.defaultExecutableCandidates[0] || selectedFamily.familyId}</p>
                 </div>
               </div>
               <UnconfiguredProviderFamily
@@ -328,13 +329,13 @@
                 <ChatModelAvatar familyId={selectedProvider.configuration.familyId} label={familyDisplayName(selectedProvider.configuration.familyId)} size={38} />
                 <div class="min-w-0">
                   <h3>{selectedProvider.configuration.label}</h3>
-                  <p class="font-mono">{filesFolder ?? "\u00a0"}</p>
+                  <p>{filesFolder ?? "\u00a0"}</p>
                 </div>
               </div>
             {/if}
 
             {#if error}
-              <Notice class="px-1 text-[0.733333rem]" message={error} onRetry={files.length === 0 && selectedInstanceId ? retryLoadFiles : undefined} />
+              <Notice class="px-1 text-[0.8rem]" message={error} onRetry={files.length === 0 && selectedInstanceId ? retryLoadFiles : undefined} />
             {/if}
 
             {#if loading && !selectedFamily}
@@ -346,7 +347,7 @@
                   <section class="flex flex-col gap-4">
                     {@render sectionHeading(t("settings.agents.files.instructionsHeading"))}
                     {#each fileNotes as fileNote (fileNote.kind)}
-                      <Notice class="px-1 text-[0.733333rem]" tone="warning" role="status" copy={false} message={fileNoteMessage(fileNote)}>
+                      <Notice class="px-1 text-[0.8rem]" tone="warning" role="status" copy={false} message={fileNoteMessage(fileNote)}>
                         {#snippet actions()}
                           <button type="button" class="notice-action-text" onclick={() => void openDocs(PROVIDER_FILE_NOTE_LINKS[fileNote.kind])}>{t("settings.agents.files.fileNoteDocs")}</button>
                         {/snippet}
@@ -370,12 +371,12 @@
                   <section class="flex flex-col gap-4">
                     {@render sectionHeading(t("settings.agents.files.preferencesHeading"))}
                     {#if !preferenceFile.preferences.editable}
-                      <Notice class="px-1 text-[0.733333rem]" tone="warning" role="status" copy={false} message={t("settings.agents.files.preferencesNotEditable")} />
+                      <Notice class="px-1 text-[0.8rem]" tone="warning" role="status" copy={false} message={t("settings.agents.files.preferencesNotEditable")} />
                     {:else if configurationDirty}
-                      <Notice class="px-1 text-[0.733333rem]" tone="warning" role="status" copy={false} message={t("settings.agents.files.preferencesWaitForFile")} />
+                      <Notice class="px-1 text-[0.8rem]" tone="warning" role="status" copy={false} message={t("settings.agents.files.preferencesWaitForFile")} />
                     {/if}
                     {#if preferenceError}
-                      <Notice class="px-1 text-[0.733333rem]" message={preferenceError} />
+                      <Notice class="px-1 text-[0.8rem]" message={preferenceError} />
                     {/if}
                     <ProviderPreferenceList
                       preferences={preferenceFile.preferences}
@@ -406,16 +407,14 @@
                 {@render separator()}
                 <section class="flex flex-col gap-4">
                   {@render sectionHeading(t("settings.agents.files.docsHeading"))}
-                  <ul class="flex flex-col gap-2 px-1">
+                  <div class="flex flex-wrap gap-2 px-1">
                     {#each docLinks as link (link.url)}
-                      <li>
-                        <button type="button" class="inline-flex items-center gap-1 text-[0.8rem] font-medium text-foreground underline-offset-2 hover:underline" onclick={() => void openDocs(link.url)}>
-                          {t(`settings.agents.files.docs.${link.kind}`)}
-                          <ExternalLink size={11} />
-                        </button>
-                      </li>
+                      <button type="button" class={SETTINGS_SECONDARY_BUTTON_CLASS} onclick={() => void openDocs(link.url)}>
+                        <span>{t(`settings.agents.files.docs.${link.kind}`)}</span>
+                        <ExternalLink size={13} strokeWidth={2.25} aria-hidden="true" />
+                      </button>
                     {/each}
-                  </ul>
+                  </div>
                 </section>
               {/if}
             {/if}
@@ -431,9 +430,6 @@
   .agent-files { display:grid; height:100%; min-height:0; grid-template-rows:auto minmax(0,1fr); gap:0.8rem; }
   .directory-header { display:flex; flex-wrap:wrap; align-items:start; justify-content:space-between; gap:0.75rem; padding-inline:0.25rem; }
   .directory-header h2 { font-size:calc(0.866667rem * var(--type-scale)); font-weight:600; }
-  .settings-button { display:inline-flex; min-height:1.9rem; align-items:center; justify-content:center; gap:0.35rem; border:1px solid var(--border); border-radius:0.42rem; background:var(--background); padding:0.3rem 0.65rem; color:var(--foreground); font-size:calc(0.733333rem * var(--type-scale)); font-weight:600; line-height:1; white-space:nowrap; }
-  .settings-button:hover:not(:disabled) { background:var(--accent); }
-  .settings-button:disabled { cursor:not-allowed; opacity:0.5; }
   .directory-layout { display:grid; min-height:0; isolation:isolate; grid-template-columns:minmax(12.5rem,0.62fr) minmax(0,1.6fr); }
   .directory-panel { position:relative; z-index:1; min-width:0; min-height:0; padding-right:0.75rem; }
   .scroll-frame,.detail-scroll-frame { position:relative; height:100%; min-height:0; }

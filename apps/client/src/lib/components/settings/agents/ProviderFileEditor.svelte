@@ -80,23 +80,23 @@
 </script>
 
 {#if selectedFile}
-  <div class="flex min-h-0 flex-col gap-2">
-    <div class="flex flex-wrap items-end justify-between gap-3 px-1">
-      <div class="min-w-48 flex-1">
+  <div class="flex min-h-0 flex-col gap-3">
+    <div class="flex items-start justify-between gap-4 px-1 py-1 max-[480px]:flex-col max-[480px]:items-stretch max-[480px]:gap-2">
+      <div class="min-w-0 flex-1">
         {#if files.length > 1}
           <Select inline class="w-full" value={selectedFile.fileId} options={fileOptions} onChange={chooseFile} ariaLabel={t("settings.agents.files.fileLabel")} />
         {:else}
-          <p class="text-[0.8rem] font-medium text-foreground">{selectedFile.name}</p>
+          <div class="text-[0.866667rem] text-foreground">{selectedFile.name}</div>
         {/if}
+        <div class="mt-0.5 wrap-break-word text-[0.8rem] leading-5 text-muted-foreground">{selectedFile.path}</div>
       </div>
       <button type="button" class={SETTINGS_PRIMARY_BUTTON_CLASS} disabled={!pending || saving} onclick={() => void save()}>
-        <Save size={13} />
-        {saving ? t("settings.agents.files.saving") : t("settings.agents.files.save")}
+        <Save size={14} strokeWidth={1.9} class="shrink-0" />
+        <span>{saving ? t("settings.agents.files.saving") : t("settings.agents.files.save")}</span>
       </button>
     </div>
-    <p class="break-all px-1 font-mono text-[0.7rem] text-muted-foreground">{selectedFile.path}</p>
     {#if error}
-      <Notice class="px-1 text-[0.733333rem]" message={error} />
+      <Notice class="px-1 text-[0.8rem]" message={error} />
     {/if}
     <div class="overflow-hidden rounded-floating-item border border-border">
       <textarea

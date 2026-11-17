@@ -111,9 +111,11 @@
     <NumberedStep number={total} {total}>
       <div class="min-w-0 flex-1 pt-0.5">
         <p class="text-[0.8rem] leading-5 text-foreground">
-          {onRefresh
-            ? t("settings.agents.providers.install.finishRefresh")
-            : t("settings.agents.providers.install.finishSetUp", family.displayName)}
+          {!onRefresh
+            ? t("settings.agents.providers.install.finishSetUp", family.displayName)
+            : situation.kind === "missing-at" || situation.kind === "signed-out"
+              ? t("settings.agents.providers.install.finishRefreshCheck", family.displayName)
+              : t("settings.agents.providers.install.finishRefreshAdd", family.displayName)}
         </p>
         {#if onRefresh}
           <button

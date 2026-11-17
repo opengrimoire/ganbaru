@@ -362,6 +362,7 @@ describe("Chat provider contracts", () => {
       exists: true,
       contents: "sandbox_mode = \"workspace-write\"\n",
       revision: "revision-1",
+      preferences: null,
     }];
 
     expect(parseProviderFiles(fixture)).toEqual(fixture);
@@ -370,6 +371,38 @@ describe("Chat provider contracts", () => {
     );
     expect(() => parseProviderFiles([{ ...fixture[0], exists: "yes" }])).toThrow(
       "exists must be a boolean",
+    );
+  });
+
+  it("validates typed teammate preferences on provider files", () => {
+    const entry = {
+      id: "CLAUDE_CODE_DISABLE_1M_CONTEXT",
+      valueType: "switch",
+      variable: true,
+      value: true,
+      ignored: false,
+      maxBytes: null,
+      multiline: false,
+      emptyAllowed: false,
+    };
+    const fixture = [{
+      fileId: "configuration",
+      name: "settings.json",
+      kind: "configuration",
+      format: "json",
+      path: "/home/user/.claude/settings.json",
+      exists: true,
+      contents: "{}\n",
+      revision: "revision-1",
+      preferences: { editable: true, entries: [entry, { ...entry, id: "language", valueType: "text", variable: false, value: null, maxBytes: 64 }] },
+    }];
+
+    expect(parseProviderFiles(fixture)).toEqual(fixture);
+    expect(() => parseProviderFiles([{ ...fixture[0], preferences: { editable: true, entries: [{ ...entry, value: "1" }] } }])).toThrow(
+      "value must be a boolean",
+    );
+    expect(() => parseProviderFiles([{ ...fixture[0], preferences: { editable: true, entries: [{ ...entry, valueType: "list" }] } }])).toThrow(
+      "valueType has an unsupported value",
     );
   });
 

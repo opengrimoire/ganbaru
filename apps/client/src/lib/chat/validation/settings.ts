@@ -2,8 +2,11 @@ import {
   CREDENTIAL_STORE_AVAILABILITIES,
   PROVIDER_FILE_FORMATS,
   PROVIDER_FILE_KINDS,
+  PROVIDER_PREFERENCE_TYPES,
   type ChatSettingsRead,
   type ProviderFileRead,
+  type ProviderPreferenceRead,
+  type ProviderPreferencesRead,
   type ProviderInstanceRead,
   type ProviderRefreshResult,
   type ProviderRuntimeReviewItem,
@@ -129,6 +132,30 @@ export function parseProviderRefreshResult(value: unknown): ProviderRefreshResul
   };
 }
 
+function parseProviderPreferenceRead(value: unknown, label: string): ProviderPreferenceRead {
+  const record = readRecord(value, label);
+  const valueType = readEnum(record.valueType, PROVIDER_PREFERENCE_TYPES, `${label}.valueType`);
+  const readValue = (raw: unknown, valueLabel: string): boolean | string =>
+    valueType === "switch" || valueType === "boolean" ? readBoolean(raw, valueLabel) : readString(raw, valueLabel);
+  return {
+    id: readString(record.id, `${label}.id`),
+    valueType,
+    variable: readBoolean(record.variable, `${label}.variable`),
+    value: readNullable(record.value, `${label}.value`, readValue),
+    ignored: readBoolean(record.ignored, `${label}.ignored`),
+    maxBytes: readNullable(record.maxBytes, `${label}.maxBytes`, readNonNegativeSafeInteger),
+    multiline: readBoolean(record.multiline, `${label}.multiline`),
+    emptyAllowed: readBoolean(record.emptyAllowed, `${label}.emptyAllowed`),
+  };
+}
+
+function parseProviderPreferencesRead(value: unknown, label: string): ProviderPreferencesRead {
+  const record = readRecord(value, label);
+  return {
+    editable: readBoolean(record.editable, `${label}.editable`),
+    entries: readArray(record.entries, `${label}.entries`, parseProviderPreferenceRead),
+  };
+}
 export function parseProviderFileRead(value: unknown, label = "provider file"): ProviderFileRead {
   const record = readRecord(value, label);
   return {
@@ -140,6 +167,7 @@ export function parseProviderFileRead(value: unknown, label = "provider file"): 
     exists: readBoolean(record.exists, `${label}.exists`),
     contents: readString(record.contents, `${label}.contents`),
     revision: readString(record.revision, `${label}.revision`),
+    preferences: readNullable(record.preferences, `${label}.preferences`, parseProviderPreferencesRead),
   };
 }
 

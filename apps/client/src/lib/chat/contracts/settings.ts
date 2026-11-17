@@ -67,6 +67,35 @@ export type ProviderFileKind = (typeof PROVIDER_FILE_KINDS)[number];
 export const PROVIDER_FILE_FORMATS = ["toml", "json", "jsonc", "markdown"] as const;
 export type ProviderFileFormat = (typeof PROVIDER_FILE_FORMATS)[number];
 
+export const PROVIDER_PREFERENCE_TYPES = ["switch", "boolean", "count", "percentage", "text"] as const;
+export type ProviderPreferenceType = (typeof PROVIDER_PREFERENCE_TYPES)[number];
+
+/** One allowlisted teammate preference and the value the configuration file gives it. */
+export interface ProviderPreferenceRead {
+  /** Dotted settings key path or environment variable name. */
+  id: string;
+  valueType: ProviderPreferenceType;
+  /** Whether the preference is an environment variable rather than a settings key. */
+  variable: boolean;
+  /** A boolean for switches and booleans, a string otherwise, or null when unset. */
+  value: boolean | string | null;
+  /** Whether the file sets a value that teammate runs skip because it fails its check. */
+  ignored: boolean;
+  /** Longest accepted text, for text preferences. */
+  maxBytes: number | null;
+  /** Whether a text preference may span lines. */
+  multiline: boolean;
+  /** Whether an empty text is a meaningful value rather than a missing one. */
+  emptyAllowed: boolean;
+}
+
+/** The teammate preferences of one provider configuration file. */
+export interface ProviderPreferencesRead {
+  /** Whether the file is missing, empty, or a JSON object, so entries can be edited. */
+  editable: boolean;
+  entries: ProviderPreferenceRead[];
+}
+
 export interface ProviderFileRead {
   fileId: string;
   name: string;
@@ -76,4 +105,6 @@ export interface ProviderFileRead {
   exists: boolean;
   contents: string;
   revision: string;
+  /** Teammate preferences of a configuration file whose provider keeps an allowlist. */
+  preferences: ProviderPreferencesRead | null;
 }

@@ -19,6 +19,9 @@ use crate::confinement::{
 };
 use crate::cursor::executable::{CursorVersion, parse_version};
 use crate::models::*;
+use crate::teammate_preferences::{
+    CURSOR_PREFERENCES, PreferenceLocation, checked_setting, insert_at, value_at,
+};
 use ganbaru_sandbox::{NetworkAccess, SandboxHelper, SandboxPolicy};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -74,15 +77,6 @@ const CURSOR_CLI_CONFIGURATION: &str = r#"{"version":1,"permissions":{"allow":[]
 const CURSOR_CLI_CONFIGURATION_NAME: &str = "cli-config.json";
 /// Largest user Cursor CLI configuration file read for preferences.
 const MAX_USER_CLI_CONFIGURATION_BYTES: u64 = 1024 * 1024;
-/// Boolean preferences of the user's Cursor CLI configuration that a confined launch keeps, as
-/// paths of nested keys. They change model tier, transport, or commit trailers only, never
-/// permissions, approval, the sandbox, or what runs.
-const USER_CLI_PREFERENCES: &[&[&str]] = &[
-    &["maxMode"],
-    &["network", "useHttp1ForAgent"],
-    &["attribution", "attributeCommitsToAgent"],
-    &["attribution", "attributePRsToAgent"],
-];
 /// Command-bearing entries removed from the configuration folder before each launch.
 const REMOVED_CONFIGURATION_ENTRIES: &[&str] = &["cli.json", "hooks.json", "mcp.json"];
 /// Variables Ganbaru sets for a confined launch, which the configured environment cannot name.
@@ -453,28 +447,15 @@ fn teammate_cli_configuration(user: Option<&[u8]>) -> String {
     let user = user
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok())
         .unwrap_or_default();
-    'paths: for path in USER_CLI_PREFERENCES {
-        let Some((leaf, parents)) = path.split_last() else {
+    for preference in CURSOR_PREFERENCES {
+        let PreferenceLocation::Setting(path) = preference.location else {
             continue;
         };
-        let value = path
-            .iter()
-            .try_fold(&user, |value, key| value.get(*key))
-            .and_then(serde_json::Value::as_bool);
-        let Some(value) = value else {
-            continue;
-        };
-        let mut target = &mut configuration;
-        for key in parents {
-            let entry = target
-                .entry(key.to_string())
-                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-            let Some(object) = entry.as_object_mut() else {
-                continue 'paths;
-            };
-            target = object;
+        if let Some(value) =
+            value_at(&user, path).and_then(|value| checked_setting(preference.value_type, value))
+        {
+            insert_at(&mut configuration, path, value);
         }
-        target.insert(leaf.to_string(), serde_json::Value::Bool(value));
     }
     serde_json::Value::Object(configuration).to_string()
 }

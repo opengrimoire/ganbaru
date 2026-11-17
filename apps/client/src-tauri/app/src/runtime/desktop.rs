@@ -390,6 +390,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::settings_commands::chat_pick_provider_home,
             chat::provider_files::chat_read_provider_files,
             chat::provider_files::chat_save_provider_file,
+            chat::provider_files::chat_save_provider_preference,
             chat::channels::chat_list_channels,
             chat::conflicts::chat_conflicts,
             chat::conflicts::chat_resolve_conflict,

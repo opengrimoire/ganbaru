@@ -1,34 +1,41 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import ChevronRight from "@lucide/svelte/icons/chevron-right";
+  import ExternalLink from "@lucide/svelte/icons/external-link";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
-  import Save from "@lucide/svelte/icons/save";
   import X from "@lucide/svelte/icons/x";
+  import { openUrl } from "@tauri-apps/plugin-opener";
   import type { ProviderFileRead, ProviderInstanceId } from "$lib/chat/contracts";
   import {
     clearBrowserPreviewData,
     readChatProviderFiles,
     readPreviewModelOrigins,
     revokePreviewModelOrigin,
-    saveChatProviderFile,
+    saveChatProviderPreference,
     type PreviewModelOriginGrant,
   } from "$lib/api/chat";
+  import { PROVIDER_DOC_LINKS, providerFilesNote, splitProviderFiles } from "$lib/chat/provider-files";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { getChat } from "$lib/stores/chat.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
+  import ProviderFileEditor from "./ProviderFileEditor.svelte";
+  import ProviderPreferenceList from "./ProviderPreferenceList.svelte";
 
   const { t } = getLocalization();
   const chat = getChat();
   let selectedInstanceId = $state<ProviderInstanceId | null>(null);
-  let selectedFileId = $state<string | null>(null);
   let files = $state<ProviderFileRead[]>([]);
-  let draft = $state("");
   let loading = $state(false);
-  let saving = $state(false);
   let error = $state<string | null>(null);
-  let loadGeneration = 0;
+  let loadGeneration = $state(0);
+  let instructionsDirty = $state(false);
+  let configurationDirty = $state(false);
+  let configurationOpen = $state(false);
+  let savingPreference = $state(false);
+  let preferenceError = $state<string | null>(null);
   let siteGrants = $state<PreviewModelOriginGrant[]>([]);
   let siteError = $state<string | null>(null);
   let revoking = $state(false);
@@ -40,16 +47,15 @@
   const selectedProvider = $derived(
     providers.find((provider) => provider.configuration.instanceId === selectedInstanceId) ?? null,
   );
-  const selectedFile = $derived(files.find((file) => file.fileId === selectedFileId) ?? null);
-  const dirty = $derived(selectedFile !== null && draft !== selectedFile.contents);
+  const familyId = $derived(selectedProvider?.configuration.familyId ?? null);
+  const dirty = $derived(instructionsDirty || configurationDirty);
+  const groups = $derived(splitProviderFiles(files));
+  const preferenceFile = $derived(groups.configuration.find((file) => file.preferences !== null) ?? null);
+  const note = $derived(familyId ? providerFilesNote(familyId) : null);
+  const docLinks = $derived(familyId ? PROVIDER_DOC_LINKS[familyId] ?? [] : []);
   const providerOptions = $derived(providers.map((provider) => ({
     value: provider.configuration.instanceId,
     label: provider.configuration.label,
-  })));
-  const fileOptions = $derived(files.map((file) => ({
-    value: file.fileId,
-    label: fileLabel(file),
-    summary: file.format.toUpperCase(),
   })));
 
   $effect(() => {
@@ -72,18 +78,14 @@
     const generation = ++loadGeneration;
     loading = true;
     error = null;
+    preferenceError = null;
     try {
       const next = await readChatProviderFiles(instanceId);
       if (generation !== loadGeneration || instanceId !== selectedInstanceId) return;
       files = next;
-      const preferred = next.find((file) => file.fileId === selectedFileId) ?? next[0] ?? null;
-      selectedFileId = preferred?.fileId ?? null;
-      draft = preferred?.contents ?? "";
     } catch (cause: unknown) {
       if (generation !== loadGeneration) return;
       files = [];
-      selectedFileId = null;
-      draft = "";
       error = errorMessage(cause);
     } finally {
       if (generation === loadGeneration) loading = false;
@@ -96,39 +98,8 @@
       error = t("settings.chat.permissions.saveOrReload");
       return;
     }
-    selectedFileId = null;
+    configurationOpen = false;
     selectedInstanceId = instanceId;
-  }
-
-  function chooseFile(file: ProviderFileRead): void {
-    if (file.fileId === selectedFileId) return;
-    if (dirty) {
-      error = t("settings.chat.permissions.saveOrReload");
-      return;
-    }
-    selectedFileId = file.fileId;
-    draft = file.contents;
-    error = null;
-  }
-
-  async function save(): Promise<void> {
-    if (!selectedProvider || !selectedFile || !dirty || saving) return;
-    saving = true;
-    error = null;
-    try {
-      const saved = await saveChatProviderFile({
-        instanceId: selectedProvider.configuration.instanceId,
-        fileId: selectedFile.fileId,
-        contents: draft,
-        expectedRevision: selectedFile.revision,
-      });
-      files = files.map((file) => file.fileId === saved.fileId ? saved : file);
-      draft = saved.contents;
-    } catch (cause: unknown) {
-      error = errorMessage(cause);
-    } finally {
-      saving = false;
-    }
   }
 
   function reload(): void {
@@ -142,8 +113,36 @@
     if (error) throw new Error(error);
   }
 
-  function fileLabel(file: ProviderFileRead): string {
-    return file.name;
+  function replaceFile(saved: ProviderFileRead): void {
+    files = files.map((file) => file.fileId === saved.fileId ? saved : file);
+  }
+
+  async function savePreference(preferenceId: string, value: boolean | string | null): Promise<void> {
+    const file = preferenceFile;
+    if (!selectedInstanceId || !file || savingPreference) return;
+    savingPreference = true;
+    preferenceError = null;
+    try {
+      replaceFile(await saveChatProviderPreference({
+        instanceId: selectedInstanceId,
+        fileId: file.fileId,
+        preferenceId,
+        value,
+        expectedRevision: file.revision,
+      }));
+    } catch (cause: unknown) {
+      preferenceError = errorMessage(cause);
+    } finally {
+      savingPreference = false;
+    }
+  }
+
+  async function openDocs(url: string): Promise<void> {
+    try {
+      await openUrl(url);
+    } catch (cause: unknown) {
+      error = errorMessage(cause);
+    }
   }
 
   async function loadSiteGrants(): Promise<void> {
@@ -198,6 +197,13 @@
   }
 </script>
 
+{#snippet sectionHeading(title: string, description: string)}
+  <div class="px-1">
+    <h3 class="text-[0.8rem] font-semibold text-foreground">{title}</h3>
+    <p class="mt-0.5 text-[0.7rem] text-muted-foreground">{description}</p>
+  </div>
+{/snippet}
+
 <section class="flex min-h-0 flex-col gap-4">
   <div class="px-1">
     <h2 class="text-[0.866667rem] font-semibold text-foreground">{t("settings.chat.permissions.heading")}</h2>
@@ -208,14 +214,22 @@
       {t("settings.chat.permissions.empty")}
     </p>
   {:else}
-    <Select
-      label={t("settings.chat.permissions.providerLabel")}
-      description={t("settings.chat.permissions.providerDescription")}
-      value={selectedInstanceId ?? ""}
-      options={providerOptions}
-      onChange={(value) => chooseProvider(value)}
-      ariaLabel={t("settings.chat.permissions.providerLabel")}
-    />
+    <div class="flex flex-wrap items-end gap-3">
+      <div class="min-w-56 flex-1">
+        <Select
+          label={t("settings.chat.permissions.providerLabel")}
+          description={t("settings.chat.permissions.providerDescription")}
+          value={selectedInstanceId ?? ""}
+          options={providerOptions}
+          onChange={(value) => chooseProvider(value)}
+          ariaLabel={t("settings.chat.permissions.providerLabel")}
+        />
+      </div>
+      <button type="button" class="chat-settings-button mx-1 mb-1" disabled={loading} onclick={reload}>
+        <RefreshCw size={13} />
+        {dirty ? t("settings.chat.permissions.discardAndReload") : t("settings.chat.permissions.reload")}
+      </button>
+    </div>
 
     {#if error}
       <Notice class="px-1 text-[0.733333rem]" message={error} onRetry={files.length === 0 && selectedInstanceId ? retryLoadFiles : undefined} />
@@ -223,59 +237,88 @@
 
     {#if loading}
       <Loading layout="fill" class="min-h-24" />
-    {:else if selectedProvider && files.length > 0}
-      <div class="flex min-h-0 flex-col gap-3">
-        <div class="flex flex-wrap items-end justify-between gap-3 px-1">
-          <div class="min-w-48 flex-1">
-            <Select
-              inline
-              class="w-full"
-              value={selectedFileId ?? ""}
-              options={fileOptions}
-              onChange={(value) => { const file = files.find((entry) => entry.fileId === value); if (file) chooseFile(file); }}
-              ariaLabel={t("settings.chat.permissions.fileLabel")}
+    {:else if selectedProvider && selectedInstanceId && files.length > 0}
+      {#if note === "native" || note === "cursor_rules" || docLinks.length > 0}
+        <div class="flex flex-col gap-2 px-1">
+          {#if note === "native"}
+            <p class="text-[0.733333rem] text-muted-foreground">{t("settings.chat.permissions.nativeNote")}</p>
+          {:else if note === "cursor_rules"}
+            <p class="text-[0.733333rem] text-muted-foreground">{t("settings.chat.permissions.cursorRulesNote")}</p>
+          {/if}
+          {#if docLinks.length > 0}
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-1" role="group" aria-label={t("settings.chat.permissions.docsHeading")}>
+              {#each docLinks as link (link.url)}
+                <button type="button" class="inline-flex items-center gap-1 text-[0.733333rem] font-medium text-foreground underline-offset-2 hover:underline" onclick={() => void openDocs(link.url)}>
+                  {t(`settings.chat.permissions.docs.${link.kind}`)}
+                  <ExternalLink size={11} />
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
+
+      {#key `${selectedInstanceId} ${loadGeneration}`}
+        {#if groups.instructions.length > 0}
+          <div class="flex flex-col gap-2">
+            {@render sectionHeading(t("settings.chat.permissions.instructionsHeading"), t("settings.chat.permissions.instructionsDescription"))}
+            <ProviderFileEditor
+              files={groups.instructions}
+              instanceId={selectedInstanceId}
+              ariaLabel={t("settings.chat.permissions.instructionsHeading")}
+              placeholder={t("settings.chat.permissions.instructionsPlaceholder")}
+              onSaved={replaceFile}
+              bind:dirty={instructionsDirty}
             />
           </div>
-          <div class="flex gap-2">
-            <button type="button" class="chat-settings-button" disabled={loading || saving} onclick={reload}>
-              <RefreshCw size={13} />
-              {dirty ? t("settings.chat.permissions.discardAndReload") : t("settings.chat.permissions.reload")}
-            </button>
-            <button type="button" class="setup-primary-button gap-1.5" disabled={!dirty || saving} onclick={() => void save()}>
-              <Save size={13} />
-              {saving ? t("settings.chat.permissions.saving") : t("settings.chat.permissions.save")}
-            </button>
-          </div>
-        </div>
+        {/if}
 
-        {#if selectedFile}
-          <div class="px-1">
-            <p class="break-all font-mono text-[0.7rem] text-muted-foreground">{selectedFile.path}</p>
-            <p class="mt-1 text-[0.666667rem] text-muted-foreground">
-              {selectedFile.exists
-                ? t("settings.chat.permissions.existingFile", selectedFile.format.toUpperCase())
-                : t("settings.chat.permissions.newFile", selectedFile.format.toUpperCase())}
-            </p>
+        {#if preferenceFile?.preferences}
+          <div class="flex flex-col gap-2">
+            {@render sectionHeading(t("settings.chat.permissions.preferencesHeading"), t("settings.chat.permissions.preferencesDescription"))}
+            {#if !preferenceFile.preferences.editable}
+              <Notice class="px-1 text-[0.733333rem]" tone="warning" role="status" copy={false} message={t("settings.chat.permissions.preferencesNotEditable")} />
+            {:else if configurationDirty}
+              <Notice class="px-1 text-[0.733333rem]" tone="warning" role="status" copy={false} message={t("settings.chat.permissions.preferencesWaitForFile")} />
+            {/if}
+            {#if preferenceError}
+              <Notice class="px-1 text-[0.733333rem]" message={preferenceError} />
+            {/if}
+            <ProviderPreferenceList
+              preferences={preferenceFile.preferences}
+              disabled={savingPreference || configurationDirty}
+              onSave={savePreference}
+            />
           </div>
-          <div class="overflow-hidden rounded-floating-item border border-border">
-            <textarea
-              class="h-[min(26rem,48vh)] min-h-48 w-full resize-y bg-transparent p-3 font-mono text-[0.766667rem] leading-5 text-foreground outline-none placeholder:text-muted-foreground"
-              value={draft}
-              aria-label={fileLabel(selectedFile)}
-              placeholder={selectedFile.kind === "instructions"
-                ? t("settings.chat.permissions.instructionsPlaceholder")
-                : t("settings.chat.permissions.configurationPlaceholder")}
-              spellcheck="false"
-              autocapitalize="off"
-              oninput={(event) => { draft = event.currentTarget.value; error = null; }}
-            ></textarea>
-            <div class="flex flex-wrap items-center justify-between gap-2 border-t border-border px-3 py-2 text-[0.666667rem] text-muted-foreground">
-              <span>{t("settings.chat.permissions.fileLimit")}</span>
-              {#if dirty}<span class="font-medium text-status-tentative">{t("settings.chat.permissions.unsaved")}</span>{/if}
+        {/if}
+
+        {#if groups.configuration.length > 0}
+          <div class="border-y border-border">
+            <button
+              type="button"
+              class="flex w-full items-start gap-2 px-1 py-2.5 text-left hover:bg-accent/40"
+              aria-expanded={configurationOpen}
+              onclick={() => { configurationOpen = !configurationOpen; }}
+            >
+              <ChevronRight size={13} class="mt-0.5 shrink-0 transition-transform {configurationOpen ? 'rotate-90' : ''}" />
+              <span class="min-w-0">
+                <span class="block text-[0.8rem] font-semibold text-foreground">{t("settings.chat.permissions.configurationHeading")}</span>
+                <span class="mt-0.5 block text-[0.7rem] text-muted-foreground">{t("settings.chat.permissions.configurationDescription")}</span>
+              </span>
+            </button>
+            <div class="pb-3" hidden={!configurationOpen}>
+              <ProviderFileEditor
+                files={groups.configuration}
+                instanceId={selectedInstanceId}
+                ariaLabel={t("settings.chat.permissions.configurationHeading")}
+                placeholder={t("settings.chat.permissions.configurationPlaceholder")}
+                onSaved={replaceFile}
+                bind:dirty={configurationDirty}
+              />
             </div>
           </div>
         {/if}
-      </div>
+      {/key}
     {/if}
   {/if}
 

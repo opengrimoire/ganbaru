@@ -19,6 +19,7 @@ mod registry;
 #[cfg(test)]
 mod replay;
 pub mod runtime_review;
+pub mod teammate_preferences;
 mod unsupported;
 
 pub use driver::*;

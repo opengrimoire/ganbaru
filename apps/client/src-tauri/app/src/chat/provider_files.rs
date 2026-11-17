@@ -1,9 +1,13 @@
 //! Bounded access to documented coding-agent configuration and instruction files.
 
+mod preferences;
+
 use super::settings_commands::read_provider;
 use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ProviderInstanceConfig, ProviderInstanceId,
 };
+use ganbaru_chat_providers::teammate_preferences::{TeammatePreference, teammate_preferences};
+pub use preferences::ProviderPreferencesRead;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
@@ -17,6 +21,8 @@ use std::sync::{
 const MAX_PROVIDER_FILE_BYTES: u64 = 1024 * 1024;
 /// Extensions OpenCode accepts for a configuration file named by `OPENCODE_CONFIG`.
 const OPENCODE_CONFIG_EXTENSIONS: &[&str] = &["json", "jsonc"];
+/// Name of the Cursor CLI configuration file.
+const CURSOR_CLI_CONFIGURATION_NAME: &str = "cli-config.json";
 static PROVIDER_FILE_WRITE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Default)]
@@ -51,6 +57,8 @@ pub struct ProviderFileRead {
     pub exists: bool,
     pub contents: String,
     pub revision: String,
+    /// Teammate preferences of a configuration file whose provider keeps an allowlist.
+    pub preferences: Option<ProviderPreferencesRead>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -62,6 +70,19 @@ pub struct SaveProviderFileRequest {
     pub expected_revision: String,
 }
 
+/// An edit of one teammate preference in a provider configuration file.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveProviderPreferenceRequest {
+    pub instance_id: ProviderInstanceId,
+    pub file_id: String,
+    pub preference_id: String,
+    /// The new value, or null to remove the entry.
+    #[serde(default)]
+    pub value: serde_json::Value,
+    pub expected_revision: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ProviderFileSpec {
     file_id: String,
@@ -70,6 +91,8 @@ struct ProviderFileSpec {
     path: PathBuf,
     /// Whether saving may create missing parent folders. Only paths in the provider home may.
     create_parent: bool,
+    /// Teammate preferences this file holds; empty when it holds none Ganbaru edits.
+    preferences: &'static [TeammatePreference],
 }
 
 #[tauri::command]
@@ -79,7 +102,9 @@ pub fn chat_read_provider_files(
 ) -> ChatResult<Vec<ProviderFileRead>> {
     let provider = read_provider(&app, &instance_id)?;
     crate::chat::settings::require_runtime_approved_on_device(&app, &provider.configuration)?;
-    provider_file_specs(&provider.configuration)?
+    let private_home =
+        crate::chat::settings::configured_private_home(&app, &provider.configuration)?;
+    provider_file_specs(&provider.configuration, private_home.as_deref())?
         .into_iter()
         .map(read_provider_file)
         .collect()
@@ -92,37 +117,102 @@ pub fn chat_save_provider_file(
     request: SaveProviderFileRequest,
 ) -> ChatResult<ProviderFileRead> {
     validate_contents(&request.contents)?;
+    save_provider_file(
+        &app,
+        &state,
+        &request.instance_id,
+        &request.file_id,
+        &request.expected_revision,
+        |_| Ok(request.contents.clone()),
+    )
+}
+
+/// Sets or removes one allowlisted teammate preference in a provider configuration file,
+/// keeping every other key of the document.
+#[tauri::command]
+pub fn chat_save_provider_preference(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ProviderFileState>,
+    request: SaveProviderPreferenceRequest,
+) -> ChatResult<ProviderFileRead> {
+    save_provider_file(
+        &app,
+        &state,
+        &request.instance_id,
+        &request.file_id,
+        &request.expected_revision,
+        |spec| {
+            let contents = preferences::apply_preference(
+                spec.contents,
+                spec.preferences,
+                &request.preference_id,
+                &request.value,
+            )?;
+            validate_contents(&contents)?;
+            Ok(contents)
+        },
+    )
+}
+
+/// The current text and preferences of the file a save edits.
+struct SaveTarget<'a> {
+    contents: &'a str,
+    preferences: &'static [TeammatePreference],
+}
+
+/// Writes the contents `edit` derives from the current file, after checking that the file still
+/// has `expected_revision`.
+fn save_provider_file(
+    app: &tauri::AppHandle,
+    state: &ProviderFileState,
+    instance_id: &ProviderInstanceId,
+    file_id: &str,
+    expected_revision: &str,
+    edit: impl FnOnce(SaveTarget<'_>) -> ChatResult<String>,
+) -> ChatResult<ProviderFileRead> {
     let _guard = state
         .mutation_lock
         .lock()
         .map_err(|_| provider_file_error())?;
-    let provider = read_provider(&app, &request.instance_id)?;
-    crate::chat::settings::require_runtime_approved_on_device(&app, &provider.configuration)?;
-    let spec = provider_file_specs(&provider.configuration)?
+    let provider = read_provider(app, instance_id)?;
+    crate::chat::settings::require_runtime_approved_on_device(app, &provider.configuration)?;
+    let private_home =
+        crate::chat::settings::configured_private_home(app, &provider.configuration)?;
+    let spec = provider_file_specs(&provider.configuration, private_home.as_deref())?
         .into_iter()
-        .find(|spec| spec.file_id == request.file_id)
+        .find(|spec| spec.file_id == file_id)
         .ok_or_else(|| ChatError::validation("fileId", "Provider file is not supported"))?;
     let current = read_provider_file(spec.clone())?;
-    if current.revision != request.expected_revision {
+    if current.revision != expected_revision {
         return Err(ChatError::new(
             ChatErrorCode::Conflict,
             "The provider file changed outside Ganbaru. Reload it before saving.",
             true,
         ));
     }
-    write_text_file_atomically(&spec.path, &request.contents, spec.create_parent)?;
+    let contents = edit(SaveTarget {
+        contents: &current.contents,
+        preferences: spec.preferences,
+    })?;
+    write_text_file_atomically(&spec.path, &contents, spec.create_parent)?;
     read_provider_file(spec)
 }
 
+/// The files a provider instance reads: its configuration and user instructions, in the
+/// private home that its launches use when it has one.
 fn provider_file_specs(
     configuration: &ProviderInstanceConfig,
+    private_home: Option<&Path>,
 ) -> ChatResult<Vec<ProviderFileSpec>> {
     let family = configuration.family_id.as_str();
     // A generic ACP agent has no documented configuration location Ganbaru could name.
     if family == "acp" {
         return Ok(Vec::new());
     }
-    let home = provider_home(configuration)?;
+    let home = match private_home {
+        Some(home) => home.to_path_buf(),
+        None => provider_home(configuration)?,
+    };
     let mut specs = match family {
         "codex" => standard_pair(&home, "config.toml", ProviderFileFormat::Toml, "AGENTS.md"),
         "claude" => standard_pair(
@@ -133,7 +223,7 @@ fn provider_file_specs(
         ),
         "cursor" => vec![configuration_spec(
             "configuration",
-            home.join("cli-config.json"),
+            home.join(CURSOR_CLI_CONFIGURATION_NAME),
             ProviderFileFormat::Json,
         )],
         "grok" => standard_pair(&home, "config.toml", ProviderFileFormat::Toml, "AGENTS.md"),
@@ -144,6 +234,12 @@ fn provider_file_specs(
             ));
         }
     };
+    let preferences = teammate_preferences(family);
+    for spec in &mut specs {
+        if spec.kind == ProviderFileKind::Configuration && spec.format == ProviderFileFormat::Json {
+            spec.preferences = preferences;
+        }
+    }
     specs.sort_by(|left, right| left.file_id.cmp(&right.file_id));
     Ok(specs)
 }
@@ -160,13 +256,7 @@ fn standard_pair(
             home.join(configuration_name),
             configuration_format,
         ),
-        ProviderFileSpec {
-            file_id: "instructions".to_string(),
-            kind: ProviderFileKind::Instructions,
-            format: ProviderFileFormat::Markdown,
-            path: home.join(instructions_name),
-            create_parent: true,
-        },
+        instructions_spec(home.join(instructions_name)),
     ]
 }
 
@@ -181,59 +271,92 @@ fn configuration_spec(
         format,
         path,
         create_parent: true,
+        preferences: &[],
     }
 }
 
+fn instructions_spec(path: PathBuf) -> ProviderFileSpec {
+    ProviderFileSpec {
+        file_id: "instructions".to_string(),
+        kind: ProviderFileKind::Instructions,
+        format: ProviderFileFormat::Markdown,
+        path,
+        create_parent: true,
+        preferences: &[],
+    }
+}
+
+/// OpenCode files: the file `OPENCODE_CONFIG` names, the configuration in the instance's home,
+/// and the global configuration, which OpenCode loads first even when the instance has its own
+/// home.
 fn opencode_specs(
     configuration: &ProviderInstanceConfig,
     home: &Path,
 ) -> ChatResult<Vec<ProviderFileSpec>> {
+    let mut specs = Vec::new();
     if let Some(custom_path) = configured_environment(configuration, "OPENCODE_CONFIG") {
         let path = opencode_config_path(&custom_path)?;
-        return Ok(vec![
-            ProviderFileSpec {
-                create_parent: false,
-                ..configuration_spec("configuration", path.clone(), json_format(&path))
-            },
-            ProviderFileSpec {
-                file_id: "instructions".to_string(),
-                kind: ProviderFileKind::Instructions,
-                format: ProviderFileFormat::Markdown,
-                path: home.join("AGENTS.md"),
-                create_parent: true,
-            },
-        ]);
+        specs.push(ProviderFileSpec {
+            create_parent: false,
+            ..configuration_spec("custom_configuration", path.clone(), json_format(&path))
+        });
     }
+    opencode_folder_specs(home, "configuration", &mut specs);
+    let global = opencode_global_folder(configuration);
+    if global != home {
+        opencode_folder_specs(&global, "global_configuration", &mut specs);
+    }
+    specs.push(instructions_spec(home.join("AGENTS.md")));
+    Ok(specs)
+}
 
-    let json = home.join("opencode.json");
-    let jsonc = home.join("opencode.jsonc");
-    let mut specs = Vec::new();
-    if json.exists() || !jsonc.exists() {
-        specs.push(configuration_spec(
-            "configuration",
-            json,
-            ProviderFileFormat::Json,
-        ));
+/// The `opencode.json` and `opencode.jsonc` of `folder`: whichever exist, or the JSON file when
+/// neither does.
+fn opencode_folder_specs(folder: &Path, file_id: &str, specs: &mut Vec<ProviderFileSpec>) {
+    let json = folder.join("opencode.json");
+    let jsonc = folder.join("opencode.jsonc");
+    let shows_json = json.exists() || !jsonc.exists();
+    if shows_json {
+        specs.push(configuration_spec(file_id, json, ProviderFileFormat::Json));
     }
     if jsonc.exists() {
-        specs.push(configuration_spec(
-            if specs.is_empty() {
-                "configuration"
-            } else {
-                "configuration_jsonc"
-            },
-            jsonc,
-            ProviderFileFormat::Jsonc,
-        ));
+        let id = if shows_json {
+            format!("{file_id}_jsonc")
+        } else {
+            file_id.to_string()
+        };
+        specs.push(configuration_spec(&id, jsonc, ProviderFileFormat::Jsonc));
     }
-    specs.push(ProviderFileSpec {
-        file_id: "instructions".to_string(),
-        kind: ProviderFileKind::Instructions,
-        format: ProviderFileFormat::Markdown,
-        path: home.join("AGENTS.md"),
-        create_parent: true,
-    });
-    Ok(specs)
+}
+
+/// The folder of OpenCode's global configuration: `opencode` under the XDG configuration home.
+fn opencode_global_folder(configuration: &ProviderInstanceConfig) -> PathBuf {
+    configured_environment(configuration, "XDG_CONFIG_HOME")
+        .or_else(|| process_environment("XDG_CONFIG_HOME"))
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| user_home().join(".config"))
+        .join("opencode")
+}
+
+/// The folder of the Cursor CLI configuration the CLI reads: `CURSOR_CONFIG_DIR`, then `cursor`
+/// under the XDG configuration home when the file exists there, then `~/.cursor`.
+fn cursor_configuration_folder(configuration: &ProviderInstanceConfig) -> PathBuf {
+    let variable = |name| {
+        configured_environment(configuration, name)
+            .or_else(|| process_environment(name))
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+    };
+    if let Some(folder) = variable("CURSOR_CONFIG_DIR") {
+        return folder;
+    }
+    if let Some(folder) = variable("XDG_CONFIG_HOME").map(|home| home.join("cursor"))
+        && folder.join(CURSOR_CLI_CONFIGURATION_NAME).is_file()
+    {
+        return folder;
+    }
+    user_home().join(".cursor")
 }
 
 /// Resolves an `OPENCODE_CONFIG` value, which must name a JSON or JSONC file.
@@ -285,7 +408,7 @@ pub(crate) fn provider_home(configuration: &ProviderInstanceConfig) -> ChatResul
             .or_else(|| process_environment("CLAUDE_CONFIG_DIR"))
             .map(PathBuf::from)
             .unwrap_or_else(|| user_home().join(".claude")),
-        "cursor" => user_home().join(".cursor"),
+        "cursor" => cursor_configuration_folder(configuration),
         "grok" => configured
             .map(str::to_string)
             .or_else(|| configured_environment(configuration, "GROK_HOME"))
@@ -296,12 +419,7 @@ pub(crate) fn provider_home(configuration: &ProviderInstanceConfig) -> ChatResul
             .or_else(|| {
                 configured_environment(configuration, "OPENCODE_CONFIG_DIR").map(PathBuf::from)
             })
-            .or_else(|| {
-                configured_environment(configuration, "XDG_CONFIG_HOME")
-                    .map(PathBuf::from)
-                    .map(|path| path.join("opencode"))
-            })
-            .unwrap_or_else(|| user_home().join(".config").join("opencode")),
+            .unwrap_or_else(|| opencode_global_folder(configuration)),
         _ => return Err(ChatError::unsupported("Provider files are unavailable")),
     };
     resolve_absolute_path(value.to_string_lossy().as_ref(), "providerHome")
@@ -364,6 +482,8 @@ fn read_provider_file(spec: ProviderFileSpec) -> ChatResult<ProviderFileRead> {
     } else {
         String::new()
     };
+    let preferences = (!spec.preferences.is_empty())
+        .then(|| preferences::read_preferences(&contents, spec.preferences));
     Ok(ProviderFileRead {
         file_id: spec.file_id,
         name: spec
@@ -377,6 +497,7 @@ fn read_provider_file(spec: ProviderFileSpec) -> ChatResult<ProviderFileRead> {
         exists,
         revision: revision(&contents, exists),
         contents,
+        preferences,
     })
 }
 
@@ -609,7 +730,7 @@ mod tests {
             ("grok", "config.toml", Some("AGENTS.md")),
         ];
         for (family, config_name, instruction_name) in cases {
-            let specs = provider_file_specs(&configuration(family, &root)).unwrap();
+            let specs = provider_file_specs(&configuration(family, &root), None).unwrap();
             assert!(specs.iter().any(|spec| spec.path == root.join(config_name)));
             assert!(
                 specs
@@ -622,23 +743,100 @@ mod tests {
     #[test]
     fn generic_acp_agents_expose_no_provider_files() {
         let specs =
-            provider_file_specs(&configuration("acp", Path::new("/provider-home"))).unwrap();
+            provider_file_specs(&configuration("acp", Path::new("/provider-home")), None).unwrap();
         assert!(specs.is_empty());
     }
 
     #[test]
-    fn cursor_exposes_only_its_documented_cli_configuration() {
-        let specs = provider_file_specs(&configuration("cursor", Path::new("/ignored"))).unwrap();
+    fn cursor_exposes_the_cli_configuration_the_cli_reads() {
+        let root = TestDirectory::new("cursor");
+        let mut cursor = configuration("cursor", Path::new("/ignored"));
+        let xdg = root.path().join("config");
+        cursor.environment.insert(
+            "XDG_CONFIG_HOME".to_string(),
+            xdg.to_string_lossy().into_owned(),
+        );
+        cursor.environment.insert(
+            "CURSOR_CONFIG_DIR".to_string(),
+            root.path().join("chosen").to_string_lossy().into_owned(),
+        );
+        let specs = provider_file_specs(&cursor, None).unwrap();
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].file_id, "configuration");
-        assert!(specs[0].path.ends_with(".cursor/cli-config.json"));
+        assert_eq!(
+            specs[0].path,
+            root.path().join("chosen").join("cli-config.json")
+        );
+        assert!(!specs[0].preferences.is_empty());
+
+        cursor.environment.remove("CURSOR_CONFIG_DIR");
+        fs::create_dir_all(xdg.join("cursor")).unwrap();
+        fs::write(xdg.join("cursor").join("cli-config.json"), "{}").unwrap();
+        let specs = provider_file_specs(&cursor, None).unwrap();
+        assert_eq!(specs[0].path, xdg.join("cursor").join("cli-config.json"));
     }
 
+    #[test]
+    fn grok_files_follow_the_private_home_of_an_api_key_instance() {
+        let private = Path::new("/config/ganbaru/chat-provider-homes/vault/instance");
+        let specs = provider_file_specs(
+            &configuration("grok", Path::new("/provider-home")),
+            Some(private),
+        )
+        .unwrap();
+        assert!(specs.iter().all(|spec| spec.path.starts_with(private)));
+        assert!(specs.iter().all(|spec| spec.preferences.is_empty()));
+    }
+
+    #[test]
+    fn opencode_with_its_own_home_also_shows_the_global_configuration() {
+        let root = TestDirectory::new("opencode-global");
+        let mut opencode = configuration("opencode", &root.path().join("instance"));
+        opencode.environment.insert(
+            "XDG_CONFIG_HOME".to_string(),
+            root.path().join("config").to_string_lossy().into_owned(),
+        );
+        let specs = provider_file_specs(&opencode, None).unwrap();
+        let global = specs
+            .iter()
+            .find(|spec| spec.file_id == "global_configuration")
+            .unwrap();
+        assert_eq!(
+            global.path,
+            root.path()
+                .join("config")
+                .join("opencode")
+                .join("opencode.json")
+        );
+        opencode.provider_home = None;
+        let specs = provider_file_specs(&opencode, None).unwrap();
+        assert!(
+            specs
+                .iter()
+                .all(|spec| !spec.file_id.starts_with("global_"))
+        );
+    }
+
+    #[test]
+    fn only_claude_and_cursor_json_configuration_carries_preferences() {
+        let root = PathBuf::from("/provider-home");
+        let claude = provider_file_specs(&configuration("claude", &root), None).unwrap();
+        for spec in &claude {
+            assert_eq!(
+                spec.preferences.is_empty(),
+                spec.kind == ProviderFileKind::Instructions
+            );
+        }
+        for family in ["codex", "grok", "opencode"] {
+            let specs = provider_file_specs(&configuration(family, &root), None).unwrap();
+            assert!(specs.iter().all(|spec| spec.preferences.is_empty()));
+        }
+    }
     #[test]
     fn opencode_honors_its_config_directory_and_explicit_config_file() {
         let root = TestDirectory::new("opencode");
         let mut configured_home = configuration("opencode", root.path());
-        let specs = provider_file_specs(&configured_home).unwrap();
+        let specs = provider_file_specs(&configured_home, None).unwrap();
         assert!(
             specs
                 .iter()
@@ -655,10 +853,10 @@ mod tests {
             "OPENCODE_CONFIG".to_string(),
             custom.to_string_lossy().into_owned(),
         );
-        let specs = provider_file_specs(&configured_home).unwrap();
+        let specs = provider_file_specs(&configured_home, None).unwrap();
         let config = specs
             .iter()
-            .find(|spec| spec.kind == ProviderFileKind::Configuration)
+            .find(|spec| spec.file_id == "custom_configuration")
             .unwrap();
         assert_eq!(config.path, custom);
         assert_eq!(config.format, ProviderFileFormat::Jsonc);
@@ -708,14 +906,14 @@ mod tests {
             configuration
                 .environment
                 .insert("OPENCODE_CONFIG".to_string(), target.to_string());
-            let error = provider_file_specs(&configuration).unwrap_err();
+            let error = provider_file_specs(&configuration, None).unwrap_err();
             assert_eq!(error.code, ChatErrorCode::Validation, "{target}");
         }
         configuration.environment.insert(
             "OPENCODE_CONFIG".to_string(),
             "~/work/opencode.JSON".to_string(),
         );
-        assert!(provider_file_specs(&configuration).is_ok());
+        assert!(provider_file_specs(&configuration, None).is_ok());
     }
 
     #[test]
@@ -727,19 +925,20 @@ mod tests {
             "OPENCODE_CONFIG".to_string(),
             target.to_string_lossy().into_owned(),
         );
-        let spec = provider_file_specs(&opencode)
+        let spec = provider_file_specs(&opencode, None)
             .unwrap()
             .into_iter()
-            .find(|spec| spec.kind == ProviderFileKind::Configuration)
+            .find(|spec| spec.file_id == "custom_configuration")
             .unwrap();
         assert!(!spec.create_parent);
         let error = write_text_file_atomically(&spec.path, "{}", spec.create_parent).unwrap_err();
         assert_eq!(error.code, ChatErrorCode::Validation);
         assert!(!root.path().join("absent").exists());
 
-        let home_spec = provider_file_specs(&configuration("codex", &root.path().join("new-home")))
-            .unwrap()
-            .remove(0);
+        let home_spec =
+            provider_file_specs(&configuration("codex", &root.path().join("new-home")), None)
+                .unwrap()
+                .remove(0);
         write_text_file_atomically(&home_spec.path, "", home_spec.create_parent).unwrap();
         assert!(home_spec.path.exists());
         #[cfg(unix)]

@@ -1,6 +1,6 @@
 //! Claude executable, configuration directory, environment, and continuation identity.
 
-use super::preferences::{PREFERENCE_VARIABLES, host_preference_variable};
+use super::preferences::{host_preference_variable, preference_variable_names};
 use crate::models::{
     ChatError, ChatErrorCode, ChatResult, ContinuationGroupId, ProviderInstanceConfig,
 };
@@ -296,10 +296,10 @@ pub(super) fn inherited_environment(
                 .filter(|value| !value.contains('\0'))
                 .map(|value| ((*name).to_string(), value))
         });
-    let preferences = PREFERENCE_VARIABLES.iter().filter_map(|(name, _)| {
+    let preferences = preference_variable_names().filter_map(|name| {
         lookup(name)
             .filter(|value| host_preference_variable(name, value))
-            .map(|value| ((*name).to_string(), value))
+            .map(|value| (name.to_string(), value))
     });
     host.chain(preferences).collect()
 }

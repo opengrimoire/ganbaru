@@ -43,6 +43,37 @@ pub(crate) fn launch_configuration(
     Ok(resolved)
 }
 
+/// The private home launches of `configuration` use, found without reading its secrets, so
+/// Settings can show the files the provider reads there.
+///
+/// # Errors
+///
+/// Returns an internal error when the app config folder or the active vault cannot be found.
+pub(crate) fn configured_private_home(
+    app: &tauri::AppHandle,
+    configuration: &ProviderInstanceConfig,
+) -> ChatResult<Option<PathBuf>> {
+    if !needs_private_home(&credential_shape(configuration)) {
+        return Ok(None);
+    }
+    Ok(Some(private_home(
+        &config_dir(app)?,
+        &active_vault_id(app)?,
+        &configuration.instance_id,
+    )))
+}
+
+/// `configuration` with a placeholder for each stored credential, which is enough to tell how
+/// the instance authenticates.
+fn credential_shape(configuration: &ProviderInstanceConfig) -> ProviderInstanceConfig {
+    let mut shape = configuration.clone();
+    for name in configuration.credential_references.keys() {
+        shape
+            .environment
+            .insert(name.clone(), "stored-credential".to_string());
+    }
+    shape
+}
 /// Removes the private home of a removed provider instance, when it has one.
 pub(crate) fn remove_private_home(app: &tauri::AppHandle, instance_id: &ProviderInstanceId) {
     let (Ok(config_dir), Ok(vault_id)) = (config_dir(app), active_vault_id(app)) else {
@@ -136,6 +167,25 @@ mod tests {
             "codex",
             &[("XAI_API_KEY", "xai-test")]
         )));
+    }
+
+    #[test]
+    fn a_stored_api_key_shows_the_private_home_without_reading_the_secret() {
+        let mut stored = configuration("grok", &[]);
+        let reference = ganbaru_chat::credentials::provider_credential_reference(
+            &stored.instance_id,
+            "XAI_API_KEY",
+        )
+        .unwrap();
+        stored
+            .credential_references
+            .insert("XAI_API_KEY".to_string(), reference);
+        assert!(!needs_private_home(&stored));
+        assert!(needs_private_home(&credential_shape(&stored)));
+        assert!(!needs_private_home(&credential_shape(&configuration(
+            "grok",
+            &[]
+        ))));
     }
 
     #[test]

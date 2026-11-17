@@ -11,13 +11,14 @@ export interface PlanLimitLabelContext {
 
 /**
  * Formats an instant as a time when it falls on the same local day as `nowMs`, or with the
- * weekday and day otherwise.
+ * weekday, month, and day otherwise. The month stays because some locales, such as US English,
+ * write a weekday and day alone in an unnatural order ("23 Mon").
  */
 export function planLimitInstantLabel(context: PlanLimitLabelContext, ms: number, nowMs: number): string {
   const sameDay = new Date(ms).toDateString() === new Date(nowMs).toDateString();
   return formatDateTime(context.locale, ms, sameDay
     ? { hour: "numeric", minute: "2-digit" }
-    : { weekday: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    : { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
 /** Writes one window as a single line, such as `5h 93% left (resets 20:00)`. */

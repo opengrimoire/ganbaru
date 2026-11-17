@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { translate } from "$lib/i18n/translator.svelte";
-import { planLimitWindowLine } from "./plan-limit-labels";
+import { planLimitInstantLabel, planLimitWindowLine } from "./plan-limit-labels";
 import type { ProviderPlanLimitWindow } from "./provider-readiness";
 
 const NOW_MS = Date.parse("2026-11-16T12:00:00Z");
@@ -28,5 +28,12 @@ describe("plan limit labels", () => {
   it("adds the reset in parentheses on the same line", () => {
     expect(planLimitWindowLine(context, window({ resetsAtMs: NOW_MS + 3_600_000 }), NOW_MS))
       .toMatch(/^5h 93% left \(resets .+\)$/);
+  });
+});
+
+describe("plan limit instants", () => {
+  it("names the weekday before the day for a reset on another day", () => {
+    const label = planLimitInstantLabel(context, NOW_MS + 7 * 86_400_000, NOW_MS);
+    expect(label).toMatch(/^Mon, Nov 23, /);
   });
 });

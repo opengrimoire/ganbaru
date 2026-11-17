@@ -183,10 +183,25 @@ pub struct ProviderFamilyMetadataRead {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderInstallGuide {
+    /// The terminal this platform runs the commands in.
+    pub shell: ProviderInstallShell,
     /// The installer command the provider documents for this platform's terminal.
     pub command: String,
+    /// The command that signs the person in to their provider account once the CLI is installed.
+    pub sign_in_command: String,
     /// The provider documentation page about installing the CLI.
     pub docs_url: String,
+}
+
+/// The terminal a provider's install and sign-in commands are written for.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderInstallShell {
+    /// A Linux or macOS terminal running a POSIX shell.
+    Terminal,
+    /// Windows PowerShell.
+    #[serde(rename = "powershell")]
+    PowerShell,
 }
 
 /// How a provider authenticates the sessions it starts, when the driver can tell.

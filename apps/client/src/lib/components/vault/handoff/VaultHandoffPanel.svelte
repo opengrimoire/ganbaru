@@ -44,7 +44,7 @@
   import EnrollmentApproval from "./EnrollmentApproval.svelte";
   import LinkedDeviceSuccess from "./LinkedDeviceSuccess.svelte";
   import ConnectSourceTabs from "./ConnectSourceTabs.svelte";
-  import ConnectStep, { stepCenteredBlockClass } from "./ConnectStep.svelte";
+  import NumberedStep, { stepCenteredBlockClass } from "$lib/components/ui/NumberedStep.svelte";
   import ConnectSteps, { type ConnectSource } from "./ConnectSteps.svelte";
   import SettingsPath from "$lib/components/settings/SettingsPath.svelte";
 
@@ -590,7 +590,7 @@
         {@const total = 3 + offset}
         <ol class="flex w-full flex-col">
           {#if networkStepsVisible}
-            <ConnectStep number={1} {total}>
+            <NumberedStep number={1} {total}>
               <div class="flex min-w-0 flex-1 flex-col items-start gap-2 pt-0.5 pb-4">
                 <p class="text-sm leading-5 text-foreground">{t("vaultHandoff.networkAccessDescription")}</p>
                 {#if networkAccess?.state === "authorizationRequired" || networkAccess?.state === "networkConfirmationRequired"}
@@ -612,18 +612,18 @@
                   <Notice class="text-[0.8rem] leading-5" message={networkError} />
                 {/if}
               </div>
-            </ConnectStep>
+            </NumberedStep>
           {/if}
-          <ConnectStep number={1 + offset} {total}>
+          <NumberedStep number={1 + offset} {total}>
             <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">{t("vaultHandoff.phoneSteps.install")}</p>
-          </ConnectStep>
-          <ConnectStep number={2 + offset} {total}>
+          </NumberedStep>
+          <NumberedStep number={2 + offset} {total}>
             <p class="min-w-0 pt-0.5 pb-4 text-sm leading-5 text-foreground">
               {t("vaultHandoff.computerSteps.goTo")}
               <SettingsPath trail={[t("settings.section.data"), t("vaultHandoff.heading")]} />
             </p>
-          </ConnectStep>
-          <ConnectStep number={3 + offset} {total}>
+          </NumberedStep>
+          <NumberedStep number={3 + offset} {total}>
             <div class="min-w-0 flex-1 pt-0.5">
               <!-- The phone scans the QR code or pastes the text code, so the step names both as tabs, as the phone's own last step does. -->
               <p class="text-sm leading-5 text-foreground">
@@ -652,7 +652,7 @@
                 </div>
               {/if}
             </div>
-          </ConnectStep>
+          </NumberedStep>
         </ol>
       {/if}
       {#if approvalError}

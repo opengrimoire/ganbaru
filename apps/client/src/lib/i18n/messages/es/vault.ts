@@ -321,8 +321,6 @@ export const vaultHandoff = {
     installLink: "esta guía",
     installSuffix: "para instalar ganbaru-server en una computadora que siempre esté encendida, como un servidor doméstico o un NAS",
     run: "En ese servidor, ejecuta",
-    copyCommand: "Copiar comando",
-    commandCopied: "Comando copiado",
     outcome: "Esta computadora se une a la bóveda del servidor en una carpeta nueva.",
     startOutcome: "Si el servidor es nuevo, recibe una copia de esta bóveda. Si ya tiene una, esta computadora se une a esa bóveda en una carpeta nueva.",
     scan: "Escanear el código QR del servidor",

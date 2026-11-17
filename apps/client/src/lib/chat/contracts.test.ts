@@ -697,12 +697,14 @@ describe("Chat provider contracts", () => {
   });
 
   it("reads an install guide and refuses a documentation link that is not https", () => {
-    const installGuide = { command: "curl -fsSL https://claude.ai/install.sh | bash", docsUrl: "https://code.claude.com/docs/en/setup" };
+    const installGuide = { shell: "terminal", command: "curl -fsSL https://claude.ai/install.sh | bash", signInCommand: "claude auth login", docsUrl: "https://code.claude.com/docs/en/setup" };
     expect(parseProviderFamilyMetadata({ ...metadataFixture(), installGuide }).installGuide).toEqual(installGuide);
     expect(() => parseProviderFamilyMetadata({ ...metadataFixture(), installGuide: { ...installGuide, docsUrl: "http://example.com" } }))
       .toThrow("installGuide.docsUrl must use https");
-    expect(() => parseProviderFamilyMetadata({ ...metadataFixture(), installGuide: { docsUrl: installGuide.docsUrl } }))
+    expect(() => parseProviderFamilyMetadata({ ...metadataFixture(), installGuide: { ...installGuide, command: undefined } }))
       .toThrow("installGuide.command must be a string");
+    expect(() => parseProviderFamilyMetadata({ ...metadataFixture(), installGuide: { ...installGuide, shell: "cmd" } }))
+      .toThrow("installGuide.shell");
   });
 
   it("reads provider updates and their run results", () => {

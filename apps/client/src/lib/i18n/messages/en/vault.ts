@@ -313,8 +313,6 @@ export const vaultHandoff = {
     installLink: "this guide",
     installSuffix: "to set up ganbaru-server on a computer that's always on, such as a home server or NAS",
     run: "On that server, run",
-    copyCommand: "Copy command",
-    commandCopied: "Command copied",
     outcome: "This computer joins the server's vault in a new folder.",
     startOutcome: "If the server is new, it gets a copy of this vault. If it already has one, this computer joins that vault in a new folder.",
     scan: "Scan server QR code",

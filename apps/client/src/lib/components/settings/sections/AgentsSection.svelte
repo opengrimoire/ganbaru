@@ -112,6 +112,6 @@
   {:else if activeTab === "providers"}
     <ProvidersSettings {onOpenProviderSetup} />
   {:else}
-    <AgentFilesSettings />
+    <AgentFilesSettings {onOpenProviderSetup} />
   {/if}
 </div>

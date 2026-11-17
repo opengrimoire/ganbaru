@@ -3,7 +3,8 @@
   import ExternalLink from "@lucide/svelte/icons/external-link";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import type { ProviderFileNote, ProviderFileRead, ProviderInstanceId } from "$lib/chat/contracts";
+  import type { ProviderFamilyMetadataRead, ProviderFileNote, ProviderFileRead, ProviderInstanceId } from "$lib/chat/contracts";
+  import type { ChatProviderSetupTarget } from "$lib/settings/types";
   import {
     readChatProviderFiles,
     saveChatProviderPreference,
@@ -28,11 +29,21 @@
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
   import ProviderFileEditor from "./ProviderFileEditor.svelte";
   import ProviderPreferenceList from "./ProviderPreferenceList.svelte";
+  import UnconfiguredProviderFamily from "./UnconfiguredProviderFamily.svelte";
+  import { unconfiguredFamilySituation } from "./provider-install-steps";
+
+  let {
+    onOpenProviderSetup,
+  }: {
+    onOpenProviderSetup: (target: ChatProviderSetupTarget) => void;
+  } = $props();
 
   const localization = getLocalization();
   const { t } = localization;
   const chat = getChat();
   let selectedInstanceId = $state<ProviderInstanceId | null>(null);
+  /** A family with no configuration whose setup steps the detail panel shows instead of files. */
+  let selectedFamilyId = $state<string | null>(null);
   let files = $state<ProviderFileRead[]>([]);
   let fileNotes = $state<ProviderFileNote[]>([]);
   let loading = $state(false);
@@ -62,21 +73,29 @@
   const note = $derived(familyId ? providerFilesNote(familyId) : null);
   const preferencesAllowlisted = $derived(familyId ? providerPreferencesAllowlisted(familyId) : false);
   const docLinks = $derived(familyId ? PROVIDER_DOC_LINKS[familyId] ?? [] : []);
-  const familyNames = $derived(new Map((chat.settings?.providerFamilies ?? []).map((family): [string, string] => [
-    family.familyId,
-    providerFamilyDisplayName(family, t("chat.providers.acp.name")),
-  ])));
+  const families = $derived((chat.settings?.providerFamilies ?? []).map((family): ProviderFamilyMetadataRead => ({
+    ...family,
+    displayName: providerFamilyDisplayName(family, t("chat.providers.acp.name")),
+  })));
+  const familyNames = $derived(new Map(families.map((family): [string, string] => [family.familyId, family.displayName])));
+  /** Families this device could set up that have no configuration yet, listed after the configured providers. */
+  const unconfiguredFamilies = $derived(families.filter((family) => family.implementationStatus === "available"
+    && !providers.some((provider) => provider.configuration.familyId === family.familyId)));
+  const selectedFamily = $derived(unconfiguredFamilies.find((family) => family.familyId === selectedFamilyId) ?? null);
 
   $effect(() => {
-    if (providers.length === 0) {
-      selectedInstanceId = null;
-      files = [];
-      fileNotes = [];
+    if (selectedFamily) return;
+    if (providers.some((provider) => provider.configuration.instanceId === selectedInstanceId)) return;
+    const first = providers[0];
+    if (first) {
+      selectedFamilyId = null;
+      selectedInstanceId = first.configuration.instanceId;
       return;
     }
-    if (!providers.some((provider) => provider.configuration.instanceId === selectedInstanceId)) {
-      selectedInstanceId = providers[0].configuration.instanceId;
-    }
+    selectedInstanceId = null;
+    files = [];
+    fileNotes = [];
+    selectedFamilyId = unconfiguredFamilies[0]?.familyId ?? null;
   });
 
   $effect(() => {
@@ -141,7 +160,21 @@
       error = t("settings.agents.files.saveOrReload");
       return;
     }
+    selectedFamilyId = null;
     selectedInstanceId = instanceId;
+  }
+
+  function chooseFamily(familyId: string): void {
+    if (familyId === selectedFamilyId) return;
+    if (dirty) {
+      error = t("settings.agents.files.saveOrReload");
+      return;
+    }
+    error = null;
+    selectedInstanceId = null;
+    files = [];
+    fileNotes = [];
+    selectedFamilyId = familyId;
   }
 
   function reload(): void {
@@ -191,6 +224,13 @@
     return t(`settings.agents.files.fileNotes.${PROVIDER_FILE_NOTE_NAMES[fileNote.kind]}`, formatList(localization.locale, fileNote.paths));
   }
 
+  /** Whether an unconfigured family's CLI is missing or only waits for setup. */
+  function familyStatus(family: ProviderFamilyMetadataRead): string {
+    return unconfiguredFamilySituation(chat.settings?.installedExecutables[family.familyId]).kind === "not-installed"
+      ? t("settings.agents.providers.notInstalled")
+      : t("settings.agents.providers.notConfigured");
+  }
+
   function familyDisplayName(familyId: string): string {
     return familyNames.get(familyId) ?? familyId;
   }
@@ -222,7 +262,7 @@
 
   {#if chat.loading}
     <Loading layout="rows" rows={3} />
-  {:else if providers.length === 0}
+  {:else if providers.length === 0 && unconfiguredFamilies.length === 0}
     <p class="px-1 text-[0.8rem] text-muted-foreground">{t("settings.agents.files.empty")}</p>
   {:else}
     <div class="directory-layout">
@@ -249,6 +289,22 @@
                   </span>
                 </button>
               {/each}
+              {#each unconfiguredFamilies as family (family.familyId)}
+                {@const active = family.familyId === selectedFamilyId}
+                <button
+                  type="button"
+                  class="provider-row"
+                  class:active
+                  aria-current={active ? "page" : undefined}
+                  onclick={() => chooseFamily(family.familyId)}
+                >
+                  <ChatModelAvatar familyId={family.familyId} label={family.displayName} size={32} />
+                  <span class="directory-summary">
+                    <strong>{family.displayName}</strong>
+                    <small>{familyStatus(family)}</small>
+                  </span>
+                </button>
+              {/each}
             </nav>
           </div>
           <CalendarScrollbar scrollContainer={directoryScrollElement} wheelPassthrough />
@@ -258,7 +314,20 @@
       <div class="detail-panel">
         <div class="detail-scroll-frame">
           <div bind:this={detailScrollElement} data-mobile-scroll-fade class="detail-scroll hide-scrollbar">
-            {#if selectedProvider}
+            {#if selectedFamily}
+              <div class="editor-heading">
+                <ChatModelAvatar familyId={selectedFamily.familyId} label={selectedFamily.displayName} size={38} />
+                <div class="min-w-0">
+                  <h3>{selectedFamily.displayName}</h3>
+                  <p class="font-mono">{selectedFamily.defaultExecutableCandidates[0] || selectedFamily.familyId}</p>
+                </div>
+              </div>
+              <UnconfiguredProviderFamily
+                family={selectedFamily}
+                installedExecutables={chat.settings?.installedExecutables[selectedFamily.familyId]}
+                onSetUp={() => onOpenProviderSetup({ mode: "create", familyId: selectedFamily.familyId })}
+              />
+            {:else if selectedProvider}
               <div class="editor-heading">
                 <ChatModelAvatar familyId={selectedProvider.configuration.familyId} label={familyDisplayName(selectedProvider.configuration.familyId)} size={38} />
                 <div class="min-w-0">
@@ -272,7 +341,7 @@
               <Notice class="px-1 text-[0.733333rem]" message={error} onRetry={files.length === 0 && selectedInstanceId ? retryLoadFiles : undefined} />
             {/if}
 
-            {#if loading}
+            {#if loading && !selectedFamily}
               <Loading layout="fill" class="min-h-24" />
             {:else if selectedProvider && selectedInstanceId && files.length > 0}
               {#if note === "native" || docLinks.length > 0}

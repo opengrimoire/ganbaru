@@ -134,6 +134,25 @@ pub(crate) fn installed_provider_executables(
     executables
 }
 
+/// The CLI programs found for each family this device can set up, by family, so Settings can
+/// say whether a family that has no configuration is installed. A family whose search finds
+/// nothing maps to an empty list.
+pub(crate) fn installed_family_executables(
+    families: &[ProviderFamilyMetadataRead],
+    search_directories: &[PathBuf],
+) -> BTreeMap<ProviderFamilyId, Vec<String>> {
+    families
+        .iter()
+        .filter(|metadata| provider_family_is_discoverable(metadata))
+        .map(|metadata| {
+            (
+                metadata.family_id.clone(),
+                installed_provider_executables(metadata, search_directories),
+            )
+        })
+        .collect()
+}
+
 pub(crate) fn replacement_provider_configurations(
     metadata: &ProviderFamilyMetadataRead,
     configuration: &ProviderInstanceConfig,

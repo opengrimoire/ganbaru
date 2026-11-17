@@ -8,7 +8,6 @@
   import Search from "@lucide/svelte/icons/search";
   import Star from "@lucide/svelte/icons/star";
   import Trash2 from "@lucide/svelte/icons/trash";
-  import { openUrl } from "@tauri-apps/plugin-opener";
   import type {
     JsonValue,
     ProviderFamilyMetadataRead,
@@ -26,7 +25,10 @@
     shouldShowModelId,
   } from "$lib/chat/composer/model-company";
   import ChatModelAvatar from "$lib/components/chat/identity/ChatModelAvatar.svelte";
+  import ProviderInstallSteps from "./ProviderInstallSteps.svelte";
   import ProviderPlanLimitRings from "./ProviderPlanLimitRings.svelte";
+  import UnconfiguredProviderFamily from "./UnconfiguredProviderFamily.svelte";
+  import { unconfiguredFamilySituation } from "./provider-install-steps";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { formatNumber } from "$lib/i18n/formatters";
@@ -397,7 +399,11 @@
   function familyStateLabel(family: ProviderFamilyMetadataRead): string {
     if (family.implementationStatus !== "available") return t("settings.agents.providers.notAvailable");
     const state = familyState(family);
-    if (state === "unconfigured") return t("settings.agents.providers.notConfigured");
+    if (state === "unconfigured") {
+      return unconfiguredFamilySituation(chat.settings?.installedExecutables[family.familyId]).kind === "not-installed"
+        ? t("settings.agents.providers.notInstalled")
+        : t("settings.agents.providers.notConfigured");
+    }
     if (state === "healthy") return t("settings.agents.providers.ready");
     if (state === "disabled") return t("settings.agents.providers.disabled");
     return t("settings.agents.providers.needsAttention");
@@ -422,15 +428,6 @@
     const executable = provider.configuration.executable.trim().replaceAll("\\", "/");
     return executable.split("/").at(-1)
       || providerFamilyCliName(family);
-  }
-
-  /** Opens a provider's install documentation, which validation already holds to `https`. */
-  async function openInstallDocs(url: string): Promise<void> {
-    try {
-      await openUrl(url);
-    } catch (error: unknown) {
-      operationError = errorMessage(error);
-    }
   }
 
   function providerFamilyCliName(family: ProviderFamilyMetadataRead): string {
@@ -464,24 +461,6 @@
     return provider.lastProbe?.version ? `${cliName} ${provider.lastProbe.version}` : cliName;
   }
 </script>
-
-{#snippet installNotice(family: ProviderFamilyMetadataRead, missing: boolean)}
-  {#if family.installGuide}
-    {@const guide = family.installGuide}
-    <Notice
-      tone={missing ? "warning" : "neutral"}
-      role="status"
-      message={missing
-        ? t("settings.agents.providers.installMissing", providerFamilyCliName(family), guide.command)
-        : t("settings.agents.providers.installHint", providerFamilyCliName(family), guide.command)}
-      copy={guide.command}
-    >
-      {#snippet actions()}
-        <button type="button" class="notice-action-text" onclick={() => void openInstallDocs(guide.docsUrl)}>{t("settings.agents.providers.installDocs")}</button>
-      {/snippet}
-    </Notice>
-  {/if}
-{/snippet}
 
 <section class="provider-settings" data-agents-settings-subsection="providers">
   <header class="directory-header">
@@ -705,11 +684,20 @@
                       onDismiss={() => (updateFailure = null)}
                     />
                   {/if}
-                  {#if selectedProvider.lastProbe?.state === "executable_missing"}
-                    {@render installNotice(selectedFamily, true)}
-                  {/if}
-                  {#if selectedProvider.lastProbe?.state === "authentication_required"}
-                    <p class="provider-notice">{t("settings.agents.providers.loginHelp")}</p>
+                  {#if selectedFamily.installGuide && selectedProvider.lastProbe?.state === "executable_missing"}
+                    <ProviderInstallSteps
+                      family={selectedFamily}
+                      guide={selectedFamily.installGuide}
+                      situation={{ kind: "missing-at", path: selectedProvider.configuration.executable }}
+                      finish="refresh"
+                    />
+                  {:else if selectedFamily.installGuide && selectedProvider.lastProbe?.state === "authentication_required"}
+                    <ProviderInstallSteps
+                      family={selectedFamily}
+                      guide={selectedFamily.installGuide}
+                      situation={{ kind: "signed-out" }}
+                      finish="refresh"
+                    />
                   {/if}
                   {#if selectedProvider.runtimeReview.length > 0}
                     <section class="provider-notice runtime-review">
@@ -848,21 +836,15 @@
                     {/if}
                   </section>
                 </div>
+              {:else if selectedFamily.implementationStatus === "available"}
+                <UnconfiguredProviderFamily
+                  family={selectedFamily}
+                  installedExecutables={chat.settings?.installedExecutables[selectedFamily.familyId]}
+                  onSetUp={() => openProviderSetup(selectedFamily.familyId)}
+                />
               {:else}
                 <section class="empty-configuration">
-                  <p>
-                    {selectedFamily.implementationStatus === "available"
-                      ? t("settings.agents.providers.noConfigurations", selectedFamily.displayName)
-                      : selectedFamily.unavailableReason ?? t("settings.agents.providers.notAvailable")}
-                  </p>
-                  {#if selectedFamily.implementationStatus === "available"}
-                    {@render installNotice(selectedFamily, false)}
-                    <button
-                      type="button"
-                      class="add-configuration-text"
-                      onclick={() => openProviderSetup(selectedFamily.familyId)}
-                    >{t("settings.agents.providers.setUp", selectedFamily.displayName)}</button>
-                  {/if}
+                  <p>{selectedFamily.unavailableReason ?? t("settings.agents.providers.notAvailable")}</p>
                 </section>
               {/if}
             </div>
@@ -958,7 +940,6 @@
   .add-configuration-text { width:max-content; margin:0.6rem 0.25rem 0; color:var(--muted-foreground); font-size:calc(0.7rem * var(--type-scale)); font-weight:600; text-align:left; }
   .add-configuration-text:hover { color:var(--foreground); text-decoration:underline; text-underline-offset:0.18rem; }
   .empty-configuration { display:grid; justify-items:start; gap:0.7rem; padding:0.25rem; color:var(--muted-foreground); font-size:calc(0.72rem * var(--type-scale)); }
-  .empty-configuration .add-configuration-text { margin:0; }
   button:disabled { cursor:not-allowed; opacity:0.5; }
   :global(.dark) .settings-button,:global(.dark) .compact-action,:global(.dark) .icon-action,:global(.dark) .favorite-action { background:transparent; }
   @media (max-width:700px) {

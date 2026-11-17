@@ -1,4 +1,7 @@
-use super::{device_state_error, mapping::provider_instance_read, provider_not_found_error};
+use super::{
+    device_state_error, discovery::installed_family_executables, executable_search_directories,
+    mapping::provider_instance_read, provider_not_found_error,
+};
 use crate::chat::configuration::{
     on_blocking_pool, read_chat_configuration, update_chat_device_config, with_behavior,
 };
@@ -21,10 +24,14 @@ pub(crate) async fn read_settings(app: &tauri::AppHandle) -> ChatResult<ChatSett
         .iter()
         .map(|portable| provider_instance_read(portable, &scope.provider_instances))
         .collect();
+    let provider_families = ProviderDriverRegistry.list_metadata();
+    let installed_executables =
+        installed_family_executables(&provider_families, &executable_search_directories());
     Ok(ChatSettingsRead {
         configuration,
-        provider_families: ProviderDriverRegistry.list_metadata(),
+        provider_families,
         provider_instances,
+        installed_executables,
         credential_store_availability: PlatformCredentialStore::default().availability(),
         last_selected_thread_id: scope.preferences.last_selected_thread_id,
     })

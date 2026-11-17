@@ -383,6 +383,7 @@ export function modelSettings(): ChatSettingsRead {
         }],
       },
     }],
+    installedExecutables: {},
     credentialStoreAvailability: "available",
     lastSelectedThreadId: null,
   };

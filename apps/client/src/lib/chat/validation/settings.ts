@@ -35,6 +35,7 @@ import {
   readRecord,
   readUtcTimestamp,
   readString,
+  readStringArray,
 } from "./readers";
 
 export function parseProviderInstanceRead(value: unknown, label = "provider instance"): ProviderInstanceRead {
@@ -74,12 +75,23 @@ function parseProviderRuntimeReviewItem(value: unknown, label: string): Provider
   };
 }
 
+/** Reads the CLI programs found for each family, keyed by family id. */
+function parseInstalledExecutables(value: unknown, label: string): Record<string, string[]> {
+  const record = readRecord(value, label);
+  const executables: Record<string, string[]> = {};
+  for (const [familyId, paths] of Object.entries(record)) {
+    executables[readIdentifier(familyId, `${label} key`)] = readStringArray(paths, `${label}.${familyId}`);
+  }
+  return executables;
+}
+
 export function parseChatSettingsRead(value: unknown): ChatSettingsRead {
   const record = readRecord(value, "Chat settings");
   return {
     configuration: parseChatConfiguration(record.configuration, "Chat settings.configuration"),
     providerFamilies: readArray(record.providerFamilies, "Chat settings.providerFamilies", parseProviderFamilyMetadata),
     providerInstances: readArray(record.providerInstances, "Chat settings.providerInstances", parseProviderInstanceRead),
+    installedExecutables: parseInstalledExecutables(record.installedExecutables, "Chat settings.installedExecutables"),
     credentialStoreAvailability: readEnum(
       record.credentialStoreAvailability,
       CREDENTIAL_STORE_AVAILABILITIES,

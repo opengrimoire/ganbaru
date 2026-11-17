@@ -7,6 +7,7 @@ import type {
   ProviderCapability,
   ProviderFamilyId,
   ProviderImplementationStatus,
+  ProviderInstallShell,
   ProviderMaturity,
   ProviderInstanceId,
   ProbeState,
@@ -58,8 +59,12 @@ export interface ProviderAuthoritySupport {
 
 /** A provider's own install instructions for its CLI. */
 export interface ProviderInstallGuide {
+  /** The terminal this platform runs the commands in. */
+  shell: ProviderInstallShell;
   /** The installer command the provider documents for this platform's terminal. */
   command: string;
+  /** The command that signs the person in to their provider account once the CLI is installed. */
+  signInCommand: string;
   /** The provider documentation page about installing the CLI, always `https`. */
   docsUrl: string;
 }

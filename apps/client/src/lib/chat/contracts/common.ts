@@ -205,6 +205,9 @@ export const PROVIDER_IMPLEMENTATION_STATUSES = ["metadata_only", "available", "
 export type ProviderImplementationStatus = (typeof PROVIDER_IMPLEMENTATION_STATUSES)[number];
 export const PROVIDER_MATURITIES = ["stable", "beta", "experimental"] as const;
 export type ProviderMaturity = (typeof PROVIDER_MATURITIES)[number];
+/** The terminal a provider install guide writes its commands for. */
+export const PROVIDER_INSTALL_SHELLS = ["terminal", "powershell"] as const;
+export type ProviderInstallShell = (typeof PROVIDER_INSTALL_SHELLS)[number];
 
 export const CHAT_ERROR_CODES = [
   "validation",

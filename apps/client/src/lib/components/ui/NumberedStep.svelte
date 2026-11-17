@@ -17,7 +17,7 @@
   import { cn } from "$lib/utils";
 
   /**
-   * One numbered step of a connect flow, for an `<ol>` of steps. The marker column spans the whole
+   * One numbered step of a guided flow, for an `<ol>` of steps. The marker column spans the whole
    * row, so a line runs from one circle to the next. Next to a field, the circle drops to the
    * field's center.
    */

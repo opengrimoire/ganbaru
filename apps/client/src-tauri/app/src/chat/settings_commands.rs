@@ -37,17 +37,15 @@ use crate::vault;
 use ganbaru_chat_contracts::config::{
     ChatBehaviorPreferences, ChatConfiguration, ChatPanelPreferences, RememberedComposerSelection,
 };
-#[cfg(test)]
-use ganbaru_chat_contracts::models::ProviderFamilyId;
 use ganbaru_chat_contracts::models::{
     ChatErrorCode, ChatResult, ChatThreadId, CredentialReferenceId, ModelId, ProbeState,
-    ProjectWorkingFolderId, ProviderFamilyMetadataRead, ProviderInstanceConfig, ProviderInstanceId,
-    ProviderModelCatalog, ProviderProbeResult,
+    ProjectWorkingFolderId, ProviderFamilyId, ProviderFamilyMetadataRead, ProviderInstanceConfig,
+    ProviderInstanceId, ProviderModelCatalog, ProviderProbeResult,
 };
 use ganbaru_chat_providers::runtime_review::DevicePathKind;
 use ganbaru_chat_providers::{ProviderDriverFactory, ProviderDriverRegistry};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 
@@ -85,6 +83,10 @@ pub struct ChatSettingsRead {
     pub configuration: ChatConfiguration,
     pub provider_families: Vec<ProviderFamilyMetadataRead>,
     pub provider_instances: Vec<ProviderInstanceRead>,
+    /// The CLI programs found on this device for each family it could set up, by family; a
+    /// family appears with an empty list when its search found nothing, and is absent when
+    /// this device does not search for it.
+    pub installed_executables: BTreeMap<ProviderFamilyId, Vec<String>>,
     pub credential_store_availability: CredentialStoreAvailability,
     pub last_selected_thread_id: Option<ChatThreadId>,
 }

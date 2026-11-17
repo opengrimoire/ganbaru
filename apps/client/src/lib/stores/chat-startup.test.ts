@@ -42,7 +42,7 @@ function settings(sendKey: "enter" | "mod_enter" = "enter"): ChatSettingsRead {
         notifyReviewReady: true, notifyFailures: true, announceBackgroundWork: true, notificationIncludeContent: false,
       },
     },
-    providerFamilies: [], providerInstances: [], credentialStoreAvailability: "available",
+    providerFamilies: [], providerInstances: [], installedExecutables: {}, credentialStoreAvailability: "available",
     lastSelectedThreadId: null,
   };
 }

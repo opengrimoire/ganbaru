@@ -3,6 +3,7 @@ import {
   MODEL_CATALOG_SOURCES,
   PROVIDER_CAPABILITIES,
   PROVIDER_IMPLEMENTATION_STATUSES,
+  PROVIDER_INSTALL_SHELLS,
   PROVIDER_MATURITIES,
   PROBE_STATES,
   PROVIDER_AUTH_SOURCES,
@@ -77,7 +78,12 @@ function parseProviderInstallGuide(value: unknown, label: string): ProviderInsta
   const record = readRecord(value, label);
   const docsUrl = readString(record.docsUrl, `${label}.docsUrl`);
   if (!docsUrl.startsWith("https://")) throw new Error(`${label}.docsUrl must use https`);
-  return { command: readString(record.command, `${label}.command`), docsUrl };
+  return {
+    shell: readEnum(record.shell, PROVIDER_INSTALL_SHELLS, `${label}.shell`),
+    command: readString(record.command, `${label}.command`),
+    signInCommand: readString(record.signInCommand, `${label}.signInCommand`),
+    docsUrl,
+  };
 }
 
 export function parseProviderFamilyMetadata(value: unknown, label = "provider metadata"): ProviderFamilyMetadataRead {

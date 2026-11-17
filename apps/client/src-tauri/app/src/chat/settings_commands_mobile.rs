@@ -8,10 +8,11 @@ use ganbaru_chat_contracts::config::{
     ChatBehaviorPreferences, ChatConfiguration, ChatPanelPreferences,
 };
 use ganbaru_chat_contracts::models::{
-    ChatResult, ChatThreadId, ProviderFamilyMetadataRead, ProviderInstanceConfig,
+    ChatResult, ChatThreadId, ProviderFamilyId, ProviderFamilyMetadataRead, ProviderInstanceConfig,
     ProviderModelCatalog, ProviderProbeResult,
 };
 use serde::Serialize;
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,6 +29,10 @@ pub struct ChatSettingsRead {
     pub configuration: ChatConfiguration,
     pub provider_families: Vec<ProviderFamilyMetadataRead>,
     pub provider_instances: Vec<ProviderInstanceRead>,
+    /// The CLI programs found on this device for each family it could set up, by family; a
+    /// family appears with an empty list when its search found nothing, and is absent when
+    /// this device does not search for it.
+    pub installed_executables: BTreeMap<ProviderFamilyId, Vec<String>>,
     pub credential_store_availability: CredentialStoreAvailability,
     pub last_selected_thread_id: Option<ChatThreadId>,
 }
@@ -37,6 +42,7 @@ async fn read_settings(app: &tauri::AppHandle) -> ChatResult<ChatSettingsRead> {
         configuration: read_chat_configuration(app).await?,
         provider_families: Vec::new(),
         provider_instances: Vec::new(),
+        installed_executables: BTreeMap::new(),
         credential_store_availability: CredentialStoreAvailability::Unavailable,
         last_selected_thread_id: None,
     })

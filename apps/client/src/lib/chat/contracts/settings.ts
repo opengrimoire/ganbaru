@@ -40,6 +40,12 @@ export interface ChatSettingsRead {
   configuration: ChatConfiguration;
   providerFamilies: ProviderFamilyMetadataRead[];
   providerInstances: ProviderInstanceRead[];
+  /**
+   * The CLI programs found on this device for each family it could set up, by family id; a
+   * family maps to an empty list when its search found nothing and is absent when this device
+   * does not search for it.
+   */
+  installedExecutables: Readonly<Record<string, readonly string[]>>;
   credentialStoreAvailability: CredentialStoreAvailability;
   lastSelectedThreadId: ChatThreadId | null;
 }

@@ -87,10 +87,10 @@
       <div class="min-w-0 flex-1 pt-0.5 pb-4">
         <p class="text-[0.8rem] leading-5 text-foreground">
           {needsInstall
-            ? t("settings.agents.providers.install.runSignInAfterInstall", family.displayName)
+            ? t("settings.agents.providers.install.runSignInAfterInstall")
             : situation.kind === "installed"
-              ? t("settings.agents.providers.install.runSignInIfNeeded", family.displayName)
-              : t("settings.agents.providers.install.runSignIn", family.displayName)}
+              ? t("settings.agents.providers.install.runSignInIfNeeded")
+              : t("settings.agents.providers.install.runSignIn")}
         </p>
         <CommandBox class="mt-2 text-[0.75rem]" command={guide.signInCommand} {prompt} />
       </div>
@@ -104,7 +104,7 @@
     </NumberedStep>
   </ol>
   <p class="text-[0.8rem] leading-5 text-muted-foreground">
-    {t("settings.agents.providers.install.guide", family.displayName)}
+    {t("settings.agents.providers.install.guide")}
     <button
       type="button"
       class="inline-flex items-baseline gap-0.5 text-primary underline underline-offset-2 hover:text-primary/80"

@@ -657,13 +657,12 @@
                     />
                   {/if}
                   {#if update && !versionNotice}
-                    {@const cliName = providerCliName(selectedFamily, selectedProvider)}
                     <Notice
                       tone="neutral"
                       role="status"
                       message={update.runsInApp
-                        ? t("settings.agents.providers.updateAvailable", cliName, update.latestVersion, update.currentVersion)
-                        : t("settings.agents.providers.updateAvailableManaged", cliName, update.latestVersion)}
+                        ? t("settings.agents.providers.updateAvailable", update.latestVersion)
+                        : t("settings.agents.providers.updateAvailableManaged", update.latestVersion)}
                       copy={update.runsInApp ? update.updateCommand : false}
                     >
                       {#snippet actions()}
@@ -919,6 +918,8 @@
   .refresh-summary.attention { border-left-color:var(--destructive); }
   .custom-model-editor p { color:var(--destructive); }
   .editor-content { display:grid; align-content:start; gap:1rem; }
+  /* Notices match the size of the provider details around them. */
+  .editor-content > :global(.notice) { font-size:0.8rem; line-height:1.25rem; }
   .runtime-review { display:grid; gap:0.4rem; }
   .runtime-review ul { display:grid; gap:0.2rem; padding-left:1rem; list-style:disc; overflow-wrap:anywhere; }
   .runtime-review button { justify-self:start; }

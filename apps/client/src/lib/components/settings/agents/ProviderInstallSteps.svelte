@@ -62,13 +62,14 @@
       tone={situation.kind === "installed" ? "neutral" : "warning"}
       icon={situation.kind === "installed" ? CircleCheck : undefined}
       role="status"
+      class="text-[0.8rem]"
       message={statusMessage}
       copy={false}
     />
   {/if}
   <ol class="flex flex-col">
     <NumberedStep number={1} {total}>
-      <p class="min-w-0 flex-1 pt-0.5 pb-4 text-sm leading-5 text-foreground">
+      <p class="min-w-0 flex-1 pt-0.5 pb-4 text-[0.8rem] leading-5 text-foreground">
         {guide.shell === "powershell"
           ? t("settings.agents.providers.install.openPowerShell")
           : t("settings.agents.providers.install.openTerminal")}
@@ -77,25 +78,25 @@
     {#if needsInstall}
       <NumberedStep number={2} {total}>
         <div class="min-w-0 flex-1 pt-0.5 pb-4">
-          <p class="text-sm leading-5 text-foreground">{t("settings.agents.providers.install.runInstall", cliName)}</p>
-          <CommandBox class="mt-2" command={guide.command} {prompt} />
+          <p class="text-[0.8rem] leading-5 text-foreground">{t("settings.agents.providers.install.runInstall", cliName)}</p>
+          <CommandBox class="mt-2 text-[0.75rem]" command={guide.command} {prompt} />
         </div>
       </NumberedStep>
     {/if}
     <NumberedStep number={needsInstall ? 3 : 2} {total}>
       <div class="min-w-0 flex-1 pt-0.5 pb-4">
-        <p class="text-sm leading-5 text-foreground">
+        <p class="text-[0.8rem] leading-5 text-foreground">
           {needsInstall
             ? t("settings.agents.providers.install.runSignInAfterInstall", family.displayName)
             : situation.kind === "installed"
               ? t("settings.agents.providers.install.runSignInIfNeeded", family.displayName)
               : t("settings.agents.providers.install.runSignIn", family.displayName)}
         </p>
-        <CommandBox class="mt-2" command={guide.signInCommand} {prompt} />
+        <CommandBox class="mt-2 text-[0.75rem]" command={guide.signInCommand} {prompt} />
       </div>
     </NumberedStep>
     <NumberedStep number={total} {total}>
-      <p class="min-w-0 flex-1 pt-0.5 text-sm leading-5 text-foreground">
+      <p class="min-w-0 flex-1 pt-0.5 text-[0.8rem] leading-5 text-foreground">
         {finish === "set-up"
           ? t("settings.agents.providers.install.finishSetUp", family.displayName)
           : t("settings.agents.providers.install.finishRefresh")}

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { hasVerticalOverflow, scrollOverflowAction } from "./scroll-overflow";
+import { hasHorizontalOverflow, hasVerticalOverflow, scrollOverflowAction } from "./scroll-overflow";
 
 describe("vertical overflow", () => {
   it("treats content that fits, including fractional excess, as not overflowing", () => {
@@ -12,6 +12,18 @@ describe("vertical overflow", () => {
 
   it("detects content taller than the visible area", () => {
     expect(hasVerticalOverflow({ scrollHeight: 202, clientHeight: 200 })).toBe(true);
+  });
+});
+
+describe("horizontal overflow", () => {
+  it("treats content that fits, including fractional excess, as not overflowing", () => {
+    expect(hasHorizontalOverflow({ scrollWidth: 300, clientWidth: 300 })).toBe(false);
+    expect(hasHorizontalOverflow({ scrollWidth: 300.5, clientWidth: 300 })).toBe(false);
+    expect(hasHorizontalOverflow({ scrollWidth: 120, clientWidth: 300 })).toBe(false);
+  });
+
+  it("detects content wider than the visible area", () => {
+    expect(hasHorizontalOverflow({ scrollWidth: 302, clientWidth: 300 })).toBe(true);
   });
 });
 

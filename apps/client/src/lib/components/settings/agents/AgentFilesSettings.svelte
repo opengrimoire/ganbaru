@@ -452,7 +452,7 @@
   .directory-summary strong { font-size:calc(0.8rem * var(--type-scale)); font-weight:600; }
   .directory-summary small { margin-top:0.05rem; color:var(--muted-foreground); font-size:calc(0.65rem * var(--type-scale)); }
   .detail-panel { position:relative; z-index:2; min-width:0; min-height:0; border-left:1px solid var(--border); padding-left:1rem; }
-  .detail-scroll { display:grid; align-content:start; gap:1.25rem; padding:0.2rem 0.75rem 1rem 0; }
+  .detail-scroll { display:grid; grid-template-columns:minmax(0,1fr); align-content:start; gap:1.25rem; padding:0.2rem 0.75rem 1rem 0; }
   .editor-heading { display:grid; min-width:0; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:0.65rem; padding-inline:0.25rem; }
   .editor-heading h3,.editor-heading p { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .editor-heading h3 { font-size:calc(0.833333rem * var(--type-scale)); font-weight:600; }

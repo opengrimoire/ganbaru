@@ -306,6 +306,7 @@ impl CursorProviderDriver {
                 .compatibility()
                 .map(|range| range.maximum_tested.to_string()),
             update_command: flavor.update_command().map(str::to_string),
+            install_guide: crate::cli_install::install_guide(flavor.family_id()),
             default_executable_candidates: match flavor {
                 AcpProviderFlavor::Cursor => {
                     vec!["cursor-agent".to_string(), "agent".to_string()]

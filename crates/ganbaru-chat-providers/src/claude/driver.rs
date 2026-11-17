@@ -171,6 +171,7 @@ impl ClaudeProviderDriver {
             minimum_tested_cli_version: Some(MINIMUM_CLAUDE_VERSION.to_string()),
             maximum_tested_cli_version: Some(CLAUDE_COMPATIBILITY.maximum_tested.to_string()),
             update_command: Some("claude update".to_string()),
+            install_guide: crate::cli_install::install_guide("claude"),
             default_executable_candidates: vec!["claude".to_string()],
             implementation_status: ProviderImplementationStatus::Available,
             maturity: ProviderMaturity::Stable,

@@ -8,6 +8,7 @@
   import Search from "@lucide/svelte/icons/search";
   import Star from "@lucide/svelte/icons/star";
   import Trash2 from "@lucide/svelte/icons/trash";
+  import { openUrl } from "@tauri-apps/plugin-opener";
   import type {
     JsonValue,
     ProviderFamilyMetadataRead,
@@ -419,6 +420,15 @@
       || providerFamilyCliName(family);
   }
 
+  /** Opens a provider's install documentation, which validation already holds to `https`. */
+  async function openInstallDocs(url: string): Promise<void> {
+    try {
+      await openUrl(url);
+    } catch (error: unknown) {
+      operationError = errorMessage(error);
+    }
+  }
+
   function providerFamilyCliName(family: ProviderFamilyMetadataRead): string {
     return family.defaultExecutableCandidates[0] || family.familyId;
   }
@@ -431,6 +441,24 @@
     return provider.lastProbe?.version ? `${cliName} ${provider.lastProbe.version}` : cliName;
   }
 </script>
+
+{#snippet installNotice(family: ProviderFamilyMetadataRead, missing: boolean)}
+  {#if family.installGuide}
+    {@const guide = family.installGuide}
+    <Notice
+      tone={missing ? "warning" : "neutral"}
+      role="status"
+      message={missing
+        ? t("settings.chat.providers.installMissing", providerFamilyCliName(family), guide.command)
+        : t("settings.chat.providers.installHint", providerFamilyCliName(family), guide.command)}
+      copy={guide.command}
+    >
+      {#snippet actions()}
+        <button type="button" class="notice-action-text" onclick={() => void openInstallDocs(guide.docsUrl)}>{t("settings.chat.providers.installDocs")}</button>
+      {/snippet}
+    </Notice>
+  {/if}
+{/snippet}
 
 <section class="provider-settings" data-chat-settings-subsection="providers">
   <header class="directory-header">
@@ -620,6 +648,9 @@
                       copy={versionNotice.kind === "too_new" ? false : versionNotice.updateCommand ?? false}
                     />
                   {/if}
+                  {#if selectedProvider.lastProbe?.state === "executable_missing"}
+                    {@render installNotice(selectedFamily, true)}
+                  {/if}
                   {#if selectedProvider.lastProbe?.state === "authentication_required"}
                     <p class="provider-notice">{t("settings.chat.providers.loginHelp")}</p>
                   {/if}
@@ -768,6 +799,7 @@
                       : selectedFamily.unavailableReason ?? t("settings.chat.providers.notAvailable")}
                   </p>
                   {#if selectedFamily.implementationStatus === "available"}
+                    {@render installNotice(selectedFamily, false)}
                     <button
                       type="button"
                       class="add-configuration-text"

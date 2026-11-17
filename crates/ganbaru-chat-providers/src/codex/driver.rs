@@ -166,6 +166,7 @@ impl CodexProviderDriver {
             minimum_tested_cli_version: Some(MINIMUM_CODEX_VERSION.to_string()),
             maximum_tested_cli_version: Some(CODEX_COMPATIBILITY.maximum_tested.to_string()),
             update_command: Some("codex update".to_string()),
+            install_guide: crate::cli_install::install_guide("codex"),
             default_executable_candidates: vec!["codex".to_string()],
             implementation_status: ProviderImplementationStatus::Available,
             maturity: ProviderMaturity::Stable,

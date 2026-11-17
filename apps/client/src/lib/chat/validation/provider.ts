@@ -15,6 +15,7 @@ import {
   type ProviderAuthoritySupport,
   type ProviderCapabilitySupport,
   type ProviderFamilyMetadataRead,
+  type ProviderInstallGuide,
   type ProviderInstanceConfig,
   type ProviderModel,
   type ProviderModelCatalog,
@@ -69,6 +70,14 @@ export function parseProviderAuthoritySupport(
   };
 }
 
+/** Reads an install guide, refusing a documentation link that is not `https`. */
+function parseProviderInstallGuide(value: unknown, label: string): ProviderInstallGuide {
+  const record = readRecord(value, label);
+  const docsUrl = readString(record.docsUrl, `${label}.docsUrl`);
+  if (!docsUrl.startsWith("https://")) throw new Error(`${label}.docsUrl must use https`);
+  return { command: readString(record.command, `${label}.command`), docsUrl };
+}
+
 export function parseProviderFamilyMetadata(value: unknown, label = "provider metadata"): ProviderFamilyMetadataRead {
   const record = readRecord(value, label);
   return {
@@ -79,6 +88,7 @@ export function parseProviderFamilyMetadata(value: unknown, label = "provider me
     minimumTestedCliVersion: readNullable(record.minimumTestedCliVersion, `${label}.minimumTestedCliVersion`, readString),
     maximumTestedCliVersion: readNullable(record.maximumTestedCliVersion, `${label}.maximumTestedCliVersion`, readString),
     updateCommand: readNullable(record.updateCommand, `${label}.updateCommand`, readString),
+    installGuide: readNullable(record.installGuide, `${label}.installGuide`, parseProviderInstallGuide),
     defaultExecutableCandidates: readStringArray(record.defaultExecutableCandidates, `${label}.defaultExecutableCandidates`),
     implementationStatus: readEnum(record.implementationStatus, PROVIDER_IMPLEMENTATION_STATUSES, `${label}.implementationStatus`),
     maturity: readEnum(record.maturity, PROVIDER_MATURITIES, `${label}.maturity`),

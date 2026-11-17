@@ -56,6 +56,14 @@ export interface ProviderAuthoritySupport {
   personApprovedCommands: boolean;
 }
 
+/** A provider's own install instructions for its CLI. */
+export interface ProviderInstallGuide {
+  /** The installer command the provider documents for this platform's terminal. */
+  command: string;
+  /** The provider documentation page about installing the CLI, always `https`. */
+  docsUrl: string;
+}
+
 export interface ProviderFamilyMetadataRead {
   familyId: ProviderFamilyId;
   displayName: string;
@@ -65,6 +73,8 @@ export interface ProviderFamilyMetadataRead {
   maximumTestedCliVersion: string | null;
   /** The command that updates the provider CLI, shown next to version notices. */
   updateCommand: string | null;
+  /** How to install the provider CLI on this platform, shown when its program is missing. */
+  installGuide: ProviderInstallGuide | null;
   defaultExecutableCandidates: string[];
   implementationStatus: ProviderImplementationStatus;
   maturity: ProviderMaturity;

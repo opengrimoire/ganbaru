@@ -10,6 +10,7 @@ const family: ProviderFamilyMetadataRead = {
   minimumTestedCliVersion: "2.1.170",
   maximumTestedCliVersion: "2.1.322",
   updateCommand: "claude update",
+  installGuide: null,
   defaultExecutableCandidates: ["claude"],
   implementationStatus: "available",
   maturity: "stable",

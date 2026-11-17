@@ -167,12 +167,26 @@ pub struct ProviderFamilyMetadataRead {
     /// version notices; `None` when the provider has no known update command.
     #[serde(default)]
     pub update_command: Option<String>,
+    /// How to install the provider's CLI on this device's platform, shown when its program is
+    /// missing; `None` when the provider documents no installer.
+    #[serde(default)]
+    pub install_guide: Option<ProviderInstallGuide>,
     pub default_executable_candidates: Vec<String>,
     pub implementation_status: ProviderImplementationStatus,
     pub maturity: ProviderMaturity,
     pub protocol_name: String,
     pub potential_capabilities: Vec<ProviderCapability>,
     pub unavailable_reason: Option<String>,
+}
+
+/// The provider's own install instructions for its CLI.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderInstallGuide {
+    /// The installer command the provider documents for this platform's terminal.
+    pub command: String,
+    /// The provider documentation page about installing the CLI.
+    pub docs_url: String,
 }
 
 /// How a provider authenticates the sessions it starts, when the driver can tell.

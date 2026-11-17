@@ -49,6 +49,7 @@ function metadataFixture(): Record<string, unknown> {
     minimumTestedCliVersion: null,
     maximumTestedCliVersion: null,
     updateCommand: null,
+    installGuide: null,
     defaultExecutableCandidates: ["codex"],
     implementationStatus: "metadata_only",
     maturity: "experimental",
@@ -654,6 +655,15 @@ describe("Chat provider contracts", () => {
       .toThrow("maximumTestedCliVersion must be a string");
     expect(parseProviderFamilyMetadata({ ...metadataFixture(), updateCommand: "claude update" }).updateCommand)
       .toBe("claude update");
+  });
+
+  it("reads an install guide and refuses a documentation link that is not https", () => {
+    const installGuide = { command: "curl -fsSL https://claude.ai/install.sh | bash", docsUrl: "https://code.claude.com/docs/en/setup" };
+    expect(parseProviderFamilyMetadata({ ...metadataFixture(), installGuide }).installGuide).toEqual(installGuide);
+    expect(() => parseProviderFamilyMetadata({ ...metadataFixture(), installGuide: { ...installGuide, docsUrl: "http://example.com" } }))
+      .toThrow("installGuide.docsUrl must use https");
+    expect(() => parseProviderFamilyMetadata({ ...metadataFixture(), installGuide: { docsUrl: installGuide.docsUrl } }))
+      .toThrow("installGuide.command must be a string");
   });
 
   it("rejects partial metadata and unsupported capability values", () => {

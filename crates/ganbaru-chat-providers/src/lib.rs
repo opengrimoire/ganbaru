@@ -10,6 +10,7 @@ mod probe_directory;
 pub mod process;
 
 mod claude;
+mod cli_install;
 mod codex;
 mod confinement;
 mod cursor;

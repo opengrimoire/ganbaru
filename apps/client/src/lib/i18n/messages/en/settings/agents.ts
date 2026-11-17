@@ -396,7 +396,7 @@ export const agentsSettings = {
       openTerminal: "Open a terminal on this computer.",
       openPowerShell: "Open PowerShell from the Start menu.",
       runInstall: (cli: string) => `Paste this command and press Enter to install ${cli}.`,
-      runSignInAfterInstall: (provider: string) => `When it finishes, open a new terminal window and run this command to sign in with your ${provider} account.`,
+      runSignInAfterInstall: (provider: string) => `When it finishes, run this command to sign in with your ${provider} account (if the terminal cannot find it, open a new terminal window and try again).`,
       runSignInIfNeeded: (provider: string) => `If you have not signed in yet, run this command to sign in with your ${provider} account.`,
       runSignIn: (provider: string) => `Run this command and follow its steps to sign in with your ${provider} account.`,
       finishSetUp: (provider: string) => `Come back here and choose Set up ${provider}.`,

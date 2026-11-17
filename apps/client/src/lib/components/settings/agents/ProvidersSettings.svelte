@@ -657,27 +657,27 @@
                     />
                   {/if}
                   {#if update && !versionNotice}
-                    <Notice
-                      tone="neutral"
-                      role="status"
-                      message={update.runsInApp
-                        ? t("settings.agents.providers.updateAvailable", update.latestVersion)
-                        : t("settings.agents.providers.updateAvailableManaged", update.latestVersion)}
-                      copy={update.runsInApp ? update.updateCommand : false}
-                    >
-                      {#snippet actions()}
-                        {#if update.runsInApp}
-                          <button
-                            type="button"
-                            class="notice-action-text"
-                            disabled={selectedBusy || providerUpdates.running !== null}
-                            onclick={() => void runProviderUpdate(instanceId)}
-                          >{providerUpdates.running === instanceId
-                            ? t("settings.agents.providers.updating")
-                            : t("settings.agents.providers.updateAction")}</button>
-                        {/if}
-                      {/snippet}
-                    </Notice>
+                    <div class="update-notice">
+                      {#if update.runsInApp}
+                        <button
+                          type="button"
+                          class={SETTINGS_SECONDARY_BUTTON_CLASS}
+                          disabled={selectedBusy || providerUpdates.running !== null}
+                          onclick={() => void runProviderUpdate(instanceId)}
+                        >{providerUpdates.running === instanceId
+                          ? t("settings.agents.providers.updating")
+                          : t("settings.agents.providers.updateAction")}</button>
+                      {/if}
+                      <Notice
+                        class="min-w-0 flex-1"
+                        tone="neutral"
+                        role="status"
+                        message={update.runsInApp
+                          ? t("settings.agents.providers.updateAvailable", update.latestVersion)
+                          : t("settings.agents.providers.updateAvailableManaged", update.latestVersion)}
+                        copy={update.runsInApp ? update.updateCommand : false}
+                      />
+                    </div>
                   {/if}
                   {#if updateFailure?.instanceId === instanceId}
                     {@const command = update?.updateCommand ?? selectedFamily.updateCommand ?? ""}
@@ -919,7 +919,9 @@
   .custom-model-editor p { color:var(--destructive); }
   .editor-content { display:grid; align-content:start; gap:1rem; }
   /* Notices match the size of the provider details around them. */
-  .editor-content > :global(.notice) { font-size:0.8rem; line-height:1.25rem; }
+  .editor-content :global(.notice) { font-size:0.8rem; }
+  /* The update action leads its notice, and both center on the button's height. */
+  .update-notice { display:flex; min-width:0; align-items:center; gap:0.625rem; }
   .runtime-review { display:grid; gap:0.4rem; }
   .runtime-review ul { display:grid; gap:0.2rem; padding-left:1rem; list-style:disc; overflow-wrap:anywhere; }
   .runtime-review button { justify-self:start; }

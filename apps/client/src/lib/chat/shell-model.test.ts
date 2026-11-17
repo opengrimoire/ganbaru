@@ -85,7 +85,7 @@ function provider(state: ProviderInstanceRead["lastProbe"] extends infer _Probe 
     },
     lastSuccessfulProbeAt: timestamp,
     usageLimits: null,
-    lastUsedAt: null,
+    lastUsedAt: null, duplicateOf: null,
     modelCatalog: null,
   };
 }

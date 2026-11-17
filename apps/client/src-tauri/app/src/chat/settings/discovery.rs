@@ -163,6 +163,42 @@ pub(crate) fn installed_family_executables(
         .collect()
 }
 
+/// The program `executable` names on this device: a path resolves to its canonical file, and a
+/// bare name to the first safe match in `search_directories`. A program that cannot be found
+/// keeps its trimmed spelling, and an empty value is `None` because nothing would launch.
+pub(crate) fn resolve_executable_identity(
+    executable: &str,
+    search_directories: &[PathBuf],
+) -> Option<PathBuf> {
+    let executable = executable.trim();
+    if executable.is_empty() {
+        return None;
+    }
+    let named = Path::new(executable);
+    if named.components().count() > 1 || named.is_absolute() || executable.starts_with('~') {
+        let expanded = match executable
+            .strip_prefix("~/")
+            .or(executable.strip_prefix("~\\"))
+        {
+            Some(rest) => {
+                platform_user_home().map_or_else(|| named.to_path_buf(), |home| home.join(rest))
+            }
+            None => named.to_path_buf(),
+        };
+        return Some(std::fs::canonicalize(&expanded).unwrap_or(expanded));
+    }
+    let found = search_directories.iter().find_map(|directory| {
+        executable_candidate_names(executable)
+            .into_iter()
+            .map(|name| directory.join(name))
+            .find(|candidate| is_safe_executable_candidate(candidate))
+    });
+    Some(match found {
+        Some(candidate) => std::fs::canonicalize(&candidate).unwrap_or(candidate),
+        None => named.to_path_buf(),
+    })
+}
+
 pub(crate) fn replacement_provider_configurations(
     metadata: &ProviderFamilyMetadataRead,
     configuration: &ProviderInstanceConfig,

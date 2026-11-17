@@ -309,7 +309,7 @@ export function modelSettings(): ChatSettingsRead {
       },
       lastSuccessfulProbeAt: "2026-07-22T12:00:00.000Z",
       usageLimits: null,
-      lastUsedAt: null,
+      lastUsedAt: null, duplicateOf: null,
       modelCatalog: {
         instanceId: "codex-local",
         source: "provider",

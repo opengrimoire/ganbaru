@@ -56,6 +56,9 @@ export function parseProviderInstanceRead(value: unknown, label = "provider inst
     lastUsedAt: record.lastUsedAt === undefined
       ? null
       : readNullable(record.lastUsedAt, `${label}.lastUsedAt`, readUtcTimestamp),
+    duplicateOf: record.duplicateOf === undefined
+      ? null
+      : readNullable(record.duplicateOf, `${label}.duplicateOf`, readIdentifier),
   };
 }
 

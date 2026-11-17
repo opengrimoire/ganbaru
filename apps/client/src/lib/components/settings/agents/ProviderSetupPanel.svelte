@@ -9,7 +9,7 @@
   import Trash2 from "@lucide/svelte/icons/trash";
   import * as chatApi from "$lib/api/chat";
   import type { JsonValue, ProviderInstanceConfig, ProviderSetupTestRead } from "$lib/chat/contracts";
-  import { chatErrorMessage, providerProbeMessage } from "$lib/chat/error-presentation";
+  import { chatErrorDetailText, chatErrorMessage, chatErrorReason, providerProbeMessage } from "$lib/chat/error-presentation";
   import {
     createProviderSetupDraft,
     providerConfigurationFromDraft,
@@ -480,6 +480,10 @@
   }
 
   function errorMessage(error: unknown): string {
+    if (chatErrorReason(error) === "duplicate_provider") {
+      const existing = chatErrorDetailText(error, "existingLabel");
+      if (existing) return t("settings.agents.setup.duplicateConfiguration", existing);
+    }
     return chatErrorMessage(error, t("settings.agents.setup.operationFailed"));
   }
 
@@ -801,20 +805,6 @@
                 </div>
             </div>
           </section>
-
-          {#if testResult}
-            <div class="test-result" data-state={testSucceeded ? "success" : "failure"}>
-              <i>{#if testSucceeded}<Check size={13} />{/if}</i>
-              <span>
-                {testSucceeded
-                  ? t("settings.agents.setup.testPassed", formatNumber(localization.locale, testResult.modelCatalog?.models.length ?? 0))
-                  : t("settings.agents.setup.testFailed", providerProbeMessage(testResult.probe.state))}
-              </span>
-              {#if !testSucceeded && testResult.probe.detail}<small>{testResult.probe.detail}</small>{/if}
-              {#if testResult.probe.version}<small>{testResult.probe.version}</small>{/if}
-              {#if testResult.probe.accountLabel}<small>{testResult.probe.accountLabel}</small>{/if}
-            </div>
-          {/if}
         {:else if operationError}
           <div class="min-h-40 text-sm"><Notice layout="fill" message={operationError} onRetry={retryInitialize} /></div>
         {/if}
@@ -827,7 +817,23 @@
     style="padding-left: {contentPaddingX}; padding-right: {contentPaddingX}; padding-bottom: {contentPaddingBottom};"
   >
     <div class="footer-content">
-      <div class="footer-message">{#if operationError && family}<Notice message={operationError} />{/if}</div>
+      <div class="footer-message" aria-live="polite">
+        {#if operationError && family}
+          <Notice message={operationError} />
+        {:else if testResult}
+          <div class="test-result" data-state={testSucceeded ? "success" : "failure"}>
+            <i>{#if testSucceeded}<Check size={13} />{/if}</i>
+            <span>
+              {testSucceeded
+                ? t("settings.agents.setup.testPassed", formatNumber(localization.locale, testResult.modelCatalog?.models.length ?? 0))
+                : t("settings.agents.setup.testFailed", providerProbeMessage(testResult.probe.state))}
+            </span>
+            {#if !testSucceeded && testResult.probe.detail}<small>{testResult.probe.detail}</small>{/if}
+            {#if testResult.probe.version}<small>{testResult.probe.version}</small>{/if}
+            {#if testResult.probe.accountLabel}<small>{testResult.probe.accountLabel}</small>{/if}
+          </div>
+        {/if}
+      </div>
       <div class="footer-actions">
         <button type="button" class="secondary-button" onclick={onCancel}>{t("common.cancel")}</button>
         <button
@@ -889,7 +895,7 @@
   .environment-error { grid-column:1/-1; }
   .environment-warning { display:flex; flex-wrap:wrap; grid-column:1/-1; align-items:center; gap:0.4rem; color:var(--muted-foreground); font-size:calc(0.68rem * var(--type-scale)); }
   .environment-warning button { color:var(--foreground); text-decoration:underline; }
-  .test-result { display:flex; flex-wrap:wrap; align-items:center; gap:0.4rem 0.65rem; border-block:1px solid var(--border); padding:0.65rem 0.25rem; color:var(--status-tentative); font-size:calc(0.75rem * var(--type-scale)); }
+  .test-result { display:flex; min-width:0; flex-wrap:wrap; align-items:center; gap:0.25rem 0.65rem; color:var(--status-tentative); overflow-wrap:anywhere; }
   .test-result[data-state="success"] { color:var(--action-confirm-signal); }
   .test-result > i { display:grid; width:1rem; height:1rem; place-items:center; border:1px solid currentColor; border-radius:999px; }
   .test-result small { color:var(--muted-foreground); }

@@ -87,11 +87,23 @@ export function chatErrorCode(error: unknown): ChatErrorCode | null {
 
 /** Extracts the `details.reason` a structured Chat failure names, from direct and nested failures. */
 export function chatErrorReason(error: unknown): string | null {
+  return chatErrorDetailText(error, "reason");
+}
+
+/**
+ * Extracts one text value from the `details` of a structured Chat failure, from direct and nested
+ * failures, such as the label of the configuration a duplicate provider matches.
+ *
+ * @param error Any rejected value.
+ * @param key The details field to read.
+ * @returns The trimmed text, or null when the field is missing, empty, or not text.
+ */
+export function chatErrorDetailText(error: unknown, key: string): string | null {
   const record = objectRecord(error);
   if (!record) return null;
-  return stringValue(objectRecord(record.details)?.reason)
-    ?? stringValue(objectRecord(objectRecord(record.error)?.details)?.reason)
-    ?? stringValue(objectRecord(objectRecord(record.cause)?.details)?.reason);
+  return stringValue(objectRecord(record.details)?.[key])
+    ?? stringValue(objectRecord(objectRecord(record.error)?.details)?.[key])
+    ?? stringValue(objectRecord(objectRecord(record.cause)?.details)?.[key]);
 }
 
 function objectRecord(value: unknown): Record<string, unknown> | null {

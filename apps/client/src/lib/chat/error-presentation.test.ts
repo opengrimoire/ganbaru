@@ -7,6 +7,7 @@ import {
   CHAT_ERROR_REASON_MESSAGES,
   chatErrorCode,
   chatErrorDetail,
+  chatErrorDetailText,
   chatErrorField,
   chatErrorMessage,
   chatErrorReason,
@@ -123,5 +124,13 @@ describe("chat error fields", () => {
     expect(chatErrorReason({ details: { reason: 3 } })).toBeNull();
     expect(chatErrorReason({ details: ["pending_replies"] })).toBeNull();
     expect(chatErrorReason("pending_replies")).toBeNull();
+  });
+
+  it("reads other detail text such as the label a duplicate provider matches", () => {
+    const error = { code: "validation", details: { reason: "duplicate_provider", existingLabel: " Claude work " } };
+    expect(chatErrorDetailText(error, "existingLabel")).toBe("Claude work");
+    expect(chatErrorDetailText({ error }, "existingLabel")).toBe("Claude work");
+    expect(chatErrorDetailText({ details: { existingLabel: "" } }, "existingLabel")).toBeNull();
+    expect(chatErrorDetailText(error, "missing")).toBeNull();
   });
 });

@@ -151,7 +151,7 @@ describe("Chat startup", () => {
         environment: {}, credentialReferences: {}, visibleModelIds: [], favoriteModelIds: [],
         providerConfig: { schemaVersion: 1, value: {} },
       },
-      lastProbe: null, lastSuccessfulProbeAt: null, modelCatalog: null, runtimeReview: [], usageLimits: null, lastUsedAt: null,
+      lastProbe: null, lastSuccessfulProbeAt: null, modelCatalog: null, runtimeReview: [], usageLimits: null, lastUsedAt: null, duplicateOf: null,
     });
     discovery.resolve(discovered);
     await vi.waitFor(() => expect(chat.settings?.configuration.behavior.sendKey).toBe("mod_enter"));

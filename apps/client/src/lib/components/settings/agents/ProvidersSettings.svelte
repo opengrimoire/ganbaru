@@ -349,6 +349,7 @@
 
   function providerStateLabel(provider: ProviderInstanceRead): string {
     if (!provider.configuration.enabled) return t("settings.agents.providers.disabled");
+    if (provider.duplicateOf) return t("settings.agents.providers.duplicateShort");
     if (provider.lastProbe?.state === "healthy") {
       if (provider.lastProbe.teammateMinimumVersion) return t("settings.agents.providers.teammatesNeedUpdate");
       if (availableUpdate(provider)) return t("settings.agents.providers.updateAvailableShort");
@@ -364,6 +365,7 @@
 
   function providerState(provider: ProviderInstanceRead): ProviderDisplayState {
     if (!provider.configuration.enabled) return "disabled";
+    if (provider.duplicateOf) return "attention";
     return provider.lastProbe?.state === "healthy" && !provider.lastProbe.teammateMinimumVersion
       ? "healthy"
       : "attention";
@@ -642,7 +644,17 @@
                 {@const selectedBusy = refreshingAll || busyIds.includes(instanceId)}
                 {@const versionNotice = providerVersionNotice(selectedProvider.lastProbe, selectedFamily)}
                 {@const update = availableUpdate(selectedProvider)}
+                {@const duplicateLabel = selectedProvider.duplicateOf
+                  ? providers.find((candidate) => candidate.configuration.instanceId === selectedProvider.duplicateOf)?.configuration.label
+                  : undefined}
                 <div class="editor-content">
+                  {#if duplicateLabel}
+                    <Notice
+                      tone="warning"
+                      role="status"
+                      message={t("settings.agents.providers.duplicateNotice", duplicateLabel)}
+                    />
+                  {/if}
                   {#if versionNotice}
                     <Notice
                       tone="warning"

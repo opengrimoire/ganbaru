@@ -81,7 +81,7 @@ function provider(
     },
     lastSuccessfulProbeAt: state === "healthy" ? "2026-08-01T00:00:00Z" : null,
     usageLimits: null,
-    lastUsedAt: null,
+    lastUsedAt: null, duplicateOf: null,
     modelCatalog: {
       instanceId,
       models,

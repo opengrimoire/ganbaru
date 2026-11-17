@@ -13,11 +13,11 @@ pub(crate) use super::settings::read_provider;
 use super::settings::{
     CHAT_PROVIDER_ACTIVITY_EVENT, apply_provider_probe, config_io_error, credential_error,
     device_configuration, device_state_error, discover_default_providers,
-    discover_default_providers_once, executable_search_directories,
-    invalidate_provider_state_for_credential, mark_discovery_finished, mutate_chat_config,
-    mutate_chat_configuration, operation_context, pick_local_path, portable_configuration,
-    provider_instance_read, provider_mut, provider_not_found_error, provider_runtime_changed,
-    read_chat_config, read_settings, remember_composer_selection,
+    discover_default_providers_once, duplicate_configuration_error, executable_search_directories,
+    find_duplicate, invalidate_provider_state_for_credential, mark_discovery_finished,
+    mutate_chat_config, mutate_chat_configuration, operation_context, pick_local_path,
+    portable_configuration, provider_instance_read, provider_mut, provider_not_found_error,
+    provider_runtime_changed, read_chat_config, read_settings, remember_composer_selection,
     replacement_provider_configurations, set_working_folder_provider_preference, unique_model_ids,
     validate_picker_title,
 };
@@ -75,6 +75,9 @@ pub struct ProviderInstanceRead {
     pub usage_limits: Option<crate::chat::device_state::ProviderUsageLimitsObservation>,
     /// When a turn last made the instance the most recently used on this device.
     pub last_used_at: Option<ganbaru_chat_contracts::models::UtcTimestamp>,
+    /// The earlier configuration this one launches the same program and account as on this
+    /// device, filled only in the Settings read.
+    pub duplicate_of: Option<ProviderInstanceId>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -232,6 +235,20 @@ pub async fn chat_save_provider(
     validate_runtime_prompt(&prompt)?;
     ProviderDriverRegistry.create_driver(request.configuration.clone())?;
     let scope = read_active_device_scope(&app).map_err(device_state_error)?;
+    let saved: Vec<ProviderInstanceConfig> = read_chat_configuration(&app)
+        .await?
+        .device
+        .providers
+        .iter()
+        .map(|portable| provider_instance_read(portable, &scope.provider_instances).configuration)
+        .collect();
+    if let Some(existing) = find_duplicate(
+        &request.configuration,
+        &saved,
+        &executable_search_directories(),
+    ) {
+        return Err(duplicate_configuration_error(existing));
+    }
     let pending = ingress_review_items(
         &request.configuration,
         scope

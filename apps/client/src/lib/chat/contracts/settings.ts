@@ -1,5 +1,5 @@
 import type { ChatConfiguration } from "./config";
-import type { ChatThreadId, UtcTimestamp } from "./common";
+import type { ChatThreadId, ProviderInstanceId, UtcTimestamp } from "./common";
 import type { RateLimitStatusEvent } from "./events";
 import type {
   ProviderFamilyMetadataRead,
@@ -28,6 +28,8 @@ export interface ProviderInstanceRead {
   usageLimits: ProviderUsageLimitsObservation | null;
   /** When this device last started a turn with the provider. */
   lastUsedAt: UtcTimestamp | null;
+  /** The earlier configuration this one launches the same program and account as on this device. */
+  duplicateOf: ProviderInstanceId | null;
 }
 
 /** Usage limits a provider reported, with when this device observed them. */

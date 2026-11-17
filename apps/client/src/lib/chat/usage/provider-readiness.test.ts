@@ -67,6 +67,7 @@ function provider(
     modelCatalog: null,
     usageLimits: options.usageLimits ?? null,
     lastUsedAt: options.lastUsedAt ?? null,
+    duplicateOf: null,
   };
 }
 

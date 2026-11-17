@@ -63,6 +63,7 @@ pub(crate) fn provider_instance_read(
             .map(ProviderModelCatalog::without_deprecated_models),
         usage_limits: device.and_then(|entry| entry.usage_limits.clone()),
         last_used_at: device.and_then(|entry| entry.last_used_at.clone()),
+        duplicate_of: None,
     }
 }
 

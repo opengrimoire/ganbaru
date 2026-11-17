@@ -632,7 +632,9 @@ describe("Chat provider contracts", () => {
       ...provider,
       runtimeReview: [{ label: 3, widensPermissions: true }],
     })).toThrow();
-    expect(provider).toMatchObject({ usageLimits: null, lastUsedAt: null });
+    expect(provider).toMatchObject({ usageLimits: null, lastUsedAt: null, duplicateOf: null });
+    expect(parseProviderInstanceRead({ ...provider, duplicateOf: "claude-default" }).duplicateOf).toBe("claude-default");
+    expect(() => parseProviderInstanceRead({ ...provider, duplicateOf: 3 })).toThrow();
     const observed = parseProviderInstanceRead({
       ...provider,
       usageLimits: {

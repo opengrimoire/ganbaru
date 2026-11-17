@@ -99,6 +99,7 @@ fn family_allowlist(family_id: &str) -> FamilyAllowlist {
             silent_environment: &[
                 "BASH_DEFAULT_TIMEOUT_MS",
                 "BASH_MAX_TIMEOUT_MS",
+                "CLAUDE_CODE_DISABLE_1M_CONTEXT",
                 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
                 "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
                 "DISABLE_AUTOUPDATER",

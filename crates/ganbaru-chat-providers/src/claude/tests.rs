@@ -1020,6 +1020,56 @@ fn claude_versions_admit_against_the_tested_range() {
 }
 
 #[test]
+fn teammate_environment_keeps_the_user_settings_context_preference_only() {
+    let home = TestDirectory::new("home-context-preference");
+    fs::write(
+        home.path().join("settings.json"),
+        json!({ "env": {
+            "CLAUDE_CODE_DISABLE_1M_CONTEXT": "1",
+            "ANTHROPIC_BASE_URL": "https://example.invalid",
+        } })
+        .to_string(),
+    )
+    .unwrap();
+    let resolved = resolve_claude_home(&configuration(home.path())).unwrap();
+    let environment = claude_process_environment(&configuration(home.path()), &resolved).unwrap();
+    assert_eq!(
+        environment
+            .get("CLAUDE_CODE_DISABLE_1M_CONTEXT")
+            .map(String::as_str),
+        Some("1")
+    );
+    assert!(!environment.contains_key("ANTHROPIC_BASE_URL"));
+
+    let mut configured = configuration(home.path());
+    configured.environment.insert(
+        "CLAUDE_CODE_DISABLE_1M_CONTEXT".to_string(),
+        "0".to_string(),
+    );
+    let environment = claude_process_environment(&configured, &resolved).unwrap();
+    assert_eq!(
+        environment
+            .get("CLAUDE_CODE_DISABLE_1M_CONTEXT")
+            .map(String::as_str),
+        Some("0")
+    );
+}
+
+#[test]
+fn context_preferences_read_scalar_values_and_ignore_malformed_settings() {
+    let read = |settings: Value| context_preferences_from_settings(settings.to_string().as_bytes());
+    assert_eq!(
+        read(json!({ "env": { "CLAUDE_CODE_DISABLE_1M_CONTEXT": 1 } }))
+            .get("CLAUDE_CODE_DISABLE_1M_CONTEXT")
+            .map(String::as_str),
+        Some("1")
+    );
+    assert!(read(json!({ "env": { "CLAUDE_CODE_DISABLE_1M_CONTEXT": ["1"] } })).is_empty());
+    assert!(read(json!({ "env": "CLAUDE_CODE_DISABLE_1M_CONTEXT=1" })).is_empty());
+    assert!(context_preferences_from_settings(b"{ not json").is_empty());
+}
+
+#[test]
 fn configured_environment_cannot_name_the_sandbox_variables() {
     let home = TestDirectory::new("home-sandbox-environment");
     let resolved = resolve_claude_home(&configuration(home.path())).unwrap();

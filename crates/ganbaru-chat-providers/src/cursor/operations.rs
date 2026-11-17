@@ -1,7 +1,7 @@
 //! Cursor provider driver operations.
 
 use super::driver::*;
-use super::executable::{CursorVersion, acp_continuation_group};
+use super::executable::{CursorVersion, acp_continuation_group, cursor_teammate_minimum_version};
 use super::interactions::{
     PendingCursorRequestKind, resolve_approval_result, resolve_question_result,
     terminal_approval_runs,
@@ -10,7 +10,7 @@ use super::protocol::*;
 use super::session::*;
 use crate::events::*;
 use crate::models::*;
-use crate::registry::{admit_version, refused_version};
+use crate::registry::{CoreVersion, admit_version, refused_version};
 use crate::{
     DriverCancellation, DriverFuture, DriverOperationContext, ProviderAuthoritySupport,
     ProviderDriver, ProviderEventSink,
@@ -168,10 +168,16 @@ impl ProviderDriver for CursorProviderDriver {
                             &CURSOR_COMPATIBILITY,
                             &about.version,
                         )?),
-                        // Grok has no stable version format and generic agents have unrelated
-                        // version schemes, so neither has a range.
-                        AcpProviderFlavor::Grok | AcpProviderFlavor::Generic => None,
+                        AcpProviderFlavor::Grok => Some(admit_version::<CoreVersion>(
+                            &GROK_COMPATIBILITY,
+                            &about.version,
+                        )?),
+                        // Generic agents have unrelated version schemes, so they have no range.
+                        AcpProviderFlavor::Generic => None,
                     };
+                    let range = self.flavor.compatibility();
+                    let teammate_minimum_version =
+                        teammate_minimum_version(self.flavor, &about.version);
                     let capabilities =
                         negotiated_capabilities_for(self.flavor, &initialize, None, self.observed);
                     // Publication is classified only by the push request host tool, which needs
@@ -194,16 +200,22 @@ impl ProviderDriver for CursorProviderDriver {
                         capabilities,
                         authority_support,
                         checked_at,
-                        detail: (version_admission
-                            == Some(ProviderVersionAdmission::UntestedNewer))
-                        .then(|| CURSOR_COMPATIBILITY.untested_newer_detail()),
+                        detail: range
+                            .filter(|_| {
+                                version_admission == Some(ProviderVersionAdmission::UntestedNewer)
+                            })
+                            .map(|range| range.untested_newer_detail()),
                         version_admission,
+                        teammate_minimum_version,
                         usage_limits: None,
                     })
                 }
                 Err(error) if context.is_cancelled() => Err(error),
                 Err(error) => {
                     let refusal = refused_version(&error);
+                    let teammate_minimum = refusal
+                        .as_ref()
+                        .and_then(|(_, version)| teammate_minimum_version(self.flavor, version));
                     Ok(ProviderProbeResult {
                         instance_id: self.configuration.instance_id.clone(),
                         state: probe_state(error.code),
@@ -216,6 +228,7 @@ impl ProviderDriver for CursorProviderDriver {
                         checked_at,
                         detail: Some(probe_detail(self.flavor, &error)),
                         version_admission: refusal.map(|(admission, _)| admission),
+                        teammate_minimum_version: teammate_minimum,
                         usage_limits: None,
                     })
                 }
@@ -1104,6 +1117,17 @@ fn operation_receipt(operation_id: &str, detail: &str) -> DriverOperationReceipt
         operation_id: operation_id.to_string(),
         accepted: true,
         detail: Some(detail.to_string()),
+    }
+}
+
+/// The oldest CLI version this device's teammate runs of `flavor` accept, when `version` is
+/// older.
+fn teammate_minimum_version(flavor: AcpProviderFlavor, version: &str) -> Option<String> {
+    match flavor {
+        AcpProviderFlavor::Cursor => {
+            cursor_teammate_minimum_version(version, super::confinement::sandbox_helper().is_some())
+        }
+        AcpProviderFlavor::Grok | AcpProviderFlavor::Generic => None,
     }
 }
 

@@ -81,6 +81,7 @@ function provider(state: ProviderInstanceRead["lastProbe"] extends infer _Probe 
       checkedAt: timestamp,
       detail: null,
       versionAdmission: "supported",
+      teammateMinimumVersion: null,
     },
     lastSuccessfulProbeAt: timestamp,
     usageLimits: null,

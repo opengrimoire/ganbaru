@@ -78,6 +78,7 @@ export function parseProviderFamilyMetadata(value: unknown, label = "provider me
     supportedPlatforms: readStringArray(record.supportedPlatforms, `${label}.supportedPlatforms`),
     minimumTestedCliVersion: readNullable(record.minimumTestedCliVersion, `${label}.minimumTestedCliVersion`, readString),
     maximumTestedCliVersion: readNullable(record.maximumTestedCliVersion, `${label}.maximumTestedCliVersion`, readString),
+    updateCommand: readNullable(record.updateCommand, `${label}.updateCommand`, readString),
     defaultExecutableCandidates: readStringArray(record.defaultExecutableCandidates, `${label}.defaultExecutableCandidates`),
     implementationStatus: readEnum(record.implementationStatus, PROVIDER_IMPLEMENTATION_STATUSES, `${label}.implementationStatus`),
     maturity: readEnum(record.maturity, PROVIDER_MATURITIES, `${label}.maturity`),
@@ -132,6 +133,7 @@ export function parseProviderProbeResult(value: unknown, label = "provider probe
     versionAdmission: readNullable(record.versionAdmission, `${label}.versionAdmission`, (entry, entryLabel) =>
       readEnum(entry, PROVIDER_VERSION_ADMISSIONS, entryLabel),
     ),
+    teammateMinimumVersion: readNullable(record.teammateMinimumVersion, `${label}.teammateMinimumVersion`, readString),
   };
 }
 

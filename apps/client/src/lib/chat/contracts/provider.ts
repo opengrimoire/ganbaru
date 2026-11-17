@@ -63,6 +63,8 @@ export interface ProviderFamilyMetadataRead {
   supportedPlatforms: string[];
   minimumTestedCliVersion: string | null;
   maximumTestedCliVersion: string | null;
+  /** The command that updates the provider CLI, shown next to version notices. */
+  updateCommand: string | null;
   defaultExecutableCandidates: string[];
   implementationStatus: ProviderImplementationStatus;
   maturity: ProviderMaturity;
@@ -83,6 +85,8 @@ export interface ProviderProbeResult {
   checkedAt: UtcTimestamp;
   detail: string | null;
   versionAdmission: ProviderVersionAdmission | null;
+  /** The oldest CLI version teammate runs on this device accept, present only when the probed version is older. */
+  teammateMinimumVersion: string | null;
 }
 
 export interface ModelChoiceOption {

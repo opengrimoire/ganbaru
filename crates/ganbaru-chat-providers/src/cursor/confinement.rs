@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 pub(super) use crate::confinement::{CONFINED_TEMPORARY_PREFIX, sandbox_helper};
 
 mod cursor_agent;
+pub(super) use cursor_agent::MINIMUM_CONFINED_CURSOR_VERSION;
 #[cfg(test)]
 mod tests;
 

@@ -467,7 +467,9 @@ fn semantic_version_range_is_explicit() {
     );
     for (admitted, admission) in [
         ("1.14.19", ProviderVersionAdmission::Supported),
-        ("1.15.0-beta.1", ProviderVersionAdmission::UntestedNewer),
+        ("1.15.0-beta.1", ProviderVersionAdmission::Supported),
+        ("1.19.5", ProviderVersionAdmission::Supported),
+        ("1.19.6", ProviderVersionAdmission::UntestedNewer),
         ("1.99.0", ProviderVersionAdmission::UntestedNewer),
     ] {
         assert_eq!(

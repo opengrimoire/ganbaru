@@ -14,7 +14,7 @@ export const chatErrors = {
     capability_unsupported: "This coding agent does not support that action.",
     driver_unavailable: "The coding agent is not available, so check its setup in Chat settings.",
     executable_missing: "The coding agent program was not found, so install it or set its path in Chat settings.",
-    unsupported_version: "This version of the coding agent is not supported, so update it and try again.",
+    unsupported_version: "This version of the coding agent is not supported, so update it with the command Chat settings shows and try again.",
     authentication_required: "The coding agent needs you to sign in, which you can do from Chat settings.",
     configuration_invalid: "The coding agent settings are not valid, so review them in Chat settings.",
     transport_unavailable: "The connection to the coding agent was lost, so try again.",

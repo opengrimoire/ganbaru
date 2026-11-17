@@ -22,7 +22,7 @@ pub const MINIMUM_OPENCODE_VERSION: &str = "1.14.19";
 /// focused tests cover, below the first major line Ganbaru has no runtime for.
 pub const OPENCODE_COMPATIBILITY: ProviderCompatibilityRange = ProviderCompatibilityRange {
     minimum: MINIMUM_OPENCODE_VERSION,
-    maximum_tested: "1.14.19",
+    maximum_tested: "1.19.5",
     ceiling_exclusive: Some("2.0.0"),
 };
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
@@ -182,6 +182,14 @@ pub const MINIMUM_ORGANIZATIONAL_OPENCODE_VERSION: OpenCodeVersion = OpenCodeVer
     minor: 19,
     patch: 5,
 };
+
+/// The oldest OpenCode version teammate runs accept, when the version `text` names is older.
+pub fn teammate_minimum_version(text: &str) -> Option<String> {
+    parse_version(text)
+        .ok()
+        .filter(|version| *version < MINIMUM_ORGANIZATIONAL_OPENCODE_VERSION)
+        .map(|_| MINIMUM_ORGANIZATIONAL_OPENCODE_VERSION.to_string())
+}
 
 /// Refuses an organizational run on an OpenCode older than
 /// [`MINIMUM_ORGANIZATIONAL_OPENCODE_VERSION`] or one that reports no readable version.

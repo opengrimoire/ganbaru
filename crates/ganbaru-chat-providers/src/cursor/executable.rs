@@ -1,14 +1,15 @@
 //! Cursor executable, probe, launch, environment, and continuation identity.
 
 use super::protocol::{
-    CURSOR_COMPATIBILITY, CursorProviderSettings, MINIMUM_CURSOR_VERSION, protocol_error,
+    CURSOR_COMPATIBILITY, CursorProviderSettings, GROK_COMPATIBILITY, MINIMUM_CURSOR_VERSION,
+    protocol_error,
 };
 use crate::models::*;
 use crate::process::{
     BoundedCommand, BoundedCommandFailure, ProviderProcessConfig, run_bounded_command,
     spawn_provider_process,
 };
-use crate::registry::{VersionOrder, admit_version, version_refusal};
+use crate::registry::{CoreVersion, VersionOrder, admit_version, admits_sessions, version_refusal};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
@@ -321,6 +322,35 @@ pub fn ensure_supported_version(version: CursorVersion) -> ChatResult<ProviderVe
         ));
     }
     Ok(admission)
+}
+
+/// Where the Grok `version` falls in `GROK_COMPATIBILITY`, refusing one below the minimum or at
+/// or above the ceiling, since an older build may ignore the switches that keep it offline.
+pub fn ensure_supported_grok_version(version: &str) -> ChatResult<ProviderVersionAdmission> {
+    let admission = admit_version::<CoreVersion>(&GROK_COMPATIBILITY, version)?;
+    if admits_sessions(admission) {
+        return Ok(admission);
+    }
+    Err(version_refusal(
+        admission,
+        version,
+        format!(
+            "Grok {version} is unsupported; Ganbaru supports versions from {} and below {}",
+            GROK_COMPATIBILITY.minimum,
+            GROK_COMPATIBILITY.ceiling_exclusive.unwrap_or_default()
+        ),
+        true,
+    ))
+}
+
+/// The oldest Cursor build teammate runs on this device accept, when `version` is older: only a
+/// device with the sandbox helper confines teammates, and that needs a verified build.
+pub fn cursor_teammate_minimum_version(version: &str, confined_commands: bool) -> Option<String> {
+    let minimum = super::confinement::MINIMUM_CONFINED_CURSOR_VERSION;
+    parse_version(version)
+        .ok()
+        .filter(|version| confined_commands && *version < minimum)
+        .map(|_| minimum.to_string())
 }
 
 pub fn parse_version(value: &str) -> ChatResult<CursorVersion> {

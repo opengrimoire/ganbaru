@@ -13,7 +13,7 @@ export const chatErrors = {
     capability_unsupported: "Este agente de programación no admite esa acción.",
     driver_unavailable: "El agente de programación no está disponible, así que revisa su configuración en los ajustes del chat.",
     executable_missing: "No se encontró el programa del agente de programación, así que instálalo o indica su ruta en los ajustes del chat.",
-    unsupported_version: "Esta versión del agente de programación no es compatible, así que actualízala e inténtalo de nuevo.",
+    unsupported_version: "Esta versión del agente de programación no es compatible, así que actualízala con el comando que muestra la configuración del Chat e inténtalo de nuevo.",
     authentication_required: "El agente de programación necesita que inicies sesión, lo que puedes hacer desde los ajustes del chat.",
     configuration_invalid: "La configuración del agente de programación no es válida, así que revísala en los ajustes del chat.",
     transport_unavailable: "Se perdió la conexión con el agente de programación, así que inténtalo de nuevo.",

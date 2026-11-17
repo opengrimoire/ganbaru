@@ -16,6 +16,7 @@
   } from "$lib/chat/contracts";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { providerFamilyDisplayName } from "$lib/chat/provider-setup";
+  import { providerVersionNotice, type ProviderVersionNotice } from "$lib/chat/provider-version";
   import {
     compareCompanyModels,
     formatModelDisplayName,
@@ -341,6 +342,7 @@
   function providerStateLabel(provider: ProviderInstanceRead): string {
     if (!provider.configuration.enabled) return t("settings.chat.providers.disabled");
     if (provider.lastProbe?.state === "healthy") {
+      if (provider.lastProbe.teammateMinimumVersion) return t("settings.chat.providers.teammatesNeedUpdate");
       return provider.lastProbe.versionAdmission === "untested_newer"
         ? t("settings.chat.providers.untestedNewer")
         : t("settings.chat.providers.healthy");
@@ -355,7 +357,23 @@
 
   function providerState(provider: ProviderInstanceRead): ProviderDisplayState {
     if (!provider.configuration.enabled) return "disabled";
-    return provider.lastProbe?.state === "healthy" ? "healthy" : "attention";
+    return provider.lastProbe?.state === "healthy" && !provider.lastProbe.teammateMinimumVersion
+      ? "healthy"
+      : "attention";
+  }
+
+  /** The sentence explaining a version notice, naming the update command when the family has one. */
+  function versionNoticeMessage(notice: ProviderVersionNotice): string {
+    if (notice.kind === "too_new") return t("settings.chat.providers.newerThanSupported");
+    if (notice.kind === "teammates") {
+      return notice.updateCommand
+        ? t("settings.chat.providers.teammateVersionCommand", notice.minimumVersion, notice.updateCommand)
+        : t("settings.chat.providers.teammateVersion", notice.minimumVersion);
+    }
+    if (!notice.minimumVersion) return t("settings.chat.providers.olderVersion");
+    return notice.updateCommand
+      ? t("settings.chat.providers.minimumVersionCommand", notice.minimumVersion, notice.updateCommand)
+      : t("settings.chat.providers.minimumVersion", notice.minimumVersion);
   }
 
   function providersForFamily(familyId: string): ProviderInstanceRead[] {
@@ -592,7 +610,16 @@
               {#if selectedProvider}
                 {@const instanceId = selectedProvider.configuration.instanceId}
                 {@const selectedBusy = refreshingAll || busyIds.includes(instanceId)}
+                {@const versionNotice = providerVersionNotice(selectedProvider.lastProbe, selectedFamily)}
                 <div class="editor-content">
+                  {#if versionNotice}
+                    <Notice
+                      tone="warning"
+                      role="status"
+                      message={versionNoticeMessage(versionNotice)}
+                      copy={versionNotice.kind === "too_new" ? false : versionNotice.updateCommand ?? false}
+                    />
+                  {/if}
                   {#if selectedProvider.lastProbe?.state === "authentication_required"}
                     <p class="provider-notice">{t("settings.chat.providers.loginHelp")}</p>
                   {/if}

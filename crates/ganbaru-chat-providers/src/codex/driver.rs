@@ -165,6 +165,7 @@ impl CodexProviderDriver {
             ],
             minimum_tested_cli_version: Some(MINIMUM_CODEX_VERSION.to_string()),
             maximum_tested_cli_version: Some(CODEX_COMPATIBILITY.maximum_tested.to_string()),
+            update_command: Some("codex update".to_string()),
             default_executable_candidates: vec!["codex".to_string()],
             implementation_status: ProviderImplementationStatus::Available,
             maturity: ProviderMaturity::Stable,
@@ -509,6 +510,7 @@ impl ProviderDriver for CodexProviderDriver {
                             Some("Codex requires authentication".to_string())
                         },
                         version_admission,
+                        teammate_minimum_version: None,
                         usage_limits: snapshot.usage_limits,
                     })
                 }
@@ -527,6 +529,7 @@ impl ProviderDriver for CodexProviderDriver {
                         checked_at,
                         detail: Some(probe_detail(error.code).to_string()),
                         version_admission: refusal.map(|(admission, _)| admission),
+                        teammate_minimum_version: None,
                         usage_limits: None,
                     })
                 }

@@ -163,6 +163,10 @@ pub struct ProviderFamilyMetadataRead {
     /// The newest CLI version the replay transcripts and focused tests cover.
     #[serde(default)]
     pub maximum_tested_cli_version: Option<String>,
+    /// The command that updates the provider's CLI to its newest version, shown next to
+    /// version notices; `None` when the provider has no known update command.
+    #[serde(default)]
+    pub update_command: Option<String>,
     pub default_executable_candidates: Vec<String>,
     pub implementation_status: ProviderImplementationStatus,
     pub maturity: ProviderMaturity,
@@ -217,6 +221,10 @@ pub struct ProviderProbeResult {
     /// without a range or when no version was read.
     #[serde(default)]
     pub version_admission: Option<ProviderVersionAdmission>,
+    /// The oldest CLI version every teammate launch on this device accepts, present only when
+    /// the probed version is older, so teammate runs fail while direct threads still start.
+    #[serde(default)]
+    pub teammate_minimum_version: Option<String>,
     /// Usage limits the provider reported during the probe; `None` when it cannot report them
     /// without a turn. The app keeps them as the device's newest limit observation rather
     /// than inside the stored probe.

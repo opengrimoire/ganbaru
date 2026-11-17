@@ -104,6 +104,7 @@ mod tests {
         });
         let probe = serde_json::from_value::<ProviderProbeResult>(stored).unwrap();
         assert_eq!(probe.version_admission, None);
+        assert_eq!(probe.teammate_minimum_version, None);
 
         let admitted = ProviderProbeResult {
             version_admission: Some(ProviderVersionAdmission::UntestedNewer),

@@ -350,6 +350,15 @@ export const chatSettings = {
     authenticationRequired: "Authentication required",
     unsupported: "Unsupported",
     untestedNewer: "Newer than tested",
+    teammatesNeedUpdate: "Update needed for teammates",
+    teammateVersion: (version: string) => `Teammates need version ${version} or newer, so update the CLI.`,
+    teammateVersionCommand: (version: string, command: string) =>
+      `Teammates need version ${version} or newer, so update the CLI with “${command}”.`,
+    olderVersion: "Ganbaru needs a newer version of this CLI, so update it.",
+    minimumVersion: (version: string) => `Ganbaru needs version ${version} or newer, so update the CLI.`,
+    minimumVersionCommand: (version: string, command: string) =>
+      `Ganbaru needs version ${version} or newer, so update the CLI with “${command}”.`,
+    newerThanSupported: "Ganbaru does not support this CLI version yet, so install an older version or update Ganbaru.",
     disabled: "Disabled",
     neverChecked: "Not tested",
     lastChecked: (date: string) => `Checked ${date}`,

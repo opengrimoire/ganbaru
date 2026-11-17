@@ -60,6 +60,24 @@ impl AcpProviderFlavor {
         }
     }
 
+    /// The CLI versions this agent supports, or `None` for an agent with no known scheme.
+    pub fn compatibility(self) -> Option<crate::registry::ProviderCompatibilityRange> {
+        match self {
+            Self::Cursor => Some(CURSOR_COMPATIBILITY),
+            Self::Grok => Some(GROK_COMPATIBILITY),
+            Self::Generic => None,
+        }
+    }
+
+    /// The command that updates this agent's CLI, or `None` when the user names the program.
+    pub fn update_command(self) -> Option<&'static str> {
+        match self {
+            Self::Cursor => Some("cursor-agent update"),
+            Self::Grok => Some("grok update"),
+            Self::Generic => None,
+        }
+    }
+
     pub fn turn_prefix(self) -> &'static str {
         self.family_id()
     }
@@ -281,10 +299,13 @@ impl CursorProviderDriver {
                 "windows".to_string(),
                 "macos".to_string(),
             ],
-            minimum_tested_cli_version: (flavor == AcpProviderFlavor::Cursor)
-                .then(|| MINIMUM_CURSOR_VERSION.to_string()),
-            maximum_tested_cli_version: (flavor == AcpProviderFlavor::Cursor)
-                .then(|| CURSOR_COMPATIBILITY.maximum_tested.to_string()),
+            minimum_tested_cli_version: flavor
+                .compatibility()
+                .map(|range| range.minimum.to_string()),
+            maximum_tested_cli_version: flavor
+                .compatibility()
+                .map(|range| range.maximum_tested.to_string()),
+            update_command: flavor.update_command().map(str::to_string),
             default_executable_candidates: match flavor {
                 AcpProviderFlavor::Cursor => {
                     vec!["cursor-agent".to_string(), "agent".to_string()]
@@ -311,22 +332,26 @@ impl CursorProviderDriver {
         }
         let environment = process_environment_for(&self.configuration, self.flavor.display_name())?;
         let executable = resolve_executable(&self.configuration.executable, &environment)?;
+        // An organizational launch never runs its agent unconfined in its folder, so the
+        // version probe runs in a neutral directory.
+        let neutral = if self.flavor != AcpProviderFlavor::Generic
+            && self.configuration.internal_mcp.is_some()
+        {
+            Some(crate::probe_directory::ProbeDirectory::create()?)
+        } else {
+            None
+        };
+        let probe_directory = neutral.as_deref().unwrap_or(workspace);
         let about = match self.flavor {
             AcpProviderFlavor::Cursor => {
-                // An organizational launch never runs Cursor unconfined in its folder, so the
-                // version probe runs in a neutral directory.
-                let neutral = if self.configuration.internal_mcp.is_some() {
-                    Some(crate::probe_directory::ProbeDirectory::create()?)
-                } else {
-                    None
-                };
-                let probe_directory = neutral.as_deref().unwrap_or(workspace);
                 let about = probe_about(&executable, probe_directory, environment).await?;
                 ensure_supported_version(about.version)?;
                 AcpProviderAbout::from(about)
             }
             AcpProviderFlavor::Grok => {
-                probe_grok_about(&executable, workspace, environment).await?
+                let about = probe_grok_about(&executable, probe_directory, environment).await?;
+                ensure_supported_grok_version(&about.version)?;
+                about
             }
             // An arbitrary agent has no known version flag, so its version comes from the
             // `agentInfo` it sends in `initialize`.

@@ -139,6 +139,7 @@ impl ProviderMetadataDefinition {
                 .collect(),
             minimum_tested_cli_version: self.minimum_tested_cli_version.map(str::to_string),
             maximum_tested_cli_version: None,
+            update_command: None,
             default_executable_candidates: self
                 .default_executable_candidates
                 .iter()
@@ -302,6 +303,7 @@ fn unsupported_metadata(family_id: &ProviderFamilyId) -> ProviderFamilyMetadataR
         supported_platforms: Vec::new(),
         minimum_tested_cli_version: None,
         maximum_tested_cli_version: None,
+        update_command: None,
         default_executable_candidates: Vec::new(),
         implementation_status: ProviderImplementationStatus::Unsupported,
         maturity: ProviderMaturity::Experimental,

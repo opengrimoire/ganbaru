@@ -48,6 +48,7 @@ function metadataFixture(): Record<string, unknown> {
     supportedPlatforms: ["linux", "windows", "macos"],
     minimumTestedCliVersion: null,
     maximumTestedCliVersion: null,
+    updateCommand: null,
     defaultExecutableCandidates: ["codex"],
     implementationStatus: "metadata_only",
     maturity: "experimental",
@@ -589,6 +590,7 @@ describe("Chat provider contracts", () => {
       checkedAt: timestamp,
       detail: "Newer than the tested version 2.1.322",
       versionAdmission: "untested_newer",
+      teammateMinimumVersion: null,
     };
     expect(parseProviderProbeResult(probe)).toEqual(probe);
     expect(parseProviderProbeResult({ ...probe, versionAdmission: null }).versionAdmission).toBeNull();
@@ -598,6 +600,9 @@ describe("Chat provider contracts", () => {
     expect(parseProviderProbeResult({ ...probe, authSource: null }).authSource).toBeNull();
     expect(() => parseProviderProbeResult({ ...probe, authSource: "browser" }))
       .toThrow("authSource has an unsupported value");
+    expect(parseProviderProbeResult({ ...probe, teammateMinimumVersion: "2.1.325" }).teammateMinimumVersion).toBe("2.1.325");
+    expect(() => parseProviderProbeResult({ ...probe, teammateMinimumVersion: 2 }))
+      .toThrow("teammateMinimumVersion must be a string");
   });
 
   it("reads the newest tested CLI version from provider metadata", () => {
@@ -605,6 +610,8 @@ describe("Chat provider contracts", () => {
       .toBe("0.147.0");
     expect(() => parseProviderFamilyMetadata({ ...metadataFixture(), maximumTestedCliVersion: 147 }))
       .toThrow("maximumTestedCliVersion must be a string");
+    expect(parseProviderFamilyMetadata({ ...metadataFixture(), updateCommand: "claude update" }).updateCommand)
+      .toBe("claude update");
   });
 
   it("rejects partial metadata and unsupported capability values", () => {

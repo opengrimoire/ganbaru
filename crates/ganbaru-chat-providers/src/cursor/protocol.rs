@@ -20,8 +20,16 @@ pub const MINIMUM_CURSOR_VERSION: &str = "2026.04.08";
 pub const CURSOR_COMPATIBILITY: crate::registry::ProviderCompatibilityRange =
     crate::registry::ProviderCompatibilityRange {
         minimum: MINIMUM_CURSOR_VERSION,
-        maximum_tested: "2026.04.08",
+        maximum_tested: "2026.11.11",
         ceiling_exclusive: None,
+    };
+/// Grok CLI versions whose ACP surface, `GROK_WEB_FETCH` switch, and permission modes the Grok
+/// driver relies on, up to the version its focused checks cover, below the next major line.
+pub const GROK_COMPATIBILITY: crate::registry::ProviderCompatibilityRange =
+    crate::registry::ProviderCompatibilityRange {
+        minimum: "1.0.77",
+        maximum_tested: "1.0.77",
+        ceiling_exclusive: Some("2.0.0"),
     };
 pub const CURSOR_AUTH_METHOD: &str = "cursor_login";
 pub const MAX_PROTOCOL_TEXT_BYTES: usize = 64 * 1024;

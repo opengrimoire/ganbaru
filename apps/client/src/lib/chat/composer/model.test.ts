@@ -77,6 +77,7 @@ function provider(
       checkedAt: "2026-08-01T00:00:00Z",
       detail: null,
       versionAdmission: null,
+      teammateMinimumVersion: null,
     },
     lastSuccessfulProbeAt: state === "healthy" ? "2026-08-01T00:00:00Z" : null,
     usageLimits: null,

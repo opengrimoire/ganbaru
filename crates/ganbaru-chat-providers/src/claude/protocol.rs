@@ -185,6 +185,21 @@ pub const MINIMUM_ORGANIZATIONAL_CLAUDE_VERSION: ClaudeVersion = ClaudeVersion::
 /// file under `CLAUDE_CODE_TMPDIR`. Older versions keep their commands unconfined and asked.
 pub const MINIMUM_CONFINED_SHELL_CLAUDE_VERSION: ClaudeVersion = ClaudeVersion::new(2, 1, 325);
 
+/// The oldest Claude Code version every teammate launch on this device accepts, when `value` is
+/// older: the teammate minimum, or the confined shell minimum where the sandbox helper confines
+/// teammate commands, since older versions refuse every safety mode but asking.
+pub fn teammate_minimum_version(
+    value: ClaudeVersion,
+    confined_commands: bool,
+) -> Option<ClaudeVersion> {
+    let minimum = if confined_commands {
+        MINIMUM_CONFINED_SHELL_CLAUDE_VERSION
+    } else {
+        MINIMUM_ORGANIZATIONAL_CLAUDE_VERSION
+    };
+    (value < minimum).then_some(minimum)
+}
+
 /// Variable naming the program the CLI places in front of every shell command.
 pub const SHELL_PREFIX_ENVIRONMENT: &str = "CLAUDE_CODE_SHELL_PREFIX";
 /// Variable naming the directory the CLI keeps shell command state and output in.

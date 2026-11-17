@@ -1094,6 +1094,18 @@ fn confined_shell_requires_the_sandbox_floor() {
     }
 }
 
+#[test]
+fn teammate_minimum_names_the_floor_this_device_needs() {
+    let minimum = |version: &str, confined: bool| {
+        teammate_minimum_version(parse_version(version).unwrap(), confined)
+            .map(|minimum| minimum.to_string())
+    };
+    assert_eq!(minimum("2.1.313", false).as_deref(), Some("2.1.314"));
+    assert_eq!(minimum("2.1.314", false), None);
+    assert_eq!(minimum("2.1.314", true).as_deref(), Some("2.1.325"));
+    assert_eq!(minimum("2.1.325", true), None);
+}
+
 fn route_command(
     policy: &ClaudeOrganizationalPermissions,
     turn: TurnModeSnapshot,

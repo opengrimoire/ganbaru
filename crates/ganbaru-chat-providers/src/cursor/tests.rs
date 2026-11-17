@@ -1470,7 +1470,9 @@ fn cursor_versions_admit_against_the_tested_range() {
         ("2026.04.07", ProviderVersionAdmission::BelowMinimum),
         (MINIMUM_CURSOR_VERSION, ProviderVersionAdmission::Supported),
         ("2026.04.08-abc1234", ProviderVersionAdmission::Supported),
-        ("2026.05.01", ProviderVersionAdmission::UntestedNewer),
+        ("2026.05.01", ProviderVersionAdmission::Supported),
+        ("2026.11.11", ProviderVersionAdmission::Supported),
+        ("2026.11.12", ProviderVersionAdmission::UntestedNewer),
         ("2031.01.01", ProviderVersionAdmission::UntestedNewer),
     ] {
         let parsed = parse_version(version).unwrap();
@@ -1485,6 +1487,41 @@ fn cursor_versions_admit_against_the_tested_range() {
             ),
         }
     }
+}
+
+#[test]
+fn grok_versions_admit_against_the_tested_range() {
+    use crate::registry::{admits_sessions, refused_version};
+    for (version, admission) in [
+        ("0.2.40", ProviderVersionAdmission::BelowMinimum),
+        ("1.0.76", ProviderVersionAdmission::BelowMinimum),
+        ("1.0.77", ProviderVersionAdmission::Supported),
+        ("1.0.88", ProviderVersionAdmission::UntestedNewer),
+        ("2.0.0", ProviderVersionAdmission::AtOrAboveCeiling),
+        ("stable", ProviderVersionAdmission::Unreadable),
+    ] {
+        let result = ensure_supported_grok_version(version);
+        assert_eq!(result.is_ok(), admits_sessions(admission), "{version}");
+        match result {
+            Ok(admitted) => assert_eq!(admitted, admission, "{version}"),
+            Err(error) => assert_eq!(
+                refused_version(&error),
+                Some((admission, version.to_string())),
+                "{version}"
+            ),
+        }
+    }
+}
+
+#[test]
+fn cursor_teammates_need_the_confined_build_only_where_the_helper_confines_them() {
+    assert_eq!(
+        cursor_teammate_minimum_version("2026.11.10", true).as_deref(),
+        Some("2026.11.11")
+    );
+    assert_eq!(cursor_teammate_minimum_version("2026.11.11", true), None);
+    assert_eq!(cursor_teammate_minimum_version("2026.11.10", false), None);
+    assert_eq!(cursor_teammate_minimum_version("unreadable", true), None);
 }
 
 #[test]

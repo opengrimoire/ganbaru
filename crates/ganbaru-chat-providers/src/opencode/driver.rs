@@ -197,6 +197,7 @@ impl OpenCodeProviderDriver {
             ],
             minimum_tested_cli_version: Some(MINIMUM_OPENCODE_VERSION.to_string()),
             maximum_tested_cli_version: Some(OPENCODE_COMPATIBILITY.maximum_tested.to_string()),
+            update_command: Some("opencode upgrade".to_string()),
             default_executable_candidates: vec!["opencode".to_string()],
             implementation_status: ProviderImplementationStatus::Available,
             maturity: ProviderMaturity::Beta,

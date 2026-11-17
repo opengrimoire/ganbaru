@@ -86,7 +86,8 @@
   $effect(() => {
     if (selectedFamily) return;
     if (providers.some((provider) => provider.configuration.instanceId === selectedInstanceId)) return;
-    const first = providers[0];
+    // A family that was just set up, such as by its Refresh step, stays selected through its new provider.
+    const first = providers.find((provider) => provider.configuration.familyId === selectedFamilyId) ?? providers[0];
     if (first) {
       selectedFamilyId = null;
       selectedInstanceId = first.configuration.instanceId;

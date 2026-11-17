@@ -1,6 +1,7 @@
 <script lang="ts">
   import CircleCheck from "@lucide/svelte/icons/circle-check";
   import ExternalLink from "@lucide/svelte/icons/external-link";
+  import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import type { ProviderFamilyMetadataRead, ProviderInstallGuide } from "$lib/chat/contracts";
   import CommandBox from "$lib/components/ui/CommandBox.svelte";
@@ -12,23 +13,25 @@
   /**
    * What this device knows about a provider's CLI, followed by the provider's own steps to
    * install it and sign in, one at a time with a copy button for each command, and a link to
-   * the provider's guide. Ganbaru shows the commands and never runs them.
+   * the provider's guide. Ganbaru shows the commands and never runs them. With `onRefresh`, the
+   * last step holds a Refresh button; without it, the step points to the Set up action instead.
    */
   let {
     family,
     guide,
     situation,
-    finish,
+    onRefresh,
   }: {
     family: ProviderFamilyMetadataRead;
     guide: ProviderInstallGuide;
     situation: ProviderInstallSituation;
-    /** What the person chooses back in Ganbaru once the terminal steps are done. */
-    finish: "set-up" | "refresh";
+    /** Checks the provider again once the terminal steps are done; the caller reports failures. */
+    onRefresh?: () => Promise<void>;
   } = $props();
 
   const { t } = getLocalization();
   let linkError = $state<string | null>(null);
+  let refreshing = $state(false);
 
   const cliName = $derived(family.defaultExecutableCandidates[0] || family.familyId);
   const prompt = $derived(guide.shell === "powershell" ? "PS>" : "$");
@@ -43,6 +46,16 @@
       case "unknown": return null;
     }
   });
+
+  async function refresh(): Promise<void> {
+    if (!onRefresh || refreshing) return;
+    refreshing = true;
+    try {
+      await onRefresh();
+    } finally {
+      refreshing = false;
+    }
+  }
 
   /** Opens the provider's guide, which validation already holds to `https`. */
   async function openGuide(): Promise<void> {
@@ -96,11 +109,24 @@
       </div>
     </NumberedStep>
     <NumberedStep number={total} {total}>
-      <p class="min-w-0 flex-1 pt-0.5 text-[0.8rem] leading-5 text-foreground">
-        {finish === "set-up"
-          ? t("settings.agents.providers.install.finishSetUp", family.displayName)
-          : t("settings.agents.providers.install.finishRefresh")}
-      </p>
+      <div class="min-w-0 flex-1 pt-0.5">
+        <p class="text-[0.8rem] leading-5 text-foreground">
+          {onRefresh
+            ? t("settings.agents.providers.install.finishRefresh")
+            : t("settings.agents.providers.install.finishSetUp", family.displayName)}
+        </p>
+        {#if onRefresh}
+          <button
+            type="button"
+            class="mt-2 inline-flex min-h-[1.9rem] items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-[0.733333rem] font-semibold whitespace-nowrap text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={refreshing}
+            onclick={() => void refresh()}
+          >
+            <RefreshCw size={13} class={refreshing ? "animate-spin" : undefined} aria-hidden="true" />
+            {t("settings.agents.providers.refresh")}
+          </button>
+        {/if}
+      </div>
     </NumberedStep>
   </ol>
   <p class="text-[0.8rem] leading-5 text-muted-foreground">

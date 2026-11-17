@@ -391,6 +391,7 @@ export const agentsSettings = {
     configurations: "Configuraciones",
     noConfigurations: (provider: string) => `No hay una configuración de ${provider} en este dispositivo.`,
     setUp: (provider: string) => `Configurar ${provider}`,
+    setUpAdvanced: (provider: string) => `Configurar ${provider} (avanzado)`,
     install: {
       installed: (cli: string, path: string) => `${cli} está instalado en ${path}.`,
       notInstalled: (cli: string) => `${cli} no está instalado en este dispositivo.`,
@@ -403,7 +404,8 @@ export const agentsSettings = {
       runSignInIfNeeded: "Si aún no iniciaste sesión, ejecuta este comando para iniciar sesión.",
       runSignIn: "Ejecuta este comando y sigue sus pasos para iniciar sesión.",
       finishSetUp: (provider: string) => `Vuelve aquí y elige Configurar ${provider}.`,
-      finishRefresh: "Vuelve aquí y elige Actualizar.",
+      finishRefresh: "Luego elige Actualizar.",
+      notAdded: (provider: string) => `Ganbaru aún no pudo agregar ${provider}.`,
       guide: "Guía completa:",
       guideFailed: "No se pudo abrir la guía.",
     },

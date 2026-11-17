@@ -689,14 +689,14 @@
                       family={selectedFamily}
                       guide={selectedFamily.installGuide}
                       situation={{ kind: "missing-at", path: selectedProvider.configuration.executable }}
-                      finish="refresh"
+                      onRefresh={() => refreshProvider(selectedProvider)}
                     />
                   {:else if selectedFamily.installGuide && selectedProvider.lastProbe?.state === "authentication_required"}
                     <ProviderInstallSteps
                       family={selectedFamily}
                       guide={selectedFamily.installGuide}
                       situation={{ kind: "signed-out" }}
-                      finish="refresh"
+                      onRefresh={() => refreshProvider(selectedProvider)}
                     />
                   {/if}
                   {#if selectedProvider.runtimeReview.length > 0}

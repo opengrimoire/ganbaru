@@ -47,11 +47,11 @@
     </div>
   </section>
 
-  <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>
+  <div class="h-px shrink-0 bg-border/50" aria-hidden="true"></div>
 
   <ProjectsGroupList />
 
-  <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>
+  <div class="h-px shrink-0 bg-border/50" aria-hidden="true"></div>
 
   <ProjectsInactiveList />
 </div>

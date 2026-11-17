@@ -72,6 +72,9 @@
   const preferenceFile = $derived(groups.configuration.find((file) => file.preferences !== null) ?? null);
   const preferencesAllowlisted = $derived(familyId ? providerPreferencesAllowlisted(familyId) : false);
   const docLinks = $derived(familyId ? PROVIDER_DOC_LINKS[familyId] ?? [] : []);
+  const showInstructions = $derived(groups.instructions.length > 0 || fileNotes.length > 0);
+  const showPreferences = $derived(Boolean(preferenceFile?.preferences));
+  const showConfiguration = $derived(groups.configuration.length > 0);
   const families = $derived((chat.settings?.providerFamilies ?? []).map((family): ProviderFamilyMetadataRead => ({
     ...family,
     displayName: providerFamilyDisplayName(family, t("chat.providers.acp.name")),
@@ -241,7 +244,7 @@
 </script>
 
 {#snippet separator()}
-  <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>
+  <div class="h-px shrink-0 bg-border/50" aria-hidden="true"></div>
 {/snippet}
 
 {#snippet sectionHeading(title: string)}
@@ -342,8 +345,7 @@
               <Loading layout="fill" class="min-h-24" />
             {:else if selectedProvider && selectedInstanceId && files.length > 0}
               {#key `${selectedInstanceId} ${editorKey}`}
-                {#if groups.instructions.length > 0 || fileNotes.length > 0}
-                  {@render separator()}
+                {#if showInstructions}
                   <section class="flex flex-col gap-4">
                     {@render sectionHeading(t("settings.agents.files.instructionsHeading"))}
                     {#each fileNotes as fileNote (fileNote.kind)}
@@ -367,7 +369,7 @@
                 {/if}
 
                 {#if preferenceFile?.preferences}
-                  {@render separator()}
+                  {#if showInstructions}{@render separator()}{/if}
                   <section class="flex flex-col gap-4">
                     {@render sectionHeading(t("settings.agents.files.preferencesHeading"))}
                     {#if !preferenceFile.preferences.editable}
@@ -387,8 +389,8 @@
                   </section>
                 {/if}
 
-                {#if groups.configuration.length > 0}
-                  {@render separator()}
+                {#if showConfiguration}
+                  {#if showInstructions || showPreferences}{@render separator()}{/if}
                   <section class="flex flex-col gap-4">
                     {@render sectionHeading(t("settings.agents.files.configurationHeading"))}
                     <ProviderFileEditor
@@ -404,7 +406,7 @@
               {/key}
 
               {#if docLinks.length > 0}
-                {@render separator()}
+                {#if showInstructions || showPreferences || showConfiguration}{@render separator()}{/if}
                 <section class="flex flex-col gap-4">
                   {@render sectionHeading(t("settings.agents.files.docsHeading"))}
                   <div class="flex flex-wrap gap-2 px-1">

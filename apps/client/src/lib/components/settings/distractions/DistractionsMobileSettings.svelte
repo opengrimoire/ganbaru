@@ -186,7 +186,7 @@
     onScheduleChange={requestConfigurationChange}
   />
 
-  <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>
+  <div class="h-px shrink-0 bg-border/50" aria-hidden="true"></div>
 
   <section class="flex flex-col gap-3">
     <h2 class="px-1 text-[0.866667rem] font-semibold text-foreground">{t("settings.distractions.mobile.appBlocking")}</h2>
@@ -218,7 +218,7 @@
   </section>
 
   <fieldset disabled={!distractions.mobileEnabled} class={cn("m-0 flex min-w-0 flex-col gap-4 border-0 p-0", !distractions.mobileEnabled && "opacity-50")}>
-    <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>
+    <div class="h-px shrink-0 bg-border/50" aria-hidden="true"></div>
     <section class="flex flex-col gap-4">
       <h2 class="px-1 text-[0.866667rem] font-semibold text-foreground">{t("settings.distractions.mobile.blocklist")}</h2>
       <DistractionsRuleList

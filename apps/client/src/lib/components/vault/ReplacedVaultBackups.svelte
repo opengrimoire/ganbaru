@@ -118,7 +118,7 @@
 </script>
 
 {#if backups.length > 0 || error}
-  <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>
+  <div class="h-px shrink-0 bg-border/50" aria-hidden="true"></div>
 
   <section class="flex flex-col gap-4">
     <div class="px-1">

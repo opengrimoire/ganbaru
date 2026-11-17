@@ -38,6 +38,7 @@ Panels were restyled one at a time, so radii, shadows, text sizes, input styles,
 
 - `menu-item` is the actionable row: it carries the panel row height, padding, gap, radius, icon size, hover, keyboard focus, and disabled styling. `menu-item-destructive` marks a row that removes data.
 - `menu-separator` divides groups, and `menu-label` titles a group.
+- Page section dividers, such as those between Settings sections, are a whole pixel `bg-border/50` line placed only between sections, never above the first. A line scaled to half a pixel fades out when the 15px root size puts it between device pixels.
 - Background highlight marks only the pointer, keyboard focus, and the row whose submenu is open (`aria-expanded="true"`). The current choice shows a trailing check, never a persistent background. Menus that keep DOM focus elsewhere, such as an editor, mark the keyboard-active row with `data-highlighted`.
 - Panel text uses `text-panel`, set by the surface, and secondary text (descriptions, shortcuts, counts, group labels) uses `text-panel-detail`. Avoid ad hoc rem sizes inside panels.
 - A row with a secondary line (such as a title above its location) grows past the row height; mark it with `data-collection-row-two-line` inside collection panels, which otherwise pin rows to one line.

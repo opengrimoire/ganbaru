@@ -223,7 +223,7 @@
   </section>
 
   {#if notificationsAvailable}
-    <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>
+    <div class="h-px shrink-0 bg-border/50" aria-hidden="true"></div>
 
     <section class="flex flex-col gap-4">
       <h2 class="px-1 text-[0.866667rem] font-semibold text-foreground">{t("settings.notesNotifications.heading")}</h2>
@@ -268,7 +268,7 @@
   {/if}
 
   {#if transfersAvailable}
-    <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>
+    <div class="h-px shrink-0 bg-border/50" aria-hidden="true"></div>
 
     <section class="flex flex-col gap-4">
       <div class="min-w-0 px-1">
@@ -296,7 +296,7 @@
       </div>
     </section>
 
-    <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>
+    <div class="h-px shrink-0 bg-border/50" aria-hidden="true"></div>
 
     <section class="flex flex-col gap-4">
       <div class="min-w-0 px-1">

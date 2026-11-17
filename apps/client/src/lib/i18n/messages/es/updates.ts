@@ -22,4 +22,15 @@ export const updates = {
   releaseNotes: "Notas de la versión",
   dismissNotification: "Descartar notificación de actualización",
   feedNotConfigured: "Esta compilación no tiene configurado un feed de actualizaciones",
+  panel: {
+    trigger: "Actualizaciones disponibles",
+    appHeading: "Ganbaru",
+    cliHeading: "CLI de agentes",
+    versionChange: (current: string, latest: string) => `${current} → ${latest}`,
+    update: "Actualizar",
+    updating: "Actualizando",
+    managed: "Actualízalo con el gestor de paquetes que lo instaló.",
+    updateFailed: "La actualización no terminó, así que ejecuta el comando en una terminal para ver por qué.",
+    copyCommand: (cli: string) => `Copiar el comando de actualización de ${cli}`,
+  },
 } as const satisfies MessageShape<typeof enUpdates>;

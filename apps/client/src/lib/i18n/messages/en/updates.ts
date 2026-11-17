@@ -19,4 +19,15 @@ export const updates = {
   releaseNotes: "Release notes",
   dismissNotification: "Dismiss update notification",
   feedNotConfigured: "This build does not have a release update feed configured",
+  panel: {
+    trigger: "Updates available",
+    appHeading: "Ganbaru",
+    cliHeading: "Agent CLIs",
+    versionChange: (current: string, latest: string) => `${current} → ${latest}`,
+    update: "Update",
+    updating: "Updating",
+    managed: "Update it through the package manager that installed it.",
+    updateFailed: "The update did not finish, so run the command in a terminal to see why.",
+    copyCommand: (cli: string) => `Copy the ${cli} update command`,
+  },
 } as const;

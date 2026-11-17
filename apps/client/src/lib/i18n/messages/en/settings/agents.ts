@@ -339,7 +339,6 @@ export const agentsSettings = {
   providers: {
     heading: "Providers",
     add: "Add provider",
-    refreshAll: "Refresh all",
     scanning: "Scanning...",
     refreshSummary: (discovered: string, issues: string) =>
       `${discovered} new providers found, ${issues} need attention.`,

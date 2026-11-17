@@ -35,6 +35,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
   import { getProviderUpdates } from "$lib/stores/chat/provider-updates.svelte";
+  import { SETTINGS_SECONDARY_BUTTON_CLASS } from "$lib/components/settings/action-buttons";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import Switch from "$lib/components/ui/Switch.svelte";
@@ -465,16 +466,6 @@
 </script>
 
 <section class="provider-settings" data-agents-settings-subsection="providers">
-  <header class="directory-header">
-    <div>
-      <h2>{t("settings.agents.providers.heading")}</h2>
-    </div>
-    <button type="button" class="settings-button" disabled={refreshingAll} onclick={() => void refreshAll()}>
-      <RefreshCw size={13} class={refreshingAll ? "animate-spin" : undefined} />
-      {refreshingAll ? t("settings.agents.providers.scanning") : t("settings.agents.providers.refreshAll")}
-    </button>
-  </header>
-
   {#if chat.loading}
     <Loading layout="rows" rows={3} />
   {:else if families.length === 0}
@@ -838,14 +829,6 @@
                         {/each}
                       </div>
                     {/if}
-
-                    {#if selectedFamily.implementationStatus === "available"}
-                      <button
-                        type="button"
-                        class="add-configuration-text"
-                        onclick={() => openProviderSetup(selectedFamily.familyId)}
-                      >{t("settings.agents.providers.addAnother", selectedFamily.displayName)}</button>
-                    {/if}
                   </section>
                 </div>
               {:else if selectedFamily.implementationStatus === "available"}
@@ -863,6 +846,18 @@
             <CalendarScrollbar scrollContainer={detailScrollElement} wheelPassthrough />
           </div>
         {/if}
+        <footer class="detail-footer">
+          {#if selectedFamily && selectedProvider && selectedFamily.implementationStatus === "available"}
+            {@const familyId = selectedFamily.familyId}
+            <button type="button" class="add-configuration-text" onclick={() => openProviderSetup(familyId)}>
+              {t("settings.agents.providers.addAnother", selectedFamily.displayName)}
+            </button>
+          {/if}
+          <button type="button" class={SETTINGS_SECONDARY_BUTTON_CLASS} disabled={refreshingAll} onclick={() => void refreshAll()}>
+            <RefreshCw size={14} strokeWidth={1.9} class={refreshingAll ? "shrink-0 animate-spin" : "shrink-0"} />
+            <span>{refreshingAll ? t("settings.agents.providers.scanning") : t("settings.agents.providers.refresh")}</span>
+          </button>
+        </footer>
       </div>
     </div>
   {/if}
@@ -880,11 +875,9 @@
 {/if}
 
 <style>
-  .provider-settings { display:grid; height:100%; min-height:0; grid-template-rows:auto minmax(0,1fr); gap:0.8rem; }
-  .directory-header { display:flex; flex-wrap:wrap; align-items:start; justify-content:space-between; gap:0.75rem; padding-inline:0.25rem; }
-  .directory-header h2 { font-size:calc(0.866667rem * var(--type-scale)); font-weight:600; }
-  .settings-button,.compact-action { display:inline-flex; min-height:1.9rem; align-items:center; justify-content:center; gap:0.35rem; border:1px solid var(--border); border-radius:0.42rem; background:var(--background); padding:0.3rem 0.65rem; color:var(--foreground); font-size:calc(0.733333rem * var(--type-scale)); font-weight:600; line-height:1; white-space:nowrap; }
-  .settings-button:hover:not(:disabled),.compact-action:hover:not(:disabled) { background:var(--accent); }
+  .provider-settings { display:grid; height:100%; min-height:0; grid-template-rows:minmax(0,1fr); }
+  .compact-action { display:inline-flex; min-height:1.9rem; align-items:center; justify-content:center; gap:0.35rem; border:1px solid var(--border); border-radius:0.42rem; background:var(--background); padding:0.3rem 0.65rem; color:var(--foreground); font-size:calc(0.733333rem * var(--type-scale)); font-weight:600; line-height:1; white-space:nowrap; }
+  .compact-action:hover:not(:disabled) { background:var(--accent); }
   .empty-copy { padding:0.7rem 0.25rem; color:var(--muted-foreground); font-size:calc(0.72rem * var(--type-scale)); }
   .directory-layout { display:grid; min-height:0; isolation:isolate; grid-template-columns:minmax(12.5rem,0.62fr) minmax(0,1.6fr); }
   .directory-panel { position:relative; z-index:1; min-width:0; min-height:0; padding-right:0.75rem; }
@@ -901,7 +894,9 @@
   .directory-summary small[data-state="healthy"] i,.editor-state[data-state="healthy"] i { background:var(--action-confirm-signal); }
   .directory-summary small[data-state="disabled"] i,.editor-state[data-state="disabled"] i { background:var(--muted-foreground); opacity:0.7; }
   .directory-summary small[data-state="unconfigured"] i,.editor-state[data-state="unconfigured"] i { background:var(--destructive); }
-  .detail-panel { position:relative; z-index:2; min-width:0; min-height:0; border-left:1px solid var(--border); padding-left:1rem; }
+  .detail-panel { position:relative; z-index:2; display:grid; min-width:0; min-height:0; grid-template-rows:minmax(0,1fr) auto; border-left:1px solid var(--border); padding-left:1rem; }
+  .detail-footer { display:flex; min-width:0; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:0.5rem 0.75rem; border-top:1px solid var(--border); padding:0.65rem 0.75rem 0.65rem 0; }
+  .detail-footer > :global(button:last-child) { margin-left:auto; }
   .detail-scroll { display:grid; grid-template-columns:minmax(0,1fr); align-content:start; gap:1rem; padding:0.2rem 0.75rem 1rem 0; }
   .editor-heading { display:grid; min-width:0; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:0.65rem; padding-inline:0.25rem; }
   .editor-title { display:grid; min-width:0; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:0.75rem; }
@@ -949,16 +944,17 @@
   .model-actions { display:flex; flex-shrink:0; align-items:center; gap:0.45rem; }
   .favorite-action[aria-pressed="true"] { color:var(--status-tentative); }
   .models-empty { padding:0.9rem 0.25rem; color:var(--muted-foreground); font-size:calc(0.75rem * var(--type-scale)); }
-  .add-configuration-text { width:max-content; margin:0.6rem 0.25rem 0; color:var(--muted-foreground); font-size:calc(0.7rem * var(--type-scale)); font-weight:600; text-align:left; }
+  .add-configuration-text { min-width:0; padding-inline:0.25rem; color:var(--muted-foreground); font-size:calc(0.7rem * var(--type-scale)); font-weight:600; text-align:left; }
   .add-configuration-text:hover { color:var(--foreground); text-decoration:underline; text-underline-offset:0.18rem; }
   .empty-configuration { display:grid; justify-items:start; gap:0.7rem; padding:0.25rem; color:var(--muted-foreground); font-size:calc(0.72rem * var(--type-scale)); }
   button:disabled { cursor:not-allowed; opacity:0.5; }
-  :global(.dark) .settings-button,:global(.dark) .compact-action,:global(.dark) .icon-action,:global(.dark) .favorite-action { background:transparent; }
+  :global(.dark) .compact-action,:global(.dark) .icon-action,:global(.dark) .favorite-action { background:transparent; }
   @media (max-width:700px) {
     .directory-layout { grid-template-columns:1fr; grid-template-rows:minmax(8rem,30%) minmax(0,1fr); }
     .directory-panel { border-bottom:1px solid var(--border); padding:0 0 0.75rem; }
     .detail-panel { border-left:0; padding:0.8rem 0 0; }
     .detail-scroll { padding-right:0.35rem; }
+    .detail-footer { padding-right:0; }
   }
   @media (max-width:540px) {
     .custom-model-editor { grid-template-columns:1fr; align-items:stretch; }

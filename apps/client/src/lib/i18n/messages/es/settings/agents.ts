@@ -342,7 +342,6 @@ export const agentsSettings = {
   providers: {
     heading: "Proveedores",
     add: "Agregar proveedor",
-    refreshAll: "Actualizar todos",
     scanning: "Buscando...",
     refreshSummary: (discovered: string, issues: string) =>
       `Se encontraron ${discovered} proveedores nuevos, ${issues} requieren atención.`,

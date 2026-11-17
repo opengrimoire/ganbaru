@@ -1109,10 +1109,10 @@
         initialSection={settingsLauncher.targetSection}
         initialDistractionsTab={settingsLauncher.targetDistractionsTab}
         initialContactsTab={settingsLauncher.targetContactsTab}
-        initialChatSubsection={settingsLauncher.targetChatSubsection}
-        initialChatTeammateId={settingsLauncher.targetChatTeammateId}
-        initialChatChannelId={settingsLauncher.targetChatChannelId}
-        initialChatCreateTeammate={settingsLauncher.targetChatCreateTeammate}
+        initialAgentsSubsection={settingsLauncher.targetAgentsSubsection}
+        initialAgentsTeammateId={settingsLauncher.targetAgentsTeammateId}
+        initialAgentsChannelId={settingsLauncher.targetAgentsChannelId}
+        initialAgentsCreateTeammate={settingsLauncher.targetAgentsCreateTeammate}
         onClose={closeSettings}
       />
     </div>

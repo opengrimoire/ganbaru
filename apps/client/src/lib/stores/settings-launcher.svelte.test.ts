@@ -8,13 +8,13 @@ describe("settings launcher", () => {
       expect(launcher.isOpen).toBe(false);
     });
 
-    launcher.open("chat", { chatSubsection: "teammates", chatCreateTeammate: true, onClosed });
+    launcher.open("agents", { agentsSubsection: "teammates", agentsCreateTeammate: true, onClosed });
     expect(launcher.isOpen).toBe(true);
     expect(onClosed).not.toHaveBeenCalled();
 
     launcher.close();
     expect(onClosed).toHaveBeenCalledTimes(1);
-    expect(launcher.targetChatCreateTeammate).toBe(false);
+    expect(launcher.targetAgentsCreateTeammate).toBe(false);
 
     launcher.open("appearance");
     launcher.close();
@@ -26,8 +26,8 @@ describe("settings launcher", () => {
     const first = vi.fn();
     const second = vi.fn();
 
-    launcher.open("chat", { onClosed: first });
-    launcher.open("chat", { onClosed: second });
+    launcher.open("agents", { onClosed: first });
+    launcher.open("agents", { onClosed: second });
     launcher.close();
 
     expect(first).not.toHaveBeenCalled();

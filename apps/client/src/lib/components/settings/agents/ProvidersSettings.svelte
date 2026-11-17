@@ -233,7 +233,7 @@
     await perform(instanceId, async () => {
       const result = await chat.removeProvider(instanceId);
       if (result.credentialCleanupFailed) {
-        operationError = t("settings.chat.providers.credentialCleanupFailed");
+        operationError = t("settings.agents.providers.credentialCleanupFailed");
       }
     });
   }
@@ -297,7 +297,7 @@
     const id = customId.trim();
     const label = customLabel.trim();
     if (!id || id.length > 256 || [...id].some((character) => /\p{Control}/u.test(character))) {
-      customError = t("settings.chat.models.customId");
+      customError = t("settings.agents.models.customId");
       return;
     }
     const config = providerConfigRecord();
@@ -346,20 +346,20 @@
   }
 
   function providerStateLabel(provider: ProviderInstanceRead): string {
-    if (!provider.configuration.enabled) return t("settings.chat.providers.disabled");
+    if (!provider.configuration.enabled) return t("settings.agents.providers.disabled");
     if (provider.lastProbe?.state === "healthy") {
-      if (provider.lastProbe.teammateMinimumVersion) return t("settings.chat.providers.teammatesNeedUpdate");
-      if (availableUpdate(provider)) return t("settings.chat.providers.updateAvailableShort");
+      if (provider.lastProbe.teammateMinimumVersion) return t("settings.agents.providers.teammatesNeedUpdate");
+      if (availableUpdate(provider)) return t("settings.agents.providers.updateAvailableShort");
       return provider.lastProbe.versionAdmission === "untested_newer"
-        ? t("settings.chat.providers.untestedNewer")
-        : t("settings.chat.providers.healthy");
+        ? t("settings.agents.providers.untestedNewer")
+        : t("settings.agents.providers.healthy");
     }
     if (provider.lastProbe?.state === "authentication_required") {
-      return t("settings.chat.providers.authenticationRequired");
+      return t("settings.agents.providers.authenticationRequired");
     }
-    if (provider.lastProbe?.state === "unsupported_version") return t("settings.chat.providers.unsupported");
-    if (!provider.lastProbe) return t("settings.chat.providers.neverChecked");
-    return t("settings.chat.providers.unavailable");
+    if (provider.lastProbe?.state === "unsupported_version") return t("settings.agents.providers.unsupported");
+    if (!provider.lastProbe) return t("settings.agents.providers.neverChecked");
+    return t("settings.agents.providers.unavailable");
   }
 
   function providerState(provider: ProviderInstanceRead): ProviderDisplayState {
@@ -371,16 +371,16 @@
 
   /** The sentence explaining a version notice, naming the update command when the family has one. */
   function versionNoticeMessage(notice: ProviderVersionNotice): string {
-    if (notice.kind === "too_new") return t("settings.chat.providers.newerThanSupported");
+    if (notice.kind === "too_new") return t("settings.agents.providers.newerThanSupported");
     if (notice.kind === "teammates") {
       return notice.updateCommand
-        ? t("settings.chat.providers.teammateVersionCommand", notice.minimumVersion, notice.updateCommand)
-        : t("settings.chat.providers.teammateVersion", notice.minimumVersion);
+        ? t("settings.agents.providers.teammateVersionCommand", notice.minimumVersion, notice.updateCommand)
+        : t("settings.agents.providers.teammateVersion", notice.minimumVersion);
     }
-    if (!notice.minimumVersion) return t("settings.chat.providers.olderVersion");
+    if (!notice.minimumVersion) return t("settings.agents.providers.olderVersion");
     return notice.updateCommand
-      ? t("settings.chat.providers.minimumVersionCommand", notice.minimumVersion, notice.updateCommand)
-      : t("settings.chat.providers.minimumVersion", notice.minimumVersion);
+      ? t("settings.agents.providers.minimumVersionCommand", notice.minimumVersion, notice.updateCommand)
+      : t("settings.agents.providers.minimumVersion", notice.minimumVersion);
   }
 
   function providersForFamily(familyId: string): ProviderInstanceRead[] {
@@ -397,24 +397,24 @@
   }
 
   function familyStateLabel(family: ProviderFamilyMetadataRead): string {
-    if (family.implementationStatus !== "available") return t("settings.chat.providers.notAvailable");
+    if (family.implementationStatus !== "available") return t("settings.agents.providers.notAvailable");
     const state = familyState(family);
-    if (state === "unconfigured") return t("settings.chat.providers.notConfigured");
-    if (state === "healthy") return t("settings.chat.providers.ready");
-    if (state === "disabled") return t("settings.chat.providers.disabled");
-    return t("settings.chat.providers.needsAttention");
+    if (state === "unconfigured") return t("settings.agents.providers.notConfigured");
+    if (state === "healthy") return t("settings.agents.providers.ready");
+    if (state === "disabled") return t("settings.agents.providers.disabled");
+    return t("settings.agents.providers.needsAttention");
   }
 
   function refreshSummary(result: ProviderRefreshResult): string {
     return t(
-      "settings.chat.providers.refreshSummary",
+      "settings.agents.providers.refreshSummary",
       formatNumber(localization.locale, result.providersDiscovered),
       formatNumber(localization.locale, result.issues),
     );
   }
 
   function errorMessage(error: unknown): string {
-    return chatErrorMessage(error, t("settings.chat.providers.operationFailed"));
+    return chatErrorMessage(error, t("settings.agents.providers.operationFailed"));
   }
 
   function providerCliName(
@@ -474,38 +474,38 @@
       tone={missing ? "warning" : "neutral"}
       role="status"
       message={missing
-        ? t("settings.chat.providers.installMissing", providerFamilyCliName(family), guide.command)
-        : t("settings.chat.providers.installHint", providerFamilyCliName(family), guide.command)}
+        ? t("settings.agents.providers.installMissing", providerFamilyCliName(family), guide.command)
+        : t("settings.agents.providers.installHint", providerFamilyCliName(family), guide.command)}
       copy={guide.command}
     >
       {#snippet actions()}
-        <button type="button" class="notice-action-text" onclick={() => void openInstallDocs(guide.docsUrl)}>{t("settings.chat.providers.installDocs")}</button>
+        <button type="button" class="notice-action-text" onclick={() => void openInstallDocs(guide.docsUrl)}>{t("settings.agents.providers.installDocs")}</button>
       {/snippet}
     </Notice>
   {/if}
 {/snippet}
 
-<section class="provider-settings" data-chat-settings-subsection="providers">
+<section class="provider-settings" data-agents-settings-subsection="providers">
   <header class="directory-header">
     <div>
-      <h2>{t("settings.chat.providers.heading")}</h2>
+      <h2>{t("settings.agents.providers.heading")}</h2>
     </div>
     <button type="button" class="settings-button" disabled={refreshingAll} onclick={() => void refreshAll()}>
       <RefreshCw size={13} class={refreshingAll ? "animate-spin" : undefined} />
-      {refreshingAll ? t("settings.chat.providers.scanning") : t("settings.chat.providers.refreshAll")}
+      {refreshingAll ? t("settings.agents.providers.scanning") : t("settings.agents.providers.refreshAll")}
     </button>
   </header>
 
   {#if chat.loading}
     <Loading layout="rows" rows={3} />
   {:else if families.length === 0}
-    <p class="empty-copy">{t("settings.chat.providers.noIntegrations")}</p>
+    <p class="empty-copy">{t("settings.agents.providers.noIntegrations")}</p>
   {:else}
     <div class="directory-layout">
       <aside class="directory-panel">
         <div class="scroll-frame">
           <div bind:this={directoryScrollElement} data-mobile-scroll-fade class="directory-scroll hide-scrollbar">
-            <nav class="provider-directory" aria-label={t("settings.chat.providers.familyTabs")}>
+            <nav class="provider-directory" aria-label={t("settings.agents.providers.familyTabs")}>
               {#each families as family (family.familyId)}
                 {@const instances = providersForFamily(family.familyId)}
                 {#if instances.length === 0}
@@ -581,7 +581,7 @@
                         <button
                           type="button"
                           class="editor-account"
-                          aria-label={`${t("settings.chat.providers.account")}: ${selectedProvider.lastProbe.accountLabel}`}
+                          aria-label={`${t("settings.agents.providers.account")}: ${selectedProvider.lastProbe.accountLabel}`}
                           data-app-tooltip={selectedProvider.lastProbe.accountLabel}
                           data-app-tooltip-keep-on-click="true"
                         ><Mail size={12} strokeWidth={1.8} /></button>
@@ -589,12 +589,12 @@
                       {#if selectedProvider}<ProviderPlanLimitRings provider={selectedProvider} />{/if}
                       {#if selectedProvider?.lastProbe?.authSource}
                         {@const authSourceLabel = selectedProvider.lastProbe.authSource === "api_key"
-                          ? t("settings.chat.providers.authSourceApiKey")
-                          : t("settings.chat.providers.authSourceAccountLogin")}
+                          ? t("settings.agents.providers.authSourceApiKey")
+                          : t("settings.agents.providers.authSourceAccountLogin")}
                         <button
                           type="button"
                           class="editor-account"
-                          aria-label={`${t("settings.chat.providers.authSource")}: ${authSourceLabel}`}
+                          aria-label={`${t("settings.agents.providers.authSource")}: ${authSourceLabel}`}
                           data-app-tooltip={authSourceLabel}
                           data-app-tooltip-keep-on-click="true"
                         >
@@ -614,16 +614,16 @@
                       <Switch
                         checked={selectedProvider.configuration.enabled}
                         ariaLabel={selectedProvider.configuration.enabled
-                          ? t("settings.chat.providers.disable")
-                          : t("settings.chat.providers.enable")}
+                          ? t("settings.agents.providers.disable")
+                          : t("settings.agents.providers.enable")}
                         disabled={headerBusy}
                         onChange={(enabled) => void setEnabled(selectedProvider, enabled)}
                       />
                       <button
                         type="button"
                         class="icon-action"
-                        aria-label={t("settings.chat.providers.configure")}
-                        data-app-tooltip={t("settings.chat.providers.configure")}
+                        aria-label={t("settings.agents.providers.configure")}
+                        data-app-tooltip={t("settings.agents.providers.configure")}
                         onclick={() => onOpenProviderSetup({ mode: "edit", instanceId: headerInstanceId })}
                       >
                         <Pencil size={14} />
@@ -632,8 +632,8 @@
                         type="button"
                         class="icon-action"
                         disabled={headerBusy}
-                        aria-label={t("settings.chat.providers.refresh")}
-                        data-app-tooltip={t("settings.chat.providers.refresh")}
+                        aria-label={t("settings.agents.providers.refresh")}
+                        data-app-tooltip={t("settings.agents.providers.refresh")}
                         onclick={() => void refreshProvider(selectedProvider)}
                       >
                         <RefreshCw size={14} class={headerBusy ? "animate-spin" : undefined} />
@@ -642,8 +642,8 @@
                         type="button"
                         class="icon-action destructive"
                         disabled={headerBusy}
-                        aria-label={t("settings.chat.providers.remove")}
-                        data-app-tooltip={t("settings.chat.providers.remove")}
+                        aria-label={t("settings.agents.providers.remove")}
+                        data-app-tooltip={t("settings.agents.providers.remove")}
                         onclick={() => { removeId = headerInstanceId; }}
                       >
                         <Trash2 size={14} />
@@ -680,8 +680,8 @@
                       tone="neutral"
                       role="status"
                       message={update.runsInApp
-                        ? t("settings.chat.providers.updateAvailable", cliName, update.latestVersion, update.currentVersion)
-                        : t("settings.chat.providers.updateAvailableManaged", cliName, update.latestVersion)}
+                        ? t("settings.agents.providers.updateAvailable", cliName, update.latestVersion, update.currentVersion)
+                        : t("settings.agents.providers.updateAvailableManaged", cliName, update.latestVersion)}
                       copy={update.runsInApp ? update.updateCommand : false}
                     >
                       {#snippet actions()}
@@ -692,8 +692,8 @@
                             disabled={selectedBusy || providerUpdates.running !== null}
                             onclick={() => void runProviderUpdate(instanceId)}
                           >{providerUpdates.running === instanceId
-                            ? t("settings.chat.providers.updating")
-                            : t("settings.chat.providers.updateAction")}</button>
+                            ? t("settings.agents.providers.updating")
+                            : t("settings.agents.providers.updateAction")}</button>
                         {/if}
                       {/snippet}
                     </Notice>
@@ -702,7 +702,7 @@
                     {@const command = update?.updateCommand ?? selectedFamily.updateCommand ?? ""}
                     <Notice
                       tone="warning"
-                      message={t("settings.chat.providers.updateFailed", providerCliName(selectedFamily, selectedProvider), command)}
+                      message={t("settings.agents.providers.updateFailed", providerCliName(selectedFamily, selectedProvider), command)}
                       copy={updateFailure.output ?? command}
                       onDismiss={() => (updateFailure = null)}
                     />
@@ -711,18 +711,18 @@
                     {@render installNotice(selectedFamily, true)}
                   {/if}
                   {#if selectedProvider.lastProbe?.state === "authentication_required"}
-                    <p class="provider-notice">{t("settings.chat.providers.loginHelp")}</p>
+                    <p class="provider-notice">{t("settings.agents.providers.loginHelp")}</p>
                   {/if}
                   {#if selectedProvider.runtimeReview.length > 0}
                     <section class="provider-notice runtime-review">
-                      <p>{t("settings.chat.setup.runtimeReviewNotice")}</p>
+                      <p>{t("settings.agents.setup.runtimeReviewNotice")}</p>
                       <ul>
                         {#each selectedProvider.runtimeReview as item, index (index)}
                           <li>{item.label}</li>
                         {/each}
                       </ul>
                       <button type="button" class="compact-action" disabled={selectedBusy} onclick={() => void confirmRuntime()}>
-                        {t("settings.chat.setup.runtimeReviewButton")}
+                        {t("settings.agents.setup.runtimeReviewButton")}
                       </button>
                     </section>
                   {/if}
@@ -732,7 +732,7 @@
                       <div class="catalog-actions">
                         <button type="button" class="compact-action" disabled={selectedBusy} onclick={() => { customOpen = !customOpen; }}>
                           <Plus size={13} />
-                          {t("settings.chat.models.addCustom")}
+                          {t("settings.agents.models.addCustom")}
                         </button>
                       </div>
                     {/if}
@@ -742,27 +742,27 @@
                       <input
                         type="search"
                         bind:value={search}
-                        aria-label={t("settings.chat.models.search")}
-                        placeholder={t("settings.chat.models.search")}
+                        aria-label={t("settings.agents.models.search")}
+                        placeholder={t("settings.agents.models.search")}
                       />
                     </label>
 
                     {#if selectedProvider.modelCatalog?.stale}
-                      <p class="catalog-warning">{t("settings.chat.models.catalogStale")}</p>
+                      <p class="catalog-warning">{t("settings.agents.models.catalogStale")}</p>
                     {/if}
 
                     {#if customOpen && acceptsCustomModels}
                       <section class="custom-model-editor">
                         <label>
-                          <span>{t("settings.chat.models.customId")}</span>
+                          <span>{t("settings.agents.models.customId")}</span>
                           <input bind:value={customId} />
                         </label>
                         <label>
-                          <span>{t("settings.chat.models.customLabel")}</span>
+                          <span>{t("settings.agents.models.customLabel")}</span>
                           <input bind:value={customLabel} />
                         </label>
                         <button type="button" class="compact-action" disabled={selectedBusy} onclick={() => void saveCustomModel()}>
-                          {t("settings.chat.models.saveCustom")}
+                          {t("settings.agents.models.saveCustom")}
                         </button>
                         {#if customError}<p role="alert">{customError}</p>{/if}
                       </section>
@@ -770,7 +770,7 @@
 
                     {#if models.length === 0}
                       <p class="models-empty">
-                        {search.trim() ? t("settings.chat.models.noSearchResults") : t("settings.chat.models.empty")}
+                        {search.trim() ? t("settings.agents.models.noSearchResults") : t("settings.agents.models.empty")}
                       </p>
                     {:else}
                       <div class="model-list">
@@ -789,32 +789,32 @@
                                 <div class="model-meta">
                                   {#if showModelId}<span class="model-id">{model.id}</span>{/if}
                                   {#if model.contextLimit}
-                                    <span>{t("settings.chat.models.context", formatNumber(localization.locale, model.contextLimit))}</span>
+                                    <span>{t("settings.agents.models.context", formatNumber(localization.locale, model.contextLimit))}</span>
                                   {/if}
                                   {#if model.availability !== "available"}
                                     <span class="text-status-tentative">
                                       {model.availability === "stale"
-                                        ? t("settings.chat.models.stale")
+                                        ? t("settings.agents.models.stale")
                                         : model.availability === "deprecated"
-                                          ? t("settings.chat.models.deprecated")
-                                          : t("settings.chat.models.unavailable")}
+                                          ? t("settings.agents.models.deprecated")
+                                          : t("settings.agents.models.unavailable")}
                                     </span>
                                   {/if}
-                                  {#if model.custom}<span>{t("settings.chat.models.custom")}</span>{/if}
+                                  {#if model.custom}<span>{t("settings.agents.models.custom")}</span>{/if}
                                 </div>
                               {/if}
                             </div>
                             <div class="model-actions">
                               <Switch
                                 checked={isVisible(model.id)}
-                                ariaLabel={isVisible(model.id) ? t("settings.chat.models.hide") : t("settings.chat.models.show")}
+                                ariaLabel={isVisible(model.id) ? t("settings.agents.models.hide") : t("settings.agents.models.show")}
                                 disabled={selectedBusy}
                                 onChange={(visible) => void setVisible(model.id, visible)}
                               />
                               <button
                                 type="button"
                                 class="favorite-action"
-                                aria-label={t("settings.chat.models.favorite")}
+                                aria-label={t("settings.agents.models.favorite")}
                                 aria-pressed={selectedProvider.configuration.favoriteModelIds.includes(model.id)}
                                 onclick={() => void toggleFavorite(model.id)}
                               >
@@ -828,8 +828,8 @@
                                   type="button"
                                   class="icon-action destructive"
                                   disabled={selectedBusy}
-                                  aria-label={t("settings.chat.models.removeCustom")}
-                                  data-app-tooltip={t("settings.chat.models.removeCustom")}
+                                  aria-label={t("settings.agents.models.removeCustom")}
+                                  data-app-tooltip={t("settings.agents.models.removeCustom")}
                                   onclick={() => void removeCustomModel(model.id)}
                                 >
                                   <Trash2 size={14} />
@@ -846,7 +846,7 @@
                         type="button"
                         class="add-configuration-text"
                         onclick={() => openProviderSetup(selectedFamily.familyId)}
-                      >{t("settings.chat.providers.addAnother", selectedFamily.displayName)}</button>
+                      >{t("settings.agents.providers.addAnother", selectedFamily.displayName)}</button>
                     {/if}
                   </section>
                 </div>
@@ -854,8 +854,8 @@
                 <section class="empty-configuration">
                   <p>
                     {selectedFamily.implementationStatus === "available"
-                      ? t("settings.chat.providers.noConfigurations", selectedFamily.displayName)
-                      : selectedFamily.unavailableReason ?? t("settings.chat.providers.notAvailable")}
+                      ? t("settings.agents.providers.noConfigurations", selectedFamily.displayName)
+                      : selectedFamily.unavailableReason ?? t("settings.agents.providers.notAvailable")}
                   </p>
                   {#if selectedFamily.implementationStatus === "available"}
                     {@render installNotice(selectedFamily, false)}
@@ -863,7 +863,7 @@
                       type="button"
                       class="add-configuration-text"
                       onclick={() => openProviderSetup(selectedFamily.familyId)}
-                    >{t("settings.chat.providers.setUp", selectedFamily.displayName)}</button>
+                    >{t("settings.agents.providers.setUp", selectedFamily.displayName)}</button>
                   {/if}
                 </section>
               {/if}
@@ -878,9 +878,9 @@
 
 {#if removeProvider}
   <ConfirmDialog
-    title={t("settings.chat.providers.removeTitle")}
-    message={t("settings.chat.providers.removeMessage", removeProvider.configuration.label)}
-    confirmLabel={t("settings.chat.providers.remove")}
+    title={t("settings.agents.providers.removeTitle")}
+    message={t("settings.agents.providers.removeMessage", removeProvider.configuration.label)}
+    confirmLabel={t("settings.agents.providers.remove")}
     cancelLabel={t("chat.cancel")}
     onConfirm={() => void confirmRemove()}
     onCancel={() => { removeId = null; }}

@@ -26,7 +26,7 @@
       const read = await chatApi.listChatPushApprovals(id);
       if (current === request) approvals = read;
     } catch (cause) {
-      if (current === request) error = chatErrorMessage(cause, t("settings.chat.teammates.pushApprovalsLoadFailed"));
+      if (current === request) error = chatErrorMessage(cause, t("settings.agents.teammates.pushApprovalsLoadFailed"));
     }
   }
 
@@ -38,7 +38,7 @@
       await chatApi.revokeChatPushApproval(approval.approvalId);
       await load(teammateId);
     } catch (cause) {
-      revokeError = chatErrorMessage(cause, t("settings.chat.teammates.revokePushApprovalFailed"));
+      revokeError = chatErrorMessage(cause, t("settings.agents.teammates.revokePushApprovalFailed"));
     } finally {
       revoking = null;
     }
@@ -54,23 +54,23 @@
   {#if error}
     <Notice message={error} onRetry={() => load(teammateId)} copy={false} />
   {:else if approvals && approvals.length === 0}
-    <p class="push-approvals-empty">{t("settings.chat.teammates.pushApprovalsEmpty")}</p>
+    <p class="push-approvals-empty">{t("settings.agents.teammates.pushApprovalsEmpty")}</p>
   {:else if approvals}
     <ul>
       {#each approvals as approval (approval.approvalId)}
         <li>
           <div class="push-approval-text">
             <strong>{approval.workingFolderName}</strong>
-            <span>{t("settings.chat.teammates.pushApprovalTarget", approval.pushUrl, approval.destinationBranch)}</span>
+            <span>{t("settings.agents.teammates.pushApprovalTarget", approval.pushUrl, approval.destinationBranch)}</span>
           </div>
           <button
             type="button"
             class="push-approval-revoke"
             disabled={revoking !== null}
             aria-busy={revoking === approval.approvalId}
-            aria-label={t("settings.chat.teammates.revokePushApproval", approval.workingFolderName, approval.destinationBranch)}
+            aria-label={t("settings.agents.teammates.revokePushApproval", approval.workingFolderName, approval.destinationBranch)}
             onclick={() => void revoke(approval)}
-          >{t("settings.chat.teammates.revokePushApprovalAction")}</button>
+          >{t("settings.agents.teammates.revokePushApprovalAction")}</button>
         </li>
       {/each}
     </ul>

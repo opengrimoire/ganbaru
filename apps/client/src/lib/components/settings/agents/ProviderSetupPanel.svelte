@@ -134,7 +134,7 @@
         if (provider) {
           draft = draftFromConfiguration(provider.configuration);
         } else {
-          operationError = t("settings.chat.setup.configurationMissing");
+          operationError = t("settings.agents.setup.configurationMissing");
         }
       } else {
         const providerFamily = chat.settings?.providerFamilies.find(
@@ -147,7 +147,7 @@
             providerFamily.defaultExecutableCandidates[0] ?? "",
           );
         } else {
-          operationError = t("settings.chat.setup.integrationUnavailable");
+          operationError = t("settings.agents.setup.integrationUnavailable");
         }
       }
     } catch (error: unknown) {
@@ -286,7 +286,7 @@
 
   async function pickExecutable(): Promise<void> {
     try {
-      const selected = await chatApi.pickChatProviderExecutable(t("settings.chat.setup.chooseExecutable"));
+      const selected = await chatApi.pickChatProviderExecutable(t("settings.agents.setup.chooseExecutable"));
       if (selected) draft.executable = selected;
     } catch (error: unknown) {
       operationError = errorMessage(error);
@@ -295,7 +295,7 @@
 
   async function pickHome(): Promise<void> {
     try {
-      const selected = await chatApi.pickChatProviderHome(t("settings.chat.setup.chooseProviderHome"));
+      const selected = await chatApi.pickChatProviderHome(t("settings.agents.setup.chooseProviderHome"));
       if (selected) draft.providerHome = selected;
     } catch (error: unknown) {
       operationError = errorMessage(error);
@@ -404,31 +404,31 @@
   function fieldError(field: string): string | null {
     const error = validation.fields[field];
     if (!error) return null;
-    if (field === "familyId") return t("settings.chat.setup.validation.provider");
-    if (field === "label") return t("settings.chat.setup.validation.label");
+    if (field === "familyId") return t("settings.agents.setup.validation.provider");
+    if (field === "label") return t("settings.agents.setup.validation.label");
     if (field === "instanceId") {
       return error.includes("already")
-        ? t("settings.chat.setup.validation.duplicateInstanceId")
-        : t("settings.chat.setup.validation.instanceId");
+        ? t("settings.agents.setup.validation.duplicateInstanceId")
+        : t("settings.agents.setup.validation.instanceId");
     }
-    if (field === "executable") return t("settings.chat.setup.validation.executable");
-    if (field.startsWith("launchArguments")) return t("settings.chat.setup.validation.arguments");
-    if (field.endsWith(".name")) return t("settings.chat.setup.validation.environmentName");
+    if (field === "executable") return t("settings.agents.setup.validation.executable");
+    if (field.startsWith("launchArguments")) return t("settings.agents.setup.validation.arguments");
+    if (field.endsWith(".name")) return t("settings.agents.setup.validation.environmentName");
     if (field.endsWith(".value")) {
       return error.includes("secret")
-        ? t("settings.chat.setup.validation.secret")
-        : t("settings.chat.setup.validation.environmentValue");
+        ? t("settings.agents.setup.validation.secret")
+        : t("settings.agents.setup.validation.environmentValue");
     }
     if (field === "providerConfig.endpoint" || field === "providerConfig.serverUrl") {
-      return t("settings.chat.setup.validation.endpoint");
+      return t("settings.agents.setup.validation.endpoint");
     }
     if (field === "providerConfig.allowInsecureExternalHttp") {
-      return t("settings.chat.setup.validation.insecureExternalHttp");
+      return t("settings.agents.setup.validation.insecureExternalHttp");
     }
     if (field === "providerConfig.confirmExternalWorkspaceAccess") {
-      return t("settings.chat.setup.validation.externalWorkspaceAccess");
+      return t("settings.agents.setup.validation.externalWorkspaceAccess");
     }
-    return t("settings.chat.setup.validation.providerConfig");
+    return t("settings.agents.setup.validation.providerConfig");
   }
 
   function draftFromConfiguration(configuration: ProviderInstanceConfig): ProviderSetupDraft {
@@ -480,14 +480,14 @@
   }
 
   function errorMessage(error: unknown): string {
-    return chatErrorMessage(error, t("settings.chat.setup.operationFailed"));
+    return chatErrorMessage(error, t("settings.agents.setup.operationFailed"));
   }
 
   function editorTitle(): string {
-    if (!family) return target.mode === "edit" ? t("settings.chat.setup.editTitle") : t("settings.chat.setup.title");
+    if (!family) return target.mode === "edit" ? t("settings.agents.setup.editTitle") : t("settings.agents.setup.title");
     return target.mode === "edit"
-      ? t("settings.chat.setup.editConfigurationTitle", providerFamilyDisplayName(family, t("chat.providers.acp.name")))
-      : t("settings.chat.setup.addConfigurationTitle", providerFamilyDisplayName(family, t("chat.providers.acp.name")));
+      ? t("settings.agents.setup.editConfigurationTitle", providerFamilyDisplayName(family, t("chat.providers.acp.name")))
+      : t("settings.agents.setup.addConfigurationTitle", providerFamilyDisplayName(family, t("chat.providers.acp.name")));
   }
 </script>
 
@@ -502,7 +502,7 @@
           {editorTitle()}
         </h1>
         <p class="mt-1 max-w-2xl text-[0.866667rem] text-muted-foreground">
-          {t("settings.chat.setup.intro")}
+          {t("settings.agents.setup.intro")}
         </p>
       </div>
     </header>
@@ -516,9 +516,9 @@
       {:else}
         {#if family}
           <section class="setup-section">
-            <h2>{t("settings.chat.setup.connectionSection")}</h2>
+            <h2>{t("settings.agents.setup.connectionSection")}</h2>
             <div class="form-row">
-              <label for="provider-label">{t("settings.chat.setup.label")}</label>
+              <label for="provider-label">{t("settings.agents.setup.label")}</label>
               <div class="field-control">
                 <input
                   id="provider-label"
@@ -529,11 +529,11 @@
               </div>
             </div>
             <div class="form-row">
-              <label for="provider-executable">{t("settings.chat.setup.executable")}</label>
+              <label for="provider-executable">{t("settings.agents.setup.executable")}</label>
               <div class="field-control">
                 <div class="input-with-action">
                   <input id="provider-executable" class="min-w-0 flex-1" bind:value={draft.executable} />
-                  <button type="button" aria-label={t("settings.chat.setup.chooseExecutable")} onclick={() => void pickExecutable()}>
+                  <button type="button" aria-label={t("settings.agents.setup.chooseExecutable")} onclick={() => void pickExecutable()}>
                     <FolderOpen size={14} />
                   </button>
                 </div>
@@ -543,11 +543,11 @@
 
             {#if draft.familyId !== "cursor"}
               <div class="form-row">
-                <label for="provider-home">{t("settings.chat.setup.providerHome")}</label>
+                <label for="provider-home">{t("settings.agents.setup.providerHome")}</label>
                 <div class="field-control">
                   <div class="input-with-action">
                     <input id="provider-home" class="min-w-0 flex-1" bind:value={draft.providerHome} />
-                    <button type="button" aria-label={t("settings.chat.setup.chooseProviderHome")} onclick={() => void pickHome()}>
+                    <button type="button" aria-label={t("settings.agents.setup.chooseProviderHome")} onclick={() => void pickHome()}>
                       <FolderOpen size={14} />
                     </button>
                   </div>
@@ -557,7 +557,7 @@
 
             {#if draft.familyId === "codex"}
               <div class="form-row">
-                <label for="codex-shadow-home">{t("settings.chat.setup.codexShadowHome")}</label>
+                <label for="codex-shadow-home">{t("settings.agents.setup.codexShadowHome")}</label>
                 <div class="field-control">
                   <input
                     id="codex-shadow-home"
@@ -567,13 +567,13 @@
                 </div>
               </div>
               <SwitchField
-                label={t("settings.chat.setup.allowCustomModels")}
+                label={t("settings.agents.setup.allowCustomModels")}
                 checked={providerConfigBoolean("allowCustomModels")}
                 onChange={(checked) => setProviderConfigBoolean("allowCustomModels", checked)}
               />
             {:else if draft.familyId === "cursor"}
               <div class="form-row">
-                <label for="cursor-endpoint">{t("settings.chat.setup.endpoint")}</label>
+                <label for="cursor-endpoint">{t("settings.agents.setup.endpoint")}</label>
                 <div class="field-control">
                   <input
                     id="cursor-endpoint"
@@ -585,27 +585,27 @@
               </div>
             {:else if draft.familyId === "opencode"}
               <div class="form-row">
-                <span>{t("settings.chat.setup.openCodeMode")}</span>
-                <div class="segmented-control" role="radiogroup" aria-label={t("settings.chat.setup.openCodeMode") }>
+                <span>{t("settings.agents.setup.openCodeMode")}</span>
+                <div class="segmented-control" role="radiogroup" aria-label={t("settings.agents.setup.openCodeMode") }>
                   <button
                     type="button"
                     role="radio"
                     aria-checked={openCodeMode() === "local"}
                     class:active={openCodeMode() === "local"}
                     onclick={() => setOpenCodeMode("local")}
-                  >{t("settings.chat.setup.localMode")}</button>
+                  >{t("settings.agents.setup.localMode")}</button>
                   <button
                     type="button"
                     role="radio"
                     aria-checked={openCodeMode() === "external"}
                     class:active={openCodeMode() === "external"}
                     onclick={() => setOpenCodeMode("external")}
-                  >{t("settings.chat.setup.externalMode")}</button>
+                  >{t("settings.agents.setup.externalMode")}</button>
                 </div>
               </div>
               {#if openCodeMode() === "external"}
                 <div class="form-row">
-                  <label for="opencode-endpoint">{t("settings.chat.setup.endpoint")}</label>
+                  <label for="opencode-endpoint">{t("settings.agents.setup.endpoint")}</label>
                   <div class="field-control">
                     <input
                       id="opencode-endpoint"
@@ -616,7 +616,7 @@
                   </div>
                 </div>
                 <SwitchField
-                  label={t("settings.chat.setup.confirmExternalWorkspaceAccess")}
+                  label={t("settings.agents.setup.confirmExternalWorkspaceAccess")}
                   checked={providerConfigBoolean("confirmExternalWorkspaceAccess")}
                   onChange={(checked) => setProviderConfigBoolean("confirmExternalWorkspaceAccess", checked)}
                 />
@@ -625,9 +625,9 @@
                 {/if}
                 {#if openCodeUsesInsecureExternalHttp()}
                   <div class="security-warning">
-                    <p>{t("settings.chat.setup.insecureExternalHttpWarning")}</p>
+                    <p>{t("settings.agents.setup.insecureExternalHttpWarning")}</p>
                     <SwitchField
-                      label={t("settings.chat.setup.allowInsecureExternalHttp")}
+                      label={t("settings.agents.setup.allowInsecureExternalHttp")}
                       checked={providerConfigBoolean("allowInsecureExternalHttp")}
                       onChange={(checked) => setProviderConfigBoolean("allowInsecureExternalHttp", checked)}
                     />
@@ -638,30 +638,30 @@
                 {/if}
                 {#if openCodePassword}
                   <div class="form-row">
-                    <span>{t("settings.chat.setup.externalPassword")}</span>
+                    <span>{t("settings.agents.setup.externalPassword")}</span>
                     <div class="field-control">
                       <div class="input-with-actions">
                         <input
                           type={revealSecrets[openCodePassword.key] ? "text" : "password"}
                           value={pendingSecrets[openCodePassword.key] ?? ""}
                           placeholder={openCodePassword.credentialReference
-                            ? t("settings.chat.setup.stored")
-                            : t("settings.chat.setup.missing")}
+                            ? t("settings.agents.setup.stored")
+                            : t("settings.agents.setup.missing")}
                           oninput={(event) => { pendingSecrets[openCodePassword.key] = event.currentTarget.value; }}
                         />
                         <button
                           type="button"
-                          aria-label={t("settings.chat.providers.revealAccount")}
+                          aria-label={t("settings.agents.providers.revealAccount")}
                           onclick={() => { revealSecrets[openCodePassword.key] = !revealSecrets[openCodePassword.key]; }}
                         >
                           {#if revealSecrets[openCodePassword.key]}<EyeOff size={13} />{:else}<Eye size={13} />{/if}
                         </button>
-                        <button type="button" aria-label={t("settings.chat.setup.storeSecret")} onclick={() => void storeSecret(openCodePassword)}>
+                        <button type="button" aria-label={t("settings.agents.setup.storeSecret")} onclick={() => void storeSecret(openCodePassword)}>
                           <Check size={13} />
                         </button>
                         <button
                           type="button"
-                          aria-label={t("settings.chat.setup.removeSecret")}
+                          aria-label={t("settings.agents.setup.removeSecret")}
                           onclick={() => {
                             if (openCodePassword.credentialReference) void removeSecret(openCodePassword);
                             removeEnvironment(openCodePassword.key);
@@ -676,7 +676,7 @@
                 {:else}
                   <div class="row-action">
                     <button type="button" onclick={addOpenCodePassword}>
-                      <Plus size={13} />{t("settings.chat.setup.addExternalPassword")}
+                      <Plus size={13} />{t("settings.agents.setup.addExternalPassword")}
                     </button>
                   </div>
                 {/if}
@@ -687,10 +687,10 @@
           <div class="section-divider" aria-hidden="true"></div>
 
           <section class="setup-section">
-            <h2>{t("settings.chat.setup.advanced")}</h2>
+            <h2>{t("settings.agents.setup.advanced")}</h2>
             <div class="advanced-content">
                 <div class="form-row">
-                  <label for="provider-instance-id">{t("settings.chat.setup.instanceId")}</label>
+                  <label for="provider-instance-id">{t("settings.agents.setup.instanceId")}</label>
                   <div class="field-control">
                     <input id="provider-instance-id" bind:value={draft.instanceId} disabled={target.mode === "edit"} />
                     {#if fieldError("instanceId")}<small>{fieldError("instanceId")}</small>{/if}
@@ -699,21 +699,21 @@
 
                 <div class="advanced-group">
                   <div class="form-row">
-                    <span>{t("settings.chat.setup.launchArguments")}</span>
+                    <span>{t("settings.agents.setup.launchArguments")}</span>
                     <div class="collection-action">
-                      <button type="button" onclick={addArgument}><Plus size={13} />{t("settings.chat.setup.addArgument")}</button>
+                      <button type="button" onclick={addArgument}><Plus size={13} />{t("settings.agents.setup.addArgument")}</button>
                     </div>
                   </div>
                   {#each draft.launchArguments as argument, index}
                     <div class="argument-row">
                       <input
-                        aria-label={t("settings.chat.setup.launchArgument", index + 1)}
+                        aria-label={t("settings.agents.setup.launchArgument", index + 1)}
                         value={argument}
                         oninput={(event) => { draft.launchArguments[index] = event.currentTarget.value; }}
                       />
                       <button
                         type="button"
-                        aria-label={t("settings.chat.setup.removeArgument", index + 1)}
+                        aria-label={t("settings.agents.setup.removeArgument", index + 1)}
                         onclick={() => {
                           draft.launchArguments = draft.launchArguments.filter((_, candidate) => candidate !== index);
                         }}
@@ -724,21 +724,21 @@
                     </div>
                   {/each}
                   {#if draft.launchArguments.length === 0}
-                    <p class="advanced-empty">{t("settings.chat.setup.noArguments")}</p>
+                    <p class="advanced-empty">{t("settings.agents.setup.noArguments")}</p>
                   {/if}
                 </div>
 
                 <div class="advanced-group">
                   <div class="form-row">
-                    <span>{t("settings.chat.setup.environment")}</span>
+                    <span>{t("settings.agents.setup.environment")}</span>
                     <div class="collection-action">
-                      <button type="button" onclick={addEnvironment}><Plus size={13} />{t("settings.chat.setup.addEnvironment")}</button>
+                      <button type="button" onclick={addEnvironment}><Plus size={13} />{t("settings.agents.setup.addEnvironment")}</button>
                     </div>
                   </div>
                   {#each draft.environment.filter((row) => row.name !== "OPENCODE_SERVER_PASSWORD") as row (row.key)}
                     <div class="environment-row">
-                      <input aria-label={t("settings.chat.setup.variableName")} bind:value={row.name} readonly={row.credentialReference !== ""} />
-                      <div class="environment-kind" aria-label={t("settings.chat.setup.valueType") }>
+                      <input aria-label={t("settings.agents.setup.variableName")} bind:value={row.name} readonly={row.credentialReference !== ""} />
+                      <div class="environment-kind" aria-label={t("settings.agents.setup.valueType") }>
                         {#each ["text", "secret", "inherit"] as valueType}
                           <button
                             type="button"
@@ -746,27 +746,27 @@
                             onclick={() => setEnvironmentValueType(row, valueType as ProviderEnvironmentValueType)}
                           >
                             {valueType === "text"
-                              ? t("settings.chat.setup.textValue")
+                              ? t("settings.agents.setup.textValue")
                               : valueType === "secret"
-                                ? t("settings.chat.setup.secretValue")
-                                : t("settings.chat.setup.inheritedValue")}
+                                ? t("settings.agents.setup.secretValue")
+                                : t("settings.agents.setup.inheritedValue")}
                           </button>
                         {/each}
                       </div>
                       {#if row.valueType === "text"}
-                        <input aria-label={t("settings.chat.setup.environmentValue")} bind:value={row.value} />
+                        <input aria-label={t("settings.agents.setup.environmentValue")} bind:value={row.value} />
                       {:else if row.valueType === "secret"}
                         <div class="input-with-actions">
                           <input
                             type={revealSecrets[row.key] ? "text" : "password"}
                             value={pendingSecrets[row.key] ?? ""}
-                            placeholder={row.credentialReference ? t("settings.chat.setup.stored") : t("settings.chat.setup.missing")}
+                            placeholder={row.credentialReference ? t("settings.agents.setup.stored") : t("settings.agents.setup.missing")}
                             oninput={(event) => { pendingSecrets[row.key] = event.currentTarget.value; }}
                           />
                           <button type="button" onclick={() => { revealSecrets[row.key] = !revealSecrets[row.key]; }}>
                             {#if revealSecrets[row.key]}<EyeOff size={13} />{:else}<Eye size={13} />{/if}
                           </button>
-                          <button type="button" aria-label={t("settings.chat.setup.storeSecret")} onclick={() => void storeSecret(row)}>
+                          <button type="button" aria-label={t("settings.agents.setup.storeSecret")} onclick={() => void storeSecret(row)}>
                             <Check size={13} />
                           </button>
                         </div>
@@ -776,7 +776,7 @@
                       <button
                         type="button"
                         class="remove-row"
-                        aria-label={t("settings.chat.setup.removeEnvironment")}
+                        aria-label={t("settings.agents.setup.removeEnvironment")}
                         onclick={() => {
                           if (row.valueType === "secret" && row.credentialReference) void removeSecret(row);
                           removeEnvironment(row.key);
@@ -784,8 +784,8 @@
                       ><Trash2 size={13} /></button>
                       {#if storesPlaintextSecret(row)}
                         <p class="environment-warning">
-                          {t("settings.chat.setup.plaintextSecretWarning")}
-                          <button type="button" onclick={() => void moveToCredentialStore(row)}>{t("settings.chat.setup.storeAsSecret")}</button>
+                          {t("settings.agents.setup.plaintextSecretWarning")}
+                          <button type="button" onclick={() => void moveToCredentialStore(row)}>{t("settings.agents.setup.storeAsSecret")}</button>
                         </p>
                       {/if}
                       {#if fieldError(`environment.${row.key}.name`) || fieldError(`environment.${row.key}.value`)}
@@ -796,7 +796,7 @@
                     </div>
                   {/each}
                   {#if draft.environment.filter((row) => row.name !== "OPENCODE_SERVER_PASSWORD").length === 0}
-                    <p class="advanced-empty">{t("settings.chat.setup.noEnvironment")}</p>
+                    <p class="advanced-empty">{t("settings.agents.setup.noEnvironment")}</p>
                   {/if}
                 </div>
             </div>
@@ -807,8 +807,8 @@
               <i>{#if testSucceeded}<Check size={13} />{/if}</i>
               <span>
                 {testSucceeded
-                  ? t("settings.chat.setup.testPassed", formatNumber(localization.locale, testResult.modelCatalog?.models.length ?? 0))
-                  : t("settings.chat.setup.testFailed", providerProbeMessage(testResult.probe.state))}
+                  ? t("settings.agents.setup.testPassed", formatNumber(localization.locale, testResult.modelCatalog?.models.length ?? 0))
+                  : t("settings.agents.setup.testFailed", providerProbeMessage(testResult.probe.state))}
               </span>
               {#if !testSucceeded && testResult.probe.detail}<small>{testResult.probe.detail}</small>{/if}
               {#if testResult.probe.version}<small>{testResult.probe.version}</small>{/if}
@@ -836,7 +836,7 @@
           disabled={testing || saving || !validation.valid}
           onclick={() => void testSetup()}
         >
-          {testing ? t("settings.chat.setup.testing") : t("settings.chat.setup.test")}
+          {testing ? t("settings.agents.setup.testing") : t("settings.agents.setup.test")}
         </button>
         <button
           type="button"
@@ -845,7 +845,7 @@
           onclick={() => void save()}
         >
           {#if target.mode === "edit"}<Save size={13} />{/if}
-          {target.mode === "edit" ? t("settings.chat.setup.save") : t("settings.chat.setup.create")}
+          {target.mode === "edit" ? t("settings.agents.setup.save") : t("settings.agents.setup.create")}
         </button>
       </div>
     </div>

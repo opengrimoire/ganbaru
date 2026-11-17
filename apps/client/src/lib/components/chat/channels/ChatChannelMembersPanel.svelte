@@ -96,10 +96,10 @@
   function createTeammate(): void {
     const channelId = channel.id;
     onClose();
-    settingsLauncher.open("chat", {
-      chatSubsection: "teammates",
-      chatChannelId: channelId,
-      chatCreateTeammate: true,
+    settingsLauncher.open("agents", {
+      agentsSubsection: "teammates",
+      agentsChannelId: channelId,
+      agentsCreateTeammate: true,
       onClosed: () => paneEvents.dispatchEvent(new CustomEvent(CHAT_OPEN_MEMBERS_EVENT, { detail: { channelId, addMembers: true } satisfies ChatOpenMembersDetail })),
     });
   }

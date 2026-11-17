@@ -6,6 +6,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
+  import { SETTINGS_PRIMARY_BUTTON_CLASS } from "$lib/components/settings/action-buttons";
 
   /**
    * Text editor for one group of provider files. The editor shows the saved contents until the
@@ -49,7 +50,7 @@
   function chooseFile(fileId: string): void {
     if (fileId === selectedFile?.fileId) return;
     if (pending) {
-      error = t("settings.chat.permissions.saveOrReload");
+      error = t("settings.agents.files.saveOrReload");
       return;
     }
     selectedFileId = fileId;
@@ -83,22 +84,22 @@
     <div class="flex flex-wrap items-end justify-between gap-3 px-1">
       <div class="min-w-48 flex-1">
         {#if files.length > 1}
-          <Select inline class="w-full" value={selectedFile.fileId} options={fileOptions} onChange={chooseFile} ariaLabel={t("settings.chat.permissions.fileLabel")} />
+          <Select inline class="w-full" value={selectedFile.fileId} options={fileOptions} onChange={chooseFile} ariaLabel={t("settings.agents.files.fileLabel")} />
         {:else}
           <p class="text-[0.8rem] font-medium text-foreground">{selectedFile.name}</p>
         {/if}
       </div>
-      <button type="button" class="setup-primary-button gap-1.5" disabled={!pending || saving} onclick={() => void save()}>
+      <button type="button" class={SETTINGS_PRIMARY_BUTTON_CLASS} disabled={!pending || saving} onclick={() => void save()}>
         <Save size={13} />
-        {saving ? t("settings.chat.permissions.saving") : t("settings.chat.permissions.save")}
+        {saving ? t("settings.agents.files.saving") : t("settings.agents.files.save")}
       </button>
     </div>
     <div class="px-1">
       <p class="break-all font-mono text-[0.7rem] text-muted-foreground">{selectedFile.path}</p>
       <p class="mt-1 text-[0.666667rem] text-muted-foreground">
         {selectedFile.exists
-          ? t("settings.chat.permissions.existingFile", selectedFile.format.toUpperCase())
-          : t("settings.chat.permissions.newFile", selectedFile.format.toUpperCase())}
+          ? t("settings.agents.files.existingFile", selectedFile.format.toUpperCase())
+          : t("settings.agents.files.newFile", selectedFile.format.toUpperCase())}
       </p>
     </div>
     {#if error}
@@ -115,8 +116,8 @@
         oninput={(event) => { draft = event.currentTarget.value; error = null; }}
       ></textarea>
       <div class="flex flex-wrap items-center justify-between gap-2 border-t border-border px-3 py-2 text-[0.666667rem] text-muted-foreground">
-        <span>{t("settings.chat.permissions.fileLimit")}</span>
-        {#if pending}<span class="font-medium text-status-tentative">{t("settings.chat.permissions.unsaved")}</span>{/if}
+        <span>{t("settings.agents.files.fileLimit")}</span>
+        {#if pending}<span class="font-medium text-status-tentative">{t("settings.agents.files.unsaved")}</span>{/if}
       </div>
     </div>
   </div>

@@ -32,27 +32,27 @@
   const presetPlaceholder = $derived<ChatControlOption>({
     value: presetValue,
     label: uniformPreset === "custom"
-      ? t("settings.chat.teammates.presets.custom")
-      : t("settings.chat.teammates.mixedChannelBehavior"),
+      ? t("settings.agents.teammates.presets.custom")
+      : t("settings.agents.teammates.mixedChannelBehavior"),
     icon: "sliders",
   });
   const presetOptions = $derived<ChatControlOption[]>([
     {
       value: "isolatedResponder",
-      label: t("settings.chat.teammates.presetControls.isolatedResponder.label"),
-      description: t("settings.chat.teammates.presetControls.isolatedResponder.description"),
+      label: t("settings.agents.teammates.presetControls.isolatedResponder.label"),
+      description: t("settings.agents.teammates.presetControls.isolatedResponder.description"),
       icon: "bot",
     },
     {
       value: "collaborator",
-      label: t("settings.chat.teammates.presetControls.collaborator.label"),
-      description: t("settings.chat.teammates.presetControls.collaborator.description"),
+      label: t("settings.agents.teammates.presetControls.collaborator.label"),
+      description: t("settings.agents.teammates.presetControls.collaborator.description"),
       icon: "messages-square",
     },
     {
       value: "contextSource",
-      label: t("settings.chat.teammates.presetControls.contextSource.label"),
-      description: t("settings.chat.teammates.presetControls.contextSource.description"),
+      label: t("settings.agents.teammates.presetControls.contextSource.label"),
+      description: t("settings.agents.teammates.presetControls.contextSource.description"),
       icon: "book-open",
     },
   ]);
@@ -64,7 +64,7 @@
       value={presetValue}
       options={presetOptions}
       placeholder={presetPlaceholder}
-      ariaLabel={t("settings.chat.teammates.channelBehavior")}
+      ariaLabel={t("settings.agents.teammates.channelBehavior")}
       onChange={(value) => onPresetChange(value as SelectablePreset)}
       {disabled}
       showTooltip={false}

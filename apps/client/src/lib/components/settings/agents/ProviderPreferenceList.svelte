@@ -1,5 +1,4 @@
 <script lang="ts">
-  import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import type { ProviderPreferenceRead, ProviderPreferencesRead } from "$lib/chat/contracts";
   import {
     providerPreferenceInputValue,
@@ -7,6 +6,7 @@
     providerPreferenceOptionName,
   } from "$lib/chat/provider-files";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import ResetButton from "$lib/components/ui/ResetButton.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import Switch from "$lib/components/ui/Switch.svelte";
 
@@ -30,19 +30,19 @@
   const { t } = getLocalization();
   const locked = $derived(disabled || !preferences.editable);
   const booleanOptions = $derived([
-    { value: "default", label: t("settings.chat.permissions.preferenceDefault") },
-    { value: "on", label: t("settings.chat.permissions.preferenceOn") },
-    { value: "off", label: t("settings.chat.permissions.preferenceOff") },
+    { value: "default", label: t("settings.agents.files.preferenceDefault") },
+    { value: "on", label: t("settings.agents.files.preferenceOn") },
+    { value: "off", label: t("settings.agents.files.preferenceOff") },
   ]);
 
   function label(entry: ProviderPreferenceRead): string {
     const name = providerPreferenceName(entry.id);
-    return name ? t(`settings.chat.permissions.preferences.${name}.label`) : entry.id;
+    return name ? t(`settings.agents.files.preferences.${name}.label`) : entry.id;
   }
 
   function description(entry: ProviderPreferenceRead): string | null {
     const name = providerPreferenceName(entry.id);
-    return name ? t(`settings.chat.permissions.preferences.${name}.description`) : null;
+    return name ? t(`settings.agents.files.preferences.${name}.description`) : null;
   }
 
   function booleanValue(entry: ProviderPreferenceRead): string {
@@ -55,10 +55,10 @@
 
   function choiceOptions(entry: ProviderPreferenceRead): { value: string; label: string }[] {
     return [
-      { value: DEFAULT_CHOICE, label: t("settings.chat.permissions.preferenceDefault") },
+      { value: DEFAULT_CHOICE, label: t("settings.agents.files.preferenceDefault") },
       ...entry.options.map((option) => {
         const name = providerPreferenceOptionName(option);
-        return { value: option, label: name ? t(`settings.chat.permissions.preferenceOptions.${name}`) : option };
+        return { value: option, label: name ? t(`settings.agents.files.preferenceOptions.${name}`) : option };
       }),
     ];
   }
@@ -75,6 +75,11 @@
     const value = providerPreferenceInputValue(entry, input);
     if (value === entry.value) return;
     void onSave(entry.id, value);
+  }
+
+  /** Whether the entry is edited in a text box, which its label then names. */
+  function usesTextInput(entry: ProviderPreferenceRead): boolean {
+    return entry.valueType !== "switch" && entry.valueType !== "boolean" && entry.valueType !== "choice";
   }
 
   function textValue(entry: ProviderPreferenceRead): string {
@@ -98,43 +103,23 @@
     {/if}
     <code class="mt-0.5 block break-all font-mono text-[0.666667rem] text-muted-foreground">{entry.variable ? `env.${entry.id}` : entry.id}</code>
     {#if entry.ignored}
-      <p class="mt-0.5 text-[0.733333rem] text-status-tentative">{t(allowlisted ? "settings.chat.permissions.preferenceIgnored" : "settings.chat.permissions.preferenceInvalid")}</p>
+      <p class="mt-0.5 text-[0.733333rem] text-status-tentative">{t(allowlisted ? "settings.agents.files.preferenceIgnored" : "settings.agents.files.preferenceInvalid")}</p>
     {/if}
   </div>
 {/snippet}
 
 {#snippet resetButton(entry: ProviderPreferenceRead)}
-  <button
-    type="button"
-    class="chat-settings-button"
-    disabled={locked || entry.value === null}
-    aria-label={t("settings.chat.permissions.preferenceReset", label(entry))}
-    title={t("settings.chat.permissions.preferenceReset", label(entry))}
-    onclick={() => void onSave(entry.id, null)}
-  >
-    <RotateCcw size={12} />
-  </button>
+  <ResetButton
+    canReset={!locked && entry.value !== null}
+    label={t("settings.agents.files.preferenceReset", label(entry))}
+    onReset={() => void onSave(entry.id, null)}
+  />
 {/snippet}
 
 <div class="flex flex-col gap-3">
   {#each preferences.entries as entry (entry.id)}
     {@const controlId = `teammate-preference-${entry.id.replaceAll(".", "-")}`}
-    {#if entry.valueType === "switch"}
-      <div class="flex items-center justify-between gap-4 px-1 py-1 max-[480px]:items-start">
-        {@render details(entry, null)}
-        <Switch checked={entry.value === true} disabled={locked} ariaLabel={label(entry)} onChange={(checked) => void onSave(entry.id, checked)} />
-      </div>
-    {:else if entry.valueType === "boolean"}
-      <div class="flex items-center justify-between gap-4 px-1 py-1 max-[480px]:flex-col max-[480px]:items-stretch max-[480px]:gap-2">
-        {@render details(entry, null)}
-        <Select inline value={booleanValue(entry)} options={booleanOptions} disabled={locked} ariaLabel={label(entry)} onChange={(choice) => saveBoolean(entry, choice)} />
-      </div>
-    {:else if entry.valueType === "choice"}
-      <div class="flex items-center justify-between gap-4 px-1 py-1 max-[480px]:flex-col max-[480px]:items-stretch max-[480px]:gap-2">
-        {@render details(entry, null)}
-        <Select inline value={typeof entry.value === "string" ? entry.value : DEFAULT_CHOICE} options={choiceOptions(entry)} disabled={locked} ariaLabel={label(entry)} onChange={(choice) => saveChoice(entry, choice)} />
-      </div>
-    {:else if entry.multiline}
+    {#if entry.multiline}
       <div class="flex flex-col gap-2 px-1 py-1">
         <div class="flex items-start justify-between gap-4">
           {@render details(entry, controlId)}
@@ -151,20 +136,28 @@
       </div>
     {:else}
       <div class="flex items-center justify-between gap-4 px-1 py-1 max-[480px]:flex-col max-[480px]:items-stretch max-[480px]:gap-2">
-        {@render details(entry, controlId)}
-        <div class="flex items-center justify-end gap-1.5">
-          <input
-            id={controlId}
-            class="field w-44 min-w-0 px-2.5 text-left text-[0.8rem] font-medium text-foreground max-[480px]:w-full"
-            value={textValue(entry)}
-            inputmode={entry.valueType === "text" ? "text" : "numeric"}
-            placeholder={t("settings.chat.permissions.preferenceDefault")}
-            disabled={locked}
-            spellcheck="false"
-            autocapitalize="off"
-            onkeydown={blurOnEnter}
-            onchange={(event) => commitText(entry, event.currentTarget.value)}
-          />
+        {@render details(entry, usesTextInput(entry) ? controlId : null)}
+        <div class="flex items-center justify-end gap-1.5 max-[480px]:justify-between">
+          {#if entry.valueType === "switch"}
+            <Switch checked={entry.value === true} disabled={locked} ariaLabel={label(entry)} onChange={(checked) => void onSave(entry.id, checked)} />
+          {:else if entry.valueType === "boolean"}
+            <Select inline value={booleanValue(entry)} options={booleanOptions} disabled={locked} ariaLabel={label(entry)} onChange={(choice) => saveBoolean(entry, choice)} />
+          {:else if entry.valueType === "choice"}
+            <Select inline value={typeof entry.value === "string" ? entry.value : DEFAULT_CHOICE} options={choiceOptions(entry)} disabled={locked} ariaLabel={label(entry)} onChange={(choice) => saveChoice(entry, choice)} />
+          {:else}
+            <input
+              id={controlId}
+              class="field w-44 min-w-0 px-2.5 text-left text-[0.8rem] font-medium text-foreground max-[480px]:w-full"
+              value={textValue(entry)}
+              inputmode={entry.valueType === "text" ? "text" : "numeric"}
+              placeholder={t("settings.agents.files.preferenceDefault")}
+              disabled={locked}
+              spellcheck="false"
+              autocapitalize="off"
+              onkeydown={blurOnEnter}
+              onchange={(event) => commitText(entry, event.currentTarget.value)}
+            />
+          {/if}
           {@render resetButton(entry)}
         </div>
       </div>

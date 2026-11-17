@@ -89,10 +89,10 @@
   function createTeammate(): void {
     const channelId = currentChannel?.id;
     onCancel();
-    settingsLauncher.open("chat", {
-      chatSubsection: "teammates",
-      chatChannelId: channelId,
-      chatCreateTeammate: true,
+    settingsLauncher.open("agents", {
+      agentsSubsection: "teammates",
+      agentsChannelId: channelId,
+      agentsCreateTeammate: true,
       onClosed: () => {
         if (channelId) paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-edit-channel", { detail: { channelId } }));
         else paneEvents.dispatchEvent(new Event("ganbaru:chat-new-channel"));

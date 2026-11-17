@@ -145,12 +145,12 @@ export async function setLastSelectedChatThread(threadId: ChatThreadId | null): 
 /** Localized text for the native runtime confirmation; the listed values are resolved natively. */
 function providerRuntimePrompt() {
   return {
-    title: translate("settings.chat.setup.runtimeReviewTitle"),
-    message: translate("settings.chat.setup.runtimeReviewMessage"),
-    allowLabel: translate("settings.chat.setup.runtimeReviewAllow"),
-    cancelLabel: translate("settings.chat.setup.runtimeReviewCancel"),
-    moreLabel: translate("settings.chat.setup.runtimeReviewMore"),
-    sharedProgramLabel: translate("settings.chat.setup.runtimeReviewSharedProgram"),
+    title: translate("settings.agents.setup.runtimeReviewTitle"),
+    message: translate("settings.agents.setup.runtimeReviewMessage"),
+    allowLabel: translate("settings.agents.setup.runtimeReviewAllow"),
+    cancelLabel: translate("settings.agents.setup.runtimeReviewCancel"),
+    moreLabel: translate("settings.agents.setup.runtimeReviewMore"),
+    sharedProgramLabel: translate("settings.agents.setup.runtimeReviewSharedProgram"),
   };
 }
 

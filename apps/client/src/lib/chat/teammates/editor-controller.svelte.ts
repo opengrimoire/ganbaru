@@ -196,7 +196,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     const failure = [archivedResult, channelResult, profileResult]
       .find((result) => result.status === "rejected");
     if (failure?.status === "rejected") {
-      error = chatErrorMessage(failure.reason, t("settings.chat.teammates.loadFailed"));
+      error = chatErrorMessage(failure.reason, t("settings.agents.teammates.loadFailed"));
     }
     loadingDirectory = false;
   }
@@ -443,7 +443,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
       }
     } catch (cause: unknown) {
       if (request === accessLoadRequest) {
-        error = chatErrorMessage(cause, t("settings.chat.teammates.accessLoadFailed"));
+        error = chatErrorMessage(cause, t("settings.agents.teammates.accessLoadFailed"));
       }
     } finally {
       if (request === accessLoadRequest) loadingAccess = false;
@@ -483,7 +483,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
       if (request !== conflictLoadRequest) return;
       conflictError = chatErrorMessage(
         cause,
-        t("settings.chat.teammates.conflict.loadFailed"),
+        t("settings.agents.teammates.conflict.loadFailed"),
       );
     } finally {
       if (request === conflictLoadRequest) {
@@ -528,7 +528,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     try {
       await chat.refreshTeammates();
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause, t("settings.chat.teammates.loadFailed"));
+      error = chatErrorMessage(cause, t("settings.agents.teammates.loadFailed"));
     }
   }
 
@@ -548,15 +548,15 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
   function providerCapabilityIssue(capability: ChatFolderCapability): string | null {
     if (capability === "none") return null;
     const support = providerAuthoritySupport;
-    if (!support) return t("settings.chat.teammates.providerAuthorityUnknown");
+    if (!support) return t("settings.agents.teammates.providerAuthorityUnknown");
     if (capability === "read" && !support.internalHostTools && !support.readOnlyRoot) {
-      return t("settings.chat.teammates.providerCannotRead");
+      return t("settings.agents.teammates.providerCannotRead");
     }
     if (capability === "edit" && !support.internalHostTools && !support.writableRoot) {
-      return t("settings.chat.teammates.providerCannotEdit");
+      return t("settings.agents.teammates.providerCannotEdit");
     }
     if (capability === "execute" && !providerExecutesWithAsk(support, safetyMode)) {
-      return t("settings.chat.teammates.providerCannotExecute");
+      return t("settings.agents.teammates.providerCannotExecute");
     }
     if (capability === "publish" && (
       !support.writableRoot
@@ -564,7 +564,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
       || !support.networkBoundary
       || !support.classifiedPublish
     )) {
-      return t("settings.chat.teammates.providerCannotPublish");
+      return t("settings.agents.teammates.providerCannotPublish");
     }
     return null;
   }
@@ -578,10 +578,10 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     const support = providerAuthoritySupport;
     if (!isDefault || !support) return null;
     if (capability === "read" && (!support.readOnlyRoot || !support.denyShell)) {
-      return t("settings.chat.teammates.providerCannotTargetReadOnly");
+      return t("settings.agents.teammates.providerCannotTargetReadOnly");
     }
     if (capability === "edit" && (!support.writableRoot || !support.denyShell)) {
-      return t("settings.chat.teammates.providerCannotTargetWritable");
+      return t("settings.agents.teammates.providerCannotTargetWritable");
     }
     return null;
   }
@@ -609,7 +609,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
       return issue ? [issue] : [];
     });
     if (grants.some((grant) => grant.workingFolderId !== impliedFolderId) && !providerAuthoritySupport?.internalHostTools) {
-      issues.push(t("settings.chat.teammates.providerNeedsHostTools"));
+      issues.push(t("settings.agents.teammates.providerNeedsHostTools"));
     }
     return issues.filter((issue, index) => issues.indexOf(issue) === index);
   }
@@ -783,7 +783,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
         errorField = null;
         await loadAccessConflict(teammateId, captureStudioDraft());
       } else {
-        error = chatErrorMessage(cause, t("settings.chat.teammates.saveFailed"));
+        error = chatErrorMessage(cause, t("settings.agents.teammates.saveFailed"));
         errorField = chatErrorField(cause);
       }
     } finally {

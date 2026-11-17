@@ -285,10 +285,10 @@
   }
 
   function approvalPolicyLabel(policy: ChatRuntimeApprovalPolicy): string {
-    if (policy === "ask") return t("settings.chat.teammates.runtime.ask");
-    if (policy === "autoApprove") return t("settings.chat.teammates.runtime.autoApprove");
-    if (policy === "unattended") return t("settings.chat.teammates.runtime.unattended");
-    return t("settings.chat.teammates.runtime.providerCustom");
+    if (policy === "ask") return t("settings.agents.teammates.runtime.ask");
+    if (policy === "autoApprove") return t("settings.agents.teammates.runtime.autoApprove");
+    if (policy === "unattended") return t("settings.agents.teammates.runtime.unattended");
+    return t("settings.agents.teammates.runtime.providerCustom");
   }
 
   function teammateReasoning(): string | null {
@@ -331,7 +331,7 @@
       return;
     }
     if (participant?.kind === "ai_teammate") {
-      settings.open("chat", { chatSubsection: "teammates", chatTeammateId: participant.id });
+      settings.open("agents", { agentsSubsection: "teammates", agentsTeammateId: participant.id });
     }
   }
 </script>

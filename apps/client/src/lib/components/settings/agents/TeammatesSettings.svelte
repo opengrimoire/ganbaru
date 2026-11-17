@@ -180,7 +180,7 @@
           id: groupId,
           name: ungrouped
             ? t("projects.navigator.noGroup")
-            : group?.name ?? t("settings.chat.teammates.unknownGroup"),
+            : group?.name ?? t("settings.agents.teammates.unknownGroup"),
           // Projects outside every group follow the groups; unknown groups come last.
           sortOrder: ungrouped ? groupRanks.size : groupRanks.get(group?.id ?? "") ?? Number.MAX_SAFE_INTEGER,
           projects: [],
@@ -191,7 +191,7 @@
       if (!summaryProject) {
         summaryProject = {
           id: channel.projectId,
-          name: project?.name ?? t("settings.chat.teammates.unknownProject"),
+          name: project?.name ?? t("settings.agents.teammates.unknownProject"),
           sortOrder: projectRanks.get(channel.projectId) ?? Number.MAX_SAFE_INTEGER,
           channels: [],
         };
@@ -220,29 +220,29 @@
   const accessProfileOptions = $derived<ChatControlOption[]>(editor.accessProfiles.map((profile) => ({
     value: profile.id,
     label: profile.builtinKey
-      ? t(`settings.chat.teammates.profiles.${profile.builtinKey}`)
+      ? t(`settings.agents.teammates.profiles.${profile.builtinKey}`)
       : profile.displayName,
     description: profileDescription(profile.latestRevision.maximumFolderCapability),
     icon: profileIcon(profile.latestRevision.maximumFolderCapability),
   })));
 
   const historyOptions = $derived([
-    { value: "entire", label: t("settings.chat.teammates.historyEntire") },
-    { value: "fromGrant", label: t("settings.chat.teammates.historyFromGrant") },
+    { value: "entire", label: t("settings.agents.teammates.historyEntire") },
+    { value: "fromGrant", label: t("settings.agents.teammates.historyFromGrant") },
   ]);
   const channelRuntimeOptions = $derived([
-    { value: "inherit", label: t("settings.chat.teammates.runtime.inherit") },
-    { value: "ask", label: t("settings.chat.teammates.runtime.ask") },
-    { value: "autoApprove", label: t("settings.chat.teammates.runtime.autoApprove") },
-    { value: "unattended", label: t("settings.chat.teammates.runtime.unattended") },
-    { value: "providerCustom", label: t("settings.chat.teammates.runtime.providerCustom") },
+    { value: "inherit", label: t("settings.agents.teammates.runtime.inherit") },
+    { value: "ask", label: t("settings.agents.teammates.runtime.ask") },
+    { value: "autoApprove", label: t("settings.agents.teammates.runtime.autoApprove") },
+    { value: "unattended", label: t("settings.agents.teammates.runtime.unattended") },
+    { value: "providerCustom", label: t("settings.agents.teammates.runtime.providerCustom") },
   ]);
   const folderRuntimeOptions = $derived([
-    { value: "inherit", label: t("settings.chat.teammates.runtime.inheritChannel") },
-    { value: "ask", label: t("settings.chat.teammates.runtime.ask") },
-    { value: "autoApprove", label: t("settings.chat.teammates.runtime.autoApprove") },
-    { value: "unattended", label: t("settings.chat.teammates.runtime.unattended") },
-    { value: "providerCustom", label: t("settings.chat.teammates.runtime.providerCustom") },
+    { value: "inherit", label: t("settings.agents.teammates.runtime.inheritChannel") },
+    { value: "ask", label: t("settings.agents.teammates.runtime.ask") },
+    { value: "autoApprove", label: t("settings.agents.teammates.runtime.autoApprove") },
+    { value: "unattended", label: t("settings.agents.teammates.runtime.unattended") },
+    { value: "providerCustom", label: t("settings.agents.teammates.runtime.providerCustom") },
   ]);
 
   $effect(() => {
@@ -289,11 +289,11 @@
   }
 
   function profileDescription(capability: ChatFolderCapability): string {
-    if (capability === "read") return t("settings.chat.teammates.profileDescriptions.readOnly");
-    if (capability === "edit") return t("settings.chat.teammates.profileDescriptions.editFiles");
-    if (capability === "execute") return t("settings.chat.teammates.profileDescriptions.buildAndTest");
-    if (capability === "publish") return t("settings.chat.teammates.profileDescriptions.publishChanges");
-    return t("settings.chat.teammates.profileDescriptions.conversationOnly");
+    if (capability === "read") return t("settings.agents.teammates.profileDescriptions.readOnly");
+    if (capability === "edit") return t("settings.agents.teammates.profileDescriptions.editFiles");
+    if (capability === "execute") return t("settings.agents.teammates.profileDescriptions.buildAndTest");
+    if (capability === "publish") return t("settings.agents.teammates.profileDescriptions.publishChanges");
+    return t("settings.agents.teammates.profileDescriptions.conversationOnly");
   }
 
   function profileIcon(capability: ChatFolderCapability): ChatControlIcon {
@@ -305,11 +305,11 @@
   }
 
   function folderCapabilityLabel(capability: ChatFolderCapability): string {
-    if (capability === "read") return t("settings.chat.teammates.folderCapabilities.read");
-    if (capability === "edit") return t("settings.chat.teammates.folderCapabilities.edit");
-    if (capability === "execute") return t("settings.chat.teammates.folderCapabilities.execute");
-    if (capability === "publish") return t("settings.chat.teammates.folderCapabilities.publish");
-    return t("settings.chat.teammates.folderCapabilities.none");
+    if (capability === "read") return t("settings.agents.teammates.folderCapabilities.read");
+    if (capability === "edit") return t("settings.agents.teammates.folderCapabilities.edit");
+    if (capability === "execute") return t("settings.agents.teammates.folderCapabilities.execute");
+    if (capability === "publish") return t("settings.agents.teammates.folderCapabilities.publish");
+    return t("settings.agents.teammates.folderCapabilities.none");
   }
 
   function channelById(channelId: string): ChatChannelRead | null {
@@ -323,7 +323,7 @@
     const formatted = formatList(localization.locale, visibleNames);
     const hiddenCount = channelIds.length - visibleNames.length;
     return hiddenCount > 0
-      ? t("settings.chat.teammates.accessConfirmation.listWithMore", formatted, hiddenCount)
+      ? t("settings.agents.teammates.accessConfirmation.listWithMore", formatted, hiddenCount)
       : formatted;
   }
 
@@ -332,35 +332,35 @@
     const consequences: string[] = [];
     if (impact.historyChannelIds.length > 0) {
       consequences.push(t(
-        "settings.chat.teammates.accessConfirmation.history",
+        "settings.agents.teammates.accessConfirmation.history",
         teammateName,
         compactChannelList(impact.historyChannelIds),
       ));
     }
     if (impact.entireHistoryChannelIds.length > 0) {
       consequences.push(t(
-        "settings.chat.teammates.accessConfirmation.entireHistory",
+        "settings.agents.teammates.accessConfirmation.entireHistory",
         teammateName,
         compactChannelList(impact.entireHistoryChannelIds),
       ));
     }
     if (impact.executeFolderIds.length > 0) {
       consequences.push(t(
-        "settings.chat.teammates.accessConfirmation.executeFolders",
+        "settings.agents.teammates.accessConfirmation.executeFolders",
         teammateName,
         impact.executeFolderIds.length,
       ));
     }
     if (impact.publishFolderIds.length > 0) {
       consequences.push(t(
-        "settings.chat.teammates.accessConfirmation.publishFolders",
+        "settings.agents.teammates.accessConfirmation.publishFolders",
         teammateName,
         impact.publishFolderIds.length,
       ));
     }
     if (impact.removedChannelIds.length > 0) {
       consequences.push(t(
-        "settings.chat.teammates.accessConfirmation.removeChannels",
+        "settings.agents.teammates.accessConfirmation.removeChannels",
         compactChannelList(impact.removedChannelIds),
       ));
     }
@@ -564,12 +564,12 @@
       if (managed && bindingStatus === "missing") {
         await chat.recreateManagedWorkingFolder(folderId);
       } else if (bindingStatus === "repository_mismatch") {
-        await chat.rebindWorkingFolder(folderId, t("settings.chat.teammates.locateFolder"));
+        await chat.rebindWorkingFolder(folderId, t("settings.agents.teammates.locateFolder"));
       } else {
-        await chat.locateWorkingFolder(folderId, t("settings.chat.teammates.locateFolder"));
+        await chat.locateWorkingFolder(folderId, t("settings.agents.teammates.locateFolder"));
       }
     } catch (cause: unknown) {
-      editor.error = chatErrorMessage(cause, t("settings.chat.teammates.folderRecoveryFailed"));
+      editor.error = chatErrorMessage(cause, t("settings.agents.teammates.folderRecoveryFailed"));
     }
   }
 
@@ -589,7 +589,7 @@
       profileManagerOpen = true;
     } catch (cause: unknown) {
       editor.errorField = null;
-      editor.error = chatErrorMessage(cause, t("settings.chat.teammates.loadFailed"));
+      editor.error = chatErrorMessage(cause, t("settings.agents.teammates.loadFailed"));
     } finally {
       profileManagerLoading = false;
     }
@@ -599,7 +599,7 @@
     if (!editor.selected || lifecycleBusy) return;
     editor.lifecycleError = null;
     if (editor.selected.activeAssignmentCount > 0) {
-      editor.lifecycleError = t("settings.chat.teammates.archiveBlocked", editor.selected.activeAssignmentCount);
+      editor.lifecycleError = t("settings.agents.teammates.archiveBlocked", editor.selected.activeAssignmentCount);
       return;
     }
     archiveTarget = editor.selected;
@@ -618,7 +618,7 @@
       await editor.loadDirectoryData();
       editor.lifecycleError = null;
     } catch (cause: unknown) {
-      editor.lifecycleError = chatErrorMessage(cause, t("settings.chat.teammates.lifecycleFailed"));
+      editor.lifecycleError = chatErrorMessage(cause, t("settings.agents.teammates.lifecycleFailed"));
     } finally {
       lifecycleBusy = false;
     }
@@ -640,7 +640,7 @@
       editor.selectedId = restored.participant.id;
       editor.lifecycleError = null;
     } catch (cause: unknown) {
-      editor.lifecycleError = chatErrorMessage(cause, t("settings.chat.teammates.restoreFailed"));
+      editor.lifecycleError = chatErrorMessage(cause, t("settings.agents.teammates.restoreFailed"));
     } finally {
       lifecycleBusy = false;
     }
@@ -653,68 +653,68 @@
   {@const preset = channelCapabilityPreset(channelAccess.capabilities)}
   <div class="access-details">
     {#if channelAccess.capabilities.readHistory}
-      <div class="form-field history-field"><span>{t("settings.chat.teammates.history")}</span><Select inline class="w-full" value={channelAccess.historyBoundary.kind} options={historyOptions} ariaLabel={t("settings.chat.teammates.history")} disabled={editor.archivedMode} onChange={(value) => updateAccessChannel(channelAccess.channelId, (channel) => ({ ...channel, historyBoundary: value === "fromGrant" ? { kind: "fromGrant" } : { kind: "entire" } }))} /></div>
+      <div class="form-field history-field"><span>{t("settings.agents.teammates.history")}</span><Select inline class="w-full" value={channelAccess.historyBoundary.kind} options={historyOptions} ariaLabel={t("settings.agents.teammates.history")} disabled={editor.archivedMode} onChange={(value) => updateAccessChannel(channelAccess.channelId, (channel) => ({ ...channel, historyBoundary: value === "fromGrant" ? { kind: "fromGrant" } : { kind: "entire" } }))} /></div>
     {/if}
     {#if preset === "custom"}
       <fieldset class="capability-switches" disabled={editor.archivedMode}>
-        <legend>{t("settings.chat.teammates.channelCapabilities")}</legend>
-        <div><Checkbox checked={channelAccess.capabilities.readHistory} label={t("settings.chat.teammates.readHistory")} disabled={editor.archivedMode} onChange={(checked) => updateAccessChannel(channelAccess.channelId, (channel) => ({ ...channel, capabilities: { ...channel.capabilities, readHistory: checked }, historyBoundary: { kind: "entire" } }))} /><span><strong>{t("settings.chat.teammates.readHistory")}</strong><small>{t("settings.chat.teammates.readHistoryDescription")}</small></span></div>
-        <div><Checkbox checked={channelAccess.capabilities.participate} label={t("settings.chat.teammates.participate")} disabled={editor.archivedMode} onChange={(checked) => updateAccessChannel(channelAccess.channelId, (channel) => ({ ...channel, capabilities: { ...channel.capabilities, participate: checked } }))} /><span><strong>{t("settings.chat.teammates.participate")}</strong><small>{t("settings.chat.teammates.participateDescription")}</small></span></div>
+        <legend>{t("settings.agents.teammates.channelCapabilities")}</legend>
+        <div><Checkbox checked={channelAccess.capabilities.readHistory} label={t("settings.agents.teammates.readHistory")} disabled={editor.archivedMode} onChange={(checked) => updateAccessChannel(channelAccess.channelId, (channel) => ({ ...channel, capabilities: { ...channel.capabilities, readHistory: checked }, historyBoundary: { kind: "entire" } }))} /><span><strong>{t("settings.agents.teammates.readHistory")}</strong><small>{t("settings.agents.teammates.readHistoryDescription")}</small></span></div>
+        <div><Checkbox checked={channelAccess.capabilities.participate} label={t("settings.agents.teammates.participate")} disabled={editor.archivedMode} onChange={(checked) => updateAccessChannel(channelAccess.channelId, (channel) => ({ ...channel, capabilities: { ...channel.capabilities, participate: checked } }))} /><span><strong>{t("settings.agents.teammates.participate")}</strong><small>{t("settings.agents.teammates.participateDescription")}</small></span></div>
       </fieldset>
     {/if}
     {#if selectedProfile?.latestRevision.maximumFolderCapability !== "none"}
       <fieldset class="folder-access" disabled={editor.archivedMode}>
-        <legend>{t("settings.chat.teammates.foldersForChannel")}</legend>
+        <legend>{t("settings.agents.teammates.foldersForChannel")}</legend>
         {#each foldersForChannel(channelAccess.channelId) as folderRead (folderRead.workingFolder.id)}
           {@const grant = channelAccess.folderGrants.find((entry) => entry.workingFolderId === folderRead.workingFolder.id)}
           <div class="folder-row">
-            <Checkbox checked={Boolean(grant)} label={t("settings.chat.teammates.allowFolder", folderRead.workingFolder.displayName)} disabled={editor.archivedMode} onChange={(checked) => toggleFolderGrant(channelAccess.channelId, folderRead.workingFolder.id, checked)} />
+            <Checkbox checked={Boolean(grant)} label={t("settings.agents.teammates.allowFolder", folderRead.workingFolder.displayName)} disabled={editor.archivedMode} onChange={(checked) => toggleFolderGrant(channelAccess.channelId, folderRead.workingFolder.id, checked)} />
             <Folder size={14} />
-            <span class="folder-name"><strong>{folderRead.workingFolder.displayName}</strong><small data-status={folderRead.bindingStatus}>{t(`settings.chat.teammates.binding.${folderRead.bindingStatus}`)}</small></span>
+            <span class="folder-name"><strong>{folderRead.workingFolder.displayName}</strong><small data-status={folderRead.bindingStatus}>{t(`settings.agents.teammates.binding.${folderRead.bindingStatus}`)}</small></span>
             <div class="folder-controls">
               {#if grant}
-                <Select inline class="folder-select" value={grant.capability} options={folderCapabilityOptions(selectedProfile?.latestRevision.maximumFolderCapability ?? "none")} ariaLabel={t("settings.chat.teammates.folderCapabilityFor", folderRead.workingFolder.displayName)} onChange={(value) => setFolderCapability(channelAccess.channelId, folderRead.workingFolder.id, value as ChatFolderCapability)} />
-                {#if advancedChannelIds.has(channelAccess.channelId)}<Select inline class="approval-select" value={grant.runtimeApprovalOverride ?? "inherit"} options={folderRuntimeOptions} ariaLabel={t("settings.chat.teammates.folderRuntimeApprovalFor", folderRead.workingFolder.displayName)} onChange={(value) => setFolderRuntimeApproval(channelAccess.channelId, folderRead.workingFolder.id, value === "inherit" ? null : value as ChatRuntimeApprovalPolicy)} />{/if}
-                <label class="default-target"><input type="radio" name={`default-${channelAccess.channelId}`} checked={grant.isDefault} onchange={() => setDefaultFolder(channelAccess.channelId, folderRead.workingFolder.id)} />{t("settings.chat.teammates.defaultTarget")}</label>
+                <Select inline class="folder-select" value={grant.capability} options={folderCapabilityOptions(selectedProfile?.latestRevision.maximumFolderCapability ?? "none")} ariaLabel={t("settings.agents.teammates.folderCapabilityFor", folderRead.workingFolder.displayName)} onChange={(value) => setFolderCapability(channelAccess.channelId, folderRead.workingFolder.id, value as ChatFolderCapability)} />
+                {#if advancedChannelIds.has(channelAccess.channelId)}<Select inline class="approval-select" value={grant.runtimeApprovalOverride ?? "inherit"} options={folderRuntimeOptions} ariaLabel={t("settings.agents.teammates.folderRuntimeApprovalFor", folderRead.workingFolder.displayName)} onChange={(value) => setFolderRuntimeApproval(channelAccess.channelId, folderRead.workingFolder.id, value === "inherit" ? null : value as ChatRuntimeApprovalPolicy)} />{/if}
+                <label class="default-target"><input type="radio" name={`default-${channelAccess.channelId}`} checked={grant.isDefault} onchange={() => setDefaultFolder(channelAccess.channelId, folderRead.workingFolder.id)} />{t("settings.agents.teammates.defaultTarget")}</label>
               {/if}
-              {#if folderRead.bindingStatus !== "available"}<button type="button" class="link-button" onclick={() => void recoverFolder(folderRead.workingFolder.id, folderRead.bindingStatus, folderRead.workingFolder.kind === "managed")}>{folderRead.workingFolder.kind === "managed" && folderRead.bindingStatus === "missing" ? t("settings.chat.teammates.recreate") : folderRead.bindingStatus === "repository_mismatch" ? t("settings.chat.teammates.relink") : t("settings.chat.teammates.locate")}</button>{/if}
+              {#if folderRead.bindingStatus !== "available"}<button type="button" class="link-button" onclick={() => void recoverFolder(folderRead.workingFolder.id, folderRead.bindingStatus, folderRead.workingFolder.kind === "managed")}>{folderRead.workingFolder.kind === "managed" && folderRead.bindingStatus === "missing" ? t("settings.agents.teammates.recreate") : folderRead.bindingStatus === "repository_mismatch" ? t("settings.agents.teammates.relink") : t("settings.agents.teammates.locate")}</button>{/if}
             </div>
           </div>
         {/each}
       </fieldset>
     {/if}
     {#if channelAccess.folderGrants.length > 0}
-      <button type="button" class="disclosure-button" aria-expanded={advancedChannelIds.has(channelAccess.channelId)} onclick={() => { const next = new Set(advancedChannelIds); if (next.has(channelAccess.channelId)) next.delete(channelAccess.channelId); else next.add(channelAccess.channelId); advancedChannelIds = next; }}><ChevronRight size={13} class={advancedChannelIds.has(channelAccess.channelId) ? "expanded" : undefined} />{advancedChannelIds.has(channelAccess.channelId) ? t("settings.chat.teammates.hideAdvancedAccess") : t("settings.chat.teammates.advancedAccess")}</button>
+      <button type="button" class="disclosure-button" aria-expanded={advancedChannelIds.has(channelAccess.channelId)} onclick={() => { const next = new Set(advancedChannelIds); if (next.has(channelAccess.channelId)) next.delete(channelAccess.channelId); else next.add(channelAccess.channelId); advancedChannelIds = next; }}><ChevronRight size={13} class={advancedChannelIds.has(channelAccess.channelId) ? "expanded" : undefined} />{advancedChannelIds.has(channelAccess.channelId) ? t("settings.agents.teammates.hideAdvancedAccess") : t("settings.agents.teammates.advancedAccess")}</button>
     {/if}
     {#if channelAccess.folderGrants.length > 0 && advancedChannelIds.has(channelAccess.channelId)}
       <div class="field-grid compact advanced-fields">
-        <div class="form-field"><span>{t("settings.chat.teammates.channelRuntimeApproval")}</span><Select inline class="w-full" value={channelAccess.runtimeApprovalOverride ?? "inherit"} options={channelRuntimeOptions} ariaLabel={t("settings.chat.teammates.channelRuntimeApproval")} disabled={editor.archivedMode} onChange={(value) => updateAccessChannel(channelAccess.channelId, (channel) => ({ ...channel, runtimeApprovalOverride: value === "inherit" ? null : value as ChatRuntimeApprovalPolicy }))} /></div>
+        <div class="form-field"><span>{t("settings.agents.teammates.channelRuntimeApproval")}</span><Select inline class="w-full" value={channelAccess.runtimeApprovalOverride ?? "inherit"} options={channelRuntimeOptions} ariaLabel={t("settings.agents.teammates.channelRuntimeApproval")} disabled={editor.archivedMode} onChange={(value) => updateAccessChannel(channelAccess.channelId, (channel) => ({ ...channel, runtimeApprovalOverride: value === "inherit" ? null : value as ChatRuntimeApprovalPolicy }))} /></div>
       </div>
     {/if}
   </div>
 {/snippet}
 
-<section class="teammate-settings" data-chat-settings-subsection="teammates">
+<section class="teammate-settings" data-agents-settings-subsection="teammates">
   <header class="directory-header">
-    <div><h2>{t("settings.chat.teammates.heading")}</h2></div>
+    <div><h2>{t("settings.agents.teammates.heading")}</h2></div>
     <div class="header-actions">
       {#if editor.archivedTeammates.length > 0}
-        {@const archiveFilterLabel = editor.showArchived ? t("settings.chat.teammates.hideArchived") : t("settings.chat.teammates.includeArchived")}
+        {@const archiveFilterLabel = editor.showArchived ? t("settings.agents.teammates.hideArchived") : t("settings.agents.teammates.includeArchived")}
         <button type="button" class="archive-filter" aria-label={archiveFilterLabel} aria-pressed={editor.showArchived} data-app-tooltip={archiveFilterLabel} disabled={editor.creating || editor.dirty || lifecycleBusy} onclick={() => { editor.showArchived = !editor.showArchived; }}><Archive size={14} /><span aria-hidden="true">{#if editor.showArchived}<Eye size={8} />{:else}<EyeOff size={8} />{/if}</span></button>
       {/if}
-      <button type="button" class="settings-button" disabled={editor.creating || editor.dirty} onclick={() => editor.beginCreate(null)}><Plus size={13} />{t("settings.chat.teammates.add")}</button>
-      <button type="button" class="settings-button" disabled={editor.dirty || profileManagerLoading} aria-busy={profileManagerLoading || undefined} onclick={() => void openProfileManager()}>{#if profileManagerLoading}<LoaderCircle size={13} class="animate-spin" aria-hidden="true" />{:else}<ShieldCheck size={13} />{/if}{t("settings.chat.teammates.profileManager.manage")}</button>
+      <button type="button" class="settings-button" disabled={editor.creating || editor.dirty} onclick={() => editor.beginCreate(null)}><Plus size={13} />{t("settings.agents.teammates.add")}</button>
+      <button type="button" class="settings-button" disabled={editor.dirty || profileManagerLoading} aria-busy={profileManagerLoading || undefined} onclick={() => void openProfileManager()}>{#if profileManagerLoading}<LoaderCircle size={13} class="animate-spin" aria-hidden="true" />{:else}<ShieldCheck size={13} />{/if}{t("settings.agents.teammates.profileManager.manage")}</button>
     </div>
   </header>
 
   <div class="directory-layout">
     <aside class="directory-panel">
-      {#if editor.allDirectoryTeammates.length > 8}<label class="directory-search"><Search size={13} /><input bind:value={directoryQuery} aria-label={t("settings.chat.teammates.searchDirectory")} placeholder={t("settings.chat.teammates.searchDirectory")} /></label>{/if}
+      {#if editor.allDirectoryTeammates.length > 8}<label class="directory-search"><Search size={13} /><input bind:value={directoryQuery} aria-label={t("settings.agents.teammates.searchDirectory")} placeholder={t("settings.agents.teammates.searchDirectory")} /></label>{/if}
       <div class="scroll-frame">
         <div bind:this={directoryScrollElement} data-mobile-scroll-fade class="directory-scroll hide-scrollbar">
-          <nav aria-label={t("settings.chat.teammates.directoryLabel")} class="directory-list teammate-directory">
+          <nav aria-label={t("settings.agents.teammates.directoryLabel")} class="directory-list teammate-directory">
             {#if editor.creating}
-              <button type="button" class="directory-row active" aria-current="page"><span class="draft-avatar">{#if draftCompany}<ChatModelAvatar familyId={draftCompany.iconFamilyId} label={draftCompany.name} size={30} />{:else}<Plus size={15} />{/if}</span><span><strong>{editor.displayName.trim() || t("settings.chat.teammates.name")}</strong><small>{editor.role.trim() || t("settings.chat.teammates.role")}</small></span></button>
+              <button type="button" class="directory-row active" aria-current="page"><span class="draft-avatar">{#if draftCompany}<ChatModelAvatar familyId={draftCompany.iconFamilyId} label={draftCompany.name} size={30} />{:else}<Plus size={15} />{/if}</span><span><strong>{editor.displayName.trim() || t("settings.agents.teammates.name")}</strong><small>{editor.role.trim() || t("settings.agents.teammates.role")}</small></span></button>
             {/if}
             {#each filteredDirectoryTeammates as teammate (teammate.participant.id)}
               <button type="button" class:active={!editor.creating && editor.selectedId === teammate.participant.id} class="directory-row" aria-current={!editor.creating && editor.selectedId === teammate.participant.id ? "page" : undefined} disabled={editor.dirty || lifecycleBusy} onclick={() => { editor.creating = false; editor.selectedId = teammate.participant.id; }}>
@@ -722,7 +722,7 @@
                 <span class="directory-summary"><strong>{teammate.participant.displayName}</strong><small>{teammate.role}</small></span>
               </button>
             {/each}
-            {#if editor.loadingDirectory}<Loading layout="rows" rows={3} class="col-span-full" />{:else if !editor.creating && filteredDirectoryTeammates.length === 0}<p class="empty-copy">{t("settings.chat.teammates.empty")}</p>{/if}
+            {#if editor.loadingDirectory}<Loading layout="rows" rows={3} class="col-span-full" />{:else if !editor.creating && filteredDirectoryTeammates.length === 0}<p class="empty-copy">{t("settings.agents.teammates.empty")}</p>{/if}
           </nav>
         </div>
         <CalendarScrollbar scrollContainer={directoryScrollElement} wheelPassthrough />
@@ -740,84 +740,84 @@
                 {:else if editor.selected}<ChatParticipantAvatar participant={editor.selected.participant} teammate={editor.selected} size={38} />{/if}
                 <div class="editor-title">
                   <div class="editor-name-line">
-                    <h3>{editor.displayName.trim() || t("settings.chat.teammates.name")}</h3>
+                    <h3>{editor.displayName.trim() || t("settings.agents.teammates.name")}</h3>
                     {#if editor.creating}
-                      <span class="editor-state" data-state={draftConfigurationState}><i></i>{draftConfigurationState === "healthy" ? t("settings.chat.teammates.available") : t("settings.chat.teammates.needsSetup")}</span>
+                      <span class="editor-state" data-state={draftConfigurationState}><i></i>{draftConfigurationState === "healthy" ? t("settings.agents.teammates.available") : t("settings.agents.teammates.needsSetup")}</span>
                     {:else if editor.selected}
                       {#if editor.archivedMode}
-                        <span class="editor-state archived-state"><Archive size={12} />{t("settings.chat.teammates.archived")}</span>
+                        <span class="editor-state archived-state"><Archive size={12} />{t("settings.agents.teammates.archived")}</span>
                       {:else}
-                        <span class="editor-state" data-state={editor.selected.configurationState}><i></i>{editor.selected.configurationState === "healthy" ? t("settings.chat.teammates.available") : t("settings.chat.teammates.needsSetup")}</span>
+                        <span class="editor-state" data-state={editor.selected.configurationState}><i></i>{editor.selected.configurationState === "healthy" ? t("settings.agents.teammates.available") : t("settings.agents.teammates.needsSetup")}</span>
                       {/if}
                     {/if}
                   </div>
-                  <p>{editor.role.trim() || t("settings.chat.teammates.role")}</p>
+                  <p>{editor.role.trim() || t("settings.agents.teammates.role")}</p>
                 </div>
               </div>
 
               {#if editor.conflictLoading}
                 <aside bind:this={conflictPanelElement} class="conflict-panel" role="status" tabindex="-1">
                   <div>
-                    <strong>{t("settings.chat.teammates.conflict.loadingTitle")}</strong>
-                    <p>{t("settings.chat.teammates.conflict.loadingDescription")}</p>
+                    <strong>{t("settings.agents.teammates.conflict.loadingTitle")}</strong>
+                    <p>{t("settings.agents.teammates.conflict.loadingDescription")}</p>
                   </div>
                 </aside>
               {:else if editor.accessConflict && editor.conflictComparison}
                 <aside bind:this={conflictPanelElement} class="conflict-panel" role="alert" tabindex="-1">
                   <div class="conflict-copy">
-                    <strong>{t("settings.chat.teammates.conflict.title")}</strong>
-                    <p>{t("settings.chat.teammates.conflict.description")}</p>
+                    <strong>{t("settings.agents.teammates.conflict.title")}</strong>
+                    <p>{t("settings.agents.teammates.conflict.description")}</p>
                     <ul>
-                      <li>{editor.conflictComparison.identityChanged ? t("settings.chat.teammates.conflict.identityChanged") : t("settings.chat.teammates.conflict.identityUnchanged")}</li>
-                      <li>{editor.conflictComparison.policyChanged ? t("settings.chat.teammates.conflict.policyChanged") : t("settings.chat.teammates.conflict.policyUnchanged")}</li>
-                      <li>{t("settings.chat.teammates.conflict.channelSummary", editor.conflictComparison.addedChannelCount, editor.conflictComparison.removedChannelCount, editor.conflictComparison.changedChannelCount)}</li>
+                      <li>{editor.conflictComparison.identityChanged ? t("settings.agents.teammates.conflict.identityChanged") : t("settings.agents.teammates.conflict.identityUnchanged")}</li>
+                      <li>{editor.conflictComparison.policyChanged ? t("settings.agents.teammates.conflict.policyChanged") : t("settings.agents.teammates.conflict.policyUnchanged")}</li>
+                      <li>{t("settings.agents.teammates.conflict.channelSummary", editor.conflictComparison.addedChannelCount, editor.conflictComparison.removedChannelCount, editor.conflictComparison.changedChannelCount)}</li>
                     </ul>
                   </div>
                   <div class="conflict-actions">
-                    <button type="button" class="primary-button" onclick={editor.rebaseAccessConflict}>{t("settings.chat.teammates.conflict.keepAndRebase")}</button>
-                    <button type="button" class="secondary-button" onclick={() => void editor.reloadCurrentAccessConflict()}>{t("settings.chat.teammates.conflict.reloadCurrent")}</button>
+                    <button type="button" class="primary-button" onclick={editor.rebaseAccessConflict}>{t("settings.agents.teammates.conflict.keepAndRebase")}</button>
+                    <button type="button" class="secondary-button" onclick={() => void editor.reloadCurrentAccessConflict()}>{t("settings.agents.teammates.conflict.reloadCurrent")}</button>
                   </div>
                 </aside>
               {:else if editor.conflictError}
                 <div bind:this={conflictPanelElement} class="conflict-notice" tabindex="-1">
-                  <Notice title={t("settings.chat.teammates.conflict.loadFailedTitle")} message={editor.conflictError} onRetry={editor.retryAccessConflict} />
+                  <Notice title={t("settings.agents.teammates.conflict.loadFailedTitle")} message={editor.conflictError} onRetry={editor.retryAccessConflict} />
                 </div>
               {/if}
 
               {#if editor.conflictRecoveryNotice}
                 <aside bind:this={recoveryNoticeElement} class="conflict-recovery-notice" role="status" tabindex="-1">
                   {editor.conflictRecoveryNotice === "rebased"
-                    ? t("settings.chat.teammates.conflict.rebasedNotice")
-                    : t("settings.chat.teammates.conflict.reloadedNotice")}
+                    ? t("settings.agents.teammates.conflict.rebasedNotice")
+                    : t("settings.agents.teammates.conflict.reloadedNotice")}
                 </aside>
               {/if}
 
               <div class="editor-content">
-                <section class="editor-section"><div class="section-heading"><h4>{t("settings.chat.teammates.identitySection")}</h4></div><div class="field-grid">
-                  <div class="form-field full"><span id="teammate-name-label">{t("settings.chat.teammates.name")}<i class="required-marker" aria-hidden="true">*</i></span><input bind:value={editor.displayName} aria-labelledby="teammate-name-label" aria-describedby={editor.nameTaken || (editor.error && editor.errorField === "displayName") ? "teammate-name-error" : undefined} aria-invalid={editor.nameTaken || (editor.error && editor.errorField === "displayName") ? "true" : undefined} placeholder={t("settings.chat.teammates.namePlaceholder")} maxlength="160" required disabled={editor.archivedMode} oninput={() => editor.clearFieldError("displayName")} />{#if editor.nameTaken}<small id="teammate-name-error" class="field-error" role="alert">{t("settings.chat.teammates.nameTaken")}</small>{:else if editor.error && editor.errorField === "displayName"}<small id="teammate-name-error" class="field-error" role="alert">{editor.error}</small>{/if}</div>
-                  <div class="form-field full"><span id="teammate-role-label">{t("settings.chat.teammates.role")}<i class="required-marker" aria-hidden="true">*</i></span><input bind:value={editor.role} aria-labelledby="teammate-role-label" aria-describedby={editor.error && editor.errorField === "role" ? "teammate-role-error" : undefined} aria-invalid={editor.error && editor.errorField === "role" ? "true" : undefined} placeholder={t("settings.chat.teammates.rolePlaceholder")} maxlength="1000" required disabled={editor.archivedMode} oninput={() => editor.clearFieldError("role")} />{#if editor.error && editor.errorField === "role"}<small id="teammate-role-error" class="field-error" role="alert">{editor.error}</small>{/if}</div>
-                  <div class="form-field full"><span id="teammate-instructions-label">{t("settings.chat.teammates.instructions")}</span><textarea bind:value={editor.instructions} aria-labelledby="teammate-instructions-label" aria-describedby={editor.instructionsTooLong || (editor.error && editor.errorField === "instructions") ? "teammate-instructions-error" : undefined} aria-invalid={editor.instructionsTooLong || (editor.error && editor.errorField === "instructions") ? "true" : undefined} rows="4" maxlength={TEAMMATE_INSTRUCTIONS_MAX_BYTES} disabled={editor.archivedMode} placeholder={t("settings.chat.teammates.instructionsPlaceholder")} oninput={() => editor.clearFieldError("instructions")}></textarea>{#if editor.instructionsTooLong}<small id="teammate-instructions-error" class="field-error" role="alert">{t("settings.chat.teammates.instructionsTooLong")}</small>{:else if editor.error && editor.errorField === "instructions"}<small id="teammate-instructions-error" class="field-error" role="alert">{editor.error}</small>{/if}</div>
+                <section class="editor-section"><div class="section-heading"><h4>{t("settings.agents.teammates.identitySection")}</h4></div><div class="field-grid">
+                  <div class="form-field full"><span id="teammate-name-label">{t("settings.agents.teammates.name")}<i class="required-marker" aria-hidden="true">*</i></span><input bind:value={editor.displayName} aria-labelledby="teammate-name-label" aria-describedby={editor.nameTaken || (editor.error && editor.errorField === "displayName") ? "teammate-name-error" : undefined} aria-invalid={editor.nameTaken || (editor.error && editor.errorField === "displayName") ? "true" : undefined} placeholder={t("settings.agents.teammates.namePlaceholder")} maxlength="160" required disabled={editor.archivedMode} oninput={() => editor.clearFieldError("displayName")} />{#if editor.nameTaken}<small id="teammate-name-error" class="field-error" role="alert">{t("settings.agents.teammates.nameTaken")}</small>{:else if editor.error && editor.errorField === "displayName"}<small id="teammate-name-error" class="field-error" role="alert">{editor.error}</small>{/if}</div>
+                  <div class="form-field full"><span id="teammate-role-label">{t("settings.agents.teammates.role")}<i class="required-marker" aria-hidden="true">*</i></span><input bind:value={editor.role} aria-labelledby="teammate-role-label" aria-describedby={editor.error && editor.errorField === "role" ? "teammate-role-error" : undefined} aria-invalid={editor.error && editor.errorField === "role" ? "true" : undefined} placeholder={t("settings.agents.teammates.rolePlaceholder")} maxlength="1000" required disabled={editor.archivedMode} oninput={() => editor.clearFieldError("role")} />{#if editor.error && editor.errorField === "role"}<small id="teammate-role-error" class="field-error" role="alert">{editor.error}</small>{/if}</div>
+                  <div class="form-field full"><span id="teammate-instructions-label">{t("settings.agents.teammates.instructions")}</span><textarea bind:value={editor.instructions} aria-labelledby="teammate-instructions-label" aria-describedby={editor.instructionsTooLong || (editor.error && editor.errorField === "instructions") ? "teammate-instructions-error" : undefined} aria-invalid={editor.instructionsTooLong || (editor.error && editor.errorField === "instructions") ? "true" : undefined} rows="4" maxlength={TEAMMATE_INSTRUCTIONS_MAX_BYTES} disabled={editor.archivedMode} placeholder={t("settings.agents.teammates.instructionsPlaceholder")} oninput={() => editor.clearFieldError("instructions")}></textarea>{#if editor.instructionsTooLong}<small id="teammate-instructions-error" class="field-error" role="alert">{t("settings.agents.teammates.instructionsTooLong")}</small>{:else if editor.error && editor.errorField === "instructions"}<small id="teammate-instructions-error" class="field-error" role="alert">{editor.error}</small>{/if}</div>
                 </div></section>
 
-                <section class="editor-section"><div class="section-heading"><h4>{t("settings.chat.teammates.executionSection")}</h4></div><div class="field-grid execution-fields">
-                  <div class="form-field execution-model-field"><span>{t("settings.chat.teammates.model")}<i class="required-marker" aria-hidden="true">*</i></span><ChatModelControls value={{ providerInstanceId: editor.providerId || null, modelId: editor.modelId || null, providerManaged: editor.providerManagedModel, options: editor.modelOptions }} disabled={editor.archivedMode} onChange={editor.selectExecution} /></div>
-                  <div class="form-field execution-approval-field"><span>{t("settings.chat.teammates.approval")}</span><ChatAccessControl value={editor.safetyMode} providerInstanceId={editor.providerId || null} workingFolderId={permissionWorkingFolderId} disabled={editor.archivedMode} onChange={(value) => { editor.safetyMode = value; }} /></div>
+                <section class="editor-section"><div class="section-heading"><h4>{t("settings.agents.teammates.executionSection")}</h4></div><div class="field-grid execution-fields">
+                  <div class="form-field execution-model-field"><span>{t("settings.agents.teammates.model")}<i class="required-marker" aria-hidden="true">*</i></span><ChatModelControls value={{ providerInstanceId: editor.providerId || null, modelId: editor.modelId || null, providerManaged: editor.providerManagedModel, options: editor.modelOptions }} disabled={editor.archivedMode} onChange={editor.selectExecution} /></div>
+                  <div class="form-field execution-approval-field"><span>{t("settings.agents.teammates.approval")}</span><ChatAccessControl value={editor.safetyMode} providerInstanceId={editor.providerId || null} workingFolderId={permissionWorkingFolderId} disabled={editor.archivedMode} onChange={(value) => { editor.safetyMode = value; }} /></div>
                 </div></section>
 
                 <section class="editor-section access-section">
                   <div class="access-section-heading">
-                    <div class="section-heading"><h4>{t("settings.chat.teammates.accessSection")}</h4></div>
+                    <div class="section-heading"><h4>{t("settings.agents.teammates.accessSection")}</h4></div>
                     <button
                       bind:this={accessPickerTriggerElement}
                       type="button"
                       class="access-configure-button"
-                      aria-label={t("settings.chat.teammates.configureChannelAccess")}
+                      aria-label={t("settings.agents.teammates.configureChannelAccess")}
                       aria-haspopup="dialog"
                       aria-expanded={accessPickerOpen}
                       disabled={editor.loadingAccess || editor.archivedMode || editor.accessProfiles.length === 0}
                       onclick={() => { accessPickerOpen = !accessPickerOpen; }}
                     >
-                      <span>{t("settings.chat.teammates.configureChannelAccessAction")}</span>
+                      <span>{t("settings.agents.teammates.configureChannelAccessAction")}</span>
                       <ChevronRight size={13} />
                     </button>
                   </div>
@@ -837,7 +837,7 @@
                                       <button
                                         type="button"
                                         class="access-channel-toggle"
-                                        aria-label={t("settings.chat.teammates.editChannelAccess")}
+                                        aria-label={t("settings.agents.teammates.editChannelAccess")}
                                         aria-expanded={expandedAccessChannelId === summaryChannel.channel.id}
                                         onclick={() => {
                                           expandedAccessChannelId = expandedAccessChannelId === summaryChannel.channel.id
@@ -858,7 +858,7 @@
                                       <ChatControlMenu
                                         value={summaryChannel.access.accessProfileId}
                                         options={accessProfileOptions}
-                                        ariaLabel={t("settings.chat.teammates.workAccess")}
+                                        ariaLabel={t("settings.agents.teammates.workAccess")}
                                         onChange={(profileId) => setChannelAccessProfile(summaryChannel.channel.id, profileId)}
                                         disabled={editor.archivedMode}
                                         showTooltip={false}
@@ -878,22 +878,22 @@
                       {/each}
                     </div>
                   {:else if !editor.loadingAccess}
-                    <p class="access-summary-empty">{t("settings.chat.teammates.noAccessTitle")}</p>
+                    <p class="access-summary-empty">{t("settings.agents.teammates.noAccessTitle")}</p>
                   {/if}
                 </section>
 
                 {#if editor.selected && !editor.creating}
-                  <section class="editor-section"><div class="section-heading"><h4>{t("settings.chat.teammates.pushApprovalsSection")}</h4></div><ChatPushApprovalsList teammateId={editor.selected.participant.id} refreshKey={[editor.selected, accessSummaryGroups]} /></section>
+                  <section class="editor-section"><div class="section-heading"><h4>{t("settings.agents.teammates.pushApprovalsSection")}</h4></div><ChatPushApprovalsList teammateId={editor.selected.participant.id} refreshKey={[editor.selected, accessSummaryGroups]} /></section>
                 {/if}
               </div>
             </div>
             <CalendarScrollbar scrollContainer={detailScrollElement} wheelPassthrough />
           </div>
 
-          <footer class="editor-footer"><div>{#if editor.creating}<button type="button" class="secondary-button" onclick={editor.cancelCreate}><X size={14} />{t("common.cancel")}</button>{:else if editor.selected && !editor.archivedMode}<button type="button" class="secondary-button" disabled={editor.selected.activeAssignmentCount > 0} onclick={requestArchive}><Archive size={14} />{t("settings.chat.teammates.archive")}</button>{/if}{#if editor.lifecycleError}<span class="field-error" role="alert">{editor.lifecycleError}</span>{/if}</div><div class="save-area">{#if editor.error && editor.errorField !== "displayName" && editor.errorField !== "role" && editor.errorField !== "instructions"}<span class="field-error" role="alert">{editor.error}</span>{:else if editor.accessErrors.length > 0}<span class="field-error" role="alert">{t("settings.chat.teammates.accessValidationFailed")}</span>{:else if editor.providerResourceBlockers[0]}<span class="field-error" role="alert">{editor.providerResourceBlockers[0]}</span>{/if}{#if editor.archivedMode}<button type="button" class="primary-button" onclick={() => void restoreSelected()}><ArchiveRestore size={14} />{t("settings.chat.teammates.restore")}</button>{:else}<button bind:this={saveButtonElement} type="submit" class="primary-button" disabled={editor.saving || !editor.canSave}>{editor.saving ? t("settings.chat.teammates.saving") : editor.creating ? t("settings.chat.teammates.createInert") : t("settings.chat.teammates.save")}</button>{/if}</div></footer>
+          <footer class="editor-footer"><div>{#if editor.creating}<button type="button" class="secondary-button" onclick={editor.cancelCreate}><X size={14} />{t("common.cancel")}</button>{:else if editor.selected && !editor.archivedMode}<button type="button" class="secondary-button" disabled={editor.selected.activeAssignmentCount > 0} onclick={requestArchive}><Archive size={14} />{t("settings.agents.teammates.archive")}</button>{/if}{#if editor.lifecycleError}<span class="field-error" role="alert">{editor.lifecycleError}</span>{/if}</div><div class="save-area">{#if editor.error && editor.errorField !== "displayName" && editor.errorField !== "role" && editor.errorField !== "instructions"}<span class="field-error" role="alert">{editor.error}</span>{:else if editor.accessErrors.length > 0}<span class="field-error" role="alert">{t("settings.agents.teammates.accessValidationFailed")}</span>{:else if editor.providerResourceBlockers[0]}<span class="field-error" role="alert">{editor.providerResourceBlockers[0]}</span>{/if}{#if editor.archivedMode}<button type="button" class="primary-button" onclick={() => void restoreSelected()}><ArchiveRestore size={14} />{t("settings.agents.teammates.restore")}</button>{:else}<button bind:this={saveButtonElement} type="submit" class="primary-button" disabled={editor.saving || !editor.canSave}>{editor.saving ? t("settings.agents.teammates.saving") : editor.creating ? t("settings.agents.teammates.createInert") : t("settings.agents.teammates.save")}</button>{/if}</div></footer>
         </form>
       {:else}
-        <div class="empty-detail"><p>{t("settings.chat.teammates.selectPrompt")}</p></div>
+        <div class="empty-detail"><p>{t("settings.agents.teammates.selectPrompt")}</p></div>
       {/if}
     </div>
   </div>
@@ -912,9 +912,9 @@
 
 {#if editor.accessConfirmationImpact}
   <ConfirmDialog
-    title={t("settings.chat.teammates.accessConfirmation.title")}
+    title={t("settings.agents.teammates.accessConfirmation.title")}
     message={accessConfirmationMessage(editor.accessConfirmationImpact)}
-    confirmLabel={t("settings.chat.teammates.accessConfirmation.confirm")}
+    confirmLabel={t("settings.agents.teammates.accessConfirmation.confirm")}
     cancelLabel={t("common.cancel")}
     danger={editor.accessConfirmationImpact.removedChannelIds.length > 0}
     onConfirm={() => void editor.save(true)}
@@ -927,9 +927,9 @@
 
 {#if archiveTarget}
   <ConfirmDialog
-    title={t("settings.chat.teammates.archiveTitle", archiveTarget.participant.displayName)}
-    message={t("settings.chat.teammates.archiveMessage", archiveTarget.participant.displayName)}
-    confirmLabel={t("settings.chat.teammates.archiveConfirm")}
+    title={t("settings.agents.teammates.archiveTitle", archiveTarget.participant.displayName)}
+    message={t("settings.agents.teammates.archiveMessage", archiveTarget.participant.displayName)}
+    confirmLabel={t("settings.agents.teammates.archiveConfirm")}
     cancelLabel={t("common.cancel")}
     onConfirm={() => void confirmArchive()}
     onCancel={() => { archiveTarget = null; }}

@@ -2,13 +2,13 @@
   import { flushSync, tick, type Snippet } from "svelte";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import Check from "@lucide/svelte/icons/check";
-  import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import type { HTMLButtonAttributes } from "svelte/elements";
   import { cn } from "$lib/utils";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { activateModalKeyboardLayer } from "$lib/modal-focus";
   import { portal } from "$lib/utils/portal";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import ResetButton from "./ResetButton.svelte";
   import ShortcutDescription from "./ShortcutDescription.svelte";
   import {
     pickSelectPopoverGeometry,
@@ -409,20 +409,7 @@
     <div class="flex items-center justify-end gap-1.5 max-[480px]:justify-between">
       {@render selectControl()}
       {#if onReset}
-        <button
-          onclick={onReset}
-          disabled={!canReset}
-          aria-label={t("common.reset")}
-          data-app-tooltip-disabled="true"
-          class={cn(
-            "flex size-(--control-height) items-center justify-center rounded-md border border-border bg-secondary text-secondary-foreground transition-colors",
-            canReset
-              ? "hover:bg-accent hover:text-accent-foreground"
-              : "cursor-not-allowed opacity-40",
-          )}
-        >
-          <RotateCcw size={12} strokeWidth={2.25} />
-        </button>
+        <ResetButton {canReset} {onReset} />
       {/if}
     </div>
   </div>

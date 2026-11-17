@@ -9,6 +9,7 @@ export const general = {
     projects: "Projects",
     notes: "Notes",
     chat: "Chat",
+    agents: "Agents",
     focus: "Focus",
     music: "Music",
     distractions: "Distractions",

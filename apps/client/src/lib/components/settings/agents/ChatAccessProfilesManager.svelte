@@ -88,7 +88,7 @@
 
   function profileLabel(profile: ChatAccessProfileRead): string {
     return profile.builtinKey
-      ? t(`settings.chat.teammates.profiles.${profile.builtinKey}`)
+      ? t(`settings.agents.teammates.profiles.${profile.builtinKey}`)
       : profile.displayName;
   }
 
@@ -144,7 +144,7 @@
     selectedId = profile.id;
     mode = "duplicate";
     duplicateSourceId = profile.id;
-    displayName = t("settings.chat.teammates.profileManager.copyName", profileLabel(profile));
+    displayName = t("settings.agents.teammates.profileManager.copyName", profileLabel(profile));
     readHistory = profile.latestRevision.defaultChannelCapabilities.readHistory;
     participate = profile.latestRevision.defaultChannelCapabilities.participate;
     historyBoundary = profile.latestRevision.defaultHistoryBoundary.kind === "entire"
@@ -240,7 +240,7 @@
       }
       replaceProfile(await chatApi.publishChatAccessProfileRevision(request));
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause, t("settings.chat.teammates.profileManager.saveFailed"));
+      error = chatErrorMessage(cause, t("settings.agents.teammates.profileManager.saveFailed"));
     } finally {
       saving = false;
     }
@@ -266,7 +266,7 @@
         else beginCreate();
       }
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause, t("settings.chat.teammates.profileManager.archiveFailed"));
+      error = chatErrorMessage(cause, t("settings.agents.teammates.profileManager.archiveFailed"));
     } finally {
       saving = false;
     }
@@ -286,46 +286,46 @@
 <div class="profile-manager-backdrop surface-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) requestClose(); }}>
   <div bind:this={dialog} class="profile-manager surface-dialog" role="dialog" aria-modal="true" aria-labelledby="chat-access-profile-title" tabindex="-1">
     <header>
-      <div><h3 id="chat-access-profile-title">{t("settings.chat.teammates.profileManager.heading")}</h3><p>{t("settings.chat.teammates.profileManager.description")}</p></div>
+      <div><h3 id="chat-access-profile-title">{t("settings.agents.teammates.profileManager.heading")}</h3><p>{t("settings.agents.teammates.profileManager.description")}</p></div>
       <button type="button" aria-label={t("common.close")} onclick={requestClose}><X size={16} /></button>
     </header>
     <div class="profile-manager-body">
       <aside use:scrollEdgeFadeAction>
-        <button type="button" class="new-profile" onclick={beginCreate}><Plus size={14} />{t("settings.chat.teammates.profileManager.new")}</button>
-        <nav aria-label={t("settings.chat.teammates.profileManager.directoryLabel")}>
+        <button type="button" class="new-profile" onclick={beginCreate}><Plus size={14} />{t("settings.agents.teammates.profileManager.new")}</button>
+        <nav aria-label={t("settings.agents.teammates.profileManager.directoryLabel")}>
           {#each profiles as profile (profile.id)}
             <button type="button" class:active={mode === "existing" && selectedId === profile.id} onclick={() => requestSelect(profile)}>
-              <Shield size={14} /><span><strong>{profileLabel(profile)}</strong><small>{profile.builtinKey ? t("settings.chat.teammates.profileManager.builtIn") : t("settings.chat.teammates.profileManager.custom")}</small></span>
+              <Shield size={14} /><span><strong>{profileLabel(profile)}</strong><small>{profile.builtinKey ? t("settings.agents.teammates.profileManager.builtIn") : t("settings.agents.teammates.profileManager.custom")}</small></span>
             </button>
           {/each}
         </nav>
       </aside>
       <form onsubmit={(event) => { event.preventDefault(); void save(); }}>
         <div class="profile-editor-scroll" use:scrollEdgeFadeAction>
-          <div class="profile-heading"><div><h4>{mode === "create" ? t("settings.chat.teammates.profileManager.new") : displayName}</h4><p>{mode === "duplicate" ? t("settings.chat.teammates.profileManager.duplicateDescription") : selected?.builtinKey ? t("settings.chat.teammates.profileManager.builtInDescription") : t("settings.chat.teammates.profileManager.customDescription")}</p></div>{#if selected}<button type="button" class="quiet-button" onclick={() => beginDuplicate(selected)}><Copy size={14} />{t("settings.chat.teammates.profileManager.duplicate")}</button>{/if}</div>
-          <label><span>{t("settings.chat.teammates.profileManager.name")}</span><input bind:value={displayName} maxlength="160" disabled={mode === "existing"} /></label>
+          <div class="profile-heading"><div><h4>{mode === "create" ? t("settings.agents.teammates.profileManager.new") : displayName}</h4><p>{mode === "duplicate" ? t("settings.agents.teammates.profileManager.duplicateDescription") : selected?.builtinKey ? t("settings.agents.teammates.profileManager.builtInDescription") : t("settings.agents.teammates.profileManager.customDescription")}</p></div>{#if selected}<button type="button" class="quiet-button" onclick={() => beginDuplicate(selected)}><Copy size={14} />{t("settings.agents.teammates.profileManager.duplicate")}</button>{/if}</div>
+          <label><span>{t("settings.agents.teammates.profileManager.name")}</span><input bind:value={displayName} maxlength="160" disabled={mode === "existing"} /></label>
           <fieldset disabled={!editableRevision || mode === "duplicate"}>
-            <legend>{t("settings.chat.teammates.profileManager.channelDefaults")}</legend>
-            <div class="check-row"><Checkbox checked={readHistory} label={t("settings.chat.teammates.readHistory")} onChange={(checked) => { readHistory = checked; }} /><span><strong>{t("settings.chat.teammates.readHistory")}</strong><small>{t("settings.chat.teammates.readHistoryDescription")}</small></span></div>
-            <div class="check-row"><Checkbox checked={participate} label={t("settings.chat.teammates.participate")} onChange={(checked) => { participate = checked; }} /><span><strong>{t("settings.chat.teammates.participate")}</strong><small>{t("settings.chat.teammates.participateDescription")}</small></span></div>
+            <legend>{t("settings.agents.teammates.profileManager.channelDefaults")}</legend>
+            <div class="check-row"><Checkbox checked={readHistory} label={t("settings.agents.teammates.readHistory")} onChange={(checked) => { readHistory = checked; }} /><span><strong>{t("settings.agents.teammates.readHistory")}</strong><small>{t("settings.agents.teammates.readHistoryDescription")}</small></span></div>
+            <div class="check-row"><Checkbox checked={participate} label={t("settings.agents.teammates.participate")} onChange={(checked) => { participate = checked; }} /><span><strong>{t("settings.agents.teammates.participate")}</strong><small>{t("settings.agents.teammates.participateDescription")}</small></span></div>
           </fieldset>
           <div class="profile-fields">
-            <div class="select-field"><span>{t("settings.chat.teammates.history")}</span><Select value={historyBoundary} options={[{ value: "entire", label: t("settings.chat.teammates.historyEntire") }, { value: "fromGrant", label: t("settings.chat.teammates.historyFromGrant") }]} onChange={(value) => { historyBoundary = value === "fromGrant" ? "fromGrant" : "entire"; }} disabled={!editableRevision || mode === "duplicate" || !readHistory} class="w-full" /></div>
-            <div class="select-field"><span>{t("settings.chat.teammates.profileManager.maximumFolderCapability")}</span><Select value={maximumFolderCapability} options={[{ value: "none", label: t("settings.chat.teammates.folderCapabilities.none") }, { value: "read", label: t("settings.chat.teammates.folderCapabilities.read") }, { value: "edit", label: t("settings.chat.teammates.folderCapabilities.edit") }, { value: "execute", label: t("settings.chat.teammates.folderCapabilities.execute") }, { value: "publish", label: t("settings.chat.teammates.folderCapabilities.publish") }]} onChange={(value) => { if (value === "none" || value === "read" || value === "edit" || value === "execute" || value === "publish") maximumFolderCapability = value; }} disabled={!editableRevision || mode === "duplicate"} class="w-full" /></div>
+            <div class="select-field"><span>{t("settings.agents.teammates.history")}</span><Select value={historyBoundary} options={[{ value: "entire", label: t("settings.agents.teammates.historyEntire") }, { value: "fromGrant", label: t("settings.agents.teammates.historyFromGrant") }]} onChange={(value) => { historyBoundary = value === "fromGrant" ? "fromGrant" : "entire"; }} disabled={!editableRevision || mode === "duplicate" || !readHistory} class="w-full" /></div>
+            <div class="select-field"><span>{t("settings.agents.teammates.profileManager.maximumFolderCapability")}</span><Select value={maximumFolderCapability} options={[{ value: "none", label: t("settings.agents.teammates.folderCapabilities.none") }, { value: "read", label: t("settings.agents.teammates.folderCapabilities.read") }, { value: "edit", label: t("settings.agents.teammates.folderCapabilities.edit") }, { value: "execute", label: t("settings.agents.teammates.folderCapabilities.execute") }, { value: "publish", label: t("settings.agents.teammates.folderCapabilities.publish") }]} onChange={(value) => { if (value === "none" || value === "read" || value === "edit" || value === "execute" || value === "publish") maximumFolderCapability = value; }} disabled={!editableRevision || mode === "duplicate"} class="w-full" /></div>
           </div>
-          <p class="profile-note">{t("settings.chat.teammates.profileManager.ceilingNote")}</p>
+          <p class="profile-note">{t("settings.agents.teammates.profileManager.ceilingNote")}</p>
           {#if impact}
             <aside class="profile-impact" role={impact.issues.length ? "alert" : "status"}>
-              <strong>{impact.isExpansion ? t("settings.chat.teammates.expansionTitle") : impact.isReduction ? t("settings.chat.teammates.reductionTitle") : t("settings.chat.teammates.profileManager.impactTitle")}</strong>
-              <p>{t("settings.chat.teammates.profileManager.impact", impact.affectedTeammateIds.length, impact.affectedChannelIds.length, impact.activeAuthorizationCount)}</p>
+              <strong>{impact.isExpansion ? t("settings.agents.teammates.expansionTitle") : impact.isReduction ? t("settings.agents.teammates.reductionTitle") : t("settings.agents.teammates.profileManager.impactTitle")}</strong>
+              <p>{t("settings.agents.teammates.profileManager.impact", impact.affectedTeammateIds.length, impact.affectedChannelIds.length, impact.activeAuthorizationCount)}</p>
               {#each impact.issues as issue}<small>{t(`chatErrors.accessIssues.${issue.code}`)}</small>{/each}
             </aside>
           {/if}
           {#if error}<Notice class="profile-error" message={error} />{/if}
         </div>
         <footer>
-          <div>{#if mode === "existing" && selected && !selected.builtinKey}<button type="button" class="archive-button" disabled={saving} onclick={() => { archiveTarget = selected; }}><Archive size={14} />{t("settings.chat.teammates.profileManager.archive")}</button>{/if}</div>
-          <div><button type="button" class="secondary-button" onclick={requestClose}>{t("common.close")}</button>{#if impact && impact.issues.length === 0}<button type="button" class="primary-button" disabled={saving} onclick={() => void save(true)}>{t("settings.chat.teammates.profileManager.applyRevision")}</button>{:else if mode !== "existing" || !selected?.builtinKey}<button type="submit" class="primary-button" disabled={!canSave}>{saving ? t("settings.chat.teammates.saving") : mode === "existing" ? t("settings.chat.teammates.profileManager.reviewRevision") : t("settings.chat.teammates.profileManager.create")}</button>{/if}</div>
+          <div>{#if mode === "existing" && selected && !selected.builtinKey}<button type="button" class="archive-button" disabled={saving} onclick={() => { archiveTarget = selected; }}><Archive size={14} />{t("settings.agents.teammates.profileManager.archive")}</button>{/if}</div>
+          <div><button type="button" class="secondary-button" onclick={requestClose}>{t("common.close")}</button>{#if impact && impact.issues.length === 0}<button type="button" class="primary-button" disabled={saving} onclick={() => void save(true)}>{t("settings.agents.teammates.profileManager.applyRevision")}</button>{:else if mode !== "existing" || !selected?.builtinKey}<button type="submit" class="primary-button" disabled={!canSave}>{saving ? t("settings.agents.teammates.saving") : mode === "existing" ? t("settings.agents.teammates.profileManager.reviewRevision") : t("settings.agents.teammates.profileManager.create")}</button>{/if}</div>
         </footer>
       </form>
     </div>
@@ -333,11 +333,11 @@
 </div>
 
 {#if pendingNavigation}
-  <ConfirmDialog title={t("settings.chat.teammates.profileManager.discardTitle")} message={t("settings.chat.teammates.profileManager.discardMessage")} confirmLabel={t("settings.chat.teammates.profileManager.discard")} cancelLabel={t("settings.chat.teammates.keepEditing")} onConfirm={discardAndContinue} onCancel={() => { pendingNavigation = null; }} />
+  <ConfirmDialog title={t("settings.agents.teammates.profileManager.discardTitle")} message={t("settings.agents.teammates.profileManager.discardMessage")} confirmLabel={t("settings.agents.teammates.profileManager.discard")} cancelLabel={t("settings.agents.teammates.keepEditing")} onConfirm={discardAndContinue} onCancel={() => { pendingNavigation = null; }} />
 {/if}
 
 {#if archiveTarget}
-  <ConfirmDialog title={t("settings.chat.teammates.profileManager.archiveTitle", profileLabel(archiveTarget))} message={t("settings.chat.teammates.profileManager.archiveMessage")} confirmLabel={t("settings.chat.teammates.profileManager.archive")} cancelLabel={t("common.cancel")} onConfirm={() => void archiveProfile()} onCancel={() => { archiveTarget = null; }} />
+  <ConfirmDialog title={t("settings.agents.teammates.profileManager.archiveTitle", profileLabel(archiveTarget))} message={t("settings.agents.teammates.profileManager.archiveMessage")} confirmLabel={t("settings.agents.teammates.profileManager.archive")} cancelLabel={t("common.cancel")} onConfirm={() => void archiveProfile()} onCancel={() => { archiveTarget = null; }} />
 {/if}
 
 <style>

@@ -942,7 +942,7 @@
           onRetry={() => retryProvider(selectedProvider.configuration.instanceId)}
           copy={selectedProvider.lastProbe?.detail ?? false}
         >
-          {#snippet actions()}<button type="button" class="notice-action-text" onclick={() => settings.open("chat", { chatSubsection: "providers" })}>{t("chat.timeline.openSettings")}</button>{/snippet}
+          {#snippet actions()}<button type="button" class="notice-action-text" onclick={() => settings.open("agents", { agentsSubsection: "providers" })}>{t("chat.timeline.openSettings")}</button>{/snippet}
         </Notice>
       </div>
     {/if}

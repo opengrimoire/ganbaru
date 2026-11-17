@@ -103,7 +103,7 @@ An agent executes only on devices of the person who owns it. Other members of a 
 
 - **Chat channels:** the channel dialog edits name, topic, section, and members together, and the header opens a details panel with the topic and members. Both use the shared picker and access step. See [Conversations](../chat/conversations.md).
 - **Chat sidebar:** no direct messages or contacts entry; direct messages are planned as a separate tab, and contacts and invitations stay in Settings > Contacts.
-- **Settings > Contacts:** the person's contact card (until pressed, the QR and code show a blurred placeholder that is not derived from the real identity, so a shared screen leaks nothing), contacts with their trust scopes and expiry, pending received and sent invitations, and blocked contacts. AI agents stay under Settings > Chat while they are only usable in Chat.
+- **Settings > Contacts:** the person's contact card (until pressed, the QR and code show a blurred placeholder that is not derived from the real identity, so a shared screen leaks nothing), contacts with their trust scopes and expiry, pending received and sent invitations, and blocked contacts. AI agents stay under Settings > Agents while they are only usable in Chat.
 - **Projects:** a Members list in project settings with roles, and the shared picker for task assignees and reviewers, limited to project members. Groups have the same Members list. See [Projects](../projects/README.md).
 - **Calendar:** attendees chosen with the shared picker, each with a response chip, next to imported attendees that stay read-only. See [Event editing](../calendar/event-editing.md#meeting-metadata).
 - **Notes:** a Share action on a page and on a database page that uses the shared picker with page or subtree scope and the Notes role names Can view, Can comment, Can edit, and Full access, which map onto the capability set above. See [Links and collaboration](../notes/links-and-collaboration.md#access).
@@ -122,6 +122,6 @@ Collaboration controls ship before their logic so the complete experience can be
 
 ## Open decisions
 
-- Whether AI agents move from Settings > Chat to Settings > Contacts once an agent can act outside Chat.
+- Whether AI agents move from Settings > Agents to Settings > Contacts once an agent can act outside Chat.
 - Whether a space owner can delegate ownership transfer to administrators.
 - Group direct conversations beyond a small fixed size.

@@ -15,7 +15,7 @@ export type LoadedSettingsDetail =
   }
   | {
     kind: "chat-provider";
-    component: typeof import("$lib/components/settings/chat/ProviderSetupPanel.svelte").default;
+    component: typeof import("$lib/components/settings/agents/ProviderSetupPanel.svelte").default;
   };
 
 const DETAIL_IMPORTERS = {
@@ -27,7 +27,7 @@ const DETAIL_IMPORTERS = {
     .then((module) => ({
       default: { kind: "notes-transfer" as const, component: module.default },
     })),
-  "chat-provider": () => import("$lib/components/settings/chat/ProviderSetupPanel.svelte")
+  "chat-provider": () => import("$lib/components/settings/agents/ProviderSetupPanel.svelte")
     .then((module) => ({
       default: { kind: "chat-provider" as const, component: module.default },
     })),

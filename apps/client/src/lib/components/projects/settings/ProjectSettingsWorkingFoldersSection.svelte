@@ -88,8 +88,8 @@
         label: providerFamilyDisplayName(family, t("chat.providers.acp.name")),
         familyId: family.familyId,
         summary: family.implementationStatus === "available"
-          ? t("settings.chat.providers.notConfigured")
-          : t("settings.chat.providers.notAvailable"),
+          ? t("settings.agents.providers.notConfigured")
+          : t("settings.agents.providers.notAvailable"),
         disabled: true,
       });
     }

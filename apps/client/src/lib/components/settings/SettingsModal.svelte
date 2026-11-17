@@ -35,7 +35,7 @@
     NotesTransferOperation,
     ContactsSettingsTab,
     ChatProviderSetupTarget,
-    ChatSettingsSubsection,
+    AgentsSettingsSubsection,
     SectionId,
     SettingsDetailKind,
     SettingsDraftKind,
@@ -57,20 +57,20 @@
     initialSection,
     initialDistractionsTab,
     initialContactsTab,
-    initialChatSubsection,
-    initialChatTeammateId,
-    initialChatChannelId,
-    initialChatCreateTeammate,
+    initialAgentsSubsection,
+    initialAgentsTeammateId,
+    initialAgentsChannelId,
+    initialAgentsCreateTeammate,
     presentation,
   }: {
     onClose: () => void;
     initialSection?: SectionId;
     initialDistractionsTab?: DistractionsSettingsTab;
     initialContactsTab?: ContactsSettingsTab;
-    initialChatSubsection?: ChatSettingsSubsection;
-    initialChatTeammateId?: string;
-    initialChatChannelId?: string;
-    initialChatCreateTeammate?: boolean;
+    initialAgentsSubsection?: AgentsSettingsSubsection;
+    initialAgentsTeammateId?: string;
+    initialAgentsChannelId?: string;
+    initialAgentsCreateTeammate?: boolean;
     presentation?: "dialog" | "mobile";
   } = $props();
 
@@ -93,12 +93,15 @@
 
   const sections = $derived(settingsSectionsForShell(mobilePresentation ? "mobile" : "desktop"));
 
-  const initialActiveSection = untrack(() => initialSection ?? "appearance");
-  const initialActiveChatSubsection = untrack(() => initialChatSubsection ?? "teammates");
-  const initialMobileSectionOpen = untrack(() => initialSection !== undefined);
+  /** The requested section when this shell lists it, so a desktop-only target opens the category list instead. */
+  const availableInitialSection = untrack(() =>
+    sections.find((section) => section.id === initialSection)?.id ?? null);
+  const initialActiveSection = availableInitialSection ?? "appearance";
+  const initialActiveAgentsSubsection = untrack(() => initialAgentsSubsection ?? "teammates");
+  const initialMobileSectionOpen = availableInitialSection !== null;
   let activeSection = $state<SectionId>(initialActiveSection);
   let mobileSectionOpen = $state(initialMobileSectionOpen);
-  let activeChatSubsection = $state<ChatSettingsSubsection>(initialActiveChatSubsection);
+  let activeAgentsSubsection = $state<AgentsSettingsSubsection>(initialActiveAgentsSubsection);
   let openDraft = $state<SettingsDraftKind | null>(null);
   let pendingDraftNavigation = $state<(() => void) | null>(null);
   let detailView = $state<SettingsDetailView | null>(null);
@@ -122,9 +125,8 @@
   const useIconRail = $derived(!useTopNav && viewport.below("regular"));
   const settingsScrollbarInset = $derived(useTopNav ? 12 : useIconRail ? 16 : 24);
   const settingsContentPaddingClass = $derived(useTopNav ? "px-3 py-4" : useIconRail ? "px-5 py-5" : "p-8");
-  const chatTeammatesUsesInternalScroll = $derived(
-    !mobilePresentation && activeSection === "chat" && activeChatSubsection === "teammates",
-  );
+  /** Every Agents tab is a two-column view whose columns scroll on their own. */
+  const agentsUsesInternalScroll = $derived(!mobilePresentation && activeSection === "agents");
 
   $effect(() => {
     if (!mobilePresentation || !mobileSectionOpen) return;
@@ -336,8 +338,8 @@
   }
 
   function openChatProviderSetup(target: ChatProviderSetupTarget): void {
-    activeSection = "chat";
-    activeChatSubsection = "providers";
+    activeSection = "agents";
+    activeAgentsSubsection = "providers";
     detailView = { kind: "chat-provider", target };
     detailScrollEl = undefined;
     detailScrollbarInsetTop = 0;
@@ -476,15 +478,15 @@
               {activeSection}
               {initialDistractionsTab}
               {initialContactsTab}
-              {activeChatSubsection}
-              {initialChatTeammateId}
-              {initialChatChannelId}
-              {initialChatCreateTeammate}
+              {activeAgentsSubsection}
+              {initialAgentsTeammateId}
+              {initialAgentsChannelId}
+              {initialAgentsCreateTeammate}
               onOpenDistractionsLimitEditor={openDistractionsLimitEditor}
               onOpenNotesTransferPanel={openNotesTransferPanel}
               onOpenChatProviderSetup={openChatProviderSetup}
-              onChatSubsectionChange={(subsection: ChatSettingsSubsection) => {
-                activeChatSubsection = subsection;
+              onAgentsSubsectionChange={(subsection: AgentsSettingsSubsection) => {
+                activeAgentsSubsection = subsection;
                 scrollSettingsToTop();
               }}
               onRequestNavigation={requestSettingsNavigation}
@@ -660,7 +662,7 @@
         data-settings-content
         class={cn(
           "h-full min-h-0 bg-background/40 dark:bg-black/20",
-          detailView || activeSection === "shortcuts" || chatTeammatesUsesInternalScroll
+          detailView || activeSection === "shortcuts" || agentsUsesInternalScroll
             ? "overflow-hidden"
             : "hide-scrollbar overflow-y-auto",
           detailView ? "p-0" : settingsContentPaddingClass,
@@ -733,15 +735,15 @@
             {activeSection}
             {initialDistractionsTab}
             {initialContactsTab}
-            {activeChatSubsection}
-            {initialChatTeammateId}
-            {initialChatChannelId}
-            {initialChatCreateTeammate}
+            {activeAgentsSubsection}
+            {initialAgentsTeammateId}
+            {initialAgentsChannelId}
+            {initialAgentsCreateTeammate}
             onOpenDistractionsLimitEditor={openDistractionsLimitEditor}
             onOpenNotesTransferPanel={openNotesTransferPanel}
             onOpenChatProviderSetup={openChatProviderSetup}
-            onChatSubsectionChange={(subsection: ChatSettingsSubsection) => {
-              activeChatSubsection = subsection;
+            onAgentsSubsectionChange={(subsection: AgentsSettingsSubsection) => {
+              activeAgentsSubsection = subsection;
               scrollSettingsToTop();
             }}
             onRequestNavigation={requestSettingsNavigation}
@@ -756,7 +758,7 @@
           stickyBottom={detailScrollbarInsetBottom}
           wheelPassthrough
         />
-      {:else if activeSection !== "shortcuts" && !chatTeammatesUsesInternalScroll}
+      {:else if activeSection !== "shortcuts" && !agentsUsesInternalScroll}
         <CalendarScrollbar
           scrollContainer={settingsScrollEl}
           stickyTop={settingsScrollbarInset}
@@ -780,10 +782,10 @@
     />
   {:else}
     <ConfirmDialog
-      title={t("settings.chat.teammates.discardDraftTitle")}
-      message={t("settings.chat.teammates.discardDraftMessage")}
-      confirmLabel={t("settings.chat.teammates.discardDraft")}
-      cancelLabel={t("settings.chat.teammates.keepEditing")}
+      title={t("settings.agents.teammates.discardDraftTitle")}
+      message={t("settings.agents.teammates.discardDraftMessage")}
+      confirmLabel={t("settings.agents.teammates.discardDraft")}
+      cancelLabel={t("settings.agents.teammates.keepEditing")}
       onConfirm={discardDraftAndContinue}
       onCancel={cancelDraftNavigation}
     />

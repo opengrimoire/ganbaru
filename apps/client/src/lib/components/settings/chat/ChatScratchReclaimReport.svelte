@@ -9,6 +9,7 @@
   } from "$lib/chat/contracts";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
   import type ChatScratchManagerComponent from "./ChatScratchManager.svelte";
+  import { SETTINGS_ICON_BUTTON_CLASS, SETTINGS_SECONDARY_BUTTON_CLASS } from "$lib/components/settings/action-buttons";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { formatDateTime, formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -37,7 +38,7 @@
   }
 
   function bytesLabel(bytes: number): string {
-    return t("settings.chat.teammates.scratchManager.bytes", formatNumber(localization.locale, bytes));
+    return t("settings.agents.teammates.scratchManager.bytes", formatNumber(localization.locale, bytes));
   }
 
   function locationLabel(row: ChatScratchReclaimRow): string {
@@ -85,51 +86,48 @@
   });
 </script>
 
-<div class="space-y-2">
-  <div class="flex items-center justify-between gap-2">
-    <h4 class="text-sm font-medium">{t("settings.chat.behavior.reclaimTitle")}</h4>
-    <button type="button" class="reclaim-action inline-flex items-center gap-1" disabled={busy} aria-label={t("settings.chat.behavior.reclaimRefresh")} title={t("settings.chat.behavior.reclaimRefresh")} onclick={() => void refresh()}><RotateCw class="size-3.5" aria-hidden="true" /></button>
+<section class="flex flex-col gap-4">
+  <div class="flex items-center justify-between gap-4 px-1">
+    <div class="min-w-0 flex-1">
+      <h2 class="text-[0.866667rem] font-semibold text-foreground">{t("settings.chat.behavior.reclaimTitle")}</h2>
+      {#if report}<p class="mt-0.5 text-[0.8rem] text-muted-foreground">{t("settings.chat.behavior.reclaimDescription", formatNumber(localization.locale, report.idleDays))}</p>{/if}
+    </div>
+    <button type="button" class={SETTINGS_ICON_BUTTON_CLASS} disabled={busy} aria-label={t("settings.chat.behavior.reclaimRefresh")} title={t("settings.chat.behavior.reclaimRefresh")} onclick={() => void refresh()}><RotateCw size={13} aria-hidden="true" /></button>
   </div>
-  {#if error}<Notice class="text-sm" message={error} />{/if}
+  {#if error}<Notice class="px-1 text-[0.733333rem]" message={error} />{/if}
   {#if report}
-    <p class="text-xs text-muted-foreground">{t("settings.chat.behavior.reclaimDescription", formatNumber(localization.locale, report.idleDays))}</p>
     {#if report.rows.length === 0}
-      <p class="text-xs text-muted-foreground">{t("settings.chat.behavior.reclaimEmpty")}</p>
+      <p class="px-1 text-[0.8rem] text-muted-foreground">{t("settings.chat.behavior.reclaimEmpty")}</p>
     {:else}
-      <p class="text-sm">{report.totalTruncated
+      <p class="px-1 text-[0.866667rem] text-foreground">{report.totalTruncated
         ? t("settings.chat.behavior.reclaimTotalLimited", formatNumber(localization.locale, report.totalBytes))
         : t("settings.chat.behavior.reclaimTotal", formatNumber(localization.locale, report.totalBytes))}</p>
-      <ul class="space-y-2">
+      <ul class="flex flex-col gap-2 px-1">
         {#each report.rows as row (row.scratchGenerationId)}
-          {@const generationLabel = t("settings.chat.teammates.scratchManager.generation", row.generation)}
+          {@const generationLabel = t("settings.agents.teammates.scratchManager.generation", row.generation)}
           <li class="flex min-w-0 items-center gap-2">
             <div class="min-w-0 flex-1">
-              <p class="truncate text-sm">{row.teammateName} · {generationLabel}</p>
-              <p class="truncate text-xs text-muted-foreground">{locationLabel(row)}</p>
-              <p class="truncate text-xs text-muted-foreground">{[
+              <p class="truncate text-[0.866667rem] text-foreground">{row.teammateName} · {generationLabel}</p>
+              <p class="truncate text-[0.733333rem] text-muted-foreground">{locationLabel(row)}</p>
+              <p class="truncate text-[0.733333rem] text-muted-foreground">{[
                 reasonLabel(row.reason, report.idleDays),
-                row.deviceAvailability === "available" ? bytesLabel(row.byteSize) : t("settings.chat.teammates.scratchManager.unavailable"),
-                row.deviceAvailability === "available" && row.sizeTruncated ? t("settings.chat.teammates.scratchManager.sizeLimited") : null,
+                row.deviceAvailability === "available" ? bytesLabel(row.byteSize) : t("settings.agents.teammates.scratchManager.unavailable"),
+                row.deviceAvailability === "available" && row.sizeTruncated ? t("settings.agents.teammates.scratchManager.sizeLimited") : null,
                 activityLabel(row),
               ].filter(Boolean).join(" · ")}</p>
             </div>
-            <button type="button" class="reclaim-action shrink-0" disabled={reviewing !== null} aria-label={t("settings.chat.behavior.reclaimReviewLabel", row.teammateName, generationLabel)} onclick={() => void review(row)}>{t("settings.chat.behavior.reclaimReview")}</button>
+            <button type="button" class={SETTINGS_SECONDARY_BUTTON_CLASS} disabled={reviewing !== null} aria-label={t("settings.chat.behavior.reclaimReviewLabel", row.teammateName, generationLabel)} onclick={() => void review(row)}>{t("settings.chat.behavior.reclaimReview")}</button>
           </li>
         {/each}
       </ul>
       {#if report.omitted > 0}
-        <p class="text-xs text-muted-foreground">{t("settings.chat.behavior.reclaimOmitted", formatNumber(localization.locale, report.omitted))}</p>
+        <p class="px-1 text-[0.733333rem] text-muted-foreground">{t("settings.chat.behavior.reclaimOmitted", formatNumber(localization.locale, report.omitted))}</p>
       {/if}
     {/if}
   {/if}
-</div>
+</section>
 
 {#if reviewing && ScratchManager}
   {@const Manager = ScratchManager}
   <Manager initialReplyThreadId={reviewing.replyThreadId} initialGenerationId={reviewing.scratchGenerationId} onClose={closeReview} />
 {/if}
-
-<style>
-  .reclaim-action { border: 1px solid var(--border); border-radius: 0.375rem; padding: 0.35rem 0.65rem; font-size: calc(0.733333rem * var(--type-scale)); }
-  .reclaim-action:disabled { cursor: not-allowed; opacity: 0.5; }
-</style>

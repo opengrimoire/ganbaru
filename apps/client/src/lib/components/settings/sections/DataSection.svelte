@@ -9,6 +9,7 @@
   import VaultHandoffPanel from "$lib/components/vault/handoff/VaultHandoffPanel.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { SETTINGS_SECONDARY_BUTTON_CLASS } from "$lib/components/settings/action-buttons";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     formatVaultError,
@@ -28,10 +29,6 @@
   );
   let error = $state<string | null>(null);
   const { t } = getLocalization();
-
-  const actionButtonClass =
-    "inline-flex h-(--control-height) shrink-0 items-center justify-center gap-1.5 rounded-md border border-border px-2.5 text-[0.8rem] font-medium transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-55";
-  const secondaryButtonClass = `${actionButtonClass} bg-card text-foreground hover:bg-accent dark:bg-transparent`;
 
   const currentFolderPath =$derived(activeVault?.path ?? t("settings.data.noActiveFolder"));
 
@@ -122,7 +119,7 @@
           type="button"
           onclick={() => void revealVault()}
           disabled={busy !== null || !activeVault}
-          class={secondaryButtonClass}
+          class={SETTINGS_SECONDARY_BUTTON_CLASS}
         >
           {#if busy === "reveal"}
             <LoaderCircle size={14} strokeWidth={2.1} class="shrink-0 animate-spin" />
@@ -144,7 +141,7 @@
           type="button"
           onclick={() => void chooseVault("change")}
           disabled={busy !== null}
-          class={secondaryButtonClass}
+          class={SETTINGS_SECONDARY_BUTTON_CLASS}
         >
           {#if busy === "change"}
             <LoaderCircle size={14} strokeWidth={2.1} class="shrink-0 animate-spin" />
@@ -166,7 +163,7 @@
           type="button"
           onclick={() => void chooseVault("import")}
           disabled={busy !== null}
-          class={secondaryButtonClass}
+          class={SETTINGS_SECONDARY_BUTTON_CLASS}
         >
           {#if busy === "import"}
             <LoaderCircle size={14} strokeWidth={2.1} class="shrink-0 animate-spin" />
@@ -184,7 +181,7 @@
   <section class="flex flex-col gap-4">
     <h2 class="px-1 text-[0.866667rem] font-semibold text-foreground">{t("settings.data.backupHeading")}</h2>
 
-    <VaultBackupRows platform="desktop" buttonClass={secondaryButtonClass} onRestored={restartApp} />
+    <VaultBackupRows platform="desktop" buttonClass={SETTINGS_SECONDARY_BUTTON_CLASS} onRestored={restartApp} />
   </section>
 
   <DatabaseRollbacks onRestored={restartApp} />

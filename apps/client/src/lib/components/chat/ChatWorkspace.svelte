@@ -298,10 +298,10 @@
         && typeof event.detail.channelId === "string"
         ? event.detail.channelId
         : undefined;
-      settings.open("chat", {
-        chatSubsection: "teammates",
-        chatTeammateId: participantId,
-        chatChannelId: channelId,
+      settings.open("agents", {
+        agentsSubsection: "teammates",
+        agentsTeammateId: participantId,
+        agentsChannelId: channelId,
       });
     };
     paneEvents.addEventListener("ganbaru:chat-revert-message", revertMessage);

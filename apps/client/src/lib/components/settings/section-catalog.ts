@@ -6,6 +6,7 @@ import Calendar from "@lucide/svelte/icons/calendar";
 import BriefcaseBusiness from "@lucide/svelte/icons/briefcase-business";
 import Book from "@lucide/svelte/icons/book";
 import MessageSquare from "@lucide/svelte/icons/message-square";
+import Bot from "@lucide/svelte/icons/bot";
 import GlobeOff from "@lucide/svelte/icons/globe-off";
 import Info from "@lucide/svelte/icons/info";
 import Keyboard from "@lucide/svelte/icons/keyboard";
@@ -35,6 +36,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   { id: "projects", labelKey: "settings.section.projects", icon: BriefcaseBusiness },
   { id: "notes", labelKey: "settings.section.notes", icon: Book },
   { id: "chat", labelKey: "settings.section.chat", icon: MessageSquare },
+  { id: "agents", labelKey: "settings.section.agents", icon: Bot },
   { id: "focus", labelKey: "settings.section.focus", icon: Timer },
   { id: "music", labelKey: "settings.section.music", icon: Music },
   { id: "distractions", labelKey: "settings.section.distractions", icon: GlobeOff },
@@ -44,10 +46,13 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   { id: "about", labelKey: "settings.section.about", icon: Info },
 ];
 
+/** Categories the mobile shell leaves out: keyboard shortcuts, and agents, whose providers run on desktop only. */
+const DESKTOP_ONLY_SECTIONS: ReadonlySet<SectionId> = new Set(["shortcuts", "agents"]);
+
 /** Return the settings categories that have meaning in the selected shell. */
 export function settingsSectionsForShell(shell: PlatformShell): readonly SettingsSectionMeta[] {
   if (shell === "desktop") return SETTINGS_SECTIONS;
-  return SETTINGS_SECTIONS.filter((section) => section.id !== "shortcuts");
+  return SETTINGS_SECTIONS.filter((section) => !DESKTOP_ONLY_SECTIONS.has(section.id));
 }
 
 /** Loads desktop Data settings once and retains its constructor for synchronous reuse. */

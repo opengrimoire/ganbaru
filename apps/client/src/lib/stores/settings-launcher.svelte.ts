@@ -13,15 +13,15 @@
  * `onClosed` to restore its own surface once the modal is gone.
  */
 
-import type { ChatSettingsSubsection, DistractionsSettingsTab, ContactsSettingsTab, SectionId } from "$lib/settings/types";
+import type { AgentsSettingsSubsection, DistractionsSettingsTab, ContactsSettingsTab, SectionId } from "$lib/settings/types";
 
 interface SettingsLaunchOptions {
   distractionsTab?: DistractionsSettingsTab;
   contactsTab?: ContactsSettingsTab;
-  chatSubsection?: ChatSettingsSubsection;
-  chatTeammateId?: string;
-  chatChannelId?: string;
-  chatCreateTeammate?: boolean;
+  agentsSubsection?: AgentsSettingsSubsection;
+  agentsTeammateId?: string;
+  agentsChannelId?: string;
+  agentsCreateTeammate?: boolean;
   /** Runs once after the modal closes, however it closes, so the opener can bring back what it had to hide. */
   onClosed?: () => void;
 }
@@ -31,10 +31,10 @@ class SettingsLauncherStore {
   targetSection = $state<SectionId | undefined>(undefined);
   targetDistractionsTab = $state<DistractionsSettingsTab | undefined>(undefined);
   targetContactsTab = $state<ContactsSettingsTab | undefined>(undefined);
-  targetChatSubsection = $state<ChatSettingsSubsection | undefined>(undefined);
-  targetChatTeammateId = $state<string | undefined>(undefined);
-  targetChatChannelId = $state<string | undefined>(undefined);
-  targetChatCreateTeammate = $state(false);
+  targetAgentsSubsection = $state<AgentsSettingsSubsection | undefined>(undefined);
+  targetAgentsTeammateId = $state<string | undefined>(undefined);
+  targetAgentsChannelId = $state<string | undefined>(undefined);
+  targetAgentsCreateTeammate = $state(false);
   private onClosed: (() => void) | null = null;
 
   /**
@@ -48,10 +48,10 @@ class SettingsLauncherStore {
       ? options.distractionsTab
       : undefined;
     this.targetContactsTab = section === "contacts" ? options.contactsTab : undefined;
-    this.targetChatSubsection = section === "chat" ? options.chatSubsection : undefined;
-    this.targetChatTeammateId = section === "chat" ? options.chatTeammateId : undefined;
-    this.targetChatChannelId = section === "chat" ? options.chatChannelId : undefined;
-    this.targetChatCreateTeammate = section === "chat" ? options.chatCreateTeammate ?? false : false;
+    this.targetAgentsSubsection = section === "agents" ? options.agentsSubsection : undefined;
+    this.targetAgentsTeammateId = section === "agents" ? options.agentsTeammateId : undefined;
+    this.targetAgentsChannelId = section === "agents" ? options.agentsChannelId : undefined;
+    this.targetAgentsCreateTeammate = section === "agents" ? options.agentsCreateTeammate ?? false : false;
     this.onClosed = options.onClosed ?? null;
     this.isOpen = true;
   }
@@ -63,10 +63,10 @@ class SettingsLauncherStore {
     this.targetSection = undefined;
     this.targetDistractionsTab = undefined;
     this.targetContactsTab = undefined;
-    this.targetChatSubsection = undefined;
-    this.targetChatTeammateId = undefined;
-    this.targetChatChannelId = undefined;
-    this.targetChatCreateTeammate = false;
+    this.targetAgentsSubsection = undefined;
+    this.targetAgentsTeammateId = undefined;
+    this.targetAgentsChannelId = undefined;
+    this.targetAgentsCreateTeammate = false;
     onClosed?.();
   }
 }

@@ -390,7 +390,7 @@
 
   function openProviderSettings(): void {
     closePicker();
-    settings.open("chat", { chatSubsection: "providers" });
+    settings.open("agents", { agentsSubsection: "providers" });
   }
 
   function chooseModel(entry: (typeof providers)[number], modelId: string | null, providerManaged: boolean): void {

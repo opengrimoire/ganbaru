@@ -156,7 +156,7 @@
       directory = null;
       if (selected) void loadAccess(selected);
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause, t("settings.chat.teammates.scratchManager.loadFailed"));
+      error = chatErrorMessage(cause, t("settings.agents.teammates.scratchManager.loadFailed"));
     } finally {
       loading = false;
     }
@@ -219,7 +219,7 @@
     } catch (cause: unknown) {
       directoryError = chatErrorMessage(
         cause,
-        t("settings.chat.teammates.scratchManager.browseFailed"),
+        t("settings.agents.teammates.scratchManager.browseFailed"),
       );
     } finally {
       directoryLoading = false;
@@ -271,12 +271,12 @@
         expectedContentRevision: promotionEntry.contentRevision,
         destination,
       });
-      notice = t("settings.chat.teammates.scratchManager.promotionSuccess");
+      notice = t("settings.agents.teammates.scratchManager.promotionSuccess");
       promotionEntry = null;
     } catch (cause: unknown) {
       directoryError = chatErrorMessage(
         cause,
-        t("settings.chat.teammates.scratchManager.promotionFailed"),
+        t("settings.agents.teammates.scratchManager.promotionFailed"),
       );
     } finally {
       promoting = false;
@@ -292,14 +292,14 @@
       });
       if (preview.activeRunCount > 0) {
         error = t(
-          "settings.chat.teammates.scratchManager.cleanupBlocked",
+          "settings.agents.teammates.scratchManager.cleanupBlocked",
           preview.activeRunCount,
         );
         return;
       }
       cleanupPreview = preview;
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause, t("settings.chat.teammates.scratchManager.cleanupFailed"));
+      error = chatErrorMessage(cause, t("settings.agents.teammates.scratchManager.cleanupFailed"));
     } finally {
       cleanupLoading = false;
     }
@@ -318,11 +318,11 @@
         confirmed: true,
       });
       notice = result.state === "completed"
-        ? t("settings.chat.teammates.scratchManager.cleanupComplete")
-        : t("settings.chat.teammates.scratchManager.cleanupDeferred");
+        ? t("settings.agents.teammates.scratchManager.cleanupComplete")
+        : t("settings.agents.teammates.scratchManager.cleanupDeferred");
       await loadScopes();
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause, t("settings.chat.teammates.scratchManager.cleanupFailed"));
+      error = chatErrorMessage(cause, t("settings.agents.teammates.scratchManager.cleanupFailed"));
     } finally {
       cleanupLoading = false;
     }
@@ -345,33 +345,33 @@
 
   function generationStatus(generation: ChatScratchGenerationRead): string {
     if (generation.lifecycleState === "quarantined") {
-      return t("settings.chat.teammates.scratchManager.quarantined");
+      return t("settings.agents.teammates.scratchManager.quarantined");
     }
     if (generation.lifecycleState === "cleanupPending") {
-      return t("settings.chat.teammates.scratchManager.cleanupPending");
+      return t("settings.agents.teammates.scratchManager.cleanupPending");
     }
     if (generation.lifecycleState === "cleanupFailed") {
-      return t("settings.chat.teammates.scratchManager.cleanupFailedState");
+      return t("settings.agents.teammates.scratchManager.cleanupFailedState");
     }
-    return t("settings.chat.teammates.scratchManager.active");
+    return t("settings.agents.teammates.scratchManager.active");
   }
 
   function cleanupMessage(preview: ChatScratchCleanupPreviewRead): string {
     if (preview.activeRunCount > 0) {
-      return t("settings.chat.teammates.scratchManager.cleanupBlocked", preview.activeRunCount);
+      return t("settings.agents.teammates.scratchManager.cleanupBlocked", preview.activeRunCount);
     }
     if (preview.deviceAvailability === "unavailableOnThisDevice") {
-      return t("settings.chat.teammates.scratchManager.cleanupUnavailableMessage");
+      return t("settings.agents.teammates.scratchManager.cleanupUnavailableMessage");
     }
     if (preview.sizeTruncated) {
       return t(
-        "settings.chat.teammates.scratchManager.cleanupLimitedMessage",
+        "settings.agents.teammates.scratchManager.cleanupLimitedMessage",
         formatNumber(localization.locale, preview.byteSize),
         preview.entryCount,
       );
     }
     return t(
-      "settings.chat.teammates.scratchManager.cleanupMessage",
+      "settings.agents.teammates.scratchManager.cleanupMessage",
       formatNumber(localization.locale, preview.byteSize),
       preview.entryCount,
     );
@@ -381,16 +381,16 @@
 <div class="scratch-manager-backdrop surface-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
   <div bind:this={dialog} class="scratch-manager surface-dialog" role="dialog" aria-modal="true" aria-labelledby="chat-scratch-manager-title" tabindex="-1">
     <header>
-      <div><h3 id="chat-scratch-manager-title">{t("settings.chat.teammates.scratchManager.heading")}</h3><p>{t("settings.chat.teammates.scratchManager.description")}</p></div>
-      <button type="button" aria-label={t("settings.chat.teammates.scratchManager.close")} onclick={onClose}><X size={17} /></button>
+      <div><h3 id="chat-scratch-manager-title">{t("settings.agents.teammates.scratchManager.heading")}</h3><p>{t("settings.agents.teammates.scratchManager.description")}</p></div>
+      <button type="button" aria-label={t("settings.agents.teammates.scratchManager.close")} onclick={onClose}><X size={17} /></button>
     </header>
     <div class="scratch-manager-body">
       <aside>
-        <label class="scratch-search"><Search size={14} /><input bind:value={search} aria-label={t("settings.chat.teammates.scratchManager.search")} placeholder={t("settings.chat.teammates.scratchManager.search")} /></label>
-        <nav aria-label={t("settings.chat.teammates.scratchManager.scopeList")} use:scrollEdgeFadeAction>
+        <label class="scratch-search"><Search size={14} /><input bind:value={search} aria-label={t("settings.agents.teammates.scratchManager.search")} placeholder={t("settings.agents.teammates.scratchManager.search")} /></label>
+        <nav aria-label={t("settings.agents.teammates.scratchManager.scopeList")} use:scrollEdgeFadeAction>
           {#if loading}<Loading layout="rows" rows={3} />
-          {:else if scopes.length === 0}<p class="empty">{t("settings.chat.teammates.scratchManager.empty")}</p>
-          {:else if filteredScopes.length === 0}<p class="empty">{t("settings.chat.teammates.scratchManager.noMatch")}</p>
+          {:else if scopes.length === 0}<p class="empty">{t("settings.agents.teammates.scratchManager.empty")}</p>
+          {:else if filteredScopes.length === 0}<p class="empty">{t("settings.agents.teammates.scratchManager.noMatch")}</p>
           {:else}{#each filteredScopes as scope (scope.id)}
             <button type="button" class:active={scope.id === selectedScopeId} aria-current={scope.id === selectedScopeId ? "page" : undefined} onclick={() => void selectScope(scope)}>
               <HardDrive size={15} /><span><strong>{scope.teammateName}</strong><small>{scopeLocation(scope)}</small></span><span class="count">{scope.generations.length}</span>
@@ -405,59 +405,59 @@
         {#if selectedScope}
           <section class="scope-heading">
             <div><h4>{selectedScope.teammateName}</h4><p>{scopeLocation(selectedScope)}</p></div>
-            {#if selectedScope.lifecycleState === "archived"}<span><Archive size={13} />{t("settings.chat.teammates.scratchManager.archived")}</span>{/if}
+            {#if selectedScope.lifecycleState === "archived"}<span><Archive size={13} />{t("settings.agents.teammates.scratchManager.archived")}</span>{/if}
           </section>
           <section class="generation-grid">
             {#each selectedScope.generations as generation (generation.id)}
               <article class:selected={selectedGenerationId === generation.id} class:quarantined={generation.lifecycleState === "quarantined"}>
                 <button type="button" class="generation-select" onclick={() => void openGeneration(generation)}>
-                  <span class="generation-title"><strong>{t("settings.chat.teammates.scratchManager.generation", generation.generation)}</strong><small>{generationStatus(generation)}</small></span>
-                  <span class="generation-meta"><small>{generation.deviceAvailability === "available" ? t("settings.chat.teammates.scratchManager.available") : t("settings.chat.teammates.scratchManager.unavailable")}</small><small>{t("settings.chat.teammates.scratchManager.bytes", formatNumber(localization.locale, generation.byteSize))} · {t("settings.chat.teammates.scratchManager.entries", generation.entryCount)}</small>{#if generation.sizeTruncated}<small>{t("settings.chat.teammates.scratchManager.sizeLimited")}</small>{/if}</span>
+                  <span class="generation-title"><strong>{t("settings.agents.teammates.scratchManager.generation", generation.generation)}</strong><small>{generationStatus(generation)}</small></span>
+                  <span class="generation-meta"><small>{generation.deviceAvailability === "available" ? t("settings.agents.teammates.scratchManager.available") : t("settings.agents.teammates.scratchManager.unavailable")}</small><small>{t("settings.agents.teammates.scratchManager.bytes", formatNumber(localization.locale, generation.byteSize))} · {t("settings.agents.teammates.scratchManager.entries", generation.entryCount)}</small>{#if generation.sizeTruncated}<small>{t("settings.agents.teammates.scratchManager.sizeLimited")}</small>{/if}</span>
                 </button>
                 <div class="generation-actions">
-                  <button type="button" disabled={generation.deviceAvailability !== "available" || cleanupLoading} onclick={() => void openGeneration(generation)}><Folder size={14} />{t("settings.chat.teammates.scratchManager.browse")}</button>
-                  <button type="button" class="cleanup" disabled={cleanupLoading} onclick={() => void requestCleanup(generation)}><Trash2 size={14} />{t("settings.chat.teammates.scratchManager.cleanup")}</button>
+                  <button type="button" disabled={generation.deviceAvailability !== "available" || cleanupLoading} onclick={() => void openGeneration(generation)}><Folder size={14} />{t("settings.agents.teammates.scratchManager.browse")}</button>
+                  <button type="button" class="cleanup" disabled={cleanupLoading} onclick={() => void requestCleanup(generation)}><Trash2 size={14} />{t("settings.agents.teammates.scratchManager.cleanup")}</button>
                 </div>
                 <div class="source-summary">
-                  <strong>{t("settings.chat.teammates.scratchManager.sources")}</strong>
-                  {#if generation.retainedSources.length === 0}<small>{t("settings.chat.teammates.scratchManager.noSources")}</small>{:else}{#each generation.retainedSources as source (source.channelId)}<small>{t("settings.chat.teammates.scratchManager.sourceRange", source.channelName)}</small>{/each}{/if}
+                  <strong>{t("settings.agents.teammates.scratchManager.sources")}</strong>
+                  {#if generation.retainedSources.length === 0}<small>{t("settings.agents.teammates.scratchManager.noSources")}</small>{:else}{#each generation.retainedSources as source (source.channelId)}<small>{t("settings.agents.teammates.scratchManager.sourceRange", source.channelName)}</small>{/each}{/if}
                 </div>
               </article>
             {/each}
           </section>
 
           {#if selectedGeneration && directory}
-            <section class="browser" aria-label={t("settings.chat.teammates.scratchManager.browseLabel")}>
-              <header><button type="button" disabled={!directory.relativePath || directoryLoading} aria-label={t("settings.chat.teammates.scratchManager.up")} onclick={() => void loadDirectory(upPath(directory?.relativePath ?? ""))}><ArrowLeft size={14} /></button><span><HardDrive size={14} /><strong>{directory.relativePath || t("settings.chat.teammates.scratchManager.root")}</strong></span></header>
+            <section class="browser" aria-label={t("settings.agents.teammates.scratchManager.browseLabel")}>
+              <header><button type="button" disabled={!directory.relativePath || directoryLoading} aria-label={t("settings.agents.teammates.scratchManager.up")} onclick={() => void loadDirectory(upPath(directory?.relativePath ?? ""))}><ArrowLeft size={14} /></button><span><HardDrive size={14} /><strong>{directory.relativePath || t("settings.agents.teammates.scratchManager.root")}</strong></span></header>
               {#if directoryError}<Notice class="scratch-error" message={directoryError} />{/if}
               <div class="entry-list">
-                {#if directory.entries.length === 0}<p class="empty">{t("settings.chat.teammates.scratchManager.emptyFolder")}</p>{/if}
+                {#if directory.entries.length === 0}<p class="empty">{t("settings.agents.teammates.scratchManager.emptyFolder")}</p>{/if}
                 {#each directory.entries as entry (entry.relativePath)}
                   <div class="entry-row">
-                    <button type="button" class="entry-open" onclick={() => entry.kind === "directory" ? void loadDirectory(entry.relativePath) : beginPromotion(entry)} disabled={entry.kind === "file" && !entry.promotable} title={entry.kind === "file" && !entry.promotable ? t("settings.chat.teammates.scratchManager.fileNotPromotable") : undefined}>{#if entry.kind === "directory"}<Folder size={15} />{:else}<File size={15} />{/if}<span><strong>{entry.displayName}</strong>{#if entry.byteSize !== null}<small>{t("settings.chat.teammates.scratchManager.bytes", formatNumber(localization.locale, entry.byteSize))}</small>{/if}</span>{#if entry.kind === "directory"}<ChevronRight size={14} />{/if}</button>
-                    {#if entry.kind === "file" && entry.promotable}<button type="button" class="promote-button" onclick={() => beginPromotion(entry)}><Upload size={14} />{t("settings.chat.teammates.scratchManager.promote")}</button>{/if}
+                    <button type="button" class="entry-open" onclick={() => entry.kind === "directory" ? void loadDirectory(entry.relativePath) : beginPromotion(entry)} disabled={entry.kind === "file" && !entry.promotable} title={entry.kind === "file" && !entry.promotable ? t("settings.agents.teammates.scratchManager.fileNotPromotable") : undefined}>{#if entry.kind === "directory"}<Folder size={15} />{:else}<File size={15} />{/if}<span><strong>{entry.displayName}</strong>{#if entry.byteSize !== null}<small>{t("settings.agents.teammates.scratchManager.bytes", formatNumber(localization.locale, entry.byteSize))}</small>{/if}</span>{#if entry.kind === "directory"}<ChevronRight size={14} />{/if}</button>
+                    {#if entry.kind === "file" && entry.promotable}<button type="button" class="promote-button" onclick={() => beginPromotion(entry)}><Upload size={14} />{t("settings.agents.teammates.scratchManager.promote")}</button>{/if}
                   </div>
                 {/each}
               </div>
-              {#if directory.nextCursor}<button type="button" class="load-more" disabled={directoryLoading} aria-busy={directoryLoading || undefined} onclick={() => void loadDirectory(directory?.relativePath ?? "", directory?.nextCursor ?? null)}>{#if directoryLoading}<LoaderCircle class="size-3.5 animate-spin" aria-hidden="true" />{/if}{t("settings.chat.teammates.scratchManager.loadMore")}</button>{/if}
+              {#if directory.nextCursor}<button type="button" class="load-more" disabled={directoryLoading} aria-busy={directoryLoading || undefined} onclick={() => void loadDirectory(directory?.relativePath ?? "", directory?.nextCursor ?? null)}>{#if directoryLoading}<LoaderCircle class="size-3.5 animate-spin" aria-hidden="true" />{/if}{t("settings.agents.teammates.scratchManager.loadMore")}</button>{/if}
             </section>
           {/if}
 
           {#if promotionEntry}
             <form class="promotion" onsubmit={(event) => { event.preventDefault(); void promote(); }}>
-              <header><div><h4>{t("settings.chat.teammates.scratchManager.promoteHeading")}</h4><p>{promotionEntry.relativePath}</p></div><button type="button" aria-label={t("common.close")} onclick={() => { promotionEntry = null; }}><X size={15} /></button></header>
+              <header><div><h4>{t("settings.agents.teammates.scratchManager.promoteHeading")}</h4><p>{promotionEntry.relativePath}</p></div><button type="button" aria-label={t("common.close")} onclick={() => { promotionEntry = null; }}><X size={15} /></button></header>
               <div class="promotion-fields">
-                <div class="select-field"><span>{t("settings.chat.teammates.scratchManager.destination")}</span><Select value={promotionKind} options={[{ value: "workingFolder", label: t("settings.chat.teammates.scratchManager.projectFolder") }, { value: "managedAttachment", label: t("settings.chat.teammates.scratchManager.managedAttachment") }]} onChange={selectPromotionKind} class="w-full" /></div>
+                <div class="select-field"><span>{t("settings.agents.teammates.scratchManager.destination")}</span><Select value={promotionKind} options={[{ value: "workingFolder", label: t("settings.agents.teammates.scratchManager.projectFolder") }, { value: "managedAttachment", label: t("settings.agents.teammates.scratchManager.managedAttachment") }]} onChange={selectPromotionKind} class="w-full" /></div>
                 {#if promotionKind === "workingFolder"}
-                  {#if editableFolders.length === 0}<p class="alert full" role="alert">{t("settings.chat.teammates.scratchManager.chooseFolder")}</p>{:else}<div class="select-field"><span>{t("settings.chat.teammates.scratchManager.chooseFolder")}</span><Select value={promotionFolderId ?? ""} options={editableFolders.map((folder) => ({ value: folder.workingFolderId, label: folder.displayName }))} onChange={selectPromotionFolder} class="w-full" /></div><label class="full"><span>{t("settings.chat.teammates.scratchManager.targetPath")}</span><input bind:value={promotionTargetPath} maxlength="4096" /></label>{/if}
+                  {#if editableFolders.length === 0}<p class="alert full" role="alert">{t("settings.agents.teammates.scratchManager.chooseFolder")}</p>{:else}<div class="select-field"><span>{t("settings.agents.teammates.scratchManager.chooseFolder")}</span><Select value={promotionFolderId ?? ""} options={editableFolders.map((folder) => ({ value: folder.workingFolderId, label: folder.displayName }))} onChange={selectPromotionFolder} class="w-full" /></div><label class="full"><span>{t("settings.agents.teammates.scratchManager.targetPath")}</span><input bind:value={promotionTargetPath} maxlength="4096" /></label>{/if}
                 {:else}
-                  <label class="full"><span>{t("settings.chat.teammates.scratchManager.attachmentName")}</span><input bind:value={promotionDisplayName} maxlength="1000" /></label>
+                  <label class="full"><span>{t("settings.agents.teammates.scratchManager.attachmentName")}</span><input bind:value={promotionDisplayName} maxlength="1000" /></label>
                 {/if}
               </div>
-              <footer><button type="button" onclick={() => { promotionEntry = null; }}>{t("common.cancel")}</button><button type="submit" class="primary" disabled={!canPromote} aria-busy={promoting || undefined}>{#if promoting}<LoaderCircle class="size-3.5 animate-spin" aria-hidden="true" />{/if}{t("settings.chat.teammates.scratchManager.promote")}</button></footer>
+              <footer><button type="button" onclick={() => { promotionEntry = null; }}>{t("common.cancel")}</button><button type="submit" class="primary" disabled={!canPromote} aria-busy={promoting || undefined}>{#if promoting}<LoaderCircle class="size-3.5 animate-spin" aria-hidden="true" />{/if}{t("settings.agents.teammates.scratchManager.promote")}</button></footer>
             </form>
           {/if}
-        {:else if !loading}<p class="empty">{t("settings.chat.teammates.scratchManager.empty")}</p>{/if}
+        {:else if !loading}<p class="empty">{t("settings.agents.teammates.scratchManager.empty")}</p>{/if}
       </main>
     </div>
   </div>
@@ -465,9 +465,9 @@
 
 {#if cleanupPreview}
   <ConfirmDialog
-    title={t("settings.chat.teammates.scratchManager.cleanupTitle")}
+    title={t("settings.agents.teammates.scratchManager.cleanupTitle")}
     message={cleanupMessage(cleanupPreview)}
-    confirmLabel={t("settings.chat.teammates.scratchManager.cleanupConfirm")}
+    confirmLabel={t("settings.agents.teammates.scratchManager.cleanupConfirm")}
     cancelLabel={t("common.cancel")}
     onConfirm={() => void confirmCleanup()}
     onCancel={() => { cleanupPreview = null; }}

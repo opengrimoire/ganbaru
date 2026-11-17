@@ -2061,20 +2061,20 @@
 
   function folderCapabilityLabel(capability: ChatFolderCapability): string {
     switch (capability) {
-      case "none": return t("settings.chat.teammates.folderCapabilities.none");
-      case "read": return t("settings.chat.teammates.folderCapabilities.read");
-      case "edit": return t("settings.chat.teammates.folderCapabilities.edit");
-      case "execute": return t("settings.chat.teammates.folderCapabilities.execute");
-      case "publish": return t("settings.chat.teammates.folderCapabilities.publish");
+      case "none": return t("settings.agents.teammates.folderCapabilities.none");
+      case "read": return t("settings.agents.teammates.folderCapabilities.read");
+      case "edit": return t("settings.agents.teammates.folderCapabilities.edit");
+      case "execute": return t("settings.agents.teammates.folderCapabilities.execute");
+      case "publish": return t("settings.agents.teammates.folderCapabilities.publish");
     }
   }
 
   function runtimeApprovalLabel(policy: ChatAssignmentTargetRead["effectiveRuntimeApproval"]): string {
     switch (policy) {
-      case "ask": return t("settings.chat.teammates.runtime.ask");
-      case "autoApprove": return t("settings.chat.teammates.runtime.autoApprove");
-      case "unattended": return t("settings.chat.teammates.runtime.unattended");
-      case "providerCustom": return t("settings.chat.teammates.runtime.providerCustom");
+      case "ask": return t("settings.agents.teammates.runtime.ask");
+      case "autoApprove": return t("settings.agents.teammates.runtime.autoApprove");
+      case "unattended": return t("settings.agents.teammates.runtime.unattended");
+      case "providerCustom": return t("settings.agents.teammates.runtime.providerCustom");
     }
   }
 </script>

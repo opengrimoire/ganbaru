@@ -87,6 +87,26 @@ export interface ChatBehaviorPreferences {
   notificationIncludeContent: boolean;
 }
 
+/** Chat behavior a fresh vault starts with, matching `ChatBehaviorPreferences::default` in Rust; Settings resets to it. */
+export const CHAT_BEHAVIOR_DEFAULTS: Readonly<ChatBehaviorPreferences> = Object.freeze({
+  sendKey: "enter",
+  restoreLastSelectedThread: true,
+  showReasoningSummaries: true,
+  automaticallyFoldSettledWork: true,
+  timelineDensity: "comfortable",
+  terminalScrollbackLines: 10_000,
+  idleSessionTimeoutSeconds: 900,
+  confirmMultilineTerminalPaste: true,
+  notifyWaitingForYou: true,
+  notifyReviewReady: true,
+  notifyFailures: true,
+  announceBackgroundWork: true,
+  notificationIncludeContent: false,
+});
+
+/** Days redacted Chat diagnostics are kept on a device that has not chosen otherwise, matching the Rust device default. */
+export const CHAT_DIAGNOSTIC_RETENTION_DEFAULT_DAYS = 7;
+
 /**
  * Chat settings as one read: the device-local fields (providers, remembered selections,
  * working folder provider preferences, panels) stay in this device's preference file and never

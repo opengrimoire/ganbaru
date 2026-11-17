@@ -22,6 +22,7 @@
   import ChatWeekdayToggles from "$lib/components/chat/composer/ChatWeekdayToggles.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
+  import { SETTINGS_ICON_BUTTON_CLASS, SETTINGS_SECONDARY_BUTTON_CLASS } from "$lib/components/settings/action-buttons";
   import { formatDateTime } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { localTimezone } from "$lib/stores/calendar/event-payloads";
@@ -94,24 +95,24 @@
   }
 </script>
 
-<section class="flex flex-col gap-3">
+<section class="flex flex-col gap-4">
   <div class="px-1">
     <h2 class="text-[0.866667rem] font-semibold text-foreground">{t("settings.chat.quietPeriods.heading")}</h2>
-    <p class="text-xs text-muted-foreground">{t("settings.chat.quietPeriods.description")}</p>
+    <p class="mt-0.5 text-[0.8rem] text-muted-foreground">{t("settings.chat.quietPeriods.description")}</p>
   </div>
   {#if error}<Notice class="text-sm" message={error} onRetry={windows ? undefined : () => void load()} />{/if}
-  {#if quietStateLabel}<p role="status" class="px-1 text-xs text-muted-foreground">{quietStateLabel}</p>{/if}
+  {#if quietStateLabel}<p role="status" class="px-1 text-[0.8rem] text-muted-foreground">{quietStateLabel}</p>{/if}
   {#if windows}
     {#if windows.length === 0}
-      <p class="px-1 text-xs text-muted-foreground">{t("settings.chat.quietPeriods.empty")}</p>
+      <p class="px-1 text-[0.8rem] text-muted-foreground">{t("settings.chat.quietPeriods.empty")}</p>
     {/if}
     {#each windows as window, index (index)}
       <div class="quiet-window">
         <div class="flex items-center gap-2">
-          <span class="min-w-0 flex-1 truncate text-sm">{chatQuietWindowSummary(window, display)}</span>
+          <span class="min-w-0 flex-1 truncate text-[0.866667rem] text-foreground">{chatQuietWindowSummary(window, display)}</span>
           <button
             type="button"
-            class="remove-window"
+            class={SETTINGS_ICON_BUTTON_CLASS}
             aria-label={t("settings.chat.quietPeriods.remove")}
             disabled={saving}
             onclick={() => void save(removeChatQuietWindow(windows ?? [], index))}
@@ -123,7 +124,7 @@
           disabled={saving}
           onChange={(weekdays) => void save(updateChatQuietWindow(windows ?? [], index, { weekdays }))}
         />
-        <div class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <div class="flex flex-wrap items-center gap-2 text-[0.8rem] text-muted-foreground">
           <span>{t("settings.chat.quietPeriods.from")}</span>
           <Select
             inline
@@ -147,10 +148,10 @@
         </div>
       </div>
     {/each}
-    <div>
+    <div class="px-1">
       <button
         type="button"
-        class="chat-settings-button"
+        class={SETTINGS_SECONDARY_BUTTON_CLASS}
         disabled={saving || windows.length >= CHAT_MAX_QUIET_WINDOWS}
         onclick={() => void save(addChatQuietWindow(windows ?? []))}
       ><Plus size={13} />{t("settings.chat.quietPeriods.add")}</button>
@@ -160,7 +161,4 @@
 
 <style>
   .quiet-window { display:grid; gap:0.45rem; border:1px solid var(--border); border-radius:0.375rem; padding:0.6rem; }
-  .remove-window { display:grid; width:1.65rem; height:1.65rem; place-items:center; border-radius:0.375rem; color:var(--muted-foreground); }
-  .remove-window:hover:not(:disabled) { background:var(--accent); color:var(--destructive); }
-  .remove-window:disabled { cursor:not-allowed; opacity:0.5; }
 </style>

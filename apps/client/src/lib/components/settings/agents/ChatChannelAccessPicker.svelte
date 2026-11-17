@@ -404,7 +404,7 @@
     class="access-picker-panel main-panel surface-floating"
     style={mainPanelStyle}
     role="dialog"
-    aria-label={t("settings.chat.teammates.channelPickerLabel")}
+    aria-label={t("settings.agents.teammates.channelPickerLabel")}
     data-app-floating-surface
   >
     <label bind:this={mainSearchElement} class="access-picker-search field">
@@ -413,8 +413,8 @@
         class="field-bare"
         bind:this={searchInputElement}
         bind:value={query}
-        aria-label={t("settings.chat.teammates.searchChannels")}
-        placeholder={t("settings.chat.teammates.searchChannels")}
+        aria-label={t("settings.agents.teammates.searchChannels")}
+        placeholder={t("settings.agents.teammates.searchChannels")}
       />
     </label>
 
@@ -423,8 +423,8 @@
         <ChevronLeft size={13} />
         <span>
           {compactStage === "channels"
-            ? activeProject?.name ?? t("settings.chat.teammates.channels")
-            : activeList?.name ?? t("settings.chat.teammates.projects")}
+            ? activeProject?.name ?? t("settings.agents.teammates.channels")
+            : activeList?.name ?? t("settings.agents.teammates.projects")}
         </span>
       </button>
     {/if}
@@ -437,7 +437,7 @@
               <div class="access-picker-row search-result-row menu-item">
                 <Checkbox
                   checked={selectedChannelIds.has(result.channel.id)}
-                  label={t("settings.chat.teammates.channelAccessTitle", result.channel.name)}
+                  label={t("settings.agents.teammates.channelAccessTitle", result.channel.name)}
                   {disabled}
                   onChange={() => toggleChannel(result.channel.id)}
                 />
@@ -447,7 +447,7 @@
                 </button>
               </div>
             {:else}
-              <p class="access-picker-empty">{t("settings.chat.teammates.noChannels")}</p>
+              <p class="access-picker-empty">{t("settings.agents.teammates.noChannels")}</p>
             {/each}
           {:else if compact && compactStage === "projects"}
             {#each visibleProjects as project (project.id)}
@@ -461,7 +461,7 @@
           {:else if compact && compactStage === "channels"}
             {#each visibleChannels as channel (channel.id)}
               <div class="access-picker-row menu-item">
-                <Checkbox checked={selectedChannelIds.has(channel.id)} label={t("settings.chat.teammates.channelAccessTitle", channel.name)} {disabled} onChange={() => toggleChannel(channel.id)} />
+                <Checkbox checked={selectedChannelIds.has(channel.id)} label={t("settings.agents.teammates.channelAccessTitle", channel.name)} {disabled} onChange={() => toggleChannel(channel.id)} />
                 <button type="button" class="access-picker-name" {disabled} onclick={() => toggleChannel(channel.id)}><span>{channel.name}</span></button>
               </div>
             {/each}
@@ -482,7 +482,7 @@
                 ><span>{list.name}</span><ChevronRight size={13} /></button>
               </div>
             {:else}
-              <p class="access-picker-empty">{t("settings.chat.teammates.noChannels")}</p>
+              <p class="access-picker-empty">{t("settings.agents.teammates.noChannels")}</p>
             {/each}
           {/if}
         </div>
@@ -534,11 +534,11 @@
         <div bind:this={channelScrollElement} class="access-picker-list surface-floating-body hide-scrollbar" use:scrollEdgeFadeAction>
           {#each filteredChannels as channel (channel.id)}
             <div class="access-picker-row menu-item">
-              <Checkbox checked={selectedChannelIds.has(channel.id)} label={t("settings.chat.teammates.channelAccessTitle", channel.name)} {disabled} onChange={() => toggleChannel(channel.id)} />
+              <Checkbox checked={selectedChannelIds.has(channel.id)} label={t("settings.agents.teammates.channelAccessTitle", channel.name)} {disabled} onChange={() => toggleChannel(channel.id)} />
               <button type="button" class="access-picker-name" {disabled} onclick={() => toggleChannel(channel.id)}><span>{channel.name}</span></button>
             </div>
           {:else}
-            <p class="access-picker-empty">{t("settings.chat.teammates.noChannels")}</p>
+            <p class="access-picker-empty">{t("settings.agents.teammates.noChannels")}</p>
           {/each}
         </div>
         <CalendarScrollbar scrollContainer={channelScrollElement} stickyTop={4} stickyBottom={4} wheelPassthrough />

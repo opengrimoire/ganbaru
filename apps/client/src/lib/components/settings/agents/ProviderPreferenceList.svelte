@@ -1,30 +1,35 @@
 <script lang="ts">
-  import type { ProviderPreferenceRead, ProviderPreferencesRead } from "$lib/chat/contracts";
+  import type { ProviderPreferenceEdit, ProviderPreferenceRead, ProviderPreferencesRead } from "$lib/chat/contracts";
   import {
     providerPreferenceInputValue,
     providerPreferenceName,
     providerPreferenceOptionName,
+    type ProviderPreferenceDrafts,
   } from "$lib/chat/provider-files";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import ResetButton from "$lib/components/ui/ResetButton.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import Switch from "$lib/components/ui/Switch.svelte";
 
+  type PreferenceValue = ProviderPreferenceEdit["value"];
+
   /**
-   * Typed controls for the catalog preferences of one provider configuration file.
-   * Each change saves the single entry through `onSave`; a null value removes it.
+   * Typed controls for the catalog preferences of one provider configuration file. Each change
+   * becomes a draft through `onChange`, where null removes the entry, and the page's footer saves it.
    */
   let {
     preferences,
     allowlisted,
     disabled,
-    onSave,
+    drafts,
+    onChange,
   }: {
     preferences: ProviderPreferencesRead;
     /** Whether agent runs skip values that fail their check, which decides the warning shown. */
     allowlisted: boolean;
     disabled: boolean;
-    onSave: (preferenceId: string, value: boolean | string | null) => Promise<void>;
+    drafts: ProviderPreferenceDrafts;
+    onChange: (preferenceId: string, value: PreferenceValue) => void;
   } = $props();
 
   const { t } = getLocalization();
@@ -40,9 +45,19 @@
     return name ? t(`settings.agents.files.preferences.${name}`) : entry.id;
   }
 
+  function drafted(entry: ProviderPreferenceRead): boolean {
+    return Object.hasOwn(drafts, entry.id);
+  }
+
+  /** The value the control shows: the unsaved draft, or the saved value. */
+  function current(entry: ProviderPreferenceRead): PreferenceValue {
+    return drafted(entry) ? drafts[entry.id] ?? null : entry.value;
+  }
+
   function booleanValue(entry: ProviderPreferenceRead): string {
-    if (entry.value === true) return "on";
-    if (entry.value === false) return "off";
+    const value = current(entry);
+    if (value === true) return "on";
+    if (value === false) return "off";
     return "default";
   }
 
@@ -58,18 +73,18 @@
     ];
   }
 
-  function saveChoice(entry: ProviderPreferenceRead, choice: string): void {
-    void onSave(entry.id, choice === DEFAULT_CHOICE ? null : choice);
+  function changeChoice(entry: ProviderPreferenceRead, choice: string): void {
+    onChange(entry.id, choice === DEFAULT_CHOICE ? null : choice);
   }
 
-  function saveBoolean(entry: ProviderPreferenceRead, choice: string): void {
-    void onSave(entry.id, choice === "on" ? true : choice === "off" ? false : null);
+  function changeBoolean(entry: ProviderPreferenceRead, choice: string): void {
+    onChange(entry.id, choice === "on" ? true : choice === "off" ? false : null);
   }
 
   function commitText(entry: ProviderPreferenceRead, input: string): void {
     const value = providerPreferenceInputValue(entry, input);
-    if (value === entry.value) return;
-    void onSave(entry.id, value);
+    if (value === current(entry)) return;
+    onChange(entry.id, value);
   }
 
   /** Whether the entry is edited in a text box, which its label then names. */
@@ -78,7 +93,8 @@
   }
 
   function textValue(entry: ProviderPreferenceRead): string {
-    return typeof entry.value === "string" ? entry.value : "";
+    const value = current(entry);
+    return typeof value === "string" ? value : "";
   }
 
   function blurOnEnter(event: KeyboardEvent & { currentTarget: HTMLInputElement }): void {
@@ -94,7 +110,7 @@
       <div class="text-[0.866667rem] text-foreground">{label(entry)}</div>
     {/if}
     <div class="mt-0.5 wrap-break-word text-[0.8rem] leading-5 text-muted-foreground">{entry.variable ? `env.${entry.id}` : entry.id}</div>
-    {#if entry.ignored}
+    {#if entry.ignored && !drafted(entry)}
       <p class="mt-0.5 text-[0.8rem] leading-5 text-status-tentative">{t(allowlisted ? "settings.agents.files.preferenceIgnored" : "settings.agents.files.preferenceInvalid")}</p>
     {/if}
   </div>
@@ -102,9 +118,9 @@
 
 {#snippet resetButton(entry: ProviderPreferenceRead)}
   <ResetButton
-    canReset={!locked && entry.value !== null}
+    canReset={!locked && current(entry) !== null}
     label={t("settings.agents.files.preferenceReset", label(entry))}
-    onReset={() => void onSave(entry.id, null)}
+    onReset={() => onChange(entry.id, null)}
   />
 {/snippet}
 
@@ -123,7 +139,7 @@
           value={textValue(entry)}
           disabled={locked}
           spellcheck="false"
-          onchange={(event) => commitText(entry, event.currentTarget.value)}
+          oninput={(event) => commitText(entry, event.currentTarget.value)}
         ></textarea>
       </div>
     {:else}
@@ -131,11 +147,11 @@
         {@render details(entry, usesTextInput(entry) ? controlId : null)}
         <div class="flex items-center justify-end gap-1.5 max-[480px]:justify-between">
           {#if entry.valueType === "switch"}
-            <Switch checked={entry.value === true} disabled={locked} ariaLabel={label(entry)} onChange={(checked) => void onSave(entry.id, checked)} />
+            <Switch checked={current(entry) === true} disabled={locked} ariaLabel={label(entry)} onChange={(checked) => onChange(entry.id, checked)} />
           {:else if entry.valueType === "boolean"}
-            <Select inline value={booleanValue(entry)} options={booleanOptions} disabled={locked} ariaLabel={label(entry)} onChange={(choice) => saveBoolean(entry, choice)} />
+            <Select inline value={booleanValue(entry)} options={booleanOptions} disabled={locked} ariaLabel={label(entry)} onChange={(choice) => changeBoolean(entry, choice)} />
           {:else if entry.valueType === "choice"}
-            <Select inline value={typeof entry.value === "string" ? entry.value : DEFAULT_CHOICE} options={choiceOptions(entry)} disabled={locked} ariaLabel={label(entry)} onChange={(choice) => saveChoice(entry, choice)} />
+            <Select inline value={textValue(entry)} options={choiceOptions(entry)} disabled={locked} ariaLabel={label(entry)} onChange={(choice) => changeChoice(entry, choice)} />
           {:else}
             <input
               id={controlId}
@@ -147,7 +163,7 @@
               spellcheck="false"
               autocapitalize="off"
               onkeydown={blurOnEnter}
-              onchange={(event) => commitText(entry, event.currentTarget.value)}
+              oninput={(event) => commitText(entry, event.currentTarget.value)}
             />
           {/if}
           {@render resetButton(entry)}

@@ -1,112 +1,63 @@
 <script lang="ts">
-  import Save from "@lucide/svelte/icons/save";
-  import type { ProviderFileRead, ProviderInstanceId } from "$lib/chat/contracts";
-  import { saveChatProviderFile } from "$lib/api/chat";
-  import { chatErrorMessage } from "$lib/chat/error-presentation";
+  import type { ProviderFileRead } from "$lib/chat/contracts";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
-  import { SETTINGS_PRIMARY_BUTTON_CLASS } from "$lib/components/settings/action-buttons";
 
   /**
-   * Text editor for one group of provider files. The editor shows the saved contents until the
-   * user types, so a file another control saves stays current while nothing is pending.
+   * Text editor for one group of provider files. Edits stay drafts that the page's footer saves,
+   * and each file shows its saved contents until the user types in it, so switching files keeps
+   * every draft.
    */
   let {
     files,
-    instanceId,
     ariaLabel,
     placeholder,
-    onSaved,
-    dirty = $bindable(false),
+    drafts,
+    disabled,
+    onDraft,
   }: {
     files: ProviderFileRead[];
-    instanceId: ProviderInstanceId;
     ariaLabel: string;
     placeholder: string;
-    onSaved: (file: ProviderFileRead) => void;
-    dirty?: boolean;
+    /** Edited text, keyed by file ID. */
+    drafts: Readonly<Record<string, string>>;
+    disabled: boolean;
+    onDraft: (fileId: string, contents: string) => void;
   } = $props();
 
   const { t } = getLocalization();
   let selectedFileId = $state<string | null>(null);
-  let draft = $state<string | null>(null);
-  let saving = $state(false);
-  let error = $state<string | null>(null);
 
   const selectedFile = $derived(files.find((file) => file.fileId === selectedFileId) ?? files[0] ?? null);
-  const contents = $derived(draft ?? selectedFile?.contents ?? "");
-  const pending = $derived(selectedFile !== null && draft !== null && draft !== selectedFile.contents);
+  const contents = $derived(selectedFile ? drafts[selectedFile.fileId] ?? selectedFile.contents : "");
+  const pending = $derived(selectedFile !== null && contents !== selectedFile.contents);
   const fileOptions = $derived(files.map((file) => ({
     value: file.fileId,
     label: file.name,
     summary: file.format.toUpperCase(),
   })));
-
-  $effect(() => {
-    dirty = pending;
-  });
-
-  function chooseFile(fileId: string): void {
-    if (fileId === selectedFile?.fileId) return;
-    if (pending) {
-      error = t("settings.agents.files.saveOrReload");
-      return;
-    }
-    selectedFileId = fileId;
-    draft = null;
-    error = null;
-  }
-
-  async function save(): Promise<void> {
-    if (!selectedFile || draft === null || !pending || saving) return;
-    saving = true;
-    error = null;
-    try {
-      const saved = await saveChatProviderFile({
-        instanceId,
-        fileId: selectedFile.fileId,
-        contents: draft,
-        expectedRevision: selectedFile.revision,
-      });
-      draft = null;
-      onSaved(saved);
-    } catch (cause: unknown) {
-      error = chatErrorMessage(cause, t("chatErrors.actions.settingsAction"));
-    } finally {
-      saving = false;
-    }
-  }
 </script>
 
 {#if selectedFile}
   <div class="flex min-h-0 flex-col gap-3">
-    <div class="flex items-start justify-between gap-4 px-1 py-1 max-[480px]:flex-col max-[480px]:items-stretch max-[480px]:gap-2">
-      <div class="min-w-0 flex-1">
-        {#if files.length > 1}
-          <Select inline class="w-full" value={selectedFile.fileId} options={fileOptions} onChange={chooseFile} ariaLabel={t("settings.agents.files.fileLabel")} />
-        {:else}
-          <div class="text-[0.866667rem] text-foreground">{selectedFile.name}</div>
-        {/if}
-        <div class="mt-0.5 wrap-break-word text-[0.8rem] leading-5 text-muted-foreground">{selectedFile.path}</div>
-      </div>
-      <button type="button" class={SETTINGS_PRIMARY_BUTTON_CLASS} disabled={!pending || saving} onclick={() => void save()}>
-        <Save size={14} strokeWidth={1.9} class="shrink-0" />
-        <span>{saving ? t("settings.agents.files.saving") : t("settings.agents.files.save")}</span>
-      </button>
+    <div class="px-1 py-1">
+      {#if files.length > 1}
+        <Select inline class="w-full" value={selectedFile.fileId} options={fileOptions} onChange={(fileId) => { selectedFileId = fileId; }} ariaLabel={t("settings.agents.files.fileLabel")} />
+      {:else}
+        <div class="text-[0.866667rem] text-foreground">{selectedFile.name}</div>
+      {/if}
+      <div class="mt-0.5 wrap-break-word text-[0.8rem] leading-5 text-muted-foreground">{selectedFile.path}</div>
     </div>
-    {#if error}
-      <Notice class="px-1 text-[0.8rem]" message={error} />
-    {/if}
     <div class="overflow-hidden rounded-floating-item border border-border">
       <textarea
         class="h-[min(26rem,48vh)] min-h-48 w-full resize-y bg-transparent p-3 font-mono text-[0.766667rem] leading-5 text-foreground outline-none placeholder:text-muted-foreground"
         value={contents}
         aria-label={`${ariaLabel}: ${selectedFile.name}`}
         {placeholder}
+        {disabled}
         spellcheck="false"
         autocapitalize="off"
-        oninput={(event) => { draft = event.currentTarget.value; error = null; }}
+        oninput={(event) => onDraft(selectedFile.fileId, event.currentTarget.value)}
       ></textarea>
       <div class="flex flex-wrap items-center justify-between gap-2 border-t border-border px-3 py-2 text-[0.666667rem] text-muted-foreground">
         <span>{t("settings.agents.files.fileLimit")}</span>

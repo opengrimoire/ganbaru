@@ -22,6 +22,7 @@ import type {
   ProviderProbeResult,
   ProviderRefreshResult,
   ProviderFileRead,
+  ProviderFileSave,
   ProviderFilesRead,
   ProviderSetupTestRead,
   ProviderUpdateRead,
@@ -65,27 +66,15 @@ export async function readChatProviderFiles(instanceId: ProviderInstanceId): Pro
   return parseProviderFiles(await invoke<unknown>("chat_read_provider_files", { instanceId }));
 }
 
-export async function saveChatProviderFile(request: {
-  instanceId: ProviderInstanceId;
-  fileId: string;
-  contents: string;
-  expectedRevision: string;
-}): Promise<ProviderFileRead> {
-  return parseProviderFileRead(await invoke<unknown>("chat_save_provider_file", { request }));
-}
-
 /**
- * Sets one allowlisted agent preference in a provider configuration file, or removes it
- * when `value` is null, and returns the saved file.
+ * Writes the edited text of one provider file with its agent preference edits applied on top,
+ * in one write, and returns the saved file.
  */
-export async function saveChatProviderPreference(request: {
-  instanceId: ProviderInstanceId;
-  fileId: string;
-  preferenceId: string;
-  value: boolean | string | null;
-  expectedRevision: string;
-}): Promise<ProviderFileRead> {
-  return parseProviderFileRead(await invoke<unknown>("chat_save_provider_preference", { request }));
+export async function saveChatProviderFile(
+  instanceId: ProviderInstanceId,
+  save: ProviderFileSave,
+): Promise<ProviderFileRead> {
+  return parseProviderFileRead(await invoke<unknown>("chat_save_provider_file", { request: { instanceId, ...save } }));
 }
 
 export async function readChatDiagnostics(): Promise<ChatDiagnosticsRead> {

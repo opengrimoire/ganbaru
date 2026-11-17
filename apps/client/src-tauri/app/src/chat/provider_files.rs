@@ -70,26 +70,29 @@ pub struct ProviderFilesRead {
     pub notes: Vec<ProviderFileNote>,
 }
 
+/// The pending edits of one provider file, written together in a single save.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveProviderFileRequest {
     pub instance_id: ProviderInstanceId,
     pub file_id: String,
-    pub contents: String,
+    /// The edited text, or none to keep the current text.
+    #[serde(default)]
+    pub contents: Option<String>,
+    /// Agent preference edits applied, in order, on top of the text.
+    #[serde(default)]
+    pub preferences: Vec<ProviderPreferenceEdit>,
     pub expected_revision: String,
 }
 
 /// An edit of one agent preference in a provider configuration file.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SaveProviderPreferenceRequest {
-    pub instance_id: ProviderInstanceId,
-    pub file_id: String,
+pub struct ProviderPreferenceEdit {
     pub preference_id: String,
     /// The new value, or null to remove the entry.
     #[serde(default)]
     pub value: serde_json::Value,
-    pub expected_revision: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -147,51 +150,43 @@ fn read_provider_files(
     Ok(ProviderFilesRead { files, notes })
 }
 
+/// Writes the edited text of a provider file and sets or removes its allowlisted agent
+/// preferences on top, keeping every other key of the document, in one write.
 #[tauri::command]
 pub fn chat_save_provider_file(
     app: tauri::AppHandle,
     state: tauri::State<'_, ProviderFileState>,
     request: SaveProviderFileRequest,
 ) -> ChatResult<ProviderFileRead> {
-    validate_contents(&request.contents)?;
     save_provider_file(
         &app,
         &state,
         &request.instance_id,
         &request.file_id,
         &request.expected_revision,
-        |_| Ok(request.contents.clone()),
+        |target| edited_contents(target, request.contents.as_deref(), &request.preferences),
     )
 }
 
-/// Sets or removes one allowlisted agent preference in a provider configuration file,
-/// keeping every other key of the document.
-#[tauri::command]
-pub fn chat_save_provider_preference(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, ProviderFileState>,
-    request: SaveProviderPreferenceRequest,
-) -> ChatResult<ProviderFileRead> {
-    save_provider_file(
-        &app,
-        &state,
-        &request.instance_id,
-        &request.file_id,
-        &request.expected_revision,
-        |spec| {
-            let catalog = spec.preferences.ok_or_else(|| {
-                ChatError::validation("fileId", "This file has no preferences to change here")
-            })?;
-            let contents = preferences::apply_preference(
-                spec.contents,
-                catalog,
-                &request.preference_id,
-                &request.value,
-            )?;
-            validate_contents(&contents)?;
-            Ok(contents)
-        },
-    )
+/// The text a save writes: `contents`, or the current text when it is none, with each
+/// preference edit applied in order.
+fn edited_contents(
+    target: SaveTarget<'_>,
+    contents: Option<&str>,
+    edits: &[ProviderPreferenceEdit],
+) -> ChatResult<String> {
+    let mut edited = contents.unwrap_or(target.contents).to_string();
+    if !edits.is_empty() {
+        let catalog = target.preferences.ok_or_else(|| {
+            ChatError::validation("fileId", "This file has no preferences to change here")
+        })?;
+        for edit in edits {
+            edited =
+                preferences::apply_preference(&edited, catalog, &edit.preference_id, &edit.value)?;
+        }
+    }
+    validate_contents(&edited)?;
+    Ok(edited)
 }
 
 /// The current text and preferences of the file a save edits.
@@ -828,6 +823,57 @@ mod tests {
         fs::write(xdg.join("cursor").join("cli-config.json"), "{}").unwrap();
         let specs = provider_file_specs(&cursor, None).unwrap();
         assert_eq!(specs[0].path, xdg.join("cursor").join("cli-config.json"));
+    }
+
+    #[test]
+    fn a_save_applies_preference_edits_on_top_of_the_edited_text() {
+        let catalog = preferences::file_preferences("claude", ProviderFileFormat::Json);
+        let target = || SaveTarget {
+            contents: "{\"model\": \"old\"}",
+            preferences: catalog,
+        };
+        let edits = [
+            ProviderPreferenceEdit {
+                preference_id: "language".to_string(),
+                value: serde_json::json!("Japanese"),
+            },
+            ProviderPreferenceEdit {
+                preference_id: "language".to_string(),
+                value: serde_json::json!("Spanish"),
+            },
+        ];
+        let edited = edited_contents(target(), Some("{\"model\": \"new\"}"), &edits).unwrap();
+        let document: serde_json::Value = serde_json::from_str(&edited).unwrap();
+        assert_eq!(
+            document,
+            serde_json::json!({ "model": "new", "language": "Spanish" })
+        );
+
+        let kept = edited_contents(target(), None, &edits[..1]).unwrap();
+        let document: serde_json::Value = serde_json::from_str(&kept).unwrap();
+        assert_eq!(
+            document,
+            serde_json::json!({ "model": "old", "language": "Japanese" })
+        );
+
+        assert!(edited_contents(target(), Some("{"), &edits).is_err());
+        let markdown = SaveTarget {
+            contents: "",
+            preferences: None,
+        };
+        assert!(edited_contents(markdown, Some("Notes"), &edits).is_err());
+        assert!(
+            edited_contents(
+                SaveTarget {
+                    contents: "",
+                    preferences: None,
+                },
+                Some("Be brief"),
+                &[]
+            )
+            .is_ok()
+        );
+        assert!(edited_contents(target(), Some("\0"), &[]).is_err());
     }
 
     #[test]

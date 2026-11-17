@@ -6,6 +6,7 @@ import {
   PROVIDER_FILE_NOTE_NAMES,
   PROVIDER_PREFERENCE_NAMES,
   PROVIDER_PREFERENCE_OPTION_NAMES,
+  providerFileSaves,
   providerFilesFolder,
   providerPreferenceInputValue,
   providerPreferenceName,
@@ -152,5 +153,54 @@ describe("provider file notes", () => {
     for (const url of urls) {
       expect(desktopCapability).toContain(`"url": "${url}"`);
     }
+  });
+});
+
+describe("provider file saves", () => {
+  const configuration: ProviderFileRead = {
+    ...file("configuration", "configuration"),
+    contents: "{}",
+    revision: "configuration-revision",
+    preferences: {
+      editable: true,
+      entries: [
+        preference({ id: "language", value: "English" }),
+        preference({ id: "maxMode", valueType: "switch", value: null }),
+      ],
+    },
+  };
+  const instructions: ProviderFileRead = { ...file("instructions", "instructions"), contents: "Be brief", revision: "instructions-revision" };
+
+  it("writes nothing while every draft matches the saved files", () => {
+    expect(providerFileSaves([instructions, configuration], { instructions: "Be brief" }, {
+      configuration: { language: "English", maxMode: null },
+    })).toEqual([]);
+  });
+
+  it("combines the text and preference edits of one file in a single save", () => {
+    expect(providerFileSaves([instructions, configuration], { configuration: "{\"model\": \"m\"}" }, {
+      configuration: { language: "English", maxMode: true },
+    })).toEqual([{
+      fileId: "configuration",
+      contents: "{\"model\": \"m\"}",
+      preferences: [{ preferenceId: "maxMode", value: true }],
+      expectedRevision: "configuration-revision",
+    }]);
+  });
+
+  it("saves each edited file in file order and keeps the text of a file with only preference edits", () => {
+    expect(providerFileSaves([instructions, configuration], { instructions: "Be thorough" }, {
+      configuration: { language: null },
+    })).toEqual([
+      { fileId: "instructions", contents: "Be thorough", preferences: [], expectedRevision: "instructions-revision" },
+      { fileId: "configuration", contents: null, preferences: [{ preferenceId: "language", value: null }], expectedRevision: "configuration-revision" },
+    ]);
+  });
+
+  it("ignores drafts for preferences or files the provider no longer has", () => {
+    expect(providerFileSaves([configuration], { removed: "text" }, {
+      configuration: { unknown: true },
+      removed: { language: "Spanish" },
+    })).toEqual([]);
   });
 });

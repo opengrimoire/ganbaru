@@ -196,7 +196,6 @@ commands.allow = [
   "chat_save_draft",
   "chat_save_provider",
   "chat_save_provider_file",
-  "chat_save_provider_preference",
   "chat_save_queued_followup",
   "chat_save_quiet_periods",
   "chat_save_terminal_panel_layout",

@@ -119,6 +119,23 @@ export interface ProviderFileRead {
   preferences: ProviderPreferencesRead | null;
 }
 
+/** A new value for one catalog preference, where null removes the entry. */
+export interface ProviderPreferenceEdit {
+  preferenceId: string;
+  value: boolean | string | null;
+}
+
+/** The pending edits of one provider file, which a single save writes together. */
+export interface ProviderFileSave {
+  fileId: string;
+  /** The edited text, or null to keep the saved text. */
+  contents: string | null;
+  /** Preference edits applied, in order, on top of the text. */
+  preferences: ProviderPreferenceEdit[];
+  /** Revision the edits were made against. */
+  expectedRevision: string;
+}
+
 export const PROVIDER_FILE_NOTE_KINDS = [
   "cursor_user_rules",
   "grok_private_home",

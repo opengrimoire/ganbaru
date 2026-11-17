@@ -1,4 +1,11 @@
-import type { ProviderFamilyId, ProviderFileNoteKind, ProviderFileRead, ProviderPreferenceRead } from "./contracts";
+import type {
+  ProviderFamilyId,
+  ProviderFileNoteKind,
+  ProviderFileRead,
+  ProviderFileSave,
+  ProviderPreferenceEdit,
+  ProviderPreferenceRead,
+} from "./contracts";
 
 /** Catalog names of the agent preferences Settings describes, keyed by preference ID. */
 export const PROVIDER_PREFERENCE_NAMES = {
@@ -199,6 +206,34 @@ export function splitProviderFiles(files: readonly ProviderFileRead[]): {
     instructions: files.filter((file) => file.kind === "instructions"),
     configuration: files.filter((file) => file.kind === "configuration"),
   };
+}
+
+/** Unsaved preference values of one configuration file, keyed by preference ID. */
+export type ProviderPreferenceDrafts = Readonly<Record<string, ProviderPreferenceEdit["value"]>>;
+
+/**
+ * The saves that write every pending edit of a provider's files, in file order: one per file
+ * whose text draft differs from its saved text or whose preference drafts change a saved value.
+ *
+ * @param files Saved files of the provider.
+ * @param textDrafts Edited text, keyed by file ID.
+ * @param preferenceDrafts Unsaved preference values, keyed by file ID.
+ */
+export function providerFileSaves(
+  files: readonly ProviderFileRead[],
+  textDrafts: Readonly<Record<string, string>>,
+  preferenceDrafts: Readonly<Record<string, ProviderPreferenceDrafts>>,
+): ProviderFileSave[] {
+  return files.flatMap((file): ProviderFileSave[] => {
+    const draft = textDrafts[file.fileId];
+    const contents = draft !== undefined && draft !== file.contents ? draft : null;
+    const drafts = preferenceDrafts[file.fileId] ?? {};
+    const preferences = (file.preferences?.entries ?? [])
+      .filter((entry) => Object.hasOwn(drafts, entry.id) && drafts[entry.id] !== entry.value)
+      .map((entry): ProviderPreferenceEdit => ({ preferenceId: entry.id, value: drafts[entry.id] ?? null }));
+    if (contents === null && preferences.length === 0) return [];
+    return [{ fileId: file.fileId, contents, preferences, expectedRevision: file.revision }];
+  });
 }
 
 /**

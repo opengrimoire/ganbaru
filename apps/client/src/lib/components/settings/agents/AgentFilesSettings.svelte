@@ -2,20 +2,30 @@
   import { untrack } from "svelte";
   import ExternalLink from "@lucide/svelte/icons/external-link";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
+  import Save from "@lucide/svelte/icons/save";
+  import X from "@lucide/svelte/icons/x";
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import type { ProviderFamilyMetadataRead, ProviderFileNote, ProviderFileRead, ProviderInstanceId } from "$lib/chat/contracts";
+  import type {
+    ProviderFamilyMetadataRead,
+    ProviderFileNote,
+    ProviderFileRead,
+    ProviderInstanceId,
+    ProviderPreferenceEdit,
+  } from "$lib/chat/contracts";
   import type { ChatProviderSetupTarget } from "$lib/settings/types";
   import {
     readChatProviderFiles,
-    saveChatProviderPreference,
+    saveChatProviderFile,
   } from "$lib/api/chat";
   import {
     PROVIDER_DOC_LINKS,
     PROVIDER_FILE_NOTE_LINKS,
     PROVIDER_FILE_NOTE_NAMES,
+    providerFileSaves,
     providerFilesFolder,
     providerPreferencesAllowlisted,
     splitProviderFiles,
+    type ProviderPreferenceDrafts,
   } from "$lib/chat/provider-files";
   import { providerFamilyDisplayName } from "$lib/chat/provider-setup";
   import { formatList } from "$lib/i18n/formatters";
@@ -24,7 +34,7 @@
   import { getChat } from "$lib/stores/chat.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
-  import { SETTINGS_SECONDARY_BUTTON_CLASS } from "$lib/components/settings/action-buttons";
+  import { SETTINGS_PRIMARY_BUTTON_CLASS, SETTINGS_SECONDARY_BUTTON_CLASS } from "$lib/components/settings/action-buttons";
   import ChatModelAvatar from "$lib/components/chat/identity/ChatModelAvatar.svelte";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
   import ProviderFileEditor from "./ProviderFileEditor.svelte";
@@ -50,12 +60,14 @@
   let error = $state<string | null>(null);
   let loadGeneration = 0;
   let editorKey = $state(0);
-  let instructionsDirty = $state(false);
-  let configurationDirty = $state(false);
   let directoryScrollElement = $state<HTMLElement>();
   let detailScrollElement = $state<HTMLElement>();
-  let savingPreference = $state(false);
-  let preferenceError = $state<string | null>(null);
+  /** Edited file text, keyed by file ID, that the footer saves. */
+  let textDrafts = $state<Record<string, string>>({});
+  /** Unsaved preference values, keyed by file ID, that the footer saves. */
+  let preferenceDrafts = $state<Record<string, ProviderPreferenceDrafts>>({});
+  let saving = $state(false);
+  let saveError = $state<string | null>(null);
   /** Folder each provider reads its files from, for the directory rows. */
   let providerFolders = $state<ReadonlyMap<ProviderInstanceId, string>>(new Map());
   let folderGeneration = 0;
@@ -66,7 +78,8 @@
     providers.find((provider) => provider.configuration.instanceId === selectedInstanceId) ?? null,
   );
   const familyId = $derived(selectedProvider?.configuration.familyId ?? null);
-  const dirty = $derived(instructionsDirty || configurationDirty);
+  const pendingSaves = $derived(providerFileSaves(files, textDrafts, preferenceDrafts));
+  const dirty = $derived(pendingSaves.length > 0);
   const groups = $derived(splitProviderFiles(files));
   const filesFolder = $derived((selectedInstanceId ? providerFolders.get(selectedInstanceId) : undefined) ?? providerFilesFolder(files));
   const preferenceFile = $derived(groups.configuration.find((file) => file.preferences !== null) ?? null);
@@ -139,7 +152,7 @@
     const generation = ++loadGeneration;
     loading = true;
     error = null;
-    preferenceError = null;
+    discardDrafts();
     try {
       const next = await readChatProviderFiles(instanceId);
       if (generation !== loadGeneration || instanceId !== selectedInstanceId) return;
@@ -195,23 +208,46 @@
     files = files.map((file) => file.fileId === saved.fileId ? saved : file);
   }
 
-  async function savePreference(preferenceId: string, value: boolean | string | null): Promise<void> {
-    const file = preferenceFile;
-    if (!selectedInstanceId || !file || savingPreference) return;
-    savingPreference = true;
-    preferenceError = null;
+  function discardDrafts(): void {
+    textDrafts = {};
+    preferenceDrafts = {};
+    saveError = null;
+  }
+
+  function changeText(fileId: string, contents: string): void {
+    textDrafts = { ...textDrafts, [fileId]: contents };
+    saveError = null;
+  }
+
+  function changePreference(fileId: string, preferenceId: string, value: ProviderPreferenceEdit["value"]): void {
+    preferenceDrafts = { ...preferenceDrafts, [fileId]: { ...preferenceDrafts[fileId], [preferenceId]: value } };
+    saveError = null;
+  }
+
+  function withoutFile<T>(drafts: Readonly<Record<string, T>>, fileId: string): Record<string, T> {
+    return Object.fromEntries(Object.entries(drafts).filter(([key]) => key !== fileId));
+  }
+
+  /**
+   * Saves every pending file edit and preference change, one file at a time. A failed save stops
+   * the rest and keeps their drafts, while files already written drop theirs.
+   */
+  async function saveAll(): Promise<void> {
+    const instanceId = selectedInstanceId;
+    const saves = pendingSaves;
+    if (!instanceId || saving || saves.length === 0) return;
+    saving = true;
+    saveError = null;
     try {
-      replaceFile(await saveChatProviderPreference({
-        instanceId: selectedInstanceId,
-        fileId: file.fileId,
-        preferenceId,
-        value,
-        expectedRevision: file.revision,
-      }));
+      for (const save of saves) {
+        replaceFile(await saveChatProviderFile(instanceId, save));
+        textDrafts = withoutFile(textDrafts, save.fileId);
+        preferenceDrafts = withoutFile(preferenceDrafts, save.fileId);
+      }
     } catch (cause: unknown) {
-      preferenceError = errorMessage(cause);
+      saveError = errorMessage(cause);
     } finally {
-      savingPreference = false;
+      saving = false;
     }
   }
 
@@ -254,7 +290,7 @@
 <section class="agent-files" data-agents-settings-subsection="files">
   <header class="directory-header">
     <div><h2>{t("settings.agents.files.heading")}</h2></div>
-    <button type="button" class={SETTINGS_SECONDARY_BUTTON_CLASS} disabled={loading || !selectedInstanceId} onclick={reload}>
+    <button type="button" class={SETTINGS_SECONDARY_BUTTON_CLASS} disabled={loading || saving || !selectedInstanceId} onclick={reload}>
       <RefreshCw size={14} strokeWidth={1.9} class="shrink-0" />
       <span>{dirty ? t("settings.agents.files.discardAndReload") : t("settings.agents.files.reload")}</span>
     </button>
@@ -358,33 +394,30 @@
                     {#if groups.instructions.length > 0}
                       <ProviderFileEditor
                         files={groups.instructions}
-                        instanceId={selectedInstanceId}
                         ariaLabel={t("settings.agents.files.instructionsHeading")}
                         placeholder={t("settings.agents.files.instructionsPlaceholder")}
-                        onSaved={replaceFile}
-                        bind:dirty={instructionsDirty}
+                        drafts={textDrafts}
+                        disabled={saving}
+                        onDraft={changeText}
                       />
                     {/if}
                   </section>
                 {/if}
 
                 {#if preferenceFile?.preferences}
+                  {@const fileId = preferenceFile.fileId}
                   {#if showInstructions}{@render separator()}{/if}
                   <section class="flex flex-col gap-4">
                     {@render sectionHeading(t("settings.agents.files.preferencesHeading"))}
                     {#if !preferenceFile.preferences.editable}
                       <Notice class="px-1 text-[0.8rem]" tone="warning" role="status" copy={false} message={t("settings.agents.files.preferencesNotEditable")} />
-                    {:else if configurationDirty}
-                      <Notice class="px-1 text-[0.8rem]" tone="warning" role="status" copy={false} message={t("settings.agents.files.preferencesWaitForFile")} />
-                    {/if}
-                    {#if preferenceError}
-                      <Notice class="px-1 text-[0.8rem]" message={preferenceError} />
                     {/if}
                     <ProviderPreferenceList
                       preferences={preferenceFile.preferences}
                       allowlisted={preferencesAllowlisted}
-                      disabled={savingPreference || configurationDirty}
-                      onSave={savePreference}
+                      disabled={saving}
+                      drafts={preferenceDrafts[fileId] ?? {}}
+                      onChange={(preferenceId, value) => changePreference(fileId, preferenceId, value)}
                     />
                   </section>
                 {/if}
@@ -395,11 +428,11 @@
                     {@render sectionHeading(t("settings.agents.files.configurationHeading"))}
                     <ProviderFileEditor
                       files={groups.configuration}
-                      instanceId={selectedInstanceId}
                       ariaLabel={t("settings.agents.files.configurationHeading")}
                       placeholder={t("settings.agents.files.configurationPlaceholder")}
-                      onSaved={replaceFile}
-                      bind:dirty={configurationDirty}
+                      drafts={textDrafts}
+                      disabled={saving}
+                      onDraft={changeText}
                     />
                   </section>
                 {/if}
@@ -423,6 +456,25 @@
           </div>
           <CalendarScrollbar scrollContainer={detailScrollElement} wheelPassthrough />
         </div>
+        {#if selectedProvider && files.length > 0 && !loading}
+          <footer class="detail-footer">
+            {#if dirty}
+              <div>
+                <button type="button" class={SETTINGS_SECONDARY_BUTTON_CLASS} disabled={saving} onclick={discardDrafts}>
+                  <X size={14} strokeWidth={1.9} class="shrink-0" />
+                  <span>{t("settings.agents.files.discard")}</span>
+                </button>
+              </div>
+            {/if}
+            <div class="save-area">
+              {#if saveError}<span class="save-error" role="alert">{saveError}</span>{/if}
+              <button type="button" class={SETTINGS_PRIMARY_BUTTON_CLASS} disabled={saving || !dirty} onclick={() => void saveAll()}>
+                <Save size={14} strokeWidth={1.9} class="shrink-0" />
+                <span>{saving ? t("settings.agents.files.saving") : t("settings.agents.files.save")}</span>
+              </button>
+            </div>
+          </footer>
+        {/if}
       </div>
     </div>
   {/if}
@@ -445,7 +497,11 @@
   .directory-summary small { margin-top:0.05rem; color:var(--muted-foreground); font-size:calc(0.65rem * var(--type-scale)); }
   .unconfigured-state { display:flex; align-items:center; gap:0.3rem; }
   .unconfigured-state i { width:0.38rem; height:0.38rem; flex:0 0 auto; border-radius:50%; background:var(--destructive); }
-  .detail-panel { position:relative; z-index:2; min-width:0; min-height:0; border-left:1px solid var(--border); padding-left:1rem; }
+  .detail-panel { position:relative; z-index:2; display:grid; min-width:0; min-height:0; grid-template-rows:minmax(0,1fr) auto; border-left:1px solid var(--border); padding-left:1rem; }
+  .detail-footer,.detail-footer > div { display:flex; min-width:0; align-items:center; gap:0.5rem; }
+  .detail-footer { justify-content:space-between; gap:0.75rem; border-top:1px solid var(--border); padding:0.65rem 0.75rem 0.65rem 0; }
+  .save-area { margin-left:auto; justify-content:flex-end; }
+  .save-error { min-width:0; overflow-wrap:anywhere; color:var(--destructive); font-size:calc(0.733333rem * var(--type-scale)); }
   .detail-scroll { display:grid; grid-template-columns:minmax(0,1fr); align-content:start; gap:1.5rem; padding:0.2rem 0.75rem 1rem 0; }
   .editor-heading { display:grid; min-width:0; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:0.65rem; padding-inline:0.25rem; }
   .editor-heading h3,.editor-heading p { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -456,5 +512,8 @@
     .directory-panel { border-bottom:1px solid var(--border); padding:0 0 0.75rem; }
     .detail-panel { border-left:0; padding:0.8rem 0 0; }
     .detail-scroll { padding-right:0.35rem; }
+    .detail-footer { align-items:stretch; flex-direction:column; padding-right:0; }
+    .detail-footer > div { justify-content:space-between; }
+    .save-area :global(button) { flex:1; }
   }
 </style>

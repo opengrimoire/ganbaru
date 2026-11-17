@@ -521,12 +521,8 @@ impl ProviderDriver for CodexProviderDriver {
                         capabilities: codex_capabilities(),
                         authority_support: snapshot.authority_support,
                         checked_at,
-                        detail: if authenticated {
-                            (version_admission == Some(ProviderVersionAdmission::UntestedNewer))
-                                .then(|| CODEX_COMPATIBILITY.untested_newer_detail())
-                        } else {
-                            Some("Codex requires authentication".to_string())
-                        },
+                        detail: (!authenticated)
+                            .then(|| "Codex requires authentication".to_string()),
                         version_admission,
                         teammate_minimum_version: None,
                         usage_limits: snapshot.usage_limits,

@@ -348,7 +348,6 @@ export const agentsSettings = {
     unavailable: "Unavailable",
     authenticationRequired: "Authentication required",
     unsupported: "Unsupported",
-    untestedNewer: "Newer than tested",
     teammatesNeedUpdate: "Update needed for teammates",
     teammateVersion: (version: string) => `Teammates need version ${version} or newer, so update the CLI.`,
     teammateVersionCommand: (version: string, command: string) =>

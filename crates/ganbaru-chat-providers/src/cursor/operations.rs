@@ -195,7 +195,6 @@ impl ProviderDriver for CursorProviderDriver {
                         // Generic agents have unrelated version schemes, so they have no range.
                         AcpProviderFlavor::Generic => None,
                     };
-                    let range = self.flavor.compatibility();
                     let teammate_minimum_version =
                         teammate_minimum_version(self.flavor, &about.version);
                     let capabilities =
@@ -220,11 +219,7 @@ impl ProviderDriver for CursorProviderDriver {
                         capabilities,
                         authority_support,
                         checked_at,
-                        detail: range
-                            .filter(|_| {
-                                version_admission == Some(ProviderVersionAdmission::UntestedNewer)
-                            })
-                            .map(|range| range.untested_newer_detail()),
+                        detail: None,
                         version_admission,
                         teammate_minimum_version,
                         usage_limits: None,

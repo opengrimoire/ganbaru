@@ -329,13 +329,6 @@ pub struct ProviderCompatibilityRange {
     pub ceiling_exclusive: Option<&'static str>,
 }
 
-impl ProviderCompatibilityRange {
-    /// The probe detail of a version newer than the tested one.
-    pub fn untested_newer_detail(&self) -> String {
-        format!("Newer than the tested version {}", self.maximum_tested)
-    }
-}
-
 /// A provider's own version parser and ordering, which `admit_version` compares through.
 pub trait VersionOrder: Ord + Sized {
     fn parse_version(value: &str) -> ChatResult<Self>;

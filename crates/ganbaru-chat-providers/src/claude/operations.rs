@@ -136,12 +136,7 @@ impl ProviderDriver for ClaudeProviderDriver {
                         capabilities: claude_capabilities(),
                         authority_support: self.authority_support(),
                         checked_at,
-                        detail: if authenticated {
-                            (version_admission == Some(ProviderVersionAdmission::UntestedNewer))
-                                .then(|| CLAUDE_COMPATIBILITY.untested_newer_detail())
-                        } else {
-                            Some(snapshot.home.authentication_hint())
-                        },
+                        detail: (!authenticated).then(|| snapshot.home.authentication_hint()),
                         version_admission,
                         teammate_minimum_version: teammate_minimum_version(
                             snapshot.version,

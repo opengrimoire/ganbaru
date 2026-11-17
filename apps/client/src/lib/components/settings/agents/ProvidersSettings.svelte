@@ -350,9 +350,7 @@
     if (provider.lastProbe?.state === "healthy") {
       if (provider.lastProbe.teammateMinimumVersion) return t("settings.agents.providers.teammatesNeedUpdate");
       if (availableUpdate(provider)) return t("settings.agents.providers.updateAvailableShort");
-      return provider.lastProbe.versionAdmission === "untested_newer"
-        ? t("settings.agents.providers.untestedNewer")
-        : t("settings.agents.providers.healthy");
+      return t("settings.agents.providers.healthy");
     }
     if (provider.lastProbe?.state === "authentication_required") {
       return t("settings.agents.providers.authenticationRequired");

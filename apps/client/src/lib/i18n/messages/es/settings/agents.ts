@@ -461,7 +461,6 @@ export const agentsSettings = {
     saving: "Guardando...",
     reload: "Recargar",
     discardAndReload: "Descartar y recargar",
-    discard: "Descartar cambios",
     unsaved: "Cambios sin guardar",
     saveOrReload: "Guarda o descarta los cambios actuales antes de abrir otro proveedor.",
     configurationPlaceholder: "Agrega la configuración del proveedor...",

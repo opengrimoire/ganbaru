@@ -3,7 +3,6 @@
   import ExternalLink from "@lucide/svelte/icons/external-link";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import Save from "@lucide/svelte/icons/save";
-  import X from "@lucide/svelte/icons/x";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import type {
     ProviderFamilyMetadataRead,
@@ -288,14 +287,6 @@
 {/snippet}
 
 <section class="agent-files" data-agents-settings-subsection="files">
-  <header class="directory-header">
-    <div><h2>{t("settings.agents.files.heading")}</h2></div>
-    <button type="button" class={SETTINGS_SECONDARY_BUTTON_CLASS} disabled={loading || saving || !selectedInstanceId} onclick={reload}>
-      <RefreshCw size={14} strokeWidth={1.9} class="shrink-0" />
-      <span>{dirty ? t("settings.agents.files.discardAndReload") : t("settings.agents.files.reload")}</span>
-    </button>
-  </header>
-
   {#if chat.loading}
     <Loading layout="rows" rows={3} />
   {:else if providers.length === 0 && unconfiguredFamilies.length === 0}
@@ -456,16 +447,14 @@
           </div>
           <CalendarScrollbar scrollContainer={detailScrollElement} wheelPassthrough />
         </div>
-        {#if selectedProvider && files.length > 0 && !loading}
+        {#if selectedProvider}
           <footer class="detail-footer">
-            {#if dirty}
-              <div>
-                <button type="button" class={SETTINGS_SECONDARY_BUTTON_CLASS} disabled={saving} onclick={discardDrafts}>
-                  <X size={14} strokeWidth={1.9} class="shrink-0" />
-                  <span>{t("settings.agents.files.discard")}</span>
-                </button>
-              </div>
-            {/if}
+            <div>
+              <button type="button" class={SETTINGS_SECONDARY_BUTTON_CLASS} disabled={loading || saving} onclick={reload}>
+                <RefreshCw size={14} strokeWidth={1.9} class="shrink-0" />
+                <span>{dirty ? t("settings.agents.files.discardAndReload") : t("settings.agents.files.reload")}</span>
+              </button>
+            </div>
             <div class="save-area">
               {#if saveError}<span class="save-error" role="alert">{saveError}</span>{/if}
               <button type="button" class={SETTINGS_PRIMARY_BUTTON_CLASS} disabled={saving || !dirty} onclick={() => void saveAll()}>
@@ -481,9 +470,7 @@
 </section>
 
 <style>
-  .agent-files { display:grid; height:100%; min-height:0; grid-template-rows:auto minmax(0,1fr); gap:0.8rem; }
-  .directory-header { display:flex; flex-wrap:wrap; align-items:start; justify-content:space-between; gap:0.75rem; padding-inline:0.25rem; }
-  .directory-header h2 { font-size:calc(0.866667rem * var(--type-scale)); font-weight:600; }
+  .agent-files { display:grid; height:100%; min-height:0; grid-template-rows:minmax(0,1fr); }
   .directory-layout { display:grid; min-height:0; isolation:isolate; grid-template-columns:minmax(12.5rem,0.62fr) minmax(0,1.6fr); }
   .directory-panel { position:relative; z-index:1; min-width:0; min-height:0; padding-right:0.75rem; }
   .scroll-frame,.detail-scroll-frame { position:relative; height:100%; min-height:0; }

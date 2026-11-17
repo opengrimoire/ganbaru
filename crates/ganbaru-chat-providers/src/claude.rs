@@ -7,6 +7,7 @@ mod instructions;
 mod normalizer;
 mod operations;
 mod organizational;
+mod preferences;
 mod protocol;
 mod session;
 mod support;

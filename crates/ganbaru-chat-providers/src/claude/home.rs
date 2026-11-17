@@ -1,5 +1,6 @@
 //! Claude executable, configuration directory, environment, and continuation identity.
 
+use super::preferences::{PREFERENCE_VARIABLES, host_preference_variable};
 use crate::models::{
     ChatError, ChatErrorCode, ChatResult, ContinuationGroupId, ProviderInstanceConfig,
 };
@@ -140,12 +141,19 @@ pub fn resolve_claude_home(configuration: &ProviderInstanceConfig) -> ChatResult
     Ok(ClaudeHome { config_directory })
 }
 
+/// The environment of a Claude process: allowlisted host variables, then the preference
+/// variables of the user settings file in `preferences`, then the configured environment.
+///
+/// # Errors
+///
+/// Fails when the configured environment names a variable Ganbaru owns or holds a NUL.
 pub fn claude_process_environment(
     configuration: &ProviderInstanceConfig,
     home: &ClaudeHome,
+    preferences: &BTreeMap<String, String>,
 ) -> ChatResult<BTreeMap<String, String>> {
     let mut environment = inherited_environment(|name| std::env::var(name).ok());
-    environment.extend(user_settings_context_preferences(home));
+    environment.extend(preferences.clone());
     for (name, value) in &configuration.environment {
         if name.is_empty()
             || name.contains(['=', '\0'])
@@ -275,62 +283,25 @@ const PORTABLE_INHERITED_ENVIRONMENT_NAMES: [&str; 11] = [
     "TERM",
 ];
 
-/// Context window preferences a Claude process honors from the host and from the `env` of the
-/// user settings file in its Claude home. Teammate launches load no settings files, so without
-/// them a teammate would run with a window the user turned off. Each can only shrink the window.
-const CONTEXT_PREFERENCE_ENVIRONMENT_NAMES: [&str; 1] = ["CLAUDE_CODE_DISABLE_1M_CONTEXT"];
-/// Largest user settings file read for context preferences.
-const MAX_USER_SETTINGS_BYTES: u64 = 1024 * 1024;
-
-/// The context preferences set in the `env` of `settings.json` in the Claude home. A missing,
-/// oversized, or malformed file yields none, because the CLI then applies none either.
-fn user_settings_context_preferences(home: &ClaudeHome) -> BTreeMap<String, String> {
-    ganbaru_atomic_files::read_regular_file_capped(
-        &home.config_directory.join("settings.json"),
-        MAX_USER_SETTINGS_BYTES,
-        ganbaru_atomic_files::FinalSymlink::Follow,
-    )
-    .map(|bytes| context_preferences_from_settings(&bytes))
-    .unwrap_or_default()
-}
-
-/// The context preferences named in the `env` object of a Claude settings document. String,
-/// number, and boolean values are kept as the CLI reads them; anything else is skipped.
-pub(super) fn context_preferences_from_settings(bytes: &[u8]) -> BTreeMap<String, String> {
-    let Ok(settings) = serde_json::from_slice::<serde_json::Value>(bytes) else {
-        return BTreeMap::new();
-    };
-    let Some(env) = settings.get("env").and_then(serde_json::Value::as_object) else {
-        return BTreeMap::new();
-    };
-    CONTEXT_PREFERENCE_ENVIRONMENT_NAMES
-        .iter()
-        .filter_map(|name| {
-            let value = match env.get(*name)? {
-                serde_json::Value::String(value) => value.clone(),
-                serde_json::Value::Number(value) => value.to_string(),
-                serde_json::Value::Bool(value) => value.to_string(),
-                _ => return None,
-            };
-            (!value.contains('\0')).then(|| ((*name).to_string(), value))
-        })
-        .collect()
-}
-
-/// Copies the allowlisted host variables that `lookup` reports, skipping values with NUL.
+/// Copies the allowlisted host variables that `lookup` reports, skipping values with NUL, and
+/// the preference variables whose host value passes their check.
 pub(super) fn inherited_environment(
     lookup: impl Fn(&str) -> Option<String>,
 ) -> BTreeMap<String, String> {
-    minimal_inherited_environment_names()
+    let host = minimal_inherited_environment_names()
         .iter()
         .chain(PORTABLE_INHERITED_ENVIRONMENT_NAMES.iter())
-        .chain(CONTEXT_PREFERENCE_ENVIRONMENT_NAMES.iter())
         .filter_map(|name| {
             lookup(name)
                 .filter(|value| !value.contains('\0'))
                 .map(|value| ((*name).to_string(), value))
-        })
-        .collect()
+        });
+    let preferences = PREFERENCE_VARIABLES.iter().filter_map(|(name, _)| {
+        lookup(name)
+            .filter(|value| host_preference_variable(name, value))
+            .map(|value| ((*name).to_string(), value))
+    });
+    host.chain(preferences).collect()
 }
 
 fn minimal_inherited_environment_names() -> &'static [&'static str] {

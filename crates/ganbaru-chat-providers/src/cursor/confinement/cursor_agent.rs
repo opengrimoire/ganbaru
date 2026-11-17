@@ -72,6 +72,17 @@ const TEAMMATE_STATE_FOLDER: &str = "ganbaru/cursor-teammates";
 const CURSOR_CLI_CONFIGURATION: &str = r#"{"version":1,"permissions":{"allow":[],"deny":["Shell(*)"]},"approvalMode":"allowlist","sandbox":{"mode":"disabled"}}"#;
 /// Name of the Cursor CLI configuration file inside the configuration folder.
 const CURSOR_CLI_CONFIGURATION_NAME: &str = "cli-config.json";
+/// Largest user Cursor CLI configuration file read for preferences.
+const MAX_USER_CLI_CONFIGURATION_BYTES: u64 = 1024 * 1024;
+/// Boolean preferences of the user's Cursor CLI configuration that a confined launch keeps, as
+/// paths of nested keys. They change model tier, transport, or commit trailers only, never
+/// permissions, approval, the sandbox, or what runs.
+const USER_CLI_PREFERENCES: &[&[&str]] = &[
+    &["maxMode"],
+    &["network", "useHttp1ForAgent"],
+    &["attribution", "attributeCommitsToAgent"],
+    &["attribution", "attributePRsToAgent"],
+];
 /// Command-bearing entries removed from the configuration folder before each launch.
 const REMOVED_CONFIGURATION_ENTRIES: &[&str] = &["cli.json", "hooks.json", "mcp.json"];
 /// Variables Ganbaru sets for a confined launch, which the configured environment cannot name.
@@ -333,8 +344,17 @@ pub(in crate::cursor) fn prepare_cursor_launch(
     let credentials = std::fs::canonicalize(configuration_home.join("cursor"))
         .ok()
         .filter(|path| path.is_dir());
-    let configuration =
-        prepare_configuration_folder(&user_folder("XDG_STATE_HOME", ".local/state"), workspace)?;
+    let user_configuration = ganbaru_atomic_files::read_regular_file_capped(
+        &user_cli_configuration_path(environment, &user_home, &configuration_home),
+        MAX_USER_CLI_CONFIGURATION_BYTES,
+        ganbaru_atomic_files::FinalSymlink::Follow,
+    )
+    .ok();
+    let configuration = prepare_configuration_folder(
+        &user_folder("XDG_STATE_HOME", ".local/state"),
+        workspace,
+        &teammate_cli_configuration(user_configuration.as_deref()),
+    )?;
     prepare_running_marker(&installation.directory)?;
     let directory = crate::probe_directory::ProbeDirectory::create_with_prefix(
         super::CONFINED_TEMPORARY_PREFIX,
@@ -396,12 +416,79 @@ pub(in crate::cursor) fn prepare_cursor_launch(
     })
 }
 
-/// The configuration folder of `workspace`, reseeded for a launch.
+/// The user's Cursor CLI configuration file, where an unconfined `cursor-agent` would read it:
+/// `CURSOR_CONFIG_DIR` when set, the XDG configuration folder when it holds one, and
+/// `~/.cursor` otherwise.
+fn user_cli_configuration_path(
+    environment: &BTreeMap<String, String>,
+    user_home: &Path,
+    configuration_home: &Path,
+) -> PathBuf {
+    if let Some(folder) = environment
+        .get("CURSOR_CONFIG_DIR")
+        .map(PathBuf::from)
+        .filter(|folder| folder.is_absolute())
+    {
+        return folder.join(CURSOR_CLI_CONFIGURATION_NAME);
+    }
+    let xdg = configuration_home
+        .join("cursor")
+        .join(CURSOR_CLI_CONFIGURATION_NAME);
+    if environment.contains_key("XDG_CONFIG_HOME") && xdg.is_file() {
+        return xdg;
+    }
+    user_home
+        .join(".cursor")
+        .join(CURSOR_CLI_CONFIGURATION_NAME)
+}
+
+/// The CLI configuration a confined launch writes: the fixed shell deny and approval mode, plus
+/// the allowlisted boolean preferences of the user's configuration document, when it parses.
+fn teammate_cli_configuration(user: Option<&[u8]>) -> String {
+    let Ok(serde_json::Value::Object(mut configuration)) =
+        serde_json::from_str::<serde_json::Value>(CURSOR_CLI_CONFIGURATION)
+    else {
+        return CURSOR_CLI_CONFIGURATION.to_string();
+    };
+    let user = user
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok())
+        .unwrap_or_default();
+    'paths: for path in USER_CLI_PREFERENCES {
+        let Some((leaf, parents)) = path.split_last() else {
+            continue;
+        };
+        let value = path
+            .iter()
+            .try_fold(&user, |value, key| value.get(*key))
+            .and_then(serde_json::Value::as_bool);
+        let Some(value) = value else {
+            continue;
+        };
+        let mut target = &mut configuration;
+        for key in parents {
+            let entry = target
+                .entry(key.to_string())
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            let Some(object) = entry.as_object_mut() else {
+                continue 'paths;
+            };
+            target = object;
+        }
+        target.insert(leaf.to_string(), serde_json::Value::Bool(value));
+    }
+    serde_json::Value::Object(configuration).to_string()
+}
+
+/// The configuration folder of `workspace`, reseeded for a launch with `cli_configuration`.
 ///
 /// It lives in the user's state directory, keyed by the working folder, so Cursor's session
 /// store survives between launches. Command-bearing entries a confined process left there are
 /// removed and the CLI configuration is written again, never through a link.
-fn prepare_configuration_folder(state_home: &Path, workspace: &Path) -> ChatResult<PathBuf> {
+fn prepare_configuration_folder(
+    state_home: &Path,
+    workspace: &Path,
+    cli_configuration: &str,
+) -> ChatResult<PathBuf> {
     let digest = Sha256::digest(workspace.as_os_str().as_encoded_bytes());
     let key = digest
         .iter()
@@ -422,7 +509,7 @@ fn prepare_configuration_folder(state_home: &Path, workspace: &Path) -> ChatResu
     }
     write_new_file(
         &folder.join(CURSOR_CLI_CONFIGURATION_NAME),
-        CURSOR_CLI_CONFIGURATION.as_bytes(),
+        cli_configuration.as_bytes(),
     )
     .map_err(|_| sandbox_policy_error())?;
     Ok(folder)

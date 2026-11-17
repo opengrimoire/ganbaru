@@ -249,14 +249,20 @@ fn the_configuration_folder_is_reseeded_without_following_links() {
     let state = crate::probe_directory::ProbeDirectory::create().unwrap();
     let outside = crate::probe_directory::ProbeDirectory::create().unwrap();
     let workspace = Path::new("/srv/work");
-    let folder = prepare_configuration_folder(&state, workspace).unwrap();
+    let folder =
+        prepare_configuration_folder(&state, workspace, &teammate_cli_configuration(None)).unwrap();
     assert!(folder.starts_with(std::fs::canonicalize(&*state).unwrap()));
     assert_eq!(
-        prepare_configuration_folder(&state, workspace).unwrap(),
+        prepare_configuration_folder(&state, workspace, &teammate_cli_configuration(None)).unwrap(),
         folder
     );
     assert_ne!(
-        prepare_configuration_folder(&state, Path::new("/srv/other")).unwrap(),
+        prepare_configuration_folder(
+            &state,
+            Path::new("/srv/other"),
+            &teammate_cli_configuration(None)
+        )
+        .unwrap(),
         folder
     );
 
@@ -269,7 +275,7 @@ fn the_configuration_folder_is_reseeded_without_following_links() {
     #[cfg(unix)]
     std::os::unix::fs::symlink(&target, folder.join("cli-config.json")).unwrap();
 
-    prepare_configuration_folder(&state, workspace).unwrap();
+    prepare_configuration_folder(&state, workspace, &teammate_cli_configuration(None)).unwrap();
     assert!(!folder.join("mcp.json").exists());
     assert!(!folder.join("hooks.json").exists());
     assert_eq!(
@@ -328,4 +334,67 @@ fn the_configured_environment_cannot_redirect_the_private_folders() {
         .unwrap();
         assert_eq!(error.code, ChatErrorCode::Validation, "{name}");
     }
+}
+
+#[test]
+fn the_teammate_configuration_keeps_allowlisted_user_preferences_only() {
+    let user = serde_json::json!({
+        "maxMode": true,
+        "network": { "useHttp1ForAgent": true, "proxy": "http://example.invalid" },
+        "attribution": { "attributeCommitsToAgent": false, "attributePRsToAgent": "no" },
+        "permissions": { "allow": ["Shell(*)"], "deny": [] },
+        "approvalMode": "unrestricted",
+        "sandbox": { "mode": "enabled" },
+        "model": { "modelId": "other" },
+    });
+    let configuration: serde_json::Value = serde_json::from_str(&teammate_cli_configuration(Some(
+        user.to_string().as_bytes(),
+    )))
+    .unwrap();
+    assert_eq!(
+        configuration,
+        serde_json::json!({
+            "version": 1,
+            "permissions": { "allow": [], "deny": ["Shell(*)"] },
+            "approvalMode": "allowlist",
+            "sandbox": { "mode": "disabled" },
+            "maxMode": true,
+            "network": { "useHttp1ForAgent": true },
+            "attribution": { "attributeCommitsToAgent": false },
+        })
+    );
+    for user in [None, Some(&b"{ not json"[..]), Some(&b"[true]"[..])] {
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&teammate_cli_configuration(user)).unwrap(),
+            serde_json::from_str::<serde_json::Value>(CURSOR_CLI_CONFIGURATION).unwrap()
+        );
+    }
+}
+
+#[test]
+fn the_user_configuration_is_read_where_the_cli_reads_it() {
+    let home = crate::probe_directory::ProbeDirectory::create().unwrap();
+    let xdg = home.join("xdg");
+    let mut environment = BTreeMap::new();
+    assert_eq!(
+        user_cli_configuration_path(&environment, &home, &home.join(".config")),
+        home.join(".cursor/cli-config.json")
+    );
+    environment.insert("XDG_CONFIG_HOME".to_string(), xdg.display().to_string());
+    assert_eq!(
+        user_cli_configuration_path(&environment, &home, &xdg),
+        home.join(".cursor/cli-config.json"),
+        "an XDG folder without the file is skipped"
+    );
+    std::fs::create_dir_all(xdg.join("cursor")).unwrap();
+    std::fs::write(xdg.join("cursor/cli-config.json"), "{}").unwrap();
+    assert_eq!(
+        user_cli_configuration_path(&environment, &home, &xdg),
+        xdg.join("cursor/cli-config.json")
+    );
+    environment.insert("CURSOR_CONFIG_DIR".to_string(), "/srv/cursor".to_string());
+    assert_eq!(
+        user_cli_configuration_path(&environment, &home, &xdg),
+        Path::new("/srv/cursor/cli-config.json")
+    );
 }

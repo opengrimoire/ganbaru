@@ -322,6 +322,8 @@ pub struct ClaudeOrganizationalLaunch<'a> {
     pub scope: ProviderOrganizationalScope,
     /// Whether the session's shell commands run under the Ganbaru sandbox.
     pub commands_confined: bool,
+    /// Allowlisted keys of the user settings file, applied below the keys Ganbaru sets.
+    pub user_settings: &'a Map<String, Value>,
 }
 
 /// The comma-joined `--allowedTools` value of an organizational launch, or `None` when it
@@ -537,10 +539,7 @@ pub fn launch_arguments(
         arguments.push("--effort".to_string());
         arguments.push(effort.to_string());
     }
-    let organizational_scope = options
-        .organizational
-        .map(|organizational| organizational.scope);
-    if let Some(settings) = launch_settings(options.fast_mode, organizational_scope) {
+    if let Some(settings) = launch_settings(options.fast_mode, options.organizational) {
         arguments.push("--settings".to_string());
         arguments.push(settings);
     }
@@ -725,15 +724,19 @@ pub fn organizational_permission_error() -> ChatError {
 /// confines the file tools to the working directory, and a scope that loads the shell sends
 /// every command to Ganbaru as a permission request: the ask rule outranks the read-only
 /// commands manual mode runs unasked, and plan mode keeps its classifier from approving them.
+/// Because an organizational launch loads no settings files, it also carries the allowlisted
+/// user preferences, which the keys Ganbaru sets override.
 pub fn launch_settings(
     fast_mode: Option<bool>,
-    organizational: Option<ProviderOrganizationalScope>,
+    organizational: Option<ClaudeOrganizationalLaunch<'_>>,
 ) -> Option<String> {
-    let mut settings = Map::new();
+    let mut settings = organizational
+        .map(|organizational| organizational.user_settings.clone())
+        .unwrap_or_default();
     if let Some(fast_mode) = fast_mode {
         settings.insert("fastMode".to_string(), Value::Bool(fast_mode));
     }
-    if let Some(scope) = organizational {
+    if let Some(scope) = organizational.map(|organizational| organizational.scope) {
         let mut permissions = Map::from_iter([
             (
                 "blockReadsOutsideWorkingDirectories".to_string(),

@@ -32,6 +32,7 @@ fn options(
             pre_approved_tools: &[],
             scope: ProviderOrganizationalScope::Conversation,
             commands_confined: false,
+            user_settings: super::no_user_settings(),
         }),
         system_prompt,
         cli_version: None,

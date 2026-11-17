@@ -143,6 +143,13 @@ fn compact_boundary_is_a_thread_level_activity() {
     assert_eq!(item.kind, CanonicalItemKind::ContextCompaction);
 }
 
+/// An empty user settings allowlist for organizational launches.
+pub(super) fn no_user_settings() -> &'static serde_json::Map<String, Value> {
+    static EMPTY: std::sync::LazyLock<serde_json::Map<String, Value>> =
+        std::sync::LazyLock::new(serde_json::Map::new);
+    &EMPTY
+}
+
 pub(super) fn modes(
     safety_mode: SafetyMode,
     interaction_mode: InteractionMode,
@@ -899,6 +906,19 @@ fn unsupported_control_subtype_gets_error_response() {
     );
 }
 
+fn organizational_launch<'a>(
+    scope: ProviderOrganizationalScope,
+    user_settings: &'a serde_json::Map<String, Value>,
+) -> ClaudeOrganizationalLaunch<'a> {
+    ClaudeOrganizationalLaunch {
+        internal_server_name: "ganbaru-chat",
+        pre_approved_tools: &[],
+        scope,
+        commands_confined: false,
+        user_settings,
+    }
+}
+
 #[test]
 fn launch_settings_merge_into_one_object_or_none() {
     assert_eq!(launch_settings(None, None), None);
@@ -907,16 +927,60 @@ fn launch_settings_merge_into_one_object_or_none() {
         Some(r#"{"fastMode":false}"#)
     );
     assert_eq!(
-        launch_settings(None, Some(ProviderOrganizationalScope::Conversation)).as_deref(),
+        launch_settings(
+            None,
+            Some(organizational_launch(
+                ProviderOrganizationalScope::Conversation,
+                no_user_settings()
+            ))
+        )
+        .as_deref(),
         Some(
             r#"{"permissions":{"blockReadsOutsideWorkingDirectories":true,"blockWritesOutsideWorkingDirectories":true}}"#
         )
     );
     assert_eq!(
-        launch_settings(Some(true), Some(ProviderOrganizationalScope::Scratch)).as_deref(),
+        launch_settings(
+            Some(true),
+            Some(organizational_launch(
+                ProviderOrganizationalScope::Scratch,
+                no_user_settings()
+            ))
+        )
+        .as_deref(),
         Some(
             r#"{"fastMode":true,"useAutoModeDuringPlan":false,"permissions":{"blockReadsOutsideWorkingDirectories":true,"blockWritesOutsideWorkingDirectories":true,"ask":["Bash"]}}"#
         )
+    );
+}
+
+#[test]
+fn teammate_launch_settings_carry_user_preferences_below_ganbaru_keys() {
+    let user_settings = json!({ "language": "Spanish", "alwaysThinkingEnabled": false });
+    let user_settings = user_settings.as_object().unwrap();
+    let settings = launch_settings(
+        None,
+        Some(organizational_launch(
+            ProviderOrganizationalScope::Conversation,
+            user_settings,
+        )),
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&settings).unwrap(),
+        json!({
+            "language": "Spanish",
+            "alwaysThinkingEnabled": false,
+            "permissions": {
+                "blockReadsOutsideWorkingDirectories": true,
+                "blockWritesOutsideWorkingDirectories": true,
+            },
+        })
+    );
+    assert_eq!(
+        launch_settings(None, None),
+        None,
+        "direct runs read the file"
     );
 }
 
@@ -1020,7 +1084,7 @@ fn claude_versions_admit_against_the_tested_range() {
 }
 
 #[test]
-fn teammate_environment_keeps_the_user_settings_context_preference_only() {
+fn process_environment_keeps_user_settings_preferences_below_the_configured_environment() {
     let home = TestDirectory::new("home-context-preference");
     fs::write(
         home.path().join("settings.json"),
@@ -1032,7 +1096,13 @@ fn teammate_environment_keeps_the_user_settings_context_preference_only() {
     )
     .unwrap();
     let resolved = resolve_claude_home(&configuration(home.path())).unwrap();
-    let environment = claude_process_environment(&configuration(home.path()), &resolved).unwrap();
+    let preferences = super::preferences::user_preferences(&resolved.config_directory);
+    let environment = claude_process_environment(
+        &configuration(home.path()),
+        &resolved,
+        &preferences.environment,
+    )
+    .unwrap();
     assert_eq!(
         environment
             .get("CLAUDE_CODE_DISABLE_1M_CONTEXT")
@@ -1046,7 +1116,8 @@ fn teammate_environment_keeps_the_user_settings_context_preference_only() {
         "CLAUDE_CODE_DISABLE_1M_CONTEXT".to_string(),
         "0".to_string(),
     );
-    let environment = claude_process_environment(&configured, &resolved).unwrap();
+    let environment =
+        claude_process_environment(&configured, &resolved, &preferences.environment).unwrap();
     assert_eq!(
         environment
             .get("CLAUDE_CODE_DISABLE_1M_CONTEXT")
@@ -1056,17 +1127,19 @@ fn teammate_environment_keeps_the_user_settings_context_preference_only() {
 }
 
 #[test]
-fn context_preferences_read_scalar_values_and_ignore_malformed_settings() {
-    let read = |settings: Value| context_preferences_from_settings(settings.to_string().as_bytes());
+fn host_preference_variables_are_inherited_only_with_valid_values() {
+    let host = BTreeMap::from([
+        ("MAX_THINKING_TOKENS", "8000"),
+        ("API_TIMEOUT_MS", "soon"),
+        ("ANTHROPIC_MODEL", "claude-opus-5-5"),
+    ]);
+    let environment = inherited_environment(|name| host.get(name).map(|value| value.to_string()));
     assert_eq!(
-        read(json!({ "env": { "CLAUDE_CODE_DISABLE_1M_CONTEXT": 1 } }))
-            .get("CLAUDE_CODE_DISABLE_1M_CONTEXT")
-            .map(String::as_str),
-        Some("1")
+        environment.get("MAX_THINKING_TOKENS").map(String::as_str),
+        Some("8000")
     );
-    assert!(read(json!({ "env": { "CLAUDE_CODE_DISABLE_1M_CONTEXT": ["1"] } })).is_empty());
-    assert!(read(json!({ "env": "CLAUDE_CODE_DISABLE_1M_CONTEXT=1" })).is_empty());
-    assert!(context_preferences_from_settings(b"{ not json").is_empty());
+    assert!(!environment.contains_key("API_TIMEOUT_MS"));
+    assert!(!environment.contains_key("ANTHROPIC_MODEL"));
 }
 
 #[test]
@@ -1082,7 +1155,8 @@ fn configured_environment_cannot_name_the_sandbox_variables() {
         configured
             .environment
             .insert(name.to_string(), "/tmp/elsewhere".to_string());
-        let error = claude_process_environment(&configured, &resolved).unwrap_err();
+        let error =
+            claude_process_environment(&configured, &resolved, &BTreeMap::new()).unwrap_err();
         assert_eq!(error.code, ChatErrorCode::Validation, "{name}");
     }
 }

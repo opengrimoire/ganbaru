@@ -7,6 +7,7 @@ use super::organizational::{
     ClaudeOrganizationalDeadline, ClaudeOrganizationalPermissions, organizational_route,
     verify_mcp_status,
 };
+use super::preferences::user_preferences;
 use super::protocol::*;
 use super::session::*;
 use super::support::*;
@@ -259,7 +260,9 @@ impl ClaudeProviderDriver {
             return Ok((connection, home, version, None));
         }
         let home = resolve_claude_home(&self.configuration)?;
-        let mut environment = claude_process_environment(&self.configuration, &home)?;
+        let preferences = user_preferences(&home.config_directory);
+        let mut environment =
+            claude_process_environment(&self.configuration, &home, &preferences.environment)?;
         let executable = resolve_claude_executable(&self.configuration.executable, &environment)?;
         let version =
             cached_probe_version(&executable, working_directory, environment.clone()).await?;
@@ -305,6 +308,7 @@ impl ClaudeProviderDriver {
                         pre_approved_tools: &server.pre_approved_tools,
                         scope,
                         commands_confined: shell.is_some(),
+                        user_settings: &preferences.settings,
                     }),
                     _ => None,
                 },

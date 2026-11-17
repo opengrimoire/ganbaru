@@ -38,6 +38,7 @@ fn options(modes: TurnModeSnapshot, organizational: bool) -> ClaudeLaunchOptions
             pre_approved_tools: &[],
             scope: EDIT_SCOPE,
             commands_confined: false,
+            user_settings: super::no_user_settings(),
         }),
         system_prompt: None,
         cli_version: None,
@@ -135,6 +136,7 @@ fn scoped_options(
         pre_approved_tools: &[],
         scope,
         commands_confined: false,
+        user_settings: super::no_user_settings(),
     });
     options
 }
@@ -272,6 +274,7 @@ fn organizational_launch_never_pre_approves_the_shell() {
             pre_approved_tools: &tools,
             scope,
             commands_confined: false,
+            user_settings: super::no_user_settings(),
         });
         assert_eq!(
             launch(&[], options).unwrap_err().code,
@@ -409,6 +412,7 @@ fn organizational_launch_requires_the_matching_internal_server() {
         pre_approved_tools: &[],
         scope: EDIT_SCOPE,
         commands_confined: false,
+        user_settings: super::no_user_settings(),
     });
     assert_eq!(
         launch(&[], renamed).unwrap_err().code,
@@ -423,6 +427,7 @@ fn pre_approving(tools: &[String]) -> ClaudeLaunchOptions<'_> {
         pre_approved_tools: tools,
         scope: EDIT_SCOPE,
         commands_confined: false,
+        user_settings: super::no_user_settings(),
     });
     options
 }

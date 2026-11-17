@@ -175,7 +175,7 @@ pub const CLAUDE_COMPATIBILITY: ProviderCompatibilityRange = ProviderCompatibili
     ceiling_exclusive: Some("3.0.0"),
 };
 
-/// Teammate launches need `--restricted` (2.1.248), its messaging socket fix (2.1.290), the
+/// Agent launches need `--restricted` (2.1.248), its messaging socket fix (2.1.290), the
 /// late-registered tool fix (2.1.295), and `permissions.blockWritesOutsideWorkingDirectories`
 /// together with a `--setting-sources` value that ignores left-out files (2.1.314).
 pub const MINIMUM_ORGANIZATIONAL_CLAUDE_VERSION: ClaudeVersion = ClaudeVersion::new(2, 1, 314);
@@ -185,10 +185,10 @@ pub const MINIMUM_ORGANIZATIONAL_CLAUDE_VERSION: ClaudeVersion = ClaudeVersion::
 /// file under `CLAUDE_CODE_TMPDIR`. Older versions keep their commands unconfined and asked.
 pub const MINIMUM_CONFINED_SHELL_CLAUDE_VERSION: ClaudeVersion = ClaudeVersion::new(2, 1, 325);
 
-/// The oldest Claude Code version every teammate launch on this device accepts, when `value` is
-/// older: the teammate minimum, or the confined shell minimum where the sandbox helper confines
-/// teammate commands, since older versions refuse every safety mode but asking.
-pub fn teammate_minimum_version(
+/// The oldest Claude Code version every agent launch on this device accepts, when `value` is
+/// older: the agent minimum, or the confined shell minimum where the sandbox helper confines
+/// agent commands, since older versions refuse every safety mode but asking.
+pub fn agent_minimum_version(
     value: ClaudeVersion,
     confined_commands: bool,
 ) -> Option<ClaudeVersion> {
@@ -238,7 +238,7 @@ pub fn ensure_supported_version(value: ClaudeVersion) -> ChatResult<ProviderVers
     }
 }
 
-/// Refuses a teammate launch on a Claude Code version below
+/// Refuses an agent launch on a Claude Code version below
 /// `MINIMUM_ORGANIZATIONAL_CLAUDE_VERSION`; direct threads keep the family minimum.
 pub fn ensure_organizational_version(value: ClaudeVersion) -> ChatResult<()> {
     if value < MINIMUM_ORGANIZATIONAL_CLAUDE_VERSION {
@@ -246,7 +246,7 @@ pub fn ensure_organizational_version(value: ClaudeVersion) -> ChatResult<()> {
             ProviderVersionAdmission::BelowMinimum,
             &value.to_string(),
             format!(
-                "Claude Code {value} cannot run teammates; version {MINIMUM_ORGANIZATIONAL_CLAUDE_VERSION} or newer is required"
+                "Claude Code {value} cannot run agents; version {MINIMUM_ORGANIZATIONAL_CLAUDE_VERSION} or newer is required"
             ),
             true,
         ));
@@ -254,7 +254,7 @@ pub fn ensure_organizational_version(value: ClaudeVersion) -> ChatResult<()> {
     Ok(())
 }
 
-/// Refuses a teammate launch whose safety mode needs confined commands on a Claude Code
+/// Refuses an agent launch whose safety mode needs confined commands on a Claude Code
 /// version below `MINIMUM_CONFINED_SHELL_CLAUDE_VERSION`.
 pub fn ensure_confined_shell_version(value: ClaudeVersion) -> ChatResult<()> {
     if value < MINIMUM_CONFINED_SHELL_CLAUDE_VERSION {
@@ -262,7 +262,7 @@ pub fn ensure_confined_shell_version(value: ClaudeVersion) -> ChatResult<()> {
             ProviderVersionAdmission::BelowMinimum,
             &value.to_string(),
             format!(
-                "Claude Code {value} cannot run teammate commands in the Ganbaru sandbox; version {MINIMUM_CONFINED_SHELL_CLAUDE_VERSION} or newer is required"
+                "Claude Code {value} cannot run agent commands in the Ganbaru sandbox; version {MINIMUM_CONFINED_SHELL_CLAUDE_VERSION} or newer is required"
             ),
             true,
         ));
@@ -1305,7 +1305,7 @@ fn validate_organizational_launch_arguments(arguments: &[String]) -> ChatResult<
     if !arguments.is_empty() {
         return Err(ChatError::validation(
             "launchArguments",
-            "Launch arguments do not apply to organizational runs; remove them from this provider instance or use another instance for teammates",
+            "Launch arguments do not apply to organizational runs; remove them from this provider instance or use another instance for agents",
         ));
     }
     Ok(())

@@ -5,9 +5,7 @@ pub(crate) mod commands;
 use super::device_state::{read_active_device_scope, update_active_device_scope};
 use super::workspace::AuthorizedWorkingFolder;
 use crate::vault;
-use ganbaru_chat::coordination::reductions::{
-    live_teammate_safety_mode_sql, teammate_policy_covers,
-};
+use ganbaru_chat::coordination::reductions::{agent_policy_covers, live_agent_safety_mode_sql};
 use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ChatThreadId, ProjectWorkingFolderId, RepositoryKind,
 };
@@ -246,7 +244,7 @@ pub(crate) async fn require_reusable_generation(
         "SELECT authorization.destination_conversation_id,
                 authorization.requester_participant_id,
                 authorization.resolved_runtime_approval_policy,
-                assignment.teammate_id
+                assignment.agent_id
          FROM chat_scratch_generations generation
          JOIN chat_scratch_scopes scope ON scope.id = generation.scratch_scope_id
          JOIN chat_agent_runs run ON run.scratch_generation_id = generation.id
@@ -276,8 +274,8 @@ pub(crate) async fn require_reusable_generation(
     let requester_participant_id: String = authorization
         .try_get("requester_participant_id")
         .map_err(persistence_error)?;
-    let teammate_id: String = authorization
-        .try_get("teammate_id")
+    let agent_id: String = authorization
+        .try_get("agent_id")
         .map_err(persistence_error)?;
     let authorized_policy: String = authorization
         .try_get("resolved_runtime_approval_policy")
@@ -286,7 +284,7 @@ pub(crate) async fn require_reusable_generation(
         pool,
         scratch_generation_id,
         &destination_conversation_id,
-        &teammate_id,
+        &agent_id,
         &requester_participant_id,
         Some(&authorized_policy),
     )
@@ -303,7 +301,7 @@ pub(crate) async fn generation_constraints_hold(
     pool: &SqlitePool,
     scratch_generation_id: &str,
     destination_conversation_id: &str,
-    teammate_id: &str,
+    agent_id: &str,
     requester_participant_id: &str,
     authorized_policy: Option<&str>,
 ) -> ChatResult<bool> {
@@ -312,21 +310,21 @@ pub(crate) async fn generation_constraints_hold(
         &mut connection,
         scratch_generation_id,
         destination_conversation_id,
-        teammate_id,
+        agent_id,
         requester_participant_id,
         authorized_policy,
     )
     .await
 }
 
-/// Returns whether the teammate may still run with `authorized_policy`, the runtime approval a
+/// Returns whether the agent may still run with `authorized_policy`, the runtime approval a
 /// scratch authorization froze: it is not archived, and its safety mode (see
-/// [`live_teammate_safety_mode_sql`]) with the override that governs a scratch target still covers
+/// [`live_agent_safety_mode_sql`]) with the override that governs a scratch target still covers
 /// that approval, as a folder source's live check requires for folder work.
 async fn policy_still_covers(
     connection: &mut SqliteConnection,
     destination_conversation_id: &str,
-    teammate_id: &str,
+    agent_id: &str,
     authorized_policy: &str,
 ) -> ChatResult<bool> {
     let live: Option<(Option<String>, Option<String>)> =
@@ -334,21 +332,21 @@ async fn policy_still_covers(
             "SELECT {},
                 coalesce(access.scratch_runtime_approval_policy, access.runtime_approval_policy)
          FROM chat_participants participant
-         LEFT JOIN chat_teammate_channel_memberships access
+         LEFT JOIN chat_agent_channel_memberships access
            ON access.conversation_id = ?
-          AND access.teammate_id = participant.id
+          AND access.agent_id = participant.id
           AND access.removed_at IS NULL
          WHERE participant.id = ? AND participant.archived_at IS NULL",
-            live_teammate_safety_mode_sql("participant.id"),
+            live_agent_safety_mode_sql("participant.id"),
         )))
         .bind(destination_conversation_id)
-        .bind(teammate_id)
+        .bind(agent_id)
         .fetch_optional(&mut *connection)
         .await
         .map_err(persistence_error)?;
     Ok(live.is_some_and(|(safety_mode, approval_override)| {
         safety_mode.is_some_and(|safety_mode| {
-            teammate_policy_covers(
+            agent_policy_covers(
                 &safety_mode,
                 approval_override.as_deref(),
                 authorized_policy,
@@ -397,14 +395,14 @@ pub(crate) async fn generation_sources_readable_by(
 /// sources are still readable by everyone who can read the destination.
 ///
 /// `authorized_policy` is the runtime approval frozen by the authorization a run holds. With it,
-/// the teammate must also still cover that approval, so a scratch run stops at the same point a
+/// the agent must also still cover that approval, so a scratch run stops at the same point a
 /// folder run does. Freezing a new authorization and owner scratch commands hold no frozen
 /// approval and pass `None`.
 pub(crate) async fn generation_constraints_hold_in_connection(
     connection: &mut SqliteConnection,
     scratch_generation_id: &str,
     destination_conversation_id: &str,
-    teammate_id: &str,
+    agent_id: &str,
     requester_participant_id: &str,
     authorized_policy: Option<&str>,
 ) -> ChatResult<bool> {
@@ -417,14 +415,14 @@ pub(crate) async fn generation_constraints_hold_in_connection(
            WHERE generation.id = ?
              AND generation.lifecycle_state = 'active'
              AND generation.removed_at IS NULL
-             AND scope.teammate_id = ?
+             AND scope.agent_id = ?
              AND scope.lifecycle_state IN ('active', 'archived')
              AND scope.removed_at IS NULL
              AND thread.conversation_id = ?
          )",
     )
     .bind(scratch_generation_id)
-    .bind(teammate_id)
+    .bind(agent_id)
     .bind(destination_conversation_id)
     .fetch_one(&mut *connection)
     .await
@@ -436,7 +434,7 @@ pub(crate) async fn generation_constraints_hold_in_connection(
         && !policy_still_covers(
             connection,
             destination_conversation_id,
-            teammate_id,
+            agent_id,
             authorized_policy,
         )
         .await?
@@ -469,9 +467,9 @@ pub(crate) async fn generation_constraints_hold_in_connection(
         "SELECT participant.id, participant.participant_kind
          FROM chat_conversation_memberships membership
          JOIN chat_participants participant ON participant.id = membership.participant_id
-         LEFT JOIN chat_teammate_channel_memberships channel_access
+         LEFT JOIN chat_agent_channel_memberships channel_access
            ON channel_access.conversation_id = membership.conversation_id
-          AND channel_access.teammate_id = membership.participant_id
+          AND channel_access.agent_id = membership.participant_id
           AND channel_access.removed_at IS NULL
          LEFT JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
          LEFT JOIN chat_access_profile_effective_revisions profile_revision
@@ -479,7 +477,7 @@ pub(crate) async fn generation_constraints_hold_in_connection(
          WHERE membership.conversation_id = ?
            AND membership.removed_at IS NULL
            AND (
-             participant.participant_kind != 'ai_teammate'
+             participant.participant_kind != 'ai_agent'
              OR CASE
                   WHEN channel_access.read_history_inherits_profile = 1
                     THEN profile_revision.default_read_history
@@ -504,7 +502,7 @@ pub(crate) async fn generation_constraints_hold_in_connection(
         if current_audience_revision < audience_revision
             || !participant_can_read_source(
                 &mut *connection,
-                teammate_id,
+                agent_id,
                 &conversation_id,
                 &lower_order_key,
             )
@@ -547,9 +545,9 @@ async fn participant_can_read_source(
            SELECT 1
            FROM chat_conversation_memberships membership
            JOIN chat_participants participant ON participant.id = membership.participant_id
-           LEFT JOIN chat_teammate_channel_memberships channel_access
+           LEFT JOIN chat_agent_channel_memberships channel_access
              ON channel_access.conversation_id = membership.conversation_id
-            AND channel_access.teammate_id = membership.participant_id
+            AND channel_access.agent_id = membership.participant_id
             AND channel_access.removed_at IS NULL
            LEFT JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
            LEFT JOIN chat_access_profile_effective_revisions profile_revision
@@ -558,7 +556,7 @@ async fn participant_can_read_source(
              AND membership.participant_id = ?
              AND membership.removed_at IS NULL
              AND (
-               participant.participant_kind != 'ai_teammate'
+               participant.participant_kind != 'ai_agent'
                OR (
                  CASE
                    WHEN channel_access.read_history_inherits_profile = 1
@@ -764,7 +762,7 @@ mod tests {
     const NOW: &str = "2026-09-18T12:00:00.000Z";
     pub(super) const GENERATION: &str = "generation:reuse";
     const AUTHORIZATION: &str = "authorization:reuse";
-    pub(super) const TEAMMATE: &str = "participant:scratch-agent";
+    pub(super) const AGENT: &str = "participant:scratch-agent";
 
     /// Returns the default channel conversation of the test project, whose id is derived.
     pub(super) fn destination_conversation() -> String {
@@ -784,13 +782,13 @@ mod tests {
         let pool = crate::chat::tests::repository::pool_with_thread().await;
         let conversation = destination_conversation();
         for (id, name) in [
-            (TEAMMATE, "Scratch agent"),
+            (AGENT, "Scratch agent"),
             ("participant:other-agent", "Other agent"),
         ] {
             sqlx::query(
                 "INSERT INTO chat_participants
                     (id, participant_kind, display_name, created_at, updated_at)
-                 VALUES (?, 'ai_teammate', ?, ?, ?)",
+                 VALUES (?, 'ai_agent', ?, ?, ?)",
             )
             .bind(id)
             .bind(name)
@@ -800,7 +798,7 @@ mod tests {
             .await
             .unwrap();
             sqlx::query(
-                "INSERT INTO chat_teammates
+                "INSERT INTO chat_agents
                     (participant_id, role, created_at, updated_at)
                  VALUES (?, 'Test', ?, ?)",
             )
@@ -812,18 +810,18 @@ mod tests {
             .unwrap();
         }
         sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "INSERT INTO chat_teammate_policy_revisions
-                (id, teammate_id, provider_instance_id, model_selection_data, created_at)
-             VALUES ('policy:scratch', '{TEAMMATE}', 'codex-personal', '{{}}', '{NOW}');
+            "INSERT INTO chat_agent_policy_revisions
+                (id, agent_id, provider_instance_id, model_selection_data, created_at)
+             VALUES ('policy:scratch', '{AGENT}', 'codex-personal', '{{}}', '{NOW}');
              INSERT INTO chat_conversation_memberships
                 (conversation_id, participant_id, sync_key, membership_role, created_at,
                  updated_at)
-             VALUES ('{conversation}', '{TEAMMATE}', 'membership:scratch', 'member',
+             VALUES ('{conversation}', '{AGENT}', 'membership:scratch', 'member',
                      '{NOW}', '{NOW}');
-             INSERT INTO chat_teammate_channel_memberships
-                (conversation_id, teammate_id, sync_key, access_profile_id,
+             INSERT INTO chat_agent_channel_memberships
+                (conversation_id, agent_id, sync_key, access_profile_id,
                  read_history, participate, history_boundary, created_at, updated_at)
-             VALUES ('{conversation}', '{TEAMMATE}', 'channel-membership:scratch',
+             VALUES ('{conversation}', '{AGENT}', 'channel-membership:scratch',
                      'access-profile:conversation-only',
                      1, 1, 'entire', '{NOW}', '{NOW}');
              INSERT INTO chat_conversation_items
@@ -836,14 +834,14 @@ mod tests {
                 (id, conversation_id, root_item_id, last_activity_at, created_at, updated_at)
              VALUES ('reply:scratch', '{conversation}', 'item:scratch', '{NOW}', '{NOW}', '{NOW}');
              INSERT INTO chat_work_assignments
-                (id, reply_thread_id, teammate_id, triggering_message_item_id, state, created_at, updated_at)
-             VALUES ('assignment:scratch', 'reply:scratch', '{TEAMMATE}', 'item:scratch',
+                (id, reply_thread_id, agent_id, triggering_message_item_id, state, created_at, updated_at)
+             VALUES ('assignment:scratch', 'reply:scratch', '{AGENT}', 'item:scratch',
                      'working', '{NOW}', '{NOW}');"
         )))
         .execute(&pool).await.unwrap();
         sqlx::query(
             "INSERT INTO chat_scratch_scopes
-                (id, reply_thread_id, teammate_id, created_at, updated_at)
+                (id, reply_thread_id, agent_id, created_at, updated_at)
              VALUES ('scope:scratch', 'reply:scratch', ?, ?, ?)",
         )
         .bind(scope_owner)
@@ -863,8 +861,8 @@ mod tests {
                  execution_environment_id = 'environment:scratch', scratch_generation_id = '{GENERATION}'
              WHERE id = 'thread-1';
              INSERT INTO chat_assignment_authorization_revisions
-                (id, assignment_id, revision, requester_participant_id, teammate_policy_revision_id,
-                 teammate_access_revision, destination_conversation_id, access_profile_revision_id,
+                (id, assignment_id, revision, requester_participant_id, agent_policy_revision_id,
+                 agent_access_revision, destination_conversation_id, access_profile_revision_id,
                  execution_environment_id, resolved_runtime_approval_policy, scope_digest,
                  decision_state, created_at)
              VALUES ('{AUTHORIZATION}', 'assignment:scratch', 1, 'participant:local-owner',
@@ -875,7 +873,7 @@ mod tests {
              VALUES ('turn:scratch', 'thread-1', 1, 'active', 'ask_for_approval', 'build', '{NOW}', '{NOW}');
              INSERT INTO chat_agent_runs
                 (id, assignment_id, project_id, execution_environment_id, scratch_generation_id,
-                 teammate_policy_revision_id, authorization_revision_id, authorization_scope_digest,
+                 agent_policy_revision_id, authorization_revision_id, authorization_scope_digest,
                  provider_turn_id, provider_thread_id, state, run_ordinal, created_at, updated_at)
              VALUES ('run:scratch', 'assignment:scratch', 'project-chat', 'environment:scratch',
                      '{GENERATION}', 'policy:scratch', '{AUTHORIZATION}', printf('%064d', 0),
@@ -903,8 +901,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scratch_reuse_resolves_the_assignment_teammate_and_retained_sources() {
-        let pool = pool_with_scratch_assignment(TEAMMATE).await;
+    async fn scratch_reuse_resolves_the_assignment_agent_and_retained_sources() {
+        let pool = pool_with_scratch_assignment(AGENT).await;
         require_reusable_generation(&pool, GENERATION, AUTHORIZATION)
             .await
             .unwrap();
@@ -925,7 +923,7 @@ mod tests {
 
     #[tokio::test]
     async fn scratch_reuse_rejects_revoked_authorization() {
-        let pool = pool_with_scratch_assignment(TEAMMATE).await;
+        let pool = pool_with_scratch_assignment(AGENT).await;
         require_reusable_generation(&pool, GENERATION, AUTHORIZATION)
             .await
             .unwrap();
@@ -937,16 +935,16 @@ mod tests {
         assert_eq!(error.code, ChatErrorCode::Permission);
     }
 
-    /// Inserts a newer policy revision of the test teammate, as sync applies it.
+    /// Inserts a newer policy revision of the test agent, as sync applies it.
     async fn apply_policy_revision(pool: &SqlitePool, id: &str, minute: u32, safety_mode: &str) {
         sqlx::query(
-            "INSERT INTO chat_teammate_policy_revisions
-                (id, teammate_id, provider_instance_id, model_selection_data, created_at,
+            "INSERT INTO chat_agent_policy_revisions
+                (id, agent_id, provider_instance_id, model_selection_data, created_at,
                  safety_mode)
              VALUES (?, ?, 'codex-personal', '{}', ?, ?)",
         )
         .bind(id)
-        .bind(TEAMMATE)
+        .bind(AGENT)
         .bind(format!("2026-09-18T12:{minute:02}:00.000Z"))
         .bind(safety_mode)
         .execute(pool)
@@ -954,9 +952,9 @@ mod tests {
         .unwrap();
     }
 
-    /// Builds a scratch assignment that froze `auto_approve` under an approve-for-me teammate.
+    /// Builds a scratch assignment that froze `auto_approve` under an approve-for-me agent.
     async fn pool_with_auto_approved_scratch() -> SqlitePool {
-        let pool = pool_with_frozen_scratch_assignment(TEAMMATE, "auto_approve").await;
+        let pool = pool_with_frozen_scratch_assignment(AGENT, "auto_approve").await;
         apply_policy_revision(&pool, "policy:scratch-approving", 1, "approve_for_me").await;
         pool
     }
@@ -980,16 +978,16 @@ mod tests {
         assert_eq!(error.code, ChatErrorCode::Permission);
     }
 
-    /// Points the test teammate at `revision_id`, as sync applies a pointer before its revision.
+    /// Points the test agent at `revision_id`, as sync applies a pointer before its revision.
     async fn apply_policy_pointer(pool: &SqlitePool, revision_id: &str, safety_mode: &str) {
         sqlx::query(
-            "UPDATE chat_teammates
+            "UPDATE chat_agents
              SET current_policy_revision_id = ?, current_policy_safety_mode = ?
              WHERE participant_id = ?",
         )
         .bind(revision_id)
         .bind(safety_mode)
-        .bind(TEAMMATE)
+        .bind(AGENT)
         .execute(pool)
         .await
         .unwrap();
@@ -1030,7 +1028,7 @@ mod tests {
     async fn scratch_constraints_read_the_override_that_governs_the_scratch_target() {
         let pool = pool_with_auto_approved_scratch().await;
         sqlx::query(
-            "UPDATE chat_teammate_channel_memberships
+            "UPDATE chat_agent_channel_memberships
              SET scratch_runtime_approval_policy = 'auto_approve',
                  runtime_approval_policy = 'ask'
              WHERE sync_key = 'channel-membership:scratch'",
@@ -1044,7 +1042,7 @@ mod tests {
             .unwrap();
 
         sqlx::query(
-            "UPDATE chat_teammate_channel_memberships
+            "UPDATE chat_agent_channel_memberships
              SET scratch_runtime_approval_policy = 'ask'
              WHERE sync_key = 'channel-membership:scratch'",
         )
@@ -1058,15 +1056,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scratch_constraints_fail_after_teammate_archive() {
-        let pool = pool_with_scratch_assignment(TEAMMATE).await;
+    async fn scratch_constraints_fail_after_agent_archive() {
+        let pool = pool_with_scratch_assignment(AGENT).await;
         require_reusable_generation(&pool, GENERATION, AUTHORIZATION)
             .await
             .unwrap();
 
         sqlx::query("UPDATE chat_participants SET archived_at = ? WHERE id = ?")
             .bind(NOW)
-            .bind(TEAMMATE)
+            .bind(AGENT)
             .execute(&pool)
             .await
             .unwrap();
@@ -1079,7 +1077,7 @@ mod tests {
 
     #[tokio::test]
     async fn scratch_reuse_rejects_unknown_identifiers_and_inactive_generations() {
-        let pool = pool_with_scratch_assignment(TEAMMATE).await;
+        let pool = pool_with_scratch_assignment(AGENT).await;
         for (generation, authorization) in [
             ("generation:unknown", AUTHORIZATION),
             (GENERATION, "authorization:unknown"),
@@ -1110,15 +1108,15 @@ mod tests {
 
     #[tokio::test]
     async fn scratch_reuse_rechecks_retained_source_access() {
-        let pool = pool_with_scratch_assignment(TEAMMATE).await;
+        let pool = pool_with_scratch_assignment(AGENT).await;
         retain_destination_source(&pool).await;
         require_reusable_generation(&pool, GENERATION, AUTHORIZATION)
             .await
             .unwrap();
         sqlx::query(
-            "UPDATE chat_teammate_channel_memberships SET read_history = 0 WHERE teammate_id = ?",
+            "UPDATE chat_agent_channel_memberships SET read_history = 0 WHERE agent_id = ?",
         )
-        .bind(TEAMMATE)
+        .bind(AGENT)
         .execute(&pool)
         .await
         .unwrap();

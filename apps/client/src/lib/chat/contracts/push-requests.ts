@@ -1,6 +1,6 @@
 import type { ChatConversationItemId, UtcTimestamp } from "./common";
 
-/** What a teammate asks to push, as Ganbaru read it from the working folder when the teammate asked. */
+/** What an agent asks to push, as Ganbaru read it from the working folder when the agent asked. */
 export interface ChatPushRequest {
   workingFolderId: string;
   /** The execution environment the target was read in, `null` for the folder itself. */
@@ -18,7 +18,7 @@ export interface ChatPushRequest {
   commit?: ChatPushRequestCommit;
 }
 
-/** A commit a push request asks Ganbaru to make at confirmation, as Ganbaru read the working tree when the teammate asked. */
+/** A commit a push request asks Ganbaru to make at confirmation, as Ganbaru read the working tree when the agent asked. */
 export interface ChatPushRequestCommit {
   message: string;
   treeId: string;
@@ -48,8 +48,8 @@ export interface ChatPushRequestStateRead {
 }
 
 /**
- * A person's confirmation of a push request, with the reply text posted after the teammate mention. With
- * `rememberApproval`, a successful push also lets later pushes of the teammate from the folder to the same push URL
+ * A person's confirmation of a push request, with the reply text posted after the agent mention. With
+ * `rememberApproval`, a successful push also lets later pushes of the agent from the folder to the same push URL
  * and branch go ahead without asking.
  */
 export interface ConfirmPushRequestRequest {
@@ -58,10 +58,10 @@ export interface ConfirmPushRequestRequest {
   rememberApproval?: boolean;
 }
 
-/** A person's standing approval of a teammate's pushes from one folder to one push URL and branch. */
+/** A person's standing approval of an agent's pushes from one folder to one push URL and branch. */
 export interface ChatPushApproval {
   approvalId: string;
-  teammateId: string;
+  agentId: string;
   workingFolderId: string;
   workingFolderName: string;
   pushUrl: string;

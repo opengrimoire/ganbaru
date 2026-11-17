@@ -1,12 +1,12 @@
 import type {
-  ChatTeammateChannelAccessInput,
+  ChatAgentChannelAccessInput,
   ModelOptionSelection,
   SafetyMode,
   VersionedJson,
 } from "$lib/chat/contracts";
-import { teammateAccessDraftSnapshot } from "./access";
+import { agentAccessDraftSnapshot } from "./access";
 
-export interface ChatTeammateStudioProfileDraft {
+export interface ChatAgentStudioProfileDraft {
   displayName: string;
   role: string;
   instructions: string;
@@ -20,12 +20,12 @@ export interface ChatTeammateStudioProfileDraft {
   providerOptions: VersionedJson;
 }
 
-export interface ChatTeammateStudioDraft {
-  profile: ChatTeammateStudioProfileDraft;
-  channels: ChatTeammateChannelAccessInput[];
+export interface ChatAgentStudioDraft {
+  profile: ChatAgentStudioProfileDraft;
+  channels: ChatAgentChannelAccessInput[];
 }
 
-export interface ChatTeammateConflictComparison {
+export interface ChatAgentConflictComparison {
   identityChanged: boolean;
   policyChanged: boolean;
   addedChannelCount: number;
@@ -34,17 +34,17 @@ export interface ChatTeammateConflictComparison {
 }
 
 /** Returns a detached full studio draft suitable for conflict retention. */
-export function cloneChatTeammateStudioDraft(
-  draft: ChatTeammateStudioDraft,
-): ChatTeammateStudioDraft {
+export function cloneChatAgentStudioDraft(
+  draft: ChatAgentStudioDraft,
+): ChatAgentStudioDraft {
   return cloneJsonValue(draft);
 }
 
-/** Compares a retained local draft with the latest durable teammate state. */
-export function compareChatTeammateStudioDrafts(
-  local: ChatTeammateStudioDraft,
-  durable: ChatTeammateStudioDraft,
-): ChatTeammateConflictComparison {
+/** Compares a retained local draft with the latest durable agent state. */
+export function compareChatAgentStudioDrafts(
+  local: ChatAgentStudioDraft,
+  durable: ChatAgentStudioDraft,
+): ChatAgentConflictComparison {
   const localChannels = channelMap(local.channels);
   const durableChannels = channelMap(durable.channels);
   let addedChannelCount = 0;
@@ -68,16 +68,16 @@ export function compareChatTeammateStudioDrafts(
   };
 }
 
-/** Replays local changes from a baseline over the latest durable teammate state. */
-export function rebaseChatTeammateStudioDraft(
-  baseline: ChatTeammateStudioDraft,
-  local: ChatTeammateStudioDraft,
-  durable: ChatTeammateStudioDraft,
-): ChatTeammateStudioDraft {
+/** Replays local changes from a baseline over the latest durable agent state. */
+export function rebaseChatAgentStudioDraft(
+  baseline: ChatAgentStudioDraft,
+  local: ChatAgentStudioDraft,
+  durable: ChatAgentStudioDraft,
+): ChatAgentStudioDraft {
   const baselineChannels = channelMap(baseline.channels);
   const localChannels = channelMap(local.channels);
   const durableChannels = channelMap(durable.channels);
-  const channels: ChatTeammateChannelAccessInput[] = [];
+  const channels: ChatAgentChannelAccessInput[] = [];
   const orderedChannelIds = [
     ...durable.channels.map((channel) => channel.channelId),
     ...local.channels
@@ -130,21 +130,21 @@ export function rebaseChatTeammateStudioDraft(
 }
 
 function channelMap(
-  channels: readonly ChatTeammateChannelAccessInput[],
-): Map<string, ChatTeammateChannelAccessInput> {
+  channels: readonly ChatAgentChannelAccessInput[],
+): Map<string, ChatAgentChannelAccessInput> {
   return new Map(channels.map((channel) => [channel.channelId, channel]));
 }
 
 function channelEqual(
-  left: ChatTeammateChannelAccessInput,
-  right: ChatTeammateChannelAccessInput,
+  left: ChatAgentChannelAccessInput,
+  right: ChatAgentChannelAccessInput,
 ): boolean {
-  return teammateAccessDraftSnapshot([left]) === teammateAccessDraftSnapshot([right]);
+  return agentAccessDraftSnapshot([left]) === agentAccessDraftSnapshot([right]);
 }
 
 function identityEqual(
-  left: ChatTeammateStudioProfileDraft,
-  right: ChatTeammateStudioProfileDraft,
+  left: ChatAgentStudioProfileDraft,
+  right: ChatAgentStudioProfileDraft,
 ): boolean {
   return trimmedEqual(left.displayName, right.displayName)
     && trimmedEqual(left.role, right.role)
@@ -152,8 +152,8 @@ function identityEqual(
 }
 
 function policyEqual(
-  left: ChatTeammateStudioProfileDraft,
-  right: ChatTeammateStudioProfileDraft,
+  left: ChatAgentStudioProfileDraft,
+  right: ChatAgentStudioProfileDraft,
 ): boolean {
   return left.providerId === right.providerId
     && left.safetyMode === right.safetyMode

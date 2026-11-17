@@ -50,13 +50,13 @@ const person: ChatParticipantRead = {
   revision: 1,
   archivedAt: null,
 };
-const teammate: ChatParticipantRead = { ...person, id: "participant:atlas", kind: "ai_teammate", displayName: "Atlas" };
+const agent: ChatParticipantRead = { ...person, id: "participant:atlas", kind: "ai_agent", displayName: "Atlas" };
 
 function reply(
   itemId: string,
   orderKey: string,
   richContent: ChatMessageRead["richContent"],
-  author: ChatParticipantRead = teammate,
+  author: ChatParticipantRead = agent,
 ): Pick<ChatMessageRead, "itemId" | "orderKey" | "richContent" | "author"> {
   return { itemId, orderKey, richContent, author };
 }
@@ -238,7 +238,7 @@ describe("answerableHostQuestion", () => {
     expect(answerableHostQuestion([reply("item:question", "a", hostQuestion([]))], waiting)).toBeNull();
     expect(answerableHostQuestion([
       reply("item:question", "a", hostQuestion(["Yes"])),
-      reply("item:update", "b", content({}), teammate),
+      reply("item:update", "b", content({}), agent),
     ], waiting)).toEqual({ messageItemId: "item:question", choices: ["Yes"] });
   });
 

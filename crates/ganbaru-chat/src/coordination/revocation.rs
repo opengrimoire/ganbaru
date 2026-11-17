@@ -9,23 +9,23 @@ use sqlx::SqliteConnection;
 /// The authorizations one revocation covers.
 #[derive(Clone, Copy, Debug)]
 enum RevocationScope<'a> {
-    /// Every authorization of one teammate.
-    Teammate(&'a str),
+    /// Every authorization of one agent.
+    Agent(&'a str),
     /// Every authorization of one work assignment.
     Assignment(&'a str),
 }
 
 impl<'a> RevocationScope<'a> {
-    fn teammate_id(self) -> Option<&'a str> {
+    fn agent_id(self) -> Option<&'a str> {
         match self {
-            Self::Teammate(teammate_id) => Some(teammate_id),
+            Self::Agent(agent_id) => Some(agent_id),
             Self::Assignment(_) => None,
         }
     }
 
     fn assignment_id(self) -> Option<&'a str> {
         match self {
-            Self::Teammate(_) => None,
+            Self::Agent(_) => None,
             Self::Assignment(assignment_id) => Some(assignment_id),
         }
     }
@@ -35,28 +35,22 @@ impl<'a> RevocationScope<'a> {
 /// was delegated under.
 pub const PARENT_AUTHORITY_REVOKED_REASON: &str = "parent_authority_revoked";
 
-/// Revokes every allowed, unrevoked authorization of `teammate_id` and queues one access
+/// Revokes every allowed, unrevoked authorization of `agent_id` and queues one access
 /// revocation job for each, unless a queued or claimed job already covers it. Work delegated
-/// from the teammate's assignments loses its authorizations too, with
+/// from the agent's assignments loses its authorizations too, with
 /// [`PARENT_AUTHORITY_REVOKED_REASON`], since a child never holds more than its parent.
 ///
 /// `now` is the revocation and job timestamp. Returns the number of authorizations revoked,
 /// the delegated ones included.
-pub async fn revoke_teammate_authorizations(
+pub async fn revoke_agent_authorizations(
     connection: &mut SqliteConnection,
-    teammate_id: &str,
+    agent_id: &str,
     now: &str,
     reason: &str,
 ) -> ChatResult<u64> {
-    let revoked = revoke_authorizations(
-        connection,
-        RevocationScope::Teammate(teammate_id),
-        now,
-        reason,
-    )
-    .await?;
-    let delegated =
-        revoke_descendants(connection, RevocationScope::Teammate(teammate_id), now).await?;
+    let revoked =
+        revoke_authorizations(connection, RevocationScope::Agent(agent_id), now, reason).await?;
+    let delegated = revoke_descendants(connection, RevocationScope::Agent(agent_id), now).await?;
     Ok(revoked + delegated)
 }
 
@@ -74,13 +68,13 @@ pub async fn revoke_delegated_authorizations(
 }
 
 /// The ids of the assignments delegated from the assignments `scope` covers, through
-/// `parent_assignment_id`, bound by the depth the schema allows. Binds `?3` (teammate) and
+/// `parent_assignment_id`, bound by the depth the schema allows. Binds `?3` (agent) and
 /// `?4` (assignment) like [`revoke_authorizations`].
 const DELEGATED_DESCENDANTS_SQL: &str = "WITH RECURSIVE descendants(id, depth) AS (
        SELECT child.id, 1
        FROM chat_work_assignments child
        JOIN chat_work_assignments parent ON parent.id = child.parent_assignment_id
-       WHERE (?3 IS NULL OR parent.teammate_id = ?3)
+       WHERE (?3 IS NULL OR parent.agent_id = ?3)
          AND (?4 IS NULL OR parent.id = ?4)
        UNION
        SELECT child.id, descendants.depth + 1
@@ -104,7 +98,7 @@ async fn revoke_descendants(
     let revoked = sqlx::query(sqlx::AssertSqlSafe(update))
         .bind(PARENT_AUTHORITY_REVOKED_REASON)
         .bind(now)
-        .bind(scope.teammate_id())
+        .bind(scope.agent_id())
         .bind(scope.assignment_id())
         .execute(&mut *connection)
         .await
@@ -116,9 +110,9 @@ async fn revoke_descendants(
     let jobs = format!(
         "{DELEGATED_DESCENDANTS_SQL}
          INSERT INTO chat_access_revocation_jobs
-            (id, teammate_id, authorization_revision_id, reason,
+            (id, agent_id, authorization_revision_id, reason,
              available_at, created_at, updated_at)
-         SELECT 'access-revocation:' || lower(hex(randomblob(16))), assignment.teammate_id,
+         SELECT 'access-revocation:' || lower(hex(randomblob(16))), assignment.agent_id,
                 authorization.id, ?1, ?2, ?2, ?2
          FROM chat_assignment_authorization_revisions authorization
          JOIN chat_work_assignments assignment ON assignment.id = authorization.assignment_id
@@ -134,7 +128,7 @@ async fn revoke_descendants(
     sqlx::query(sqlx::AssertSqlSafe(jobs))
         .bind(PARENT_AUTHORITY_REVOKED_REASON)
         .bind(now)
-        .bind(scope.teammate_id())
+        .bind(scope.agent_id())
         .bind(scope.assignment_id())
         .execute(&mut *connection)
         .await
@@ -176,7 +170,7 @@ async fn revoke_authorizations(
              FROM chat_assignment_authorization_revisions authorization
              JOIN chat_work_assignments assignment
                ON assignment.id = authorization.assignment_id
-             WHERE (?3 IS NULL OR assignment.teammate_id = ?3)
+             WHERE (?3 IS NULL OR assignment.agent_id = ?3)
                AND (?4 IS NULL OR assignment.id = ?4)
                AND authorization.decision_state = 'allowed'
                AND authorization.revoked_at IS NULL
@@ -184,7 +178,7 @@ async fn revoke_authorizations(
     )
     .bind(reason)
     .bind(now)
-    .bind(scope.teammate_id())
+    .bind(scope.agent_id())
     .bind(scope.assignment_id())
     .execute(&mut *connection)
     .await
@@ -192,13 +186,13 @@ async fn revoke_authorizations(
     .rows_affected();
     sqlx::query(
         "INSERT INTO chat_access_revocation_jobs
-            (id, teammate_id, authorization_revision_id, reason,
+            (id, agent_id, authorization_revision_id, reason,
              available_at, created_at, updated_at)
-         SELECT 'access-revocation:' || lower(hex(randomblob(16))), assignment.teammate_id,
+         SELECT 'access-revocation:' || lower(hex(randomblob(16))), assignment.agent_id,
                 authorization.id, ?1, ?2, ?2, ?2
          FROM chat_assignment_authorization_revisions authorization
          JOIN chat_work_assignments assignment ON assignment.id = authorization.assignment_id
-         WHERE (?3 IS NULL OR assignment.teammate_id = ?3)
+         WHERE (?3 IS NULL OR assignment.agent_id = ?3)
            AND (?4 IS NULL OR assignment.id = ?4)
            AND authorization.revoked_at = ?2
            AND NOT EXISTS (
@@ -209,7 +203,7 @@ async fn revoke_authorizations(
     )
     .bind(reason)
     .bind(now)
-    .bind(scope.teammate_id())
+    .bind(scope.agent_id())
     .bind(scope.assignment_id())
     .execute(&mut *connection)
     .await

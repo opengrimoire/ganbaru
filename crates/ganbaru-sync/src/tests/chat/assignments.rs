@@ -42,24 +42,24 @@ fn input_id(message: &str) -> String {
     key(ASSIGNMENT_INPUT_KEY_PREFIX, &[message])
 }
 
-/// SQL creating the assignment `id` of [`TEAMMATE`] triggered by [`MENTION`] in the reply
+/// SQL creating the assignment `id` of [`AGENT`] triggered by [`MENTION`] in the reply
 /// thread under [`ROOT`], executed by [`EXECUTOR`].
 fn assignment_sql(id: &str, previous: Option<&str>) -> String {
     assignment_on_sql(id, previous, EXECUTOR)
 }
 
-/// SQL creating the assignment `id` of [`TEAMMATE`] triggered by [`MENTION`] in the reply
+/// SQL creating the assignment `id` of [`AGENT`] triggered by [`MENTION`] in the reply
 /// thread under [`ROOT`], executed by `executor`.
 fn assignment_on_sql(id: &str, previous: Option<&str>, executor: &str) -> String {
     format!(
         "INSERT INTO chat_work_assignments
-            (id, reply_thread_id, teammate_id, triggering_message_item_id, executing_device_id,
+            (id, reply_thread_id, agent_id, triggering_message_item_id, executing_device_id,
              previous_assignment_id, state, created_at, updated_at)
-         VALUES ({id}, {thread}, {teammate}, {mention}, {executor}, {previous}, 'queued',
+         VALUES ({id}, {thread}, {agent}, {mention}, {executor}, {previous}, 'queued',
                  {created}, {created});",
         id = quoted(id),
         thread = quoted(&thread()),
-        teammate = quoted(TEAMMATE),
+        agent = quoted(AGENT),
         mention = quoted(MENTION),
         executor = quoted(executor),
         previous = optional(previous),
@@ -648,14 +648,14 @@ const PARENT_AUTHORITY_REVOKED: &str = "parent_authority_revoked";
 fn delegated_sql() -> String {
     format!(
         "INSERT INTO chat_work_assignments
-            (id, reply_thread_id, teammate_id, triggering_message_item_id, executing_device_id,
+            (id, reply_thread_id, agent_id, triggering_message_item_id, executing_device_id,
              state, parent_assignment_id, delegation_depth, delegation_objective,
              delegation_expected_result, delegation_folder_ceiling, created_at, updated_at)
-         VALUES ({child}, {thread}, {teammate}, {mention}, {executor}, 'queued', {parent}, 1,
+         VALUES ({child}, {thread}, {agent}, {mention}, {executor}, 'queued', {parent}, 1,
                  'Read the failing tests', 'The causes', {ceiling}, {created}, {created});",
         child = quoted(CHILD),
         thread = quoted(&thread()),
-        teammate = quoted(TEAMMATE),
+        agent = quoted(AGENT),
         mention = quoted(MENTION),
         executor = quoted(EXECUTOR),
         parent = quoted(ASSIGNMENT),
@@ -691,7 +691,7 @@ fn child_state_sql(state: &str, reason: Option<&str>, updated_at: &str) -> Strin
 async fn sees_narrowed_parent(replica: &mut Replica) -> bool {
     replica
         .scalar_text(
-            "SELECT grant_row.capability FROM chat_teammate_working_folder_grants grant_row
+            "SELECT grant_row.capability FROM chat_agent_working_folder_grants grant_row
              WHERE EXISTS (SELECT 1 FROM chat_work_assignments WHERE id = 'assignment:delegated')",
         )
         .await
@@ -782,7 +782,7 @@ fn chat_simulated_delegation_against_a_narrowed_parent_grant_cancels_the_child()
                 );
                 assert_eq!(
                     replica
-                        .scalar_text("SELECT capability FROM chat_teammate_working_folder_grants")
+                        .scalar_text("SELECT capability FROM chat_agent_working_folder_grants")
                         .await
                         .as_deref(),
                     Some("read"),
@@ -963,14 +963,14 @@ async fn child_settled(replica: &mut Replica) -> bool {
 fn overridden_assignment_sql(executor: &str, model: &str) -> String {
     format!(
         "INSERT INTO chat_work_assignments
-            (id, reply_thread_id, teammate_id, triggering_message_item_id, executing_device_id,
+            (id, reply_thread_id, agent_id, triggering_message_item_id, executing_device_id,
              override_model_selection_schema_version, override_model_selection_data, state,
              created_at, updated_at)
-         VALUES ({id}, {thread}, {teammate}, {mention}, {executor}, 1, {data}, 'queued',
+         VALUES ({id}, {thread}, {agent}, {mention}, {executor}, 1, {data}, 'queued',
                  {created}, {created});",
         id = quoted(ASSIGNMENT),
         thread = quoted(&thread()),
-        teammate = quoted(TEAMMATE),
+        agent = quoted(AGENT),
         mention = quoted(MENTION),
         executor = quoted(executor),
         data = quoted(&format!(

@@ -21,7 +21,7 @@
     onSave,
   }: {
     preferences: ProviderPreferencesRead;
-    /** Whether teammate runs skip values that fail their check, which decides the warning shown. */
+    /** Whether agent runs skip values that fail their check, which decides the warning shown. */
     allowlisted: boolean;
     disabled: boolean;
     onSave: (preferenceId: string, value: boolean | string | null) => Promise<void>;
@@ -110,7 +110,7 @@
 
 <div class="flex flex-col gap-3">
   {#each preferences.entries as entry (entry.id)}
-    {@const controlId = `teammate-preference-${entry.id.replaceAll(".", "-")}`}
+    {@const controlId = `agent-preference-${entry.id.replaceAll(".", "-")}`}
     {#if entry.multiline}
       <div class="flex flex-col gap-2 px-1 py-1">
         <div class="flex items-start justify-between gap-4">

@@ -1,5 +1,5 @@
 use super::*;
-use crate::chat::scratch::tests::{GENERATION, TEAMMATE, pool_with_scratch_assignment};
+use crate::chat::scratch::tests::{AGENT, GENERATION, pool_with_scratch_assignment};
 
 /// The scratch fixture writes every timestamp at this instant.
 const FIXTURE_NOW: &str = "2026-09-18T12:00:00.000Z";
@@ -10,7 +10,7 @@ fn fixture_instant() -> DateTime<Utc> {
 
 /// Builds the fixture scratch assignment with its run already finished.
 async fn pool_with_finished_run() -> SqlitePool {
-    let pool = pool_with_scratch_assignment(TEAMMATE).await;
+    let pool = pool_with_scratch_assignment(AGENT).await;
     sqlx::query("UPDATE chat_agent_runs SET state = 'completed' WHERE id = 'run:scratch'")
         .execute(&pool)
         .await
@@ -114,7 +114,7 @@ async fn a_recent_run_update_keeps_scratch_from_idling() {
 
 #[tokio::test]
 async fn active_work_excludes_otherwise_reclaimable_scratch() {
-    let pool = pool_with_scratch_assignment(TEAMMATE).await;
+    let pool = pool_with_scratch_assignment(AGENT).await;
     set_states(&pool, "archived", "quarantined").await;
     let much_later = fixture_instant() + Duration::days(365);
     assert!(reasons_at(&pool, much_later).await.is_empty());
@@ -154,7 +154,7 @@ fn row(
         scratch_generation_id: ChatScratchGenerationId::new(format!("generation:{id}")).unwrap(),
         reply_thread_id: ChatReplyThreadId::new(format!("reply:{id}")).unwrap(),
         generation: 1,
-        teammate_name: "Scratch agent".to_string(),
+        agent_name: "Scratch agent".to_string(),
         channel_name: "general".to_string(),
         project_name: "Project".to_string(),
         group_name: None,

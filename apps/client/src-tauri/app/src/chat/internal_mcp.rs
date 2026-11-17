@@ -98,7 +98,7 @@ pub struct InternalMcpRunScope {
     pub folder_sources: Vec<InternalMcpFolderSource>,
     /// Delegation depth of the run's assignment: 0 for work a person started.
     pub delegation_depth: u8,
-    /// Whether another teammate participated in the destination channel when the run started,
+    /// Whether another agent participated in the destination channel when the run started,
     /// which decides whether the delegation tool is offered.
     pub delegation_target_available: bool,
 }

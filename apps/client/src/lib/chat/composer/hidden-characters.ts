@@ -13,7 +13,7 @@ const EMOJI_PRESENTATION_SELECTOR = 0xfe0f;
  * Characters that are always removed: control characters except tab and newline, the soft
  * hyphen, bidirectional embeddings, overrides, and isolates, zero-width characters other than the
  * joiner, variation selectors other than the two emoji presentation selectors, and tag characters.
- * Hidden characters let a reader see one text while a teammate reads another.
+ * Hidden characters let a reader see one text while an agent reads another.
  */
 const ALWAYS_HIDDEN = /[\u{0}-\u{8}\u{B}\u{C}\u{E}-\u{1F}\u{7F}-\u{9F}\u{AD}\u{200B}\u{200C}\u{202A}-\u{202E}\u{2060}\u{2066}-\u{2069}\u{FE00}-\u{FE0D}\u{FEFF}\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/gu;
 const PICTOGRAPHIC = /^\p{Extended_Pictographic}$/u;

@@ -6,11 +6,11 @@
   import type { ChatInteractionStateRead, ChatParticipantRead, ChatRuntimeApprovalPolicy, ChatThreadId } from "$lib/chat/contracts";
   import { composerMeterRead } from "$lib/chat/composer/composer-meter";
   import { formatNumber } from "$lib/i18n/formatters";
-  import { chatParticipantDisplayName } from "$lib/chat/teammates/participant-display";
-  import type { ChatModelParticipant } from "$lib/chat/teammates/participant-identity";
+  import { chatParticipantDisplayName } from "$lib/chat/agents/participant-display";
+  import type { ChatModelParticipant } from "$lib/chat/agents/participant-identity";
   import { compactModelName, compactModelOptionLabel } from "$lib/chat/composer/model-picker-model";
-  import { teammateExecutionSummary } from "$lib/chat/teammates/draft";
-  import { chatTeammateModelParticipant } from "$lib/chat/teammates/identity";
+  import { agentExecutionSummary } from "$lib/chat/agents/draft";
+  import { chatAgentModelParticipant } from "$lib/chat/agents/identity";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
@@ -65,19 +65,19 @@
   let cardStyle = $state("visibility:hidden");
   let previewTimer: ReturnType<typeof setTimeout> | null = null;
   let closeTimer: ReturnType<typeof setTimeout> | null = null;
-  const teammate = $derived(participant?.kind === "ai_teammate"
-    ? chat.teammateIdentities.find((entry) => entry.participant.id === participant.id) ?? null
+  const agent = $derived(participant?.kind === "ai_agent"
+    ? chat.agentIdentities.find((entry) => entry.participant.id === participant.id) ?? null
     : null);
-  const teammateModel = $derived(participant?.kind === "ai_teammate"
-    ? chatTeammateModelParticipant(participant.id, chat.teammateIdentities, chat.settings)
+  const agentModel = $derived(participant?.kind === "ai_agent"
+    ? chatAgentModelParticipant(participant.id, chat.agentIdentities, chat.settings)
     : null);
-  const teammateProvider = $derived(teammate?.latestPolicy
+  const agentProvider = $derived(agent?.latestPolicy
     ? chat.settings?.providerInstances.find((entry) => (
-      entry.configuration.instanceId === teammate.latestPolicy?.providerInstanceId
+      entry.configuration.instanceId === agent.latestPolicy?.providerInstanceId
     )) ?? null
     : null);
-  /** The provider whose plan limits the card shows: the teammate's, or the one serving the model. */
-  const cardProvider = $derived(teammateProvider ?? (model
+  /** The provider whose plan limits the card shows: the agent's, or the one serving the model. */
+  const cardProvider = $derived(agentProvider ?? (model
     ? chat.settings?.providerInstances.find((entry) => entry.configuration.familyId === model.providerFamilyId) ?? null
     : null));
   const displayName = $derived(participant
@@ -91,8 +91,8 @@
   const localFullName = $derived(preferences.profileFullName.trim());
   const visibleTriggerLabel = $derived(triggerLabel
     ?? (presentation === "mention" ? `@${displayName}` : displayName));
-  const cardModel = $derived(teammateModel ?? model);
-  const cardReasoning = $derived(teammateReasoning() ?? cardModel?.defaultReasoning ?? null);
+  const cardModel = $derived(agentModel ?? model);
+  const cardReasoning = $derived(agentReasoning() ?? cardModel?.defaultReasoning ?? null);
   const formattedModelName = $derived(cardModel
     ? compactModelName(cardModel.displayName, cardModel.providerFamilyId)
     : null);
@@ -105,15 +105,15 @@
       )
     : null);
   const fastEnabled = $derived.by(() => {
-    const policy = teammate?.latestPolicy;
+    const policy = agent?.latestPolicy;
     if (!policy) return false;
     if (policy.speed !== null) return policy.speed === "fast";
-    const modelDefinition = teammateProvider?.modelCatalog?.models.find((candidate) => (
+    const modelDefinition = agentProvider?.modelCatalog?.models.find((candidate) => (
       candidate.id === policy.modelId
     )) ?? null;
-    return teammateExecutionSummary(policy.modelOptions, modelDefinition).speed === "fast";
+    return agentExecutionSummary(policy.modelOptions, modelDefinition).speed === "fast";
   });
-  const approvalPolicy = $derived(participant?.kind === "ai_teammate"
+  const approvalPolicy = $derived(participant?.kind === "ai_agent"
       ? chat.selectedChannel?.memberships.find((membership) => (
         membership.participant.id === participant.id && membership.removedAt === null
       ))?.aiAccess?.runtimeApprovalOverride ?? null
@@ -163,7 +163,7 @@
     };
     void tick().then(reposition);
     // Context usage and plan limits arrive after the card opens, so a taller card is placed again.
-    const resizeObserver = cardElement ? new ResizeObserver(reposition) : null;
+    const resizeObserver = cardElement && typeof ResizeObserver !== "undefined" ? new ResizeObserver(reposition) : null;
     if (cardElement) {
       resizeObserver?.observe(cardElement);
       for (const child of cardElement.children) resizeObserver?.observe(child);
@@ -278,28 +278,28 @@
     cardStyle = `left:${Math.round(left)}px;top:${Math.round(top)}px;max-height:${Math.round(maxHeight)}px;visibility:visible`;
   }
 
-  function teammateStatus(): string {
+  function agentStatus(): string {
     if (participant?.archivedAt) return t("chat.organization.archivedParticipant");
-    if (teammate?.configurationState === "healthy") return t("chat.organization.availableParticipant");
+    if (agent?.configurationState === "healthy") return t("chat.organization.availableParticipant");
     return t("chat.organization.needsSetup");
   }
 
   function approvalPolicyLabel(policy: ChatRuntimeApprovalPolicy): string {
-    if (policy === "ask") return t("settings.agents.teammates.runtime.ask");
-    if (policy === "autoApprove") return t("settings.agents.teammates.runtime.autoApprove");
-    if (policy === "unattended") return t("settings.agents.teammates.runtime.unattended");
-    return t("settings.agents.teammates.runtime.providerCustom");
+    if (policy === "ask") return t("settings.agents.agents.runtime.ask");
+    if (policy === "autoApprove") return t("settings.agents.agents.runtime.autoApprove");
+    if (policy === "unattended") return t("settings.agents.agents.runtime.unattended");
+    return t("settings.agents.agents.runtime.providerCustom");
   }
 
-  function teammateReasoning(): string | null {
-    const policy = teammate?.latestPolicy;
+  function agentReasoning(): string | null {
+    const policy = agent?.latestPolicy;
     const selectedValue = policy?.effort
       ?? policy?.modelOptions.find((option) => /effort|reasoning/iu.test(option.key))?.value;
     const value = typeof selectedValue === "string"
       ? selectedValue
       : selectedValue?.kind === "choice" ? selectedValue.value : null;
-    if (!value) return teammateModel?.defaultReasoning ?? null;
-    const modelDefinition = teammateProvider?.modelCatalog?.models.find((candidate) => (
+    if (!value) return agentModel?.defaultReasoning ?? null;
+    const modelDefinition = agentProvider?.modelCatalog?.models.find((candidate) => (
       candidate.id === policy?.modelId
     ));
     const optionDefinition = modelDefinition?.options.find((option) => (
@@ -330,8 +330,8 @@
       settings.open("profile");
       return;
     }
-    if (participant?.kind === "ai_teammate") {
-      settings.open("agents", { agentsSubsection: "teammates", agentsTeammateId: participant.id });
+    if (participant?.kind === "ai_agent") {
+      settings.open("agents", { agentsSubsection: "agents", agentsAgentId: participant.id });
     }
   }
 </script>
@@ -377,18 +377,18 @@
       <div class="identity-heading">
         <div class="identity-name-line">
           <strong>{participant?.kind === "local_user" && preferences.profileDisplayName.trim() ? `${displayName} ${t("chat.organization.youSuffix")}` : displayName}</strong>
-          {#if participant?.kind === "ai_teammate"}
+          {#if participant?.kind === "ai_agent"}
             <span
               class="identity-status-dot"
-              class:available={teammate?.configurationState === "healthy"}
+              class:available={agent?.configurationState === "healthy"}
               role="img"
-              aria-label={teammateStatus()}
+              aria-label={agentStatus()}
             ></span>
           {/if}
         </div>
         {#if participant?.kind === "local_user"}
           {#if localFullName && localFullName !== displayName}<small>{localFullName}</small>{/if}
-        {:else if participant?.kind === "ai_teammate" && teammate?.role}<small>{teammate.role}</small>
+        {:else if participant?.kind === "ai_agent" && agent?.role}<small>{agent.role}</small>
         {/if}
       </div>
     </div>
@@ -423,9 +423,9 @@
       {#if cardProvider}<ProviderPlanLimits provider={cardProvider} />{/if}
     </div>{/if}
 
-    {#if participant?.kind === "local_user" || participant?.kind === "ai_teammate"}
+    {#if participant?.kind === "local_user" || participant?.kind === "ai_agent"}
       <footer>
-        <button type="button" onclick={openIdentitySettings}><Settings size={13} />{participant.kind === "local_user" ? t("chat.organization.openProfileSettings") : t("chat.organization.openTeammateSettings")}</button>
+        <button type="button" onclick={openIdentitySettings}><Settings size={13} />{participant.kind === "local_user" ? t("chat.organization.openProfileSettings") : t("chat.organization.openAgentSettings")}</button>
       </footer>
     {/if}
   </div>

@@ -343,9 +343,9 @@ pub fn ensure_supported_grok_version(version: &str) -> ChatResult<ProviderVersio
     ))
 }
 
-/// The oldest Cursor build teammate runs on this device accept, when `version` is older: only a
-/// device with the sandbox helper confines teammates, and that needs a verified build.
-pub fn cursor_teammate_minimum_version(version: &str, confined_commands: bool) -> Option<String> {
+/// The oldest Cursor build agent runs on this device accept, when `version` is older: only a
+/// device with the sandbox helper confines agents, and that needs a verified build.
+pub fn cursor_agent_minimum_version(version: &str, confined_commands: bool) -> Option<String> {
     let minimum = super::confinement::MINIMUM_CONFINED_CURSOR_VERSION;
     parse_version(version)
         .ok()

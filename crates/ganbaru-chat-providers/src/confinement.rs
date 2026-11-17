@@ -1,6 +1,6 @@
-//! Kernel confinement shared by teammate providers.
+//! Kernel confinement shared by agent providers.
 //!
-//! Organizational teammates and the commands they run start under the `ganbaru-sandbox` helper
+//! Organizational agents and the commands they run start under the `ganbaru-sandbox` helper
 //! when the device has one that the kernel enforces. This module locates that helper once per
 //! app run and holds the pieces every provider builds its policies from: the confined terminal
 //! policy, the toolchain homes a confined command uses in place, the Git metadata guard, and
@@ -52,7 +52,7 @@ fn locate_enforcing_helper() -> Option<SandboxHelper> {
     None
 }
 
-/// The loopback port of the internal MCP endpoint; `provider` names the teammate in a refusal.
+/// The loopback port of the internal MCP endpoint; `provider` names the agent in a refusal.
 pub(crate) fn internal_mcp_port(url: &str, provider: &str) -> ChatResult<u16> {
     let parsed = reqwest::Url::parse(url).map_err(|_| sandbox_policy_error(provider))?;
     let loopback = parsed.host_str().is_some_and(|host| {
@@ -124,7 +124,7 @@ pub(crate) fn sandbox_policy_error(provider: &str) -> ChatError {
     )
 }
 
-/// A recoverable refusal of one action outside the teammate's folder scope.
+/// A recoverable refusal of one action outside the agent's folder scope.
 pub(crate) fn scope_refusal(message: &str) -> ChatError {
     ChatError::new(ChatErrorCode::Permission, message, true)
 }

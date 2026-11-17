@@ -1,6 +1,6 @@
 //! Device-local working-folder and scratch assignment-target discovery.
 
-use super::channels::read_teammate_access;
+use super::channels::read_agent_access;
 use super::{
     ChatAssignmentTargetBindingState, ChatAssignmentTargetKind, ChatAssignmentTargetLifecycleState,
     ChatAssignmentTargetRead, ChatError, ChatErrorCode, ChatExecutionEnvironmentId,
@@ -23,7 +23,7 @@ pub async fn chat_list_assignment_targets(
 ) -> ChatResult<Vec<ChatAssignmentTargetRead>> {
     let pool = chat_pool(app.clone(), db_url.clone()).await?;
     let channel = crate::chat::channels::read_channel(&pool, &request.channel_id).await?;
-    let access = read_teammate_access(&pool, &request.teammate_id).await?;
+    let access = read_agent_access(&pool, &request.agent_id).await?;
     let channel_access = access
         .channels
         .iter()
@@ -31,14 +31,14 @@ pub async fn chat_list_assignment_targets(
         .ok_or_else(|| {
             ChatError::new(
                 ChatErrorCode::NotFound,
-                "The teammate is not a member of this channel",
+                "The agent is not a member of this channel",
                 true,
             )
         })?;
     if !channel_access.capabilities.participate {
         return Err(ChatError::new(
             ChatErrorCode::Conflict,
-            "The teammate cannot participate in this channel",
+            "The agent cannot participate in this channel",
             true,
         ));
     }
@@ -143,11 +143,11 @@ pub async fn chat_list_assignment_targets(
                 display_name: row.try_get("display_name").map_err(persistence_error)?,
                 folder_capability: Some(grant.capability),
                 effective_runtime_approval: effective_runtime_approval(
-                    access.teammate_default_runtime_approval,
+                    access.agent_default_runtime_approval,
                     grant
                         .runtime_approval_override
                         .or(channel_access.runtime_approval_override)
-                        .unwrap_or(access.teammate_default_runtime_approval),
+                        .unwrap_or(access.agent_default_runtime_approval),
                 ),
                 is_default: implied_folder_id == Some(grant.working_folder_id.as_str())
                     && !is_worktree,
@@ -166,11 +166,11 @@ pub async fn chat_list_assignment_targets(
     if let Some(scratch) = read_scratch_assignment_target(
         &app,
         &pool,
-        &request.teammate_id,
+        &request.agent_id,
         request.reply_thread_id.as_ref(),
         channel_access.scratch_runtime_approval_override,
         channel_access.runtime_approval_override,
-        access.teammate_default_runtime_approval,
+        access.agent_default_runtime_approval,
     )
     .await?
     {
@@ -188,16 +188,16 @@ pub async fn chat_list_assignment_targets(
     Ok(targets)
 }
 
-/// Reads the teammate's active scratch generation in the reply thread, or `None` when none exists, so the
+/// Reads the agent's active scratch generation in the reply thread, or `None` when none exists, so the
 /// listed targets never name a scratch that is not there.
 async fn read_scratch_assignment_target(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
-    teammate_id: &ChatParticipantId,
+    agent_id: &ChatParticipantId,
     reply_thread_id: Option<&ChatReplyThreadId>,
     scratch_override: Option<ChatRuntimeApprovalPolicy>,
     channel_override: Option<ChatRuntimeApprovalPolicy>,
-    teammate_default: ChatRuntimeApprovalPolicy,
+    agent_default: ChatRuntimeApprovalPolicy,
 ) -> ChatResult<Option<ChatAssignmentTargetRead>> {
     let row = match reply_thread_id {
         Some(reply_thread_id) => sqlx::query(
@@ -211,11 +211,11 @@ async fn read_scratch_assignment_target(
              JOIN chat_execution_environments environment
                ON environment.scratch_generation_id = generation.id
               AND environment.archived_at IS NULL
-             WHERE scope.reply_thread_id = ? AND scope.teammate_id = ?
+             WHERE scope.reply_thread_id = ? AND scope.agent_id = ?
                AND scope.removed_at IS NULL",
         )
         .bind(reply_thread_id.as_str())
-        .bind(teammate_id.as_str())
+        .bind(agent_id.as_str())
         .fetch_optional(pool)
         .await
         .map_err(persistence_error)?,
@@ -284,10 +284,10 @@ async fn read_scratch_assignment_target(
         display_name: "Private scratch".to_string(),
         folder_capability: None,
         effective_runtime_approval: effective_runtime_approval(
-            teammate_default,
+            agent_default,
             scratch_override
                 .or(channel_override)
-                .unwrap_or(teammate_default),
+                .unwrap_or(agent_default),
         ),
         is_default: false,
         binding_state,

@@ -26,7 +26,7 @@ describe("ChatAccessControl controlled mode", () => {
     vi.restoreAllMocks();
   });
 
-  it("emits a teammate approval policy without mutating the live composer", async () => {
+  it("emits an agent approval policy without mutating the live composer", async () => {
     getChat().composer.safetyMode = "full_access";
     const changes: SafetyMode[] = [];
     ({ target, component } = setup({
@@ -64,11 +64,11 @@ describe("ChatAccessControl controlled mode", () => {
     confirm?.click();
     await tick();
 
-    expect(setTrust).toHaveBeenCalledWith("codex-local", "teammate-folder", true);
+    expect(setTrust).toHaveBeenCalledWith("codex-local", "agent-folder", true);
     expect(changes).toEqual(["full_access"]);
   });
 
-  it("stores a teammate permission preference before a channel target exists", async () => {
+  it("stores an agent permission preference before a channel target exists", async () => {
     const changes: SafetyMode[] = [];
     ({ target, component } = setup({
       value: "ask_for_approval",
@@ -90,7 +90,7 @@ describe("ChatAccessControl controlled mode", () => {
     expect(changes).toEqual(["full_access"]);
   });
 
-  it("prevents editing an archived teammate", async () => {
+  it("prevents editing an archived agent", async () => {
     ({ target, component } = setup({
       value: "ask_for_approval",
       disabled: true,
@@ -125,7 +125,7 @@ function setup(props: {
       ...props,
       providerInstanceId: "codex-local",
       workingFolderId: props.workingFolderId === undefined
-        ? "teammate-folder"
+        ? "agent-folder"
         : props.workingFolderId,
     },
   });

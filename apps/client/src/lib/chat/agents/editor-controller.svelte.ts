@@ -6,43 +6,43 @@ import {
 } from "$lib/chat/composer/model";
 import type {
   ChatAccessProfileRead,
-  ChatAiTeammateRead,
+  ChatAiAgentRead,
   ChatChannelRead,
   ChatFolderCapability,
-  ChatTeammatePolicyInput,
-  ChatTeammateAccessRead,
-  ChatTeammateChannelAccessInput,
+  ChatAgentPolicyInput,
+  ChatAgentAccessRead,
+  ChatAgentChannelAccessInput,
   ModelOptionSelection,
-  ReplaceChatTeammateAccessRequest,
+  ReplaceChatAgentAccessRequest,
   SafetyMode,
   VersionedJson,
 } from "$lib/chat/contracts";
 import { chatErrorCode, chatErrorField, chatErrorMessage } from "$lib/chat/error-presentation";
 import {
   impliedFolderGrantId,
-  teammateAccessConfirmationImpact,
-  teammateAccessDraftErrors,
-  teammateAccessDraftSnapshot,
-  teammateAccessNeedsConfirmation,
-  type ChatTeammateAccessConfirmationImpact,
+  agentAccessConfirmationImpact,
+  agentAccessDraftErrors,
+  agentAccessDraftSnapshot,
+  agentAccessNeedsConfirmation,
+  type ChatAgentAccessConfirmationImpact,
 } from "./access";
 import { defaultChannelAccessInput } from "./channel-membership";
 import { providerExecutesWithAsk } from "$lib/chat/composer/provider-authority";
 import { preferredProjectWorkingFolder } from "$lib/chat/workspace/working-folder-selection";
-import { teammateExecutionSummary, teammateInstructionsTooLong, teammateProfileDraftSnapshot } from "./draft";
+import { agentExecutionSummary, agentInstructionsTooLong, agentProfileDraftSnapshot } from "./draft";
 import {
-  cloneChatTeammateStudioDraft,
-  compareChatTeammateStudioDrafts,
-  rebaseChatTeammateStudioDraft,
-  type ChatTeammateStudioDraft,
+  cloneChatAgentStudioDraft,
+  compareChatAgentStudioDrafts,
+  rebaseChatAgentStudioDraft,
+  type ChatAgentStudioDraft,
 } from "./access-conflict";
 import type { Translate } from "$lib/i18n/translator.svelte";
 import type { getChat } from "$lib/stores/chat.svelte";
 
-export interface TeammateEditorOptions {
+export interface AgentEditorOptions {
   chat: Pick<
     ReturnType<typeof getChat>,
-    "teammates" | "archivedTeammates" | "settings" | "refreshTeammates" | "workingFolders" | "primaryWorkingFolder"
+    "agents" | "archivedAgents" | "settings" | "refreshAgents" | "workingFolders" | "primaryWorkingFolder"
   >;
   t: Translate;
   initialChannelId: () => string | null;
@@ -54,22 +54,22 @@ export interface TeammateEditorOptions {
 
 type ConflictRecoveryNotice = "rebased" | "reloaded";
 
-interface TeammateAccessConflictState {
-  teammateId: string;
-  localDraft: ChatTeammateStudioDraft;
-  baselineDraft: ChatTeammateStudioDraft;
-  durableDraft: ChatTeammateStudioDraft;
-  durableTeammate: ChatAiTeammateRead;
-  durableAccess: ChatTeammateAccessRead;
+interface AgentAccessConflictState {
+  agentId: string;
+  localDraft: ChatAgentStudioDraft;
+  baselineDraft: ChatAgentStudioDraft;
+  durableDraft: ChatAgentStudioDraft;
+  durableAgent: ChatAiAgentRead;
+  durableAccess: ChatAgentAccessRead;
 }
 
-/** Owns one mounted teammate editor's drafts, revision checks, and save/conflict workflow. */
-export function createTeammateEditorController(options: TeammateEditorOptions) {
+/** Owns one mounted agent editor's drafts, revision checks, and save/conflict workflow. */
+export function createAgentEditorController(options: AgentEditorOptions) {
   const { chat, t } = options;
   let selectedId = $state<string | null>(null);
   let creating = $state(false);
   let showArchived = $state(false);
-  let archivedTeammates = $state<ChatAiTeammateRead[]>([]);
+  let archivedAgents = $state<ChatAiAgentRead[]>([]);
   let navigationChannels = $state<ChatChannelRead[]>([]);
   let accessProfiles = $state<ChatAccessProfileRead[]>([]);
   let loadingDirectory = $state(true);
@@ -91,15 +91,15 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
   let profileExpectedRevision = $state(0);
   let profileAvatar = $state<VersionedJson>({ schemaVersion: 1, value: { kind: "initials" } });
   let accessRevision = $state(0);
-  let accessDraft = $state<ChatTeammateChannelAccessInput[]>([]);
+  let accessDraft = $state<ChatAgentChannelAccessInput[]>([]);
   let untouchedDefaultAccess: string | null = null;
   let profileBaseline = $state<string | null>(null);
   let accessBaseline = $state<string | null>(null);
-  let studioDraftBaseline = $state<ChatTeammateStudioDraft | null>(null);
-  let accessConfirmationImpact = $state<ChatTeammateAccessConfirmationImpact | null>(null);
+  let studioDraftBaseline = $state<ChatAgentStudioDraft | null>(null);
+  let accessConfirmationImpact = $state<ChatAgentAccessConfirmationImpact | null>(null);
   let accessConfirmationSnapshot = $state<string | null>(null);
-  let accessConflict = $state<TeammateAccessConflictState | null>(null);
-  let conflictPendingDraft = $state<ChatTeammateStudioDraft | null>(null);
+  let accessConflict = $state<AgentAccessConflictState | null>(null);
+  let conflictPendingDraft = $state<ChatAgentStudioDraft | null>(null);
   let conflictLoading = $state(false);
   let conflictError = $state<string | null>(null);
   let conflictRecoveryNotice = $state<ConflictRecoveryNotice | null>(null);
@@ -109,11 +109,11 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
   let lifecycleError = $state<string | null>(null);
   let preserveStudioDraftForId: string | null = null;
 
-  const allDirectoryTeammates = $derived(showArchived
-    ? [...chat.teammates, ...archivedTeammates]
-    : chat.teammates);
-  const allTeammates = $derived([...chat.teammates, ...archivedTeammates]);
-  const selected = $derived(allDirectoryTeammates.find((entry) => entry.participant.id === selectedId) ?? null);
+  const allDirectoryAgents = $derived(showArchived
+    ? [...chat.agents, ...archivedAgents]
+    : chat.agents);
+  const allAgents = $derived([...chat.agents, ...archivedAgents]);
+  const selected = $derived(allDirectoryAgents.find((entry) => entry.participant.id === selectedId) ?? null);
   const archivedMode = $derived(Boolean(selected?.participant.archivedAt));
   const providers = $derived(chat.settings?.providerInstances ?? []);
   const selectedProvider = $derived(providers.find((entry) => entry.configuration.instanceId === providerId) ?? null);
@@ -122,20 +122,20 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
   const selectedModel = $derived(availableModels.find((model) => model.id === modelId) ?? null);
   const modelSelectionValid = $derived(providerManagedModel !== Boolean(modelId));
   const normalizedDisplayName = $derived(displayName.trim().toLocaleLowerCase());
-  const instructionsTooLong = $derived(teammateInstructionsTooLong(instructions));
-  const nameTaken = $derived(Boolean(normalizedDisplayName && allTeammates.some((teammate) => (
-    teammate.participant.id !== selectedId
-      && teammate.participant.displayName.trim().toLocaleLowerCase() === normalizedDisplayName
+  const instructionsTooLong = $derived(agentInstructionsTooLong(instructions));
+  const nameTaken = $derived(Boolean(normalizedDisplayName && allAgents.some((agent) => (
+    agent.participant.id !== selectedId
+      && agent.participant.displayName.trim().toLocaleLowerCase() === normalizedDisplayName
   ))));
   const profileCeilings = $derived(new Map(accessProfiles.map((profile) => [
     profile.id,
     profile.latestRevision.maximumFolderCapability,
   ])));
-  const accessErrors = $derived(teammateAccessDraftErrors(accessDraft, profileCeilings));
+  const accessErrors = $derived(agentAccessDraftErrors(accessDraft, profileCeilings));
   const providerResourceBlockers = $derived(accessDraft
     .flatMap(providerResourceIssuesForChannel)
     .filter((issue, index, issues) => issues.indexOf(issue) === index));
-  const currentProfileSnapshot = $derived(teammateProfileDraftSnapshot({
+  const currentProfileSnapshot = $derived(agentProfileDraftSnapshot({
     displayName,
     role,
     instructions,
@@ -148,7 +148,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     speed,
   }));
   const currentAccessSnapshot = $derived(JSON.stringify({
-    channels: teammateAccessDraftSnapshot(accessDraft),
+    channels: agentAccessDraftSnapshot(accessDraft),
   }));
   const currentDraftSnapshot = $derived(JSON.stringify({
     profile: currentProfileSnapshot,
@@ -156,7 +156,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     access: currentAccessSnapshot,
   }));
   const conflictComparison = $derived(accessConflict
-    ? compareChatTeammateStudioDrafts(captureStudioDraft(), accessConflict.durableDraft)
+    ? compareChatAgentStudioDrafts(captureStudioDraft(), accessConflict.durableDraft)
     : null);
   const profileDirty = $derived(profileBaseline !== null && currentProfileSnapshot !== profileBaseline);
   const accessDirty = $derived(accessBaseline !== null && currentAccessSnapshot !== accessBaseline);
@@ -183,25 +183,25 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     loadingDirectory = true;
     error = null;
     const [archivedResult, channelResult, profileResult] = await Promise.allSettled([
-      chatApi.listChatTeammates(true),
+      chatApi.listChatAgents(true),
       chatApi.listChatNavigationChannels(),
       chatApi.listChatAccessProfiles(false),
     ]);
     if (archivedResult.status === "fulfilled") {
-      archivedTeammates = archivedResult.value;
-      chat.archivedTeammates = archivedResult.value;
+      archivedAgents = archivedResult.value;
+      chat.archivedAgents = archivedResult.value;
     }
     if (channelResult.status === "fulfilled") navigationChannels = channelResult.value;
     if (profileResult.status === "fulfilled") accessProfiles = profileResult.value;
     const failure = [archivedResult, channelResult, profileResult]
       .find((result) => result.status === "rejected");
     if (failure?.status === "rejected") {
-      error = chatErrorMessage(failure.reason, t("settings.agents.teammates.loadFailed"));
+      error = chatErrorMessage(failure.reason, t("settings.agents.agents.loadFailed"));
     }
     loadingDirectory = false;
   }
 
-  function captureStudioDraft(): ChatTeammateStudioDraft {
+  function captureStudioDraft(): ChatAgentStudioDraft {
     return {
       profile: {
         displayName,
@@ -221,21 +221,21 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
   }
 
   function draftFromReads(
-    teammate: ChatAiTeammateRead,
-    access: ChatTeammateAccessRead,
-  ): ChatTeammateStudioDraft {
-    const policy = teammate.latestPolicy;
+    agent: ChatAiAgentRead,
+    access: ChatAgentAccessRead,
+  ): ChatAgentStudioDraft {
+    const policy = agent.latestPolicy;
     const options = copyModelOptionSelections(policy?.modelOptions ?? []);
     const provider = providers.find((entry) => (
       entry.configuration.instanceId === policy?.providerInstanceId
     )) ?? null;
     const model = provider?.modelCatalog?.models.find((entry) => entry.id === policy?.modelId) ?? null;
-    const summary = teammateExecutionSummary(options, model);
+    const summary = agentExecutionSummary(options, model);
     return {
       profile: {
-        displayName: teammate.participant.displayName,
-        role: teammate.role,
-        instructions: teammate.instructions,
+        displayName: agent.participant.displayName,
+        role: agent.role,
+        instructions: agent.instructions,
         providerId: policy?.providerInstanceId ?? "",
         safetyMode: policy?.safetyMode ?? "ask_for_approval",
         modelId: policy?.modelId ?? "",
@@ -271,8 +271,8 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     };
   }
 
-  function applyStudioDraft(draft: ChatTeammateStudioDraft): void {
-    const copy = cloneChatTeammateStudioDraft(draft);
+  function applyStudioDraft(draft: ChatAgentStudioDraft): void {
+    const copy = cloneChatAgentStudioDraft(draft);
     displayName = copy.profile.displayName;
     role = copy.profile.role;
     instructions = copy.profile.instructions;
@@ -287,24 +287,24 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     accessDraft = copy.channels;
   }
 
-  function setStudioDraftBaseline(draft: ChatTeammateStudioDraft): void {
-    const copy = cloneChatTeammateStudioDraft(draft);
+  function setStudioDraftBaseline(draft: ChatAgentStudioDraft): void {
+    const copy = cloneChatAgentStudioDraft(draft);
     studioDraftBaseline = copy;
     profileBaseline = profileSnapshotForDraft(copy);
     accessBaseline = accessSnapshotForDraft(copy);
   }
 
-  function profileSnapshotForDraft(draft: ChatTeammateStudioDraft): string {
-    return teammateProfileDraftSnapshot(draft.profile);
+  function profileSnapshotForDraft(draft: ChatAgentStudioDraft): string {
+    return agentProfileDraftSnapshot(draft.profile);
   }
 
-  function accessSnapshotForDraft(draft: ChatTeammateStudioDraft): string {
+  function accessSnapshotForDraft(draft: ChatAgentStudioDraft): string {
     return JSON.stringify({
-      channels: teammateAccessDraftSnapshot(draft.channels),
+      channels: agentAccessDraftSnapshot(draft.channels),
     });
   }
 
-  function draftSnapshotForDraft(draft: ChatTeammateStudioDraft): string {
+  function draftSnapshotForDraft(draft: ChatAgentStudioDraft): string {
     return JSON.stringify({
       profile: profileSnapshotForDraft(draft),
       providerOptions: JSON.stringify(draft.profile.providerOptions),
@@ -313,8 +313,8 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
   }
 
   function copyChannelAccessInputs(
-    channels: readonly ChatTeammateChannelAccessInput[],
-  ): ChatTeammateChannelAccessInput[] {
+    channels: readonly ChatAgentChannelAccessInput[],
+  ): ChatAgentChannelAccessInput[] {
     return channels.map((channel) => ({
       ...channel,
       capabilities: { ...channel.capabilities },
@@ -356,7 +356,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     modelId = resolved?.model?.id ?? "";
     providerManagedModel = resolved?.providerManaged ?? false;
     modelOptions = copyModelOptionSelections(resolved?.options ?? []);
-    const summary = teammateExecutionSummary(modelOptions, resolved?.model ?? null);
+    const summary = agentExecutionSummary(modelOptions, resolved?.model ?? null);
     effort = summary.effort;
     speed = summary.speed;
     providerOptions = { schemaVersion: 1, value: {} };
@@ -375,7 +375,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     clearAccessConflict();
     lifecycleError = null;
     creating = false;
-    selectedId = chat.teammates[0]?.participant.id ?? null;
+    selectedId = chat.agents[0]?.participant.id ?? null;
     profileBaseline = null;
     accessBaseline = null;
     studioDraftBaseline = null;
@@ -383,9 +383,9 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     options.closeAccessPicker();
   }
 
-  /** Loads the selected teammate without resetting a draft preserved across this editor's own refresh. */
-  async function initializeSelectedTeammate(teammate: ChatAiTeammateRead): Promise<void> {
-    if (preserveStudioDraftForId === teammate.participant.id) {
+  /** Loads the selected agent without resetting a draft preserved across this editor's own refresh. */
+  async function initializeSelectedAgent(agent: ChatAiAgentRead): Promise<void> {
+    if (preserveStudioDraftForId === agent.participant.id) {
       preserveStudioDraftForId = null;
       return;
     }
@@ -400,38 +400,38 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     errorField = null;
     accessDraft = [];
     options.setExpandedAccessChannel(null);
-    displayName = teammate.participant.displayName;
-    role = teammate.role;
-    instructions = teammate.instructions;
-    providerId = teammate.latestPolicy?.providerInstanceId ?? "";
-    safetyMode = teammate.latestPolicy?.safetyMode ?? "ask_for_approval";
-    modelId = teammate.latestPolicy?.modelId ?? "";
-    providerManagedModel = teammate.latestPolicy?.providerManagedModel ?? false;
-    modelOptions = copyModelOptionSelections(teammate.latestPolicy?.modelOptions ?? []);
-    const summary = teammateExecutionSummary(modelOptions, selectedModel);
-    effort = summary.effort ?? teammate.latestPolicy?.effort ?? null;
-    speed = summary.speed ?? teammate.latestPolicy?.speed ?? null;
+    displayName = agent.participant.displayName;
+    role = agent.role;
+    instructions = agent.instructions;
+    providerId = agent.latestPolicy?.providerInstanceId ?? "";
+    safetyMode = agent.latestPolicy?.safetyMode ?? "ask_for_approval";
+    modelId = agent.latestPolicy?.modelId ?? "";
+    providerManagedModel = agent.latestPolicy?.providerManagedModel ?? false;
+    modelOptions = copyModelOptionSelections(agent.latestPolicy?.modelOptions ?? []);
+    const summary = agentExecutionSummary(modelOptions, selectedModel);
+    effort = summary.effort ?? agent.latestPolicy?.effort ?? null;
+    speed = summary.speed ?? agent.latestPolicy?.speed ?? null;
     providerOptions = copyVersionedJson(
-      teammate.latestPolicy?.providerOptions ?? { schemaVersion: 1, value: {} },
+      agent.latestPolicy?.providerOptions ?? { schemaVersion: 1, value: {} },
     );
-    profileExpectedRevision = teammate.participant.revision;
-    profileAvatar = copyVersionedJson(teammate.participant.avatar);
+    profileExpectedRevision = agent.participant.revision;
+    profileAvatar = copyVersionedJson(agent.participant.avatar);
     profileBaseline = currentProfileSnapshot;
-    await loadTeammateAccess(teammate.participant.id);
+    await loadAgentAccess(agent.participant.id);
   }
 
-  async function loadTeammateAccess(teammateId: string): Promise<void> {
+  async function loadAgentAccess(agentId: string): Promise<void> {
     const request = ++accessLoadRequest;
     loadingAccess = true;
     try {
-      const access = await chatApi.readChatTeammateAccess(teammateId);
-      if (request !== accessLoadRequest || selectedId !== teammateId) return;
-      const teammate = allDirectoryTeammates.find((entry) => entry.participant.id === teammateId);
-      if (!teammate) return;
-      const durableDraft = draftFromReads(teammate, access);
+      const access = await chatApi.readChatAgentAccess(agentId);
+      if (request !== accessLoadRequest || selectedId !== agentId) return;
+      const agent = allDirectoryAgents.find((entry) => entry.participant.id === agentId);
+      if (!agent) return;
+      const durableDraft = draftFromReads(agent, access);
       accessRevision = access.accessRevision;
-      profileExpectedRevision = teammate.participant.revision;
-      profileAvatar = copyVersionedJson(teammate.participant.avatar);
+      profileExpectedRevision = agent.participant.revision;
+      profileAvatar = copyVersionedJson(agent.participant.avatar);
       accessDraft = copyChannelAccessInputs(durableDraft.channels);
       const initialChannelId = options.initialChannelId();
       options.setExpandedAccessChannel(initialChannelId);
@@ -443,7 +443,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
       }
     } catch (cause: unknown) {
       if (request === accessLoadRequest) {
-        error = chatErrorMessage(cause, t("settings.agents.teammates.accessLoadFailed"));
+        error = chatErrorMessage(cause, t("settings.agents.agents.accessLoadFailed"));
       }
     } finally {
       if (request === accessLoadRequest) loadingAccess = false;
@@ -451,12 +451,12 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
   }
 
   async function loadAccessConflict(
-    teammateId: string,
-    localDraft: ChatTeammateStudioDraft,
+    agentId: string,
+    localDraft: ChatAgentStudioDraft,
   ): Promise<void> {
     const request = ++conflictLoadRequest;
-    const retainedLocalDraft = cloneChatTeammateStudioDraft(localDraft);
-    const retainedBaseline = cloneChatTeammateStudioDraft(
+    const retainedLocalDraft = cloneChatAgentStudioDraft(localDraft);
+    const retainedBaseline = cloneChatAgentStudioDraft(
       studioDraftBaseline ?? retainedLocalDraft,
     );
     conflictPendingDraft = retainedLocalDraft;
@@ -466,24 +466,24 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     clearAccessConfirmation();
     conflictLoading = true;
     try {
-      const [durableTeammate, durableAccess] = await Promise.all([
-        chatApi.readChatTeammate(teammateId),
-        chatApi.readChatTeammateAccess(teammateId),
+      const [durableAgent, durableAccess] = await Promise.all([
+        chatApi.readChatAgent(agentId),
+        chatApi.readChatAgentAccess(agentId),
       ]);
-      if (request !== conflictLoadRequest || selectedId !== teammateId) return;
+      if (request !== conflictLoadRequest || selectedId !== agentId) return;
       accessConflict = {
-        teammateId,
+        agentId,
         localDraft: retainedLocalDraft,
         baselineDraft: retainedBaseline,
-        durableDraft: draftFromReads(durableTeammate, durableAccess),
-        durableTeammate,
+        durableDraft: draftFromReads(durableAgent, durableAccess),
+        durableAgent,
         durableAccess,
       };
     } catch (cause: unknown) {
       if (request !== conflictLoadRequest) return;
       conflictError = chatErrorMessage(
         cause,
-        t("settings.agents.teammates.conflict.loadFailed"),
+        t("settings.agents.agents.conflict.loadFailed"),
       );
     } finally {
       if (request === conflictLoadRequest) {
@@ -502,15 +502,15 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
   function rebaseAccessConflict(): void {
     const conflict = accessConflict;
     if (!conflict) return;
-    const rebased = rebaseChatTeammateStudioDraft(
+    const rebased = rebaseChatAgentStudioDraft(
       conflict.baselineDraft,
       captureStudioDraft(),
       conflict.durableDraft,
     );
     applyStudioDraft(rebased);
     accessRevision = conflict.durableAccess.accessRevision;
-    profileExpectedRevision = conflict.durableTeammate.participant.revision;
-    profileAvatar = copyVersionedJson(conflict.durableTeammate.participant.avatar);
+    profileExpectedRevision = conflict.durableAgent.participant.revision;
+    profileAvatar = copyVersionedJson(conflict.durableAgent.participant.avatar);
     setStudioDraftBaseline(conflict.durableDraft);
     settleAccessConflict("rebased");
   }
@@ -520,15 +520,15 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     if (!conflict) return;
     applyStudioDraft(conflict.durableDraft);
     accessRevision = conflict.durableAccess.accessRevision;
-    profileExpectedRevision = conflict.durableTeammate.participant.revision;
-    profileAvatar = copyVersionedJson(conflict.durableTeammate.participant.avatar);
+    profileExpectedRevision = conflict.durableAgent.participant.revision;
+    profileAvatar = copyVersionedJson(conflict.durableAgent.participant.avatar);
     setStudioDraftBaseline(conflict.durableDraft);
-    preserveStudioDraftForId = conflict.teammateId;
+    preserveStudioDraftForId = conflict.agentId;
     settleAccessConflict("reloaded");
     try {
-      await chat.refreshTeammates();
+      await chat.refreshAgents();
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause, t("settings.agents.teammates.loadFailed"));
+      error = chatErrorMessage(cause, t("settings.agents.agents.loadFailed"));
     }
   }
 
@@ -548,15 +548,15 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
   function providerCapabilityIssue(capability: ChatFolderCapability): string | null {
     if (capability === "none") return null;
     const support = providerAuthoritySupport;
-    if (!support) return t("settings.agents.teammates.providerAuthorityUnknown");
+    if (!support) return t("settings.agents.agents.providerAuthorityUnknown");
     if (capability === "read" && !support.internalHostTools && !support.readOnlyRoot) {
-      return t("settings.agents.teammates.providerCannotRead");
+      return t("settings.agents.agents.providerCannotRead");
     }
     if (capability === "edit" && !support.internalHostTools && !support.writableRoot) {
-      return t("settings.agents.teammates.providerCannotEdit");
+      return t("settings.agents.agents.providerCannotEdit");
     }
     if (capability === "execute" && !providerExecutesWithAsk(support, safetyMode)) {
-      return t("settings.agents.teammates.providerCannotExecute");
+      return t("settings.agents.agents.providerCannotExecute");
     }
     if (capability === "publish" && (
       !support.writableRoot
@@ -564,7 +564,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
       || !support.networkBoundary
       || !support.classifiedPublish
     )) {
-      return t("settings.agents.teammates.providerCannotPublish");
+      return t("settings.agents.agents.providerCannotPublish");
     }
     return null;
   }
@@ -578,10 +578,10 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     const support = providerAuthoritySupport;
     if (!isDefault || !support) return null;
     if (capability === "read" && (!support.readOnlyRoot || !support.denyShell)) {
-      return t("settings.agents.teammates.providerCannotTargetReadOnly");
+      return t("settings.agents.agents.providerCannotTargetReadOnly");
     }
     if (capability === "edit" && (!support.writableRoot || !support.denyShell)) {
-      return t("settings.agents.teammates.providerCannotTargetWritable");
+      return t("settings.agents.agents.providerCannotTargetWritable");
     }
     return null;
   }
@@ -601,7 +601,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     ))?.workingFolder.id ?? null;
   }
 
-  function providerResourceIssuesForChannel(channel: ChatTeammateChannelAccessInput): string[] {
+  function providerResourceIssuesForChannel(channel: ChatAgentChannelAccessInput): string[] {
     const grants = channel.folderGrants.filter((grant) => grant.capability !== "none");
     const impliedFolderId = impliedFolderGrantId(grants, channelProjectWorkingFolderId(channel.channelId));
     const issues = grants.flatMap((grant) => {
@@ -609,12 +609,12 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
       return issue ? [issue] : [];
     });
     if (grants.some((grant) => grant.workingFolderId !== impliedFolderId) && !providerAuthoritySupport?.internalHostTools) {
-      issues.push(t("settings.agents.teammates.providerNeedsHostTools"));
+      issues.push(t("settings.agents.agents.providerNeedsHostTools"));
     }
     return issues.filter((issue, index) => issues.indexOf(issue) === index);
   }
 
-  function defaultChannelAccess(channelId: string): ChatTeammateChannelAccessInput {
+  function defaultChannelAccess(channelId: string): ChatAgentChannelAccessInput {
     const projectId = navigationChannels.find((channel) => channel.id === channelId)?.projectId ?? null;
     const folder = projectId ? preferredProjectWorkingFolder(chat.workingFolders, projectId, null) : null;
     return defaultChannelAccessInput(
@@ -624,7 +624,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     );
   }
 
-  /** Rebuilds a new teammate's untouched default access after its provider or approval changes. */
+  /** Rebuilds a new agent's untouched default access after its provider or approval changes. */
   function refreshUntouchedDefaultAccess(): void {
     if (!creating || untouchedDefaultAccess === null || currentAccessSnapshot !== untouchedDefaultAccess) return;
     accessDraft = accessDraft.map((channel) => defaultChannelAccess(channel.channelId));
@@ -633,8 +633,8 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
 
   function handleProfilesChange(nextProfiles: ChatAccessProfileRead[]): void {
     accessProfiles = nextProfiles;
-    const teammateId = selected?.participant.id;
-    if (teammateId) void loadTeammateAccess(teammateId);
+    const agentId = selected?.participant.id;
+    if (agentId) void loadAgentAccess(agentId);
   }
 
   function selectExecution(selection: {
@@ -649,24 +649,24 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     modelOptions = copyModelOptionSelections(selection.options);
     const provider = providers.find((entry) => entry.configuration.instanceId === providerId) ?? null;
     const model = provider?.modelCatalog?.models.find((entry) => entry.id === modelId) ?? null;
-    const summary = teammateExecutionSummary(modelOptions, model);
+    const summary = agentExecutionSummary(modelOptions, model);
     effort = summary.effort;
     speed = summary.speed;
     refreshUntouchedDefaultAccess();
   }
 
   function accessReplacementRequest(
-    teammateId: string,
-    policy: ChatTeammatePolicyInput,
-    draft: ChatTeammateStudioDraft,
+    agentId: string,
+    policy: ChatAgentPolicyInput,
+    draft: ChatAgentStudioDraft,
     includeProfile: boolean,
-  ): ReplaceChatTeammateAccessRequest {
+  ): ReplaceChatAgentAccessRequest {
     return {
-      teammateId,
+      agentId,
       expectedAccessRevision: accessRevision,
       channels: copyChannelAccessInputs(draft.channels),
-      teammateProfile: includeProfile ? {
-        teammateId,
+      agentProfile: includeProfile ? {
+        agentId,
         displayName: draft.profile.displayName.trim(),
         avatar: copyVersionedJson(profileAvatar),
         role: draft.profile.role.trim(),
@@ -677,7 +677,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     };
   }
 
-  function policyForDraft(draft: ChatTeammateStudioDraft): ChatTeammatePolicyInput {
+  function policyForDraft(draft: ChatAgentStudioDraft): ChatAgentPolicyInput {
     return {
       providerInstanceId: draft.profile.providerId,
       safetyMode: draft.profile.safetyMode,
@@ -705,8 +705,8 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     let requestDraft = captureStudioDraft();
     let includesProfileChange = !creatingAtStart && profileDirty;
     let includesAccessChange = !creatingAtStart && accessDirty;
-    let savedDraft: ChatTeammateStudioDraft | null = null;
-    let teammateId = selected?.participant.id ?? null;
+    let savedDraft: ChatAgentStudioDraft | null = null;
+    let agentId = selected?.participant.id ?? null;
     saving = true;
     error = null;
     errorField = null;
@@ -714,20 +714,20 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     try {
       if (creatingAtStart) {
         const creationPolicy = policyForDraft(requestDraft);
-        const created = await chatApi.createChatTeammate({
-          teammateId: `participant:${crypto.randomUUID()}`,
+        const created = await chatApi.createChatAgent({
+          agentId: `participant:${crypto.randomUUID()}`,
           displayName: requestDraft.profile.displayName.trim(),
           avatar: { schemaVersion: 1, value: { kind: "initials" } },
           role: requestDraft.profile.role.trim(),
           instructions: requestDraft.profile.instructions.trim(),
           policy: creationPolicy,
         });
-        teammateId = created.participant.id;
+        agentId = created.participant.id;
         creating = false;
-        selectedId = teammateId;
+        selectedId = agentId;
         profileExpectedRevision = created.participant.revision;
         profileAvatar = copyVersionedJson(created.participant.avatar);
-        const inertAccess = await chatApi.readChatTeammateAccess(teammateId);
+        const inertAccess = await chatApi.readChatAgentAccess(agentId);
         const durableInertDraft = draftFromReads(created, inertAccess);
         requestDraft = captureStudioDraft();
         accessRevision = inertAccess.accessRevision;
@@ -736,22 +736,22 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
           !== profileSnapshotForDraft(durableInertDraft);
         includesAccessChange = accessSnapshotForDraft(requestDraft)
           !== accessSnapshotForDraft(durableInertDraft);
-        preserveStudioDraftForId = teammateId;
-        await chat.refreshTeammates();
+        preserveStudioDraftForId = agentId;
+        await chat.refreshAgents();
         if (!includesProfileChange && !includesAccessChange) savedDraft = durableInertDraft;
       }
 
-      if (teammateId && (includesProfileChange || includesAccessChange)) {
+      if (agentId && (includesProfileChange || includesAccessChange)) {
         const policy = policyForDraft(requestDraft);
-        const request = accessReplacementRequest(teammateId, policy, requestDraft, includesProfileChange);
+        const request = accessReplacementRequest(agentId, policy, requestDraft, includesProfileChange);
         const requestSnapshot = draftSnapshotForDraft(requestDraft);
         if (!creatingAtStart && !confirmAccess && includesAccessChange) {
-          const impact = teammateAccessConfirmationImpact(
+          const impact = agentAccessConfirmationImpact(
             studioDraftBaseline?.channels ?? [],
             requestDraft.channels,
           );
-          if (teammateAccessNeedsConfirmation(impact)) {
-            const preview = await chatApi.previewChatTeammateAccess(request);
+          if (agentAccessNeedsConfirmation(impact)) {
+            const preview = await chatApi.previewChatAgentAccess(request);
             const issue = preview.issues[0];
             if (issue) {
               error = t(`chatErrors.accessIssues.${issue.code}`);
@@ -763,27 +763,27 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
             return;
           }
         }
-        const replaced = await chatApi.replaceChatTeammateAccess(request);
+        const replaced = await chatApi.replaceChatAgentAccess(request);
         accessRevision = replaced.accessRevision;
         savedDraft = requestDraft;
         clearAccessConfirmation();
       }
-      if (!teammateId || !savedDraft) return;
-      preserveStudioDraftForId = teammateId;
-      await chat.refreshTeammates();
-      const refreshed = chat.teammates.find((teammate) => teammate.participant.id === teammateId);
+      if (!agentId || !savedDraft) return;
+      preserveStudioDraftForId = agentId;
+      await chat.refreshAgents();
+      const refreshed = chat.agents.find((agent) => agent.participant.id === agentId);
       if (refreshed) {
         profileExpectedRevision = refreshed.participant.revision;
         profileAvatar = copyVersionedJson(refreshed.participant.avatar);
       }
       setStudioDraftBaseline(savedDraft);
     } catch (cause: unknown) {
-      if (teammateId && chatErrorCode(cause) === "stale_revision") {
+      if (agentId && chatErrorCode(cause) === "stale_revision") {
         error = null;
         errorField = null;
-        await loadAccessConflict(teammateId, captureStudioDraft());
+        await loadAccessConflict(agentId, captureStudioDraft());
       } else {
-        error = chatErrorMessage(cause, t("settings.agents.teammates.saveFailed"));
+        error = chatErrorMessage(cause, t("settings.agents.agents.saveFailed"));
         errorField = chatErrorField(cause);
       }
     } finally {
@@ -804,7 +804,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     set creating(value: typeof creating) { creating = value; },
     get showArchived() { return showArchived; },
     set showArchived(value: typeof showArchived) { showArchived = value; },
-    get archivedTeammates() { return archivedTeammates; },
+    get archivedAgents() { return archivedAgents; },
     get navigationChannels() { return navigationChannels; },
     get accessProfiles() { return accessProfiles; },
     set accessProfiles(value: typeof accessProfiles) { accessProfiles = value; },
@@ -840,7 +840,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     get conflictRecoveryNotice() { return conflictRecoveryNotice; },
     get lifecycleError() { return lifecycleError; },
     set lifecycleError(value: typeof lifecycleError) { lifecycleError = value; },
-    get allDirectoryTeammates() { return allDirectoryTeammates; },
+    get allDirectoryAgents() { return allDirectoryAgents; },
     get selected() { return selected; },
     get archivedMode() { return archivedMode; },
     get selectedProvider() { return selectedProvider; },
@@ -859,7 +859,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     clearAccessConfirmation,
     beginCreate,
     cancelCreate,
-    initializeSelectedTeammate,
+    initializeSelectedAgent,
     retryAccessConflict,
     rebaseAccessConflict,
     reloadCurrentAccessConflict,

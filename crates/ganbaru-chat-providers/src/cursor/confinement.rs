@@ -1,4 +1,4 @@
-//! Kernel confinement of Grok and Cursor teammates and of the commands Grok asks Ganbaru to run.
+//! Kernel confinement of Grok and Cursor agents and of the commands Grok asks Ganbaru to run.
 //!
 //! An organizational Grok launch runs the Grok process under the `ganbaru-sandbox` helper. The
 //! process reads the system, its own Grok home, and the working folder, writes only its session
@@ -32,7 +32,7 @@ pub(super) use cursor_agent::{
     sandbox_unavailable_error as cursor_sandbox_unavailable_error,
 };
 
-/// Teammate provider named in confinement refusals.
+/// Agent provider named in confinement refusals.
 const PROVIDER: &str = "Grok";
 
 /// System trees a confined Grok process reads: programs, libraries, configuration such as TLS
@@ -117,7 +117,7 @@ impl AcpFolderAccess {
     }
 }
 
-/// Boundaries a Grok teammate holds, given whether the sandbox confines its process.
+/// Boundaries a Grok agent holds, given whether the sandbox confines its process.
 ///
 /// Without the sandbox only a conversation is held: Grok's subagents and workflows write
 /// files directly, `agent stdio` ignores the tool deny, removal, and subagent switches, and a
@@ -371,7 +371,7 @@ impl AcpCallbackConfinement {
     pub(super) fn verify_write(&self) -> ChatResult<()> {
         if !self.access.writes_files() {
             return Err(scope_refusal(
-                "acp_write_outside_scope: this teammate may not change files in this folder",
+                "acp_write_outside_scope: this agent may not change files in this folder",
             ));
         }
         self.guard().map_or(Ok(()), GitMetadataGuard::verify)
@@ -386,7 +386,7 @@ impl AcpCallbackConfinement {
     pub(super) fn terminal_sandbox(&self) -> ChatResult<&TerminalSandbox> {
         if !self.access.runs_commands() {
             return Err(scope_refusal(
-                "acp_command_outside_scope: this teammate may not run commands in this folder",
+                "acp_command_outside_scope: this agent may not run commands in this folder",
             ));
         }
         let sandbox = self

@@ -31,7 +31,7 @@ const CONTROL_CHARACTER_PATTERN = /\p{Cc}/u;
 const MESSAGE_CONTROL_CHARACTER_PATTERN = /[^\P{Cc}\n\t]/u;
 
 /**
- * Reads the push target of a teammate's push request. Requests replicate from other devices, so every
+ * Reads the push target of an agent's push request. Requests replicate from other devices, so every
  * field is checked against the shape Ganbaru writes, and a push URL that carries a password is refused.
  */
 export function parseChatPushRequest(value: unknown, label = "Chat push request"): ChatPushRequest {
@@ -64,7 +64,7 @@ export function parseChatPushRequestStates(
 }
 
 /**
- * Reads a teammate's standing push approvals. Approvals replicate from other devices, so each push URL is
+ * Reads an agent's standing push approvals. Approvals replicate from other devices, so each push URL is
  * checked like a push request's.
  */
 export function parseChatPushApprovals(value: unknown, label = "Chat push approvals"): ChatPushApproval[] {
@@ -72,7 +72,7 @@ export function parseChatPushApprovals(value: unknown, label = "Chat push approv
     const record = readRecord(entry, path);
     return {
       approvalId: readIdentifier(record.approvalId, `${path}.approvalId`),
-      teammateId: readIdentifier(record.teammateId, `${path}.teammateId`),
+      agentId: readIdentifier(record.agentId, `${path}.agentId`),
       workingFolderId: readIdentifier(record.workingFolderId, `${path}.workingFolderId`),
       workingFolderName: readString(record.workingFolderName, `${path}.workingFolderName`),
       pushUrl: readPushUrl(record.pushUrl, `${path}.pushUrl`),

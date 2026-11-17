@@ -1,7 +1,7 @@
-//! Schedule proposals a teammate posts and a person confirms or dismisses.
+//! Schedule proposals an agent posts and a person confirms or dismisses.
 //!
 //! A confirmation schedules a message authored by the local person that mentions the proposing
-//! teammate in the proposal's reply thread. Its scheduled message and command ids derive from the
+//! agent in the proposal's reply thread. Its scheduled message and command ids derive from the
 //! proposal, so confirming one proposal on two devices yields one scheduled message. Dismissing
 //! a proposal is device-local.
 
@@ -34,7 +34,7 @@ const PROPOSAL_ID_PART: &str = "schedule-proposal";
 /// Most proposals one state read may name.
 const MAX_PROPOSAL_STATE_READS: usize = 200;
 
-/// Checks a teammate's proposal: its first send time is a valid delivery time from `now`, and
+/// Checks an agent's proposal: its first send time is a valid delivery time from `now`, and
 /// its repeat rule is valid and resolves a first occurrence.
 ///
 /// # Errors
@@ -60,7 +60,7 @@ pub(crate) fn validate_proposed_schedule(
     Ok(())
 }
 
-/// Schedules the message a person confirmed from a teammate's proposal. `schedule_message`
+/// Schedules the message a person confirmed from an agent's proposal. `schedule_message`
 /// validates it like any scheduled message and records this device's consent.
 pub(in crate::chat::organization) async fn confirm_schedule_proposal(
     app: tauri::AppHandle,
@@ -75,13 +75,13 @@ pub(in crate::chat::organization) async fn confirm_schedule_proposal(
 }
 
 /// Builds the scheduled message command that confirms the proposal `request` names: the
-/// person's text after a mention of the proposing teammate, in the proposal's reply thread,
+/// person's text after a mention of the proposing agent, in the proposal's reply thread,
 /// under ids derived from the proposal.
 ///
 /// # Errors
 ///
 /// Returns a not found error for an unknown proposal, a validation error for a malformed
-/// proposal or text, and a conflict when the proposing teammate was removed.
+/// proposal or text, and a conflict when the proposing agent was removed.
 pub(super) async fn confirmation_command(
     connection: &mut SqliteConnection,
     request: ConfirmScheduleProposalCommand,
@@ -91,31 +91,31 @@ pub(super) async fn confirmation_command(
         proposal,
         channel_id,
         reply_thread_id,
-        teammate_id,
-        teammate_name,
+        agent_id,
+        agent_name,
     } = read_schedule_proposal(connection, item_id).await?;
-    let teammate_name = teammate_name.ok_or_else(|| {
+    let agent_name = agent_name.ok_or_else(|| {
         ChatError::new(
             ChatErrorCode::Conflict,
-            "The teammate that proposed this schedule was removed",
+            "The agent that proposed this schedule was removed",
             false,
         )
     })?;
     let text = confirmed_text(request.normalized_markdown, proposal.message)?;
-    let mention = format!("@{teammate_name}");
+    let mention = format!("@{agent_name}");
     let normalized_markdown = format!("{mention} {text}");
     let derived = |prefix: &str| derived_id(prefix, &[PROPOSAL_ID_PART, item_id]);
     let reference = ChatMessageReference::Participant {
         metadata: ChatReferenceMetadata {
             reference_id: ChatMessageReferenceId::new(derived("message-reference")?)
                 .map_err(identifier_error)?,
-            label_snapshot: teammate_name,
+            label_snapshot: agent_name,
             start_offset: 0,
             end_offset: u64::try_from(mention.len()).map_err(|_| text_too_long())?,
             plain_text_projection: mention,
         },
-        participant_id: ChatParticipantId::new(teammate_id).map_err(identifier_error)?,
-        participant_kind: ChatParticipantKind::AiTeammate,
+        participant_id: ChatParticipantId::new(agent_id).map_err(identifier_error)?,
+        participant_kind: ChatParticipantKind::AiAgent,
     };
     Ok(ScheduleChatMessageCommand {
         scheduled_message_id: ChatScheduledMessageId::new(derived("scheduled-message")?)

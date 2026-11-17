@@ -1,5 +1,5 @@
 /**
- * Bridge for Chat sync conflicts: participant names, teammate roles and instructions, channel names and topics, channel note wording, and
+ * Bridge for Chat sync conflicts: participant names, agent roles and instructions, channel names and topics, channel note wording, and
  * message edits.
  */
 
@@ -17,7 +17,7 @@ import {
 } from "$lib/utils/readers";
 
 /** Chat row kinds whose edits can conflict. */
-export const CHAT_CONFLICT_TARGETS = ["participant", "teammate", "channel", "channel_note", "message"] as const;
+export const CHAT_CONFLICT_TARGETS = ["participant", "agent", "channel", "channel_note", "message"] as const;
 export type ChatConflictTarget = (typeof CHAT_CONFLICT_TARGETS)[number];
 
 /** One concurrent version of a conflicted Chat row. */
@@ -30,7 +30,7 @@ export interface ChatConflictVersion {
   displayed: boolean;
   /** A name, a role, a channel note, or message Markdown. */
   text: string;
-  /** A teammate's instructions or a channel's topic, or null when the row kind has none. */
+  /** An agent's instructions or a channel's topic, or null when the row kind has none. */
   detail: string | null;
 }
 

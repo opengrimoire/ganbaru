@@ -1,4 +1,4 @@
-//! The confined terminal: commands a teammate asks Ganbaru to run, under the sandbox helper.
+//! The confined terminal: commands an agent asks Ganbaru to run, under the sandbox helper.
 
 use super::toolchains::{ToolchainGrants, resolve_existing, toolchain_grants};
 use super::{
@@ -23,7 +23,7 @@ const TERMINAL_DEFAULT_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
 /// The `env` program that applies requested variables inside the sandbox.
 pub(super) const CONFINED_ENV: &str = "/usr/bin/env";
 
-/// The sandbox that confines the commands one teammate session asks Ganbaru to run: they write
+/// The sandbox that confines the commands one agent session asks Ganbaru to run: they write
 /// the working folder and a private temporary directory, execute system programs, the folder,
 /// the toolchains on `PATH`, and the toolchain homes such as Cargo's, and have no network.
 pub(crate) struct TerminalSandbox {
@@ -31,7 +31,7 @@ pub(crate) struct TerminalSandbox {
     policy: SandboxPolicy,
     environment: Vec<(String, std::ffi::OsString)>,
     guard: GitMetadataGuard,
-    /// Teammate provider named in refusals.
+    /// Agent provider named in refusals.
     provider: &'static str,
     /// Private temporary and home directory of the commands, removed with the session.
     _temporary: crate::probe_directory::ProbeDirectory,
@@ -182,7 +182,7 @@ pub(crate) fn terminal_policy(
     })
 }
 
-/// The policy and environment of the commands one teammate session runs in a working folder.
+/// The policy and environment of the commands one agent session runs in a working folder.
 pub(crate) struct ConfinedCommands {
     pub policy: SandboxPolicy,
     /// The whole environment of a command, in place of the app environment.

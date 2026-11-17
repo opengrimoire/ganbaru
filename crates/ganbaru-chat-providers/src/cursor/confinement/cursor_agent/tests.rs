@@ -26,7 +26,7 @@ fn policy_paths<'a>(
         workspace,
         writes_workspace: false,
         credentials: Some(Path::new("/home/person/.config/cursor")),
-        configuration: Path::new("/home/person/.local/state/ganbaru/cursor-teammates/ab/config"),
+        configuration: Path::new("/home/person/.local/state/ganbaru/cursor-agents/ab/config"),
         home: Path::new("/tmp/ganbaru-confined-a/home"),
         data: Path::new("/tmp/ganbaru-confined-a/data"),
         temporary: Path::new("/tmp/ganbaru-confined-a/tmp"),
@@ -250,17 +250,17 @@ fn the_configuration_folder_is_reseeded_without_following_links() {
     let outside = crate::probe_directory::ProbeDirectory::create().unwrap();
     let workspace = Path::new("/srv/work");
     let folder =
-        prepare_configuration_folder(&state, workspace, &teammate_cli_configuration(None)).unwrap();
+        prepare_configuration_folder(&state, workspace, &agent_cli_configuration(None)).unwrap();
     assert!(folder.starts_with(std::fs::canonicalize(&*state).unwrap()));
     assert_eq!(
-        prepare_configuration_folder(&state, workspace, &teammate_cli_configuration(None)).unwrap(),
+        prepare_configuration_folder(&state, workspace, &agent_cli_configuration(None)).unwrap(),
         folder
     );
     assert_ne!(
         prepare_configuration_folder(
             &state,
             Path::new("/srv/other"),
-            &teammate_cli_configuration(None)
+            &agent_cli_configuration(None)
         )
         .unwrap(),
         folder
@@ -275,7 +275,7 @@ fn the_configuration_folder_is_reseeded_without_following_links() {
     #[cfg(unix)]
     std::os::unix::fs::symlink(&target, folder.join("cli-config.json")).unwrap();
 
-    prepare_configuration_folder(&state, workspace, &teammate_cli_configuration(None)).unwrap();
+    prepare_configuration_folder(&state, workspace, &agent_cli_configuration(None)).unwrap();
     assert!(!folder.join("mcp.json").exists());
     assert!(!folder.join("hooks.json").exists());
     assert_eq!(
@@ -337,7 +337,7 @@ fn the_configured_environment_cannot_redirect_the_private_folders() {
 }
 
 #[test]
-fn the_teammate_configuration_keeps_allowlisted_user_preferences_only() {
+fn the_agent_configuration_keeps_allowlisted_user_preferences_only() {
     let user = serde_json::json!({
         "maxMode": true,
         "network": { "useHttp1ForAgent": true, "proxy": "http://example.invalid" },
@@ -347,10 +347,8 @@ fn the_teammate_configuration_keeps_allowlisted_user_preferences_only() {
         "sandbox": { "mode": "enabled" },
         "model": { "modelId": "other" },
     });
-    let configuration: serde_json::Value = serde_json::from_str(&teammate_cli_configuration(Some(
-        user.to_string().as_bytes(),
-    )))
-    .unwrap();
+    let configuration: serde_json::Value =
+        serde_json::from_str(&agent_cli_configuration(Some(user.to_string().as_bytes()))).unwrap();
     assert_eq!(
         configuration,
         serde_json::json!({
@@ -365,7 +363,7 @@ fn the_teammate_configuration_keeps_allowlisted_user_preferences_only() {
     );
     for user in [None, Some(&b"{ not json"[..]), Some(&b"[true]"[..])] {
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&teammate_cli_configuration(user)).unwrap(),
+            serde_json::from_str::<serde_json::Value>(&agent_cli_configuration(user)).unwrap(),
             serde_json::from_str::<serde_json::Value>(CURSOR_CLI_CONFIGURATION).unwrap()
         );
     }

@@ -1,8 +1,8 @@
 //! Durable bridge between organizational assignments and provider turns.
 
 use super::models::{
-    ChatAgentRunId, ChatAuthorizationRevisionId, ChatError, ChatErrorCode, ChatResult,
-    ChatTeammatePolicyRevisionId, ChatThreadId, ChatTurnId, ChatWorkAssignmentId, UtcTimestamp,
+    ChatAgentPolicyRevisionId, ChatAgentRunId, ChatAuthorizationRevisionId, ChatError,
+    ChatErrorCode, ChatResult, ChatThreadId, ChatTurnId, ChatWorkAssignmentId, UtcTimestamp,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -28,7 +28,7 @@ pub struct AgentRunBinding {
     pub run_id: ChatAgentRunId,
     pub assignment_id: ChatWorkAssignmentId,
     pub project_id: String,
-    pub teammate_policy_revision_id: ChatTeammatePolicyRevisionId,
+    pub agent_policy_revision_id: ChatAgentPolicyRevisionId,
     pub authorization_revision_id: ChatAuthorizationRevisionId,
     pub authorization_scope_digest: String,
     pub working_folder_id: Option<String>,
@@ -370,7 +370,7 @@ pub async fn insert_starting_run(
         "INSERT INTO chat_agent_runs
             (id, assignment_id, project_id, working_folder_id,
              execution_environment_id, scratch_generation_id,
-             teammate_policy_revision_id, authorization_revision_id,
+             agent_policy_revision_id, authorization_revision_id,
              authorization_scope_digest,
              provider_turn_id, provider_thread_id, state, run_ordinal,
              attempt_reason, handoff_reason, instructions_sha256, model_selection_sha256,
@@ -383,7 +383,7 @@ pub async fn insert_starting_run(
     .bind(&run.binding.working_folder_id)
     .bind(&run.binding.execution_environment_id)
     .bind(&run.binding.scratch_generation_id)
-    .bind(run.binding.teammate_policy_revision_id.as_str())
+    .bind(run.binding.agent_policy_revision_id.as_str())
     .bind(run.binding.authorization_revision_id.as_str())
     .bind(&run.binding.authorization_scope_digest)
     .bind(run.provider_turn_id.as_str())
@@ -703,11 +703,11 @@ pub async fn insert_assignment_failure_message(
     now: &UtcTimestamp,
 ) -> ChatResult<bool> {
     let row = sqlx::query(
-        "SELECT assignment.reply_thread_id, assignment.teammate_id, thread.conversation_id,
+        "SELECT assignment.reply_thread_id, assignment.agent_id, thread.conversation_id,
                 participant.display_name AS author_label_snapshot
          FROM chat_work_assignments assignment
          JOIN chat_reply_threads thread ON thread.id = assignment.reply_thread_id
-         JOIN chat_participants participant ON participant.id = assignment.teammate_id
+         JOIN chat_participants participant ON participant.id = assignment.agent_id
          WHERE assignment.id = ?",
     )
     .bind(assignment_id.as_str())
@@ -715,7 +715,7 @@ pub async fn insert_assignment_failure_message(
     .await
     .map_err(persistence_error)?;
     let reply_thread_id: String = row.try_get("reply_thread_id").map_err(persistence_error)?;
-    let teammate_id: String = row.try_get("teammate_id").map_err(persistence_error)?;
+    let agent_id: String = row.try_get("agent_id").map_err(persistence_error)?;
     let conversation_id: String = row.try_get("conversation_id").map_err(persistence_error)?;
     let author_label_snapshot: String = row
         .try_get("author_label_snapshot")
@@ -751,7 +751,7 @@ pub async fn insert_assignment_failure_message(
          VALUES (?, ?, ?, ?)",
     )
     .bind(&item_id)
-    .bind(&teammate_id)
+    .bind(&agent_id)
     .bind(&author_label_snapshot)
     .bind(now.as_str())
     .execute(&mut *connection)

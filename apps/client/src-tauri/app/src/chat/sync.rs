@@ -2,13 +2,13 @@
 //!
 //! The post-apply hook runs `ganbaru_chat::sync_effects::after_materialize` inside the engine
 //! transaction with only the connection and a change sink, so the headless Android pass runs it
-//! too: it creates the device-local access state of arrived teammates and audience state of
+//! too: it creates the device-local access state of arrived agents and audience state of
 //! arrived conversations, bumps the audience and access counters an arrived effective profile
 //! revision, membership, or folder grant affects, and revokes authorizations a narrowing revision
-//! or a removed or narrowed membership or grant no longer covers. A teammate or profile pointer
+//! or a removed or narrowed membership or grant no longer covers. An agent or profile pointer
 //! that copies restrictiveness differing from the revision it names has no effective revision,
-//! so its teammates are refused; the hook revokes their authorizations and logs the pointer
-//! rather than failing the apply, which would stop every later apply. It reports each teammate
+//! so its agents are refused; the hook revokes their authorizations and logs the pointer
+//! rather than failing the apply, which would stop every later apply. It reports each agent
 //! it revoked and each conversation the apply deleted, whose cascade removed the authorizations
 //! and runs that targeted it. On desktop the app host hands those reports to
 //! [`on_sync_notices`], which wakes the access revocation drain so the revoked runs and the runs
@@ -23,7 +23,7 @@
 //! profile or an inherited stricter scratch override survives a concurrent widening the priority
 //! cannot rank. Android
 //! never holds an active authorization, since runs execute only on desktop, so it has no drain to
-//! wake. Dispatch and the readers of teammates and profiles read the effective rows
+//! wake. Dispatch and the readers of agents and profiles read the effective rows
 //! when they run, and views learn about the changed tables from the applied tables event.
 
 use ganbaru_chat::sync_effects::{self, ChatSyncEffects};
@@ -45,8 +45,8 @@ pub(crate) fn check_synced_attachment(asset: &AssetRef, path: &Path) -> Result<(
     ganbaru_chat::attachment_files::check_received_file(asset.content_type(), path)
 }
 
-/// Change notice topic of a teammate whose authorizations an applied profile revision revoked;
-/// the key is the teammate participant id.
+/// Change notice topic of an agent whose authorizations an applied profile revision revoked;
+/// the key is the agent participant id.
 pub(crate) const CHAT_ACCESS_REVOKED_TOPIC: &str = "chat-access-revoked";
 
 /// Change notice topic of a conversation an apply deleted; the key is the conversation id.
@@ -75,7 +75,7 @@ pub(crate) const CHAT_DELEGATION_SETTLED_TOPIC: &str = "chat-delegation-settled"
 /// [`ChatApplyHook`].
 const HOOKED_TABLES: [&TableSpec; 13] = [
     &chat::PARTICIPANTS,
-    &chat::TEAMMATES,
+    &chat::AGENTS,
     &chat::POLICY_REVISIONS,
     &chat::PROFILES,
     &chat::PROFILE_REVISIONS,
@@ -98,17 +98,17 @@ fn hook_error(error: ganbaru_chat_contracts::models::ChatError) -> HookError {
 
 /// Reports the work `effects` leaves for services outside the engine transaction.
 ///
-/// A mismatched pointer is logged rather than reported, since its teammates are already refused
+/// A mismatched pointer is logged rather than reported, since its agents are already refused
 /// and only an honest edit from another device can repair it.
 fn report_effects(effects: ChatSyncEffects, changes: &mut dyn ChangeSink) {
     for owner_id in &effects.mismatched_pointers {
         eprintln!(
             "Synced Chat row {owner_id} copies restrictiveness that differs from the revision it \
-             names, so its teammates have no effective access"
+             names, so its agents have no effective access"
         );
     }
-    for teammate_id in effects.revoked_teammates {
-        changes.report(CHAT_ACCESS_REVOKED_TOPIC, teammate_id);
+    for agent_id in effects.revoked_agents {
+        changes.report(CHAT_ACCESS_REVOKED_TOPIC, agent_id);
     }
     for conversation_id in effects.removed_conversations {
         changes.report(CHAT_CONVERSATION_REMOVED_TOPIC, conversation_id);

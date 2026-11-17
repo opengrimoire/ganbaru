@@ -1,7 +1,7 @@
-//! Work one teammate delegates to another, and the ceiling that keeps it within its ancestors.
+//! Work one agent delegates to another, and the ceiling that keeps it within its ancestors.
 //!
 //! A delegated child is a separate assignment in its own reply thread, rooted at a message the
-//! parent teammate posts in the channel. The child records the folder ceiling it may never
+//! parent agent posts in the channel. The child records the folder ceiling it may never
 //! exceed. Every freeze and every claim of its dispatch reads the ceiling again against the
 //! ancestors' current authorizations, so work whose parent lost its authority is cancelled
 //! instead of starting.
@@ -16,7 +16,7 @@ use super::common::{
 use super::workflow::{
     ChatWriters, CommunicationMessageWrite, DelegationWrite, MessageAuthor, NewAssignment,
     PostingDevice, create_assignment, insert_communication_message,
-    new_assignment_executing_device, next_item_order_key, require_participating_teammate,
+    new_assignment_executing_device, next_item_order_key, require_participating_agent,
 };
 use super::{identifier_error, now_timestamp, persistence_error};
 use ganbaru_chat::coordination::contracts::*;
@@ -35,7 +35,7 @@ pub(crate) struct DelegatedFolder {
     pub(crate) capability: ChatFolderCapability,
 }
 
-/// A teammate's request to hand bounded work to another teammate of its channel.
+/// An agent's request to hand bounded work to another agent of its channel.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct DelegationRequest<'a> {
     /// Working assignment the calling run belongs to.
@@ -44,7 +44,7 @@ pub(crate) struct DelegationRequest<'a> {
     pub(crate) parent_authorization_revision_id: &'a ChatAuthorizationRevisionId,
     /// Conversation the parent works in, where the child's thread opens.
     pub(crate) conversation_id: &'a ChatConversationId,
-    pub(crate) teammate_id: &'a ChatParticipantId,
+    pub(crate) agent_id: &'a ChatParticipantId,
     pub(crate) objective: &'a str,
     pub(crate) expected_result: &'a str,
     /// The child's folder ceiling, already within the calling run's folders.
@@ -138,15 +138,11 @@ pub(super) async fn persist_delegation(
     if depth > MAX_DELEGATION_DEPTH {
         return Ok(Err(DelegationRefusal::DepthExceeded));
     }
-    if request.teammate_id == &parent.teammate_id {
+    if request.agent_id == &parent.agent_id {
         return Ok(Err(DelegationRefusal::TargetUnavailable));
     }
-    match require_participating_teammate(
-        &mut *transaction,
-        request.conversation_id,
-        request.teammate_id,
-    )
-    .await
+    match require_participating_agent(&mut *transaction, request.conversation_id, request.agent_id)
+        .await
     {
         Ok(()) => {}
         Err(error) if error.code == ChatErrorCode::Persistence => return Err(error),
@@ -175,7 +171,7 @@ pub(super) async fn persist_delegation(
     insert_communication_message(
         &mut transaction,
         CommunicationMessageWrite {
-            author: MessageAuthor::Teammate(&parent.teammate_id),
+            author: MessageAuthor::Agent(&parent.agent_id),
             item_id: &item_id,
             revision_id: &revision_id,
             conversation_id: request.conversation_id,
@@ -183,7 +179,7 @@ pub(super) async fn persist_delegation(
             order_key: &order_key,
             request: &message,
             attachments: super::common::AttachmentSource::Device(&[]),
-            invoked_teammate_id: Some(request.teammate_id),
+            invoked_agent_id: Some(request.agent_id),
             now: &now,
         },
     )
@@ -196,7 +192,7 @@ pub(super) async fn persist_delegation(
         device
     };
     let Some(executing_device_id) =
-        new_assignment_executing_device(&mut transaction, request.teammate_id, device).await?
+        new_assignment_executing_device(&mut transaction, request.agent_id, device).await?
     else {
         return Ok(Err(DelegationRefusal::TargetUnavailable));
     };
@@ -205,11 +201,11 @@ pub(super) async fn persist_delegation(
         NewAssignment {
             reply_thread_id: &thread_id,
             message_item_id: &item_id,
-            teammate_id: request.teammate_id,
+            agent_id: request.agent_id,
             latest_assignment: None,
             executing_device_id: &executing_device_id,
             execution_target: None,
-            poster_participant_id: parent.teammate_id.as_str(),
+            poster_participant_id: parent.agent_id.as_str(),
             delegation: Some(DelegationWrite {
                 parent_assignment_id: request.parent_assignment_id,
                 depth,
@@ -318,7 +314,7 @@ fn capability_rank(capability: &str) -> Option<u8> {
 /// A child an earlier call with the same client request id created.
 struct ExistingChild {
     assignment_id: ChatWorkAssignmentId,
-    teammate_id: String,
+    agent_id: String,
     objective: Option<String>,
     expected_result: Option<String>,
     ceiling: Option<String>,
@@ -339,7 +335,7 @@ impl ExistingChild {
             }
             _ => false,
         };
-        let same = self.teammate_id == request.teammate_id.as_str()
+        let same = self.agent_id == request.agent_id.as_str()
             && self.objective.as_deref() == Some(request.objective)
             && self.expected_result.as_deref() == Some(request.expected_result)
             && same_ceiling;
@@ -361,7 +357,7 @@ async fn read_existing_child(
     item_id: &ChatConversationItemId,
 ) -> ChatResult<PriorRequest> {
     let row = sqlx::query(
-        "SELECT id, teammate_id, delegation_objective, delegation_expected_result,
+        "SELECT id, agent_id, delegation_objective, delegation_expected_result,
                 delegation_folder_ceiling, state
          FROM chat_work_assignments
          WHERE triggering_message_item_id = ? AND parent_assignment_id = ?",
@@ -377,7 +373,7 @@ async fn read_existing_child(
                 row.try_get::<String, _>("id").map_err(persistence_error)?,
             )
             .map_err(identifier_error)?,
-            teammate_id: row.try_get("teammate_id").map_err(persistence_error)?,
+            agent_id: row.try_get("agent_id").map_err(persistence_error)?,
             objective: row
                 .try_get("delegation_objective")
                 .map_err(persistence_error)?,
@@ -415,7 +411,7 @@ enum PriorRequest {
 
 /// The working parent of a delegation.
 struct WorkingParent {
-    teammate_id: ChatParticipantId,
+    agent_id: ChatParticipantId,
     depth: u8,
     /// Whether the parent runs without approval prompts, so no person on this device consents
     /// to what its child runs and the child waits for a local acceptance.
@@ -429,7 +425,7 @@ async fn read_working_parent(
     request: &DelegationRequest<'_>,
 ) -> ChatResult<Result<WorkingParent, DelegationRefusal>> {
     let row = sqlx::query(
-        "SELECT assignment.state, assignment.delegation_depth, assignment.teammate_id,
+        "SELECT assignment.state, assignment.delegation_depth, assignment.agent_id,
                 thread.conversation_id,
                 authorization.decision_state, authorization.revoked_at,
                 authorization.resolved_runtime_approval_policy
@@ -468,8 +464,8 @@ async fn read_working_parent(
         return Ok(Err(DelegationRefusal::ParentInactive));
     }
     Ok(Ok(WorkingParent {
-        teammate_id: ChatParticipantId::new(
-            row.try_get::<String, _>("teammate_id")
+        agent_id: ChatParticipantId::new(
+            row.try_get::<String, _>("agent_id")
                 .map_err(persistence_error)?,
         )
         .map_err(identifier_error)?,
@@ -524,7 +520,7 @@ async fn read_target(
          WHERE participant.id = ? AND channel.archived_at IS NULL",
     )
     .bind(request.conversation_id.as_str())
-    .bind(request.teammate_id.as_str())
+    .bind(request.agent_id.as_str())
     .fetch_optional(&mut *connection)
     .await
     .map_err(persistence_error)?;
@@ -575,8 +571,8 @@ fn delegation_message(
                 end_offset: u64::try_from(mention.len()).unwrap_or(u64::MAX),
                 plain_text_projection: mention,
             },
-            participant_id: request.teammate_id.clone(),
-            participant_kind: ChatParticipantKind::AiTeammate,
+            participant_id: request.agent_id.clone(),
+            participant_kind: ChatParticipantKind::AiAgent,
         }],
         execution_target: None,
         also_send_to_channel: false,
@@ -650,7 +646,7 @@ pub(super) struct DelegationCeiling {
     /// Rank of the broadest runtime approval the assignment may run with.
     pub(super) approval_rank: u8,
     /// The person who started the root of the delegation chain. Delegated work runs on that
-    /// person's behalf, not the parent teammate's.
+    /// person's behalf, not the parent agent's.
     pub(super) requester_participant_id: Option<ChatParticipantId>,
 }
 

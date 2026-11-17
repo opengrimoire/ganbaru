@@ -1,13 +1,13 @@
-//! Instruction files a teammate run receives as text.
+//! Instruction files an agent run receives as text.
 //!
-//! Teammate runs keep provider configuration out of the native process, and Claude, Grok, and
+//! Agent runs keep provider configuration out of the native process, and Claude, Grok, and
 //! OpenCode then skip some of the instruction files a direct run loads: Claude's restricted mode
 //! drops every `CLAUDE.md` and rule, OpenCode's disabled project configuration drops the project
 //! `AGENTS.md`, and Grok loads project files at startup only in folders the user trusted in
 //! Grok and cannot read the Claude and Cursor homes under the sandbox. Dispatch reads those
 //! files itself, bounded and without leaving the working folder or those homes, and
 //! appends them to the run's instructions, so the continuation key changes whenever a file
-//! does. Codex and Cursor load the same files natively in teammate runs and get nothing here.
+//! does. Codex and Cursor load the same files natively in agent runs and get nothing here.
 
 use super::common::truncate_utf8;
 use ganbaru_atomic_files::{FinalSymlink, read_regular_file_capped, require_directories_within};
@@ -59,7 +59,7 @@ provider. Follow them where they apply to the assignment; they grant no access b
 
 const TRUNCATED_MARKER: &str = "\n\n[Cut to fit the instruction limit.]";
 
-/// A provider whose teammate runs need its instruction files sent as text.
+/// A provider whose agent runs need its instruction files sent as text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum InstructionFileFamily {
     Claude,
@@ -69,7 +69,7 @@ pub(super) enum InstructionFileFamily {
 
 impl InstructionFileFamily {
     /// The family whose instruction files dispatch reads, or `None` for providers that load
-    /// them natively in teammate runs (Codex and Cursor) or document no files (generic ACP).
+    /// them natively in agent runs (Codex and Cursor) or document no files (generic ACP).
     pub(super) fn from_family_id(family_id: &str) -> Option<Self> {
         match family_id {
             "claude" => Some(Self::Claude),
@@ -99,7 +99,7 @@ pub(super) struct InstructionFile {
 
 /// Appends the instruction files of `provider_instance_id` to a run's composed instructions.
 ///
-/// Files come from the provider home where the provider skips them in teammate runs, and from
+/// Files come from the provider home where the provider skips them in agent runs, and from
 /// the folder the run executes in when it has a working folder target. A provider, folder, or
 /// file that cannot be read adds nothing, because dispatch reports those failures itself when
 /// it starts the run.
@@ -126,7 +126,7 @@ pub(super) async fn with_instruction_files(
         }
         // Grok loads its own home natively, and the Claude and Cursor homes it also reads only
         // where the sandbox does not hide them.
-        InstructionFileFamily::Grok => ganbaru_chat_providers::teammates_run_confined()
+        InstructionFileFamily::Grok => ganbaru_chat_providers::agents_run_confined()
             .then(crate::chat::provider_files::user_home),
         InstructionFileFamily::OpenCode => None,
     };
@@ -171,7 +171,7 @@ async fn execution_folder(
     .map(|resolved| resolved.canonical_path)
 }
 
-/// Reads the instruction files `family` skips in teammate runs, in the order the provider
+/// Reads the instruction files `family` skips in agent runs, in the order the provider
 /// loads them: user files from `user_folder`, then project files from `working_folder`.
 ///
 /// `user_folder` is Claude's provider home, or for Grok the user's home folder, whose

@@ -1,27 +1,27 @@
 use super::*;
 use crate::chat::revocation::tests::pool_with_folder_runs;
 
-const TEAMMATE: &str = "participant:folder-agent";
+const AGENT: &str = "participant:folder-agent";
 
-/// Approves the fixture teammate's pushes from `folder` to `branch` under key `key`.
+/// Approves the fixture agent's pushes from `folder` to `branch` under key `key`.
 async fn approve(pool: &SqlitePool, key: &str, folder: &str, branch: &str) {
     sqlx::query(
-        "UPDATE chat_teammates SET current_policy_revision_id = 'policy:folders',
+        "UPDATE chat_agents SET current_policy_revision_id = 'policy:folders',
              current_policy_safety_mode = 'ask_for_approval'
          WHERE participant_id = ? AND current_policy_safety_mode IS NULL",
     )
-    .bind(TEAMMATE)
+    .bind(AGENT)
     .execute(pool)
     .await
     .unwrap();
     sqlx::query(
         "INSERT INTO chat_push_approvals
-            (teammate_id, working_folder_id, push_url, destination_branch, sync_key,
+            (agent_id, working_folder_id, push_url, destination_branch, sync_key,
              runtime_approval_policy, safety_mode, approved_by_participant_id, approved_at)
          VALUES (?, ?, 'git@example.invalid:org/repo.git', ?, ?, 'ask', 'ask_for_approval',
                  'participant:local-owner', '2026-10-20T12:00:00.000Z')",
     )
-    .bind(TEAMMATE)
+    .bind(AGENT)
     .bind(folder)
     .bind(branch)
     .bind(key)
@@ -43,9 +43,9 @@ async fn listing_shows_active_approvals_by_folder_name_and_revoking_hides_one() 
     approve(&pool, "push-approval-unrelated", "workspace-3", "main").await;
     approve(&pool, "push-approval-reference", "workspace-2", "main").await;
     approve(&pool, "push-approval-release", "workspace-2", "release").await;
-    let teammate = ChatParticipantId::new(TEAMMATE).unwrap();
+    let agent = ChatParticipantId::new(AGENT).unwrap();
 
-    let approvals = list_push_approvals(&pool, &teammate).await.unwrap();
+    let approvals = list_push_approvals(&pool, &agent).await.unwrap();
     assert_eq!(
         listed_keys(&approvals),
         [
@@ -71,7 +71,7 @@ async fn listing_shows_active_approvals_by_folder_name_and_revoking_hides_one() 
     revoke_push_approval(&pool, &revoke("push-approval-missing"))
         .await
         .unwrap();
-    let approvals = list_push_approvals(&pool, &teammate).await.unwrap();
+    let approvals = list_push_approvals(&pool, &agent).await.unwrap();
     assert_eq!(
         listed_keys(&approvals),
         ["push-approval-reference", "push-approval-unrelated"]

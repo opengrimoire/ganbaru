@@ -2,11 +2,11 @@ import { CHAT_MAX_ACTIVE_CHANNEL_NOTES, CHAT_MAX_CHANNEL_NOTE_CHARS } from "$lib
 import {
   chatParticipantDisplayName,
   type ChatParticipantDisplaySource,
-} from "$lib/chat/teammates/participant-display";
+} from "$lib/chat/agents/participant-display";
 
 /** Where the names a note credits come from. */
 export interface ChannelNoteNameSources {
-  /** Channel members and teammates, in any order; the first match wins. */
+  /** Channel members and agents, in any order; the first match wins. */
   readonly participants: readonly ChatParticipantDisplaySource[];
   /** Current profile name of the local person, possibly empty. */
   readonly localProfileDisplayName: string;
@@ -19,7 +19,7 @@ export interface ChannelNoteNameSources {
 /**
  * Resolves the name a note credits for `participantId`.
  *
- * @param participantId The saving person or proposing teammate, or `null` when the note credits nobody.
+ * @param participantId The saving person or proposing agent, or `null` when the note credits nobody.
  * @param sources Known participants and the localized fallbacks.
  * @returns The display name, the unknown label for an unlisted participant, or `null` when there is nobody to credit.
  */

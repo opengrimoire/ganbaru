@@ -118,8 +118,8 @@ export interface ProviderProbeResult {
   checkedAt: UtcTimestamp;
   detail: string | null;
   versionAdmission: ProviderVersionAdmission | null;
-  /** The oldest CLI version teammate runs on this device accept, present only when the probed version is older. */
-  teammateMinimumVersion: string | null;
+  /** The oldest CLI version agent runs on this device accept, present only when the probed version is older. */
+  agentMinimumVersion: string | null;
 }
 
 export interface ModelChoiceOption {

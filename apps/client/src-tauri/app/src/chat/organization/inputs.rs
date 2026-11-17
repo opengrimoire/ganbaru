@@ -50,7 +50,7 @@ pub(super) const AWAITING_DELIVERY_SQL: &str = "EXISTS (
       AND NOT EXISTS (
         SELECT 1 FROM chat_participants waiting_author
         WHERE waiting_author.id = waiting_message.author_participant_id
-          AND waiting_author.participant_kind = 'ai_teammate'))";
+          AND waiting_author.participant_kind = 'ai_agent'))";
 
 /// Moves the reply `message_item_id`, which waited for running work and has just reached it, to
 /// the end of its thread at `entered_at`, so the thread shows it after everything that came
@@ -66,7 +66,7 @@ pub(super) async fn place_delivered_reply(
         "SELECT EXISTS (
             SELECT 1 FROM chat_communication_messages message
             JOIN chat_participants author ON author.id = message.author_participant_id
-            WHERE message.item_id = ? AND author.participant_kind = 'ai_teammate')",
+            WHERE message.item_id = ? AND author.participant_kind = 'ai_agent')",
     )
     .bind(message_item_id)
     .fetch_one(&mut *connection)
@@ -555,7 +555,7 @@ fn input_not_found() -> ChatError {
 fn already_delivered() -> ChatError {
     let mut error = ChatError::new(
         ChatErrorCode::Conflict,
-        "This reply already reached the teammate or was cancelled",
+        "This reply already reached the agent or was cancelled",
         false,
     );
     error.details = Some(Box::new(

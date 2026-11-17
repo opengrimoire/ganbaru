@@ -1,13 +1,13 @@
-//! Schedules a teammate proposes for a person to confirm.
+//! Schedules an agent proposes for a person to confirm.
 //!
-//! A proposal is a teammate message in its reply thread with a `schedule_proposal` semantic
+//! A proposal is an agent message in its reply thread with a `schedule_proposal` semantic
 //! update. It schedules nothing: only a person who confirms it creates a scheduled message, so
 //! every scheduled message stays a person's. Its ids derive from the run and the client request
 //! id, so a repeated call writes nothing new.
 
 use super::reports::{
-    HOST_TOOL_SOURCE, HostCall, HostCallOutcome, HostUpdateIds, TeammateUpdate,
-    insert_teammate_update, read_active_target, replayed,
+    AgentUpdate, HOST_TOOL_SOURCE, HostCall, HostCallOutcome, HostUpdateIds, insert_agent_update,
+    read_active_target, replayed,
 };
 use crate::models::{ChatError, ChatErrorCode, ChatResult};
 use crate::scheduling::RecurrenceSpec;
@@ -17,31 +17,31 @@ use sqlx::SqliteConnection;
 
 /// Semantic update kind of a schedule proposal.
 pub const SCHEDULE_PROPOSAL_UPDATE_KIND: &str = "schedule_proposal";
-/// Longest message a teammate may propose, in characters.
+/// Longest message an agent may propose, in characters.
 pub const MAX_PROPOSED_MESSAGE_CHARS: usize = 4000;
-/// Longest reason a teammate may give for a proposal, in characters.
+/// Longest reason an agent may give for a proposal, in characters.
 pub const MAX_PROPOSAL_REASON_CHARS: usize = 500;
 /// Id part of a schedule proposal update derived from its host call.
 const PROPOSAL_ID_PART: &str = "schedule-proposal";
 
-/// A schedule a teammate proposes: the message to send, when it first sends, how it repeats,
+/// A schedule an agent proposes: the message to send, when it first sends, how it repeats,
 /// and why. It is also the semantic update payload, with [`HOST_TOOL_SOURCE`] beside it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScheduleProposal {
-    /// Message text, without the mention of the proposing teammate a confirmation adds.
+    /// Message text, without the mention of the proposing agent a confirmation adds.
     pub message: String,
     /// RFC 3339 UTC time of the first send.
     pub first_at: String,
     /// Repeat rule, or `None` to send once.
     #[serde(default)]
     pub recurrence: Option<RecurrenceSpec>,
-    /// Why the teammate proposes it.
+    /// Why the agent proposes it.
     pub reason: String,
 }
 
 /// Why a schedule proposal was refused. [`ScheduleProposalRefusal::code`] is the tool error
-/// code, so the teammate can correct its next call.
+/// code, so the agent can correct its next call.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScheduleProposalRefusal {
     /// The first send time is unparsable, too soon, or too far ahead.
@@ -64,7 +64,7 @@ impl ScheduleProposalRefusal {
         }
     }
 
-    /// The refusal as the tool error the teammate receives.
+    /// The refusal as the tool error the agent receives.
     pub fn into_error(self) -> ChatError {
         ChatError::new(ChatErrorCode::Permission, self.code(), false)
     }
@@ -131,13 +131,13 @@ pub async fn record_host_schedule_proposal(
     }
     validate(proposal)?;
     let target = read_active_target(connection, call, &["working", "waiting_for_answer"]).await?;
-    insert_teammate_update(
+    insert_agent_update(
         connection,
-        &TeammateUpdate {
+        &AgentUpdate {
             item_id: &ids.item_id,
             revision_id: &ids.revision_id,
             reply_thread_id: &target.reply_thread_id,
-            teammate_id: &target.teammate_id,
+            agent_id: &target.agent_id,
             assignment_id: call.assignment_id,
             run_id: Some(call.run_id),
             update_kind: SCHEDULE_PROPOSAL_UPDATE_KIND,
@@ -160,15 +160,15 @@ fn proposal_payload(proposal: &ScheduleProposal) -> ChatResult<Value> {
 }
 
 /// A stored schedule proposal with what a confirmation needs: where it was posted and which
-/// teammate proposed it.
+/// agent proposed it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredScheduleProposal {
     pub proposal: ScheduleProposal,
     pub channel_id: String,
     pub reply_thread_id: String,
-    pub teammate_id: String,
-    /// The teammate's current name, `None` when it was removed or archived.
-    pub teammate_name: Option<String>,
+    pub agent_id: String,
+    /// The agent's current name, `None` when it was removed or archived.
+    pub agent_name: Option<String>,
 }
 
 /// Reads the schedule proposal posted as the conversation item `item_id`. The payload replicates
@@ -191,7 +191,7 @@ pub async fn read_schedule_proposal(
         Option<String>,
     );
     let row: Option<Row> = sqlx::query_as(
-        "SELECT semantic.payload_data, item.reply_thread_id, channel.id, assignment.teammate_id,
+        "SELECT semantic.payload_data, item.reply_thread_id, channel.id, assignment.agent_id,
                 participant.display_name, participant.participant_kind
          FROM chat_work_semantic_updates semantic
          JOIN chat_conversation_items item ON item.id = semantic.item_id
@@ -199,7 +199,7 @@ pub async fn read_schedule_proposal(
          JOIN chat_work_assignments assignment ON assignment.id = semantic.assignment_id
          JOIN chat_channels channel ON channel.conversation_id = item.conversation_id
          LEFT JOIN chat_participants participant
-           ON participant.id = assignment.teammate_id AND participant.archived_at IS NULL
+           ON participant.id = assignment.agent_id AND participant.archived_at IS NULL
          WHERE semantic.item_id = ? AND semantic.update_kind = ?
            AND message.deleted_at IS NULL",
     )
@@ -208,7 +208,7 @@ pub async fn read_schedule_proposal(
     .fetch_optional(connection)
     .await
     .map_err(persistence_error)?;
-    let Some((payload_data, reply_thread_id, channel_id, teammate_id, name, kind)) = row else {
+    let Some((payload_data, reply_thread_id, channel_id, agent_id, name, kind)) = row else {
         return Err(ChatError::new(
             ChatErrorCode::NotFound,
             "Schedule proposal was not found",
@@ -221,8 +221,8 @@ pub async fn read_schedule_proposal(
         proposal,
         channel_id,
         reply_thread_id,
-        teammate_id,
-        teammate_name: name.filter(|_| kind.as_deref() == Some("ai_teammate")),
+        agent_id,
+        agent_name: name.filter(|_| kind.as_deref() == Some("ai_agent")),
     })
 }
 

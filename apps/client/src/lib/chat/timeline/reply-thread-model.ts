@@ -2,7 +2,7 @@ import type {
   ChatAgentRunRead,
   ChatErrorCode,
   ChatMessageRead,
-  ChatTeammateChannelAccess,
+  ChatAgentChannelAccess,
   ChatThreadShellRead,
   ChatTimelinePageRead,
   ChatTimelineTurnRead,
@@ -404,11 +404,11 @@ export function agentRunLocation(
 }
 
 /**
- * Returns whether the teammate holds a folder grant in the channel, so conversation-only work there means no grant
- * was implied rather than that the teammate has no folder access at all.
+ * Returns whether the agent holds a folder grant in the channel, so conversation-only work there means no grant
+ * was implied rather than that the agent has no folder access at all.
  */
 export function channelHasFolderGrants(
-  access: { channels: readonly Pick<ChatTeammateChannelAccess, "channelId" | "removedAt" | "folderGrants">[] } | null,
+  access: { channels: readonly Pick<ChatAgentChannelAccess, "channelId" | "removedAt" | "folderGrants">[] } | null,
   channelId: string | null,
 ): boolean {
   const channel = access?.channels.find((entry) => entry.channelId === channelId && entry.removedAt === null);

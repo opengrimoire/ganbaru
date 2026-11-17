@@ -1,9 +1,9 @@
 use super::{
-    ChatAccessProfileId, ChatAccessProfileRevisionId, ChatAgentRunId, ChatAssignmentInputId,
-    ChatAttachmentId, ChatChannelId, ChatConversationId, ChatConversationItemId,
-    ChatExecutionEnvironmentId, ChatMessageReferenceId, ChatMessageRevisionId, ChatParticipantId,
-    ChatReplyThreadId, ChatScratchCleanupJobId, ChatScratchGenerationId, ChatScratchPromotionId,
-    ChatScratchScopeId, ChatTeammatePolicyRevisionId, ChatThreadId, ChatTurnId,
+    ChatAccessProfileId, ChatAccessProfileRevisionId, ChatAgentPolicyRevisionId, ChatAgentRunId,
+    ChatAssignmentInputId, ChatAttachmentId, ChatChannelId, ChatConversationId,
+    ChatConversationItemId, ChatExecutionEnvironmentId, ChatMessageReferenceId,
+    ChatMessageRevisionId, ChatParticipantId, ChatReplyThreadId, ChatScratchCleanupJobId,
+    ChatScratchGenerationId, ChatScratchPromotionId, ChatScratchScopeId, ChatThreadId, ChatTurnId,
     ChatWorkAssignmentId, ModelId, ModelOptionSelection, ProjectWorkingFolderId,
     ProviderInstanceId, UtcTimestamp, VersionedJson,
 };
@@ -13,13 +13,13 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum ChatParticipantKind {
     LocalUser,
-    AiTeammate,
+    AiAgent,
     Human,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ChatTeammateConfigurationState {
+pub enum ChatAgentConfigurationState {
     Healthy,
     NeedsSetup,
     ProviderUnavailable,
@@ -76,7 +76,7 @@ pub enum ChatApprovalPolicy {
     Custom,
 }
 
-/// Independent capabilities granted to an AI teammate in one channel.
+/// Independent capabilities granted to an AI agent in one channel.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatChannelCapabilities {
@@ -198,7 +198,7 @@ pub struct ChatFolderGrantRead {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChatTeammateChannelAccessRead {
+pub struct ChatAgentChannelAccessRead {
     pub channel_id: ChatChannelId,
     pub project_id: String,
     /// Group of the channel's project, absent when the project is outside every group.
@@ -219,11 +219,11 @@ pub struct ChatTeammateChannelAccessRead {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChatTeammateAccessRead {
-    pub teammate_id: ChatParticipantId,
+pub struct ChatAgentAccessRead {
+    pub agent_id: ChatParticipantId,
     pub access_revision: u64,
-    pub teammate_default_runtime_approval: ChatRuntimeApprovalPolicy,
-    pub channels: Vec<ChatTeammateChannelAccessRead>,
+    pub agent_default_runtime_approval: ChatRuntimeApprovalPolicy,
+    pub channels: Vec<ChatAgentChannelAccessRead>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -238,7 +238,7 @@ pub enum ChatAccessIssueCode {
     ProfileCeilingExceeded,
     ProfileNotFound,
     RetainedReferenceDisclosure,
-    TeammateNotFound,
+    AgentNotFound,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -251,8 +251,8 @@ pub struct ChatAccessValidationIssue {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChatTeammateAccessPreview {
-    pub proposed: Option<ChatTeammateAccessRead>,
+pub struct ChatAgentAccessPreview {
+    pub proposed: Option<ChatAgentAccessRead>,
     pub is_expansion: bool,
     pub added_channel_ids: Vec<ChatChannelId>,
     pub removed_channel_ids: Vec<ChatChannelId>,
@@ -266,7 +266,7 @@ pub struct ChatAccessProfileImpactPreview {
     pub current_revision: ChatAccessProfileRevision,
     pub is_expansion: bool,
     pub is_reduction: bool,
-    pub affected_teammate_ids: Vec<ChatParticipantId>,
+    pub affected_agent_ids: Vec<ChatParticipantId>,
     pub affected_channel_ids: Vec<ChatChannelId>,
     pub active_authorization_count: u64,
     pub issues: Vec<ChatAccessValidationIssue>,
@@ -399,14 +399,14 @@ pub struct ChatScratchGenerationRead {
     pub updated_at: UtcTimestamp,
 }
 
-/// Private scratch storage owned by one teammate in one reply thread.
+/// Private scratch storage owned by one agent in one reply thread.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatScratchScopeRead {
     pub id: ChatScratchScopeId,
     pub reply_thread_id: ChatReplyThreadId,
-    pub teammate_id: ChatParticipantId,
-    pub teammate_name: String,
+    pub agent_id: ChatParticipantId,
+    pub agent_name: String,
     pub channel_id: ChatChannelId,
     pub channel_name: String,
     pub project_id: String,
@@ -542,7 +542,7 @@ pub struct ChatScratchReclaimRow {
     /// Reply thread that owns the scope, used to open its scratch manager.
     pub reply_thread_id: ChatReplyThreadId,
     pub generation: u64,
-    pub teammate_name: String,
+    pub agent_name: String,
     pub channel_name: String,
     pub project_name: String,
     pub group_name: Option<String>,
@@ -615,8 +615,8 @@ mod tests {
                 "channelId": "channel:general",
                 "channelName": "general",
                 "replyThreadId": "reply-thread:review",
-                "teammateParticipantId": "participant:reviewer",
-                "teammateDisplayName": "Reviewer",
+                "agentParticipantId": "participant:reviewer",
+                "agentDisplayName": "Reviewer",
                 "stateReason": null,
                 "changedFileCount": 2,
                 "executedHere": true,
@@ -832,9 +832,9 @@ pub struct ChatParticipantRead {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChatTeammatePolicyRead {
-    pub id: ChatTeammatePolicyRevisionId,
-    pub teammate_id: ChatParticipantId,
+pub struct ChatAgentPolicyRead {
+    pub id: ChatAgentPolicyRevisionId,
+    pub agent_id: ChatParticipantId,
     pub revision: u64,
     pub provider_instance_id: ProviderInstanceId,
     pub safety_mode: ChatApprovalPolicy,
@@ -849,12 +849,12 @@ pub struct ChatTeammatePolicyRead {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChatAiTeammateRead {
+pub struct ChatAiAgentRead {
     pub participant: ChatParticipantRead,
     pub role: String,
     pub instructions: String,
-    pub configuration_state: ChatTeammateConfigurationState,
-    pub latest_policy: Option<ChatTeammatePolicyRead>,
+    pub configuration_state: ChatAgentConfigurationState,
+    pub latest_policy: Option<ChatAgentPolicyRead>,
     pub channel_count: u64,
     pub active_assignment_count: u64,
 }
@@ -895,12 +895,12 @@ pub struct ChatChannelRosterRead {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatChannelMembershipRemovalPreview {
-    pub teammate_id: ChatParticipantId,
+    pub agent_id: ChatParticipantId,
     pub channel_id: ChatChannelId,
     pub active_assignment_count: u64,
     pub active_authorization_count: u64,
     pub will_revoke_active_work: bool,
-    pub proposed_access: ChatTeammateAccessRead,
+    pub proposed_access: ChatAgentAccessRead,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -1049,12 +1049,12 @@ pub struct ChatChannelPageRead {
 pub struct ChatWorkAssignmentRead {
     pub id: ChatWorkAssignmentId,
     pub reply_thread_id: ChatReplyThreadId,
-    pub teammate: ChatParticipantRead,
+    pub agent: ChatParticipantRead,
     pub triggering_message_item_id: ChatConversationItemId,
     pub previous_assignment_id: Option<ChatWorkAssignmentId>,
     pub state: ChatWorkAssignmentState,
     pub state_reason: Option<String>,
-    /// Where this work came from when another teammate delegated it; absent for work a person
+    /// Where this work came from when another agent delegated it; absent for work a person
     /// started.
     pub delegation: Option<ChatAssignmentDelegationRead>,
     pub revision: u64,
@@ -1104,14 +1104,14 @@ pub struct ChatAssignmentDelegationRead {
     pub expected_result: String,
 }
 
-/// Work a teammate delegated from an assignment, with its live state.
+/// Work an agent delegated from an assignment, with its live state.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatDelegatedChildRead {
     pub assignment_id: ChatWorkAssignmentId,
     pub parent_assignment_id: ChatWorkAssignmentId,
     pub reply_thread_id: ChatReplyThreadId,
-    pub teammate: ChatParticipantRead,
+    pub agent: ChatParticipantRead,
     pub objective: String,
     pub state: ChatWorkAssignmentState,
     pub state_reason: Option<String>,
@@ -1127,7 +1127,7 @@ pub struct ChatWaitingAssignmentRead {
     pub channel_id: ChatChannelId,
     pub channel_name: String,
     pub reply_thread_id: ChatReplyThreadId,
-    pub teammate_display_name: String,
+    pub agent_display_name: String,
     pub created_at: UtcTimestamp,
 }
 
@@ -1144,9 +1144,9 @@ pub struct ChatWaitingAssignmentsRead {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChatReviewQueueKind {
-    /// The teammate waits for an answer to a question (`waiting_for_answer`).
+    /// The agent waits for an answer to a question (`waiting_for_answer`).
     Answer,
-    /// The teammate waits for an approval (`waiting_for_approval`).
+    /// The agent waits for an approval (`waiting_for_approval`).
     Approval,
     /// Finished work waits for review (`ready_for_review`).
     Review,
@@ -1182,8 +1182,8 @@ pub struct ChatReviewQueueItemRead {
     pub channel_id: ChatChannelId,
     pub channel_name: String,
     pub reply_thread_id: ChatReplyThreadId,
-    pub teammate_participant_id: ChatParticipantId,
-    pub teammate_display_name: String,
+    pub agent_participant_id: ChatParticipantId,
+    pub agent_display_name: String,
     /// The assignment state reason, clipped for display.
     pub state_reason: Option<String>,
     /// Distinct files the assignment's review updates report as changed.
@@ -1247,7 +1247,7 @@ pub struct ChatAgentRunRead {
     pub working_folder_id: Option<ProjectWorkingFolderId>,
     pub execution_environment_id: ChatExecutionEnvironmentId,
     pub scratch_generation_id: Option<ChatScratchGenerationId>,
-    pub teammate_policy_revision_id: ChatTeammatePolicyRevisionId,
+    pub agent_policy_revision_id: ChatAgentPolicyRevisionId,
     pub effort: Option<String>,
     pub provider_execution_turn_id: ChatTurnId,
     pub provider_execution_thread_id: Option<ChatThreadId>,

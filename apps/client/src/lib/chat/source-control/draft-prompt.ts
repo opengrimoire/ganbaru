@@ -16,7 +16,7 @@ export interface DraftPromptText {
 }
 
 /**
- * Builds the turn prompt that asks a teammate to draft text from bounded Git context. Every cut
+ * Builds the turn prompt that asks an agent to draft text from bounded Git context. Every cut
  * the context reports is stated, and the patch sits in a fence longer than any backtick run in it.
  *
  * @param context Bounded Git context.

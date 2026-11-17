@@ -827,7 +827,7 @@ async fn working_run_binding(pool: &sqlx::SqlitePool) -> ganbaru_chat::agent_run
         run_id: ChatAgentRunId::new("run:working").unwrap(),
         assignment_id: ChatWorkAssignmentId::new("assignment:folders").unwrap(),
         project_id: "project-chat".to_string(),
-        teammate_policy_revision_id: ChatTeammatePolicyRevisionId::new("policy:folders").unwrap(),
+        agent_policy_revision_id: ChatAgentPolicyRevisionId::new("policy:folders").unwrap(),
         authorization_revision_id: ChatAuthorizationRevisionId::new("authorization:working")
             .unwrap(),
         authorization_scope_digest: format!("{:064}", 0),

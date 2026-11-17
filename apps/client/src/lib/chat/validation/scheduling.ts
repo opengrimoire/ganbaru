@@ -28,7 +28,7 @@ import {
   readUtcTimestamp,
 } from "./readers";
 
-/** Longest proposed message a teammate may post, in characters. */
+/** Longest proposed message an agent may post, in characters. */
 const MAX_PROPOSED_MESSAGE_CHARS = 4_000;
 /** Longest reason a schedule proposal gives, in characters. */
 const MAX_PROPOSAL_REASON_CHARS = 500;
@@ -162,7 +162,7 @@ function readBoundedText(value: unknown, maximum: number, label: string, allowEm
   return text;
 }
 
-/** Parses the payload of a teammate's schedule proposal update. */
+/** Parses the payload of an agent's schedule proposal update. */
 export function parseChatScheduleProposal(value: unknown, label = "Chat schedule proposal"): ChatScheduleProposal {
   const record = readRecord(value, label);
   return {

@@ -29,8 +29,8 @@ fn stored(request: PushRequest, authorization_revision_id: Option<&str>) -> Stor
         authorization_revision_id: authorization_revision_id.map(str::to_string),
         channel_id: "channel:push".to_string(),
         reply_thread_id: "reply:folders".to_string(),
-        teammate_id: "participant:folder-agent".to_string(),
-        teammate_name: Some("Folder agent".to_string()),
+        agent_id: "participant:folder-agent".to_string(),
+        agent_name: Some("Folder agent".to_string()),
     }
 }
 
@@ -52,7 +52,7 @@ async fn grant_publish(pool: &SqlitePool, working_folder_id: &str) {
 }
 
 #[test]
-fn the_confirmation_reply_mentions_the_teammate_under_ids_derived_from_the_request() {
+fn the_confirmation_reply_mentions_the_agent_under_ids_derived_from_the_request() {
     let stored = stored(request("workspace-1", None), Some("authorization:working"));
     let post = confirmation_post(&stored, ITEM, "  Pushed topic to origin. \n").unwrap();
     assert_eq!(
@@ -72,7 +72,7 @@ fn the_confirmation_reply_mentions_the_teammate_under_ids_derived_from_the_reque
         panic!("one participant mention: {:?}", post.references);
     };
     assert_eq!(participant_id.as_str(), "participant:folder-agent");
-    assert_eq!(*participant_kind, ChatParticipantKind::AiTeammate);
+    assert_eq!(*participant_kind, ChatParticipantKind::AiAgent);
     assert_eq!(
         (metadata.start_offset, metadata.end_offset),
         (0, "@Folder agent".len() as u64)
@@ -89,13 +89,13 @@ fn the_confirmation_reply_mentions_the_teammate_under_ids_derived_from_the_reque
 }
 
 #[test]
-fn a_confirmation_needs_text_and_a_teammate_that_still_exists() {
+fn a_confirmation_needs_text_and_a_agent_that_still_exists() {
     let mut stored = stored(request("workspace-1", None), Some("authorization:working"));
     assert_eq!(
         confirmation_post(&stored, ITEM, " \n").unwrap_err().code,
         ChatErrorCode::Validation
     );
-    stored.teammate_name = None;
+    stored.agent_name = None;
     assert_eq!(
         confirmation_post(&stored, ITEM, "Pushed").unwrap_err().code,
         ChatErrorCode::Conflict
@@ -201,11 +201,11 @@ async fn the_publish_source_comes_from_the_asking_runs_authorization() {
     );
 }
 
-/// Records the fixture teammate's current policy with `safety_mode`, which standing approvals
+/// Records the fixture agent's current policy with `safety_mode`, which standing approvals
 /// compare against.
-async fn set_teammate_safety_mode(pool: &SqlitePool, safety_mode: &str) {
+async fn set_agent_safety_mode(pool: &SqlitePool, safety_mode: &str) {
     sqlx::query(
-        "UPDATE chat_teammates SET current_policy_revision_id = 'policy:folders',
+        "UPDATE chat_agents SET current_policy_revision_id = 'policy:folders',
              current_policy_safety_mode = ?
          WHERE participant_id = 'participant:folder-agent'",
     )
@@ -216,11 +216,11 @@ async fn set_teammate_safety_mode(pool: &SqlitePool, safety_mode: &str) {
 }
 
 /// A pool whose fixture run may publish from `workspace-1` under the ask policy, with the
-/// teammate's safety mode recorded, and the open request and publish source of that run.
+/// agent's safety mode recorded, and the open request and publish source of that run.
 async fn standing_fixture() -> (SqlitePool, StoredPushRequest, InternalMcpFolderSource) {
     let pool = pool_with_folder_runs().await;
     grant_publish(&pool, "workspace-1").await;
-    set_teammate_safety_mode(&pool, "ask_for_approval").await;
+    set_agent_safety_mode(&pool, "ask_for_approval").await;
     let stored = stored(request("workspace-1", None), Some("authorization:working"));
     let source = publish_source(&pool, &stored).await.unwrap();
     (pool, stored, source)
@@ -259,16 +259,16 @@ async fn a_standing_push_needs_a_matching_approval_or_a_full_access_turn() {
     other_url.request.target.push_url = "git@example.invalid:org/fork.git".to_string();
     let mut other_folder = stored.clone();
     other_folder.request.working_folder_id = "workspace-2".to_string();
-    let mut other_teammate = stored.clone();
-    other_teammate.teammate_id = "participant:local-owner".to_string();
-    let mut removed_teammate = stored.clone();
-    removed_teammate.teammate_name = None;
+    let mut other_agent = stored.clone();
+    other_agent.agent_id = "participant:local-owner".to_string();
+    let mut removed_agent = stored.clone();
+    removed_agent.agent_name = None;
     for (case, request) in [
         ("branch", &other_branch),
         ("push URL", &other_url),
         ("folder", &other_folder),
-        ("teammate", &other_teammate),
-        ("removed teammate", &removed_teammate),
+        ("agent", &other_agent),
+        ("removed agent", &removed_agent),
     ] {
         assert_eq!(
             standing_permission(&pool, request, &source).await.unwrap(),
@@ -277,11 +277,11 @@ async fn a_standing_push_needs_a_matching_approval_or_a_full_access_turn() {
         );
     }
     assert_eq!(
-        standing_permission(&pool, &removed_teammate, &full_access)
+        standing_permission(&pool, &removed_agent, &full_access)
             .await
             .unwrap(),
         None,
-        "a removed teammate never pushes on its own"
+        "a removed agent never pushes on its own"
     );
     let auto_approve = InternalMcpFolderSource {
         runtime_approval_policy: ChatRuntimeApprovalPolicy::AutoApprove,
@@ -295,7 +295,7 @@ async fn a_standing_push_needs_a_matching_approval_or_a_full_access_turn() {
         "another approval policy asks again"
     );
 
-    set_teammate_safety_mode(&pool, "approve_for_me").await;
+    set_agent_safety_mode(&pool, "approve_for_me").await;
     assert_eq!(
         standing_permission(&pool, &stored, &source).await.unwrap(),
         None,
@@ -349,7 +349,7 @@ async fn remembering_a_push_approves_again_under_one_key_by_the_local_person() {
 }
 
 #[tokio::test]
-async fn a_teammate_without_a_current_policy_gets_no_approval() {
+async fn a_agent_without_a_current_policy_gets_no_approval() {
     let pool = pool_with_folder_runs().await;
     grant_publish(&pool, "workspace-1").await;
     let stored = stored(request("workspace-1", None), Some("authorization:working"));

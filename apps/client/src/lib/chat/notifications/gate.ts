@@ -18,7 +18,7 @@ export interface ChatAttentionSignal {
   projectId: string;
   channelId: ChatChannelId;
   replyThreadId: ChatReplyThreadId;
-  teammateName: string;
+  agentName: string;
   channelName: string;
   /** Whether this device executed the assignment, which decides who sends its notification. */
   executedHere: boolean;
@@ -92,7 +92,7 @@ export function attentionSignals(queue: ChatReviewQueueRead): ChatAttentionSnaps
       projectId: item.projectId,
       channelId: item.channelId,
       replyThreadId: item.replyThreadId,
-      teammateName: item.teammateDisplayName,
+      agentName: item.agentDisplayName,
       channelName: item.channelName,
       executedHere: item.executedHere,
       stateReason: item.stateReason,

@@ -3,7 +3,7 @@ import type {
   ChatFolderCapability,
   ChatHistoryBoundary,
   ChatRuntimeApprovalPolicy,
-  ChatTeammateChannelAccessInput,
+  ChatAgentChannelAccessInput,
 } from "$lib/chat/contracts";
 
 export type ChatChannelCapabilityPreset =
@@ -14,7 +14,7 @@ export type ChatChannelCapabilityPreset =
 
 export type SelectionState = "none" | "some" | "all";
 
-export interface ChatTeammateAccessConfirmationImpact {
+export interface ChatAgentAccessConfirmationImpact {
   historyChannelIds: string[];
   entireHistoryChannelIds: string[];
   executeFolderIds: string[];
@@ -59,13 +59,13 @@ export function capabilitiesForPreset(
 
 /** Resolves an inherited runtime approval without letting an absent override widen it. */
 export function resolveRuntimeApproval(
-  teammateDefault: ChatRuntimeApprovalPolicy,
+  agentDefault: ChatRuntimeApprovalPolicy,
   channelOverride: ChatRuntimeApprovalPolicy | null,
   folderOverride: ChatRuntimeApprovalPolicy | null,
-): { policy: ChatRuntimeApprovalPolicy; source: "teammate" | "channel" | "folder" } {
+): { policy: ChatRuntimeApprovalPolicy; source: "agent" | "channel" | "folder" } {
   if (folderOverride) return { policy: folderOverride, source: "folder" };
   if (channelOverride) return { policy: channelOverride, source: "channel" };
-  return { policy: teammateDefault, source: "teammate" };
+  return { policy: agentDefault, source: "agent" };
 }
 
 /** Calculates the native tri-state value for a bounded group of selectable channels. */
@@ -91,10 +91,10 @@ export function toggleSelectionGroup(
 
 /** Applies one channel behavior to an exact, already selected scope. */
 export function applyChannelPresetToScope(
-  channels: readonly ChatTeammateChannelAccessInput[],
+  channels: readonly ChatAgentChannelAccessInput[],
   channelIds: ReadonlySet<string>,
   preset: Exclude<ChatChannelCapabilityPreset, "custom">,
-): ChatTeammateChannelAccessInput[] {
+): ChatAgentChannelAccessInput[] {
   return channels.map((channel) => channelIds.has(channel.channelId)
     ? {
         ...channel,
@@ -106,14 +106,14 @@ export function applyChannelPresetToScope(
 
 /** Applies one profile ceiling to an exact scope and removes grants above it. */
 export function applyAccessProfileToScope(
-  channels: readonly ChatTeammateChannelAccessInput[],
+  channels: readonly ChatAgentChannelAccessInput[],
   channelIds: ReadonlySet<string>,
   profile: {
     id: string;
     revisionId: string;
     maximumFolderCapability: ChatFolderCapability;
   },
-): ChatTeammateChannelAccessInput[] {
+): ChatAgentChannelAccessInput[] {
   return channels.map((channel) => channelIds.has(channel.channelId)
     ? {
         ...channel,
@@ -128,8 +128,8 @@ export function applyAccessProfileToScope(
 }
 
 /** Creates a stable access snapshot for dirty checks and optimistic replacement. */
-export function teammateAccessDraftSnapshot(
-  channels: readonly ChatTeammateChannelAccessInput[],
+export function agentAccessDraftSnapshot(
+  channels: readonly ChatAgentChannelAccessInput[],
 ): string {
   return JSON.stringify(
     [...channels]
@@ -152,10 +152,10 @@ export function teammateAccessDraftSnapshot(
  * Returns only access changes that benefit from a separate human confirmation.
  * Exact responder membership and participation changes remain ordinary draft edits.
  */
-export function teammateAccessConfirmationImpact(
-  current: readonly ChatTeammateChannelAccessInput[],
-  proposed: readonly ChatTeammateChannelAccessInput[],
-): ChatTeammateAccessConfirmationImpact {
+export function agentAccessConfirmationImpact(
+  current: readonly ChatAgentChannelAccessInput[],
+  proposed: readonly ChatAgentChannelAccessInput[],
+): ChatAgentAccessConfirmationImpact {
   const currentByChannel = new Map(current.map((channel) => [channel.channelId, channel]));
   const proposedByChannel = new Map(proposed.map((channel) => [channel.channelId, channel]));
   const historyChannelIds = new Set<string>();
@@ -208,8 +208,8 @@ export function teammateAccessConfirmationImpact(
 }
 
 /** Returns whether the impact contains a change that deserves separate confirmation. */
-export function teammateAccessNeedsConfirmation(
-  impact: ChatTeammateAccessConfirmationImpact,
+export function agentAccessNeedsConfirmation(
+  impact: ChatAgentAccessConfirmationImpact,
 ): boolean {
   return impact.historyChannelIds.length > 0
     || impact.entireHistoryChannelIds.length > 0
@@ -227,8 +227,8 @@ function normalizeHistoryBoundary(boundary: ChatHistoryBoundary): ChatHistoryBou
 }
 
 /** Returns all configuration errors that must block an atomic access save. */
-export function teammateAccessDraftErrors(
-  channels: readonly ChatTeammateChannelAccessInput[],
+export function agentAccessDraftErrors(
+  channels: readonly ChatAgentChannelAccessInput[],
   profileCeilings: ReadonlyMap<string, ChatFolderCapability>,
 ): string[] {
   const errors: string[] = [];
@@ -264,7 +264,7 @@ export function teammateAccessDraftErrors(
  * Returns `null` when the work runs conversation only. Grants without a capability never become the target.
  */
 export function impliedFolderGrantId(
-  grants: readonly Pick<ChatTeammateChannelAccessInput["folderGrants"][number], "workingFolderId" | "capability" | "isDefault">[],
+  grants: readonly Pick<ChatAgentChannelAccessInput["folderGrants"][number], "workingFolderId" | "capability" | "isDefault">[],
   projectWorkingFolderId: string | null,
 ): string | null {
   const candidates = grants.filter((grant) => grant.capability !== "none");

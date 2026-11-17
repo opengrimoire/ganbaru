@@ -7,7 +7,7 @@ use ganbaru_chat::scheduling::{QuietPolicy, RecurrenceRule, RecurrenceSpec, Week
 const NOW: &str = "2026-11-12T09:00:00.000Z";
 const FIRST_AT: &str = "2026-11-13T08:00:00.000Z";
 const PROJECT_ID: &str = "project-schedule-proposals";
-const TEAMMATE: &str = "participant:proposals-helper";
+const AGENT: &str = "participant:proposals-helper";
 const OWNER: &str = "participant:local-owner";
 const ASSIGNMENT: &str = "assignment:proposals";
 const RUN: &str = "run:proposals-1";
@@ -31,9 +31,9 @@ async fn migrated_pool() -> SqlitePool {
     pool
 }
 
-/// Seeds a working assignment of a teammate named `teammate_name` and returns the id of the
+/// Seeds a working assignment of an agent named `agent_name` and returns the id of the
 /// schedule proposal its run posted.
-async fn seed_proposal(pool: &SqlitePool, teammate_name: &str) -> ChatConversationItemId {
+async fn seed_proposal(pool: &SqlitePool, agent_name: &str) -> ChatConversationItemId {
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "INSERT INTO project_groups (id, name, order_key) VALUES ('group-proposals', 'P', 'a0');
          INSERT INTO projects (id, group_id, name, order_key)
@@ -55,9 +55,9 @@ async fn seed_proposal(pool: &SqlitePool, teammate_name: &str) -> ChatConversati
     let digest = "a".repeat(64);
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
-         VALUES ('{TEAMMATE}', 'ai_teammate', '{teammate_name}', '{NOW}', '{NOW}');
-         INSERT INTO chat_teammates (participant_id, role, created_at, updated_at)
-         VALUES ('{TEAMMATE}', 'Helper', '{NOW}', '{NOW}');
+         VALUES ('{AGENT}', 'ai_agent', '{agent_name}', '{NOW}', '{NOW}');
+         INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
+         VALUES ('{AGENT}', 'Helper', '{NOW}', '{NOW}');
          INSERT INTO chat_conversation_items (id, conversation_id, item_kind, order_key, created_at)
          VALUES ('item:root', '{conversation}', 'message', 'c000', '{NOW}');
          INSERT INTO chat_communication_messages (item_id, author_participant_id, created_at)
@@ -66,12 +66,12 @@ async fn seed_proposal(pool: &SqlitePool, teammate_name: &str) -> ChatConversati
             (id, conversation_id, root_item_id, last_activity_at, created_at, updated_at)
          VALUES ('{THREAD}', '{conversation}', 'item:root', '{NOW}', '{NOW}', '{NOW}');
          INSERT INTO chat_work_assignments
-            (id, reply_thread_id, teammate_id, triggering_message_item_id, state,
+            (id, reply_thread_id, agent_id, triggering_message_item_id, state,
              created_at, updated_at)
-         VALUES ('{ASSIGNMENT}', '{THREAD}', '{TEAMMATE}', 'item:root', 'working', '{NOW}', '{NOW}');
+         VALUES ('{ASSIGNMENT}', '{THREAD}', '{AGENT}', 'item:root', 'working', '{NOW}', '{NOW}');
          UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
          INSERT INTO chat_agent_runs
-            (id, assignment_id, project_id, teammate_policy_revision_id,
+            (id, assignment_id, project_id, agent_policy_revision_id,
              authorization_revision_id, authorization_scope_digest, provider_turn_id,
              provider_thread_id, state, run_ordinal, created_at, updated_at)
          VALUES ('{RUN}', '{ASSIGNMENT}', '{PROJECT_ID}', 'policy:proposals',
@@ -135,7 +135,7 @@ async fn confirm(
 }
 
 #[tokio::test]
-async fn a_confirmation_mentions_the_teammate_in_the_reply_thread_under_derived_ids() {
+async fn a_confirmation_mentions_the_agent_in_the_reply_thread_under_derived_ids() {
     let pool = migrated_pool().await;
     let item_id = seed_proposal(&pool, "Helper").await;
     let command = confirm(&pool, request(&item_id, None)).await.unwrap();
@@ -171,8 +171,8 @@ async fn a_confirmation_mentions_the_teammate_in_the_reply_thread_under_derived_
     else {
         panic!("one participant reference");
     };
-    assert_eq!(participant_id.as_str(), TEAMMATE);
-    assert_eq!(*participant_kind, ChatParticipantKind::AiTeammate);
+    assert_eq!(participant_id.as_str(), AGENT);
+    assert_eq!(*participant_kind, ChatParticipantKind::AiAgent);
     assert_eq!((metadata.start_offset, metadata.end_offset), (0, 7));
     assert_eq!(metadata.plain_text_projection, "@Helper");
     // A second device confirming the same proposal derives the same ids.
@@ -188,7 +188,7 @@ async fn a_confirmation_mentions_the_teammate_in_the_reply_thread_under_derived_
 }
 
 #[tokio::test]
-async fn a_non_ascii_teammate_name_gets_byte_offsets() {
+async fn a_non_ascii_agent_name_gets_byte_offsets() {
     let pool = migrated_pool().await;
     let item_id = seed_proposal(&pool, "Asistenté").await;
     let command = confirm(&pool, request(&item_id, None)).await.unwrap();
@@ -204,7 +204,7 @@ async fn a_non_ascii_teammate_name_gets_byte_offsets() {
 }
 
 #[tokio::test]
-async fn confirmations_refuse_blank_or_oversized_text_and_removed_teammates() {
+async fn confirmations_refuse_blank_or_oversized_text_and_removed_agents() {
     let pool = migrated_pool().await;
     let item_id = seed_proposal(&pool, "Helper").await;
     let blank = confirm(&pool, request(&item_id, Some("   ")))
@@ -218,7 +218,7 @@ async fn confirmations_refuse_blank_or_oversized_text_and_removed_teammates() {
     assert_eq!(oversized.code, ChatErrorCode::Validation);
     sqlx::query("UPDATE chat_participants SET archived_at = ? WHERE id = ?")
         .bind(NOW)
-        .bind(TEAMMATE)
+        .bind(AGENT)
         .execute(&pool)
         .await
         .unwrap();

@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
-  TEAMMATE_INSTRUCTIONS_MAX_BYTES,
-  teammateExecutionSummary,
-  teammateInstructionsTooLong,
-  teammateProfileDraftSnapshot,
-  type TeammateProfileDraftSnapshotInput,
+  AGENT_INSTRUCTIONS_MAX_BYTES,
+  agentExecutionSummary,
+  agentInstructionsTooLong,
+  agentProfileDraftSnapshot,
+  type AgentProfileDraftSnapshotInput,
 } from "./draft";
 
-const PROFILE: TeammateProfileDraftSnapshotInput = {
+const PROFILE: AgentProfileDraftSnapshotInput = {
   displayName: "Atlas",
   role: "Plan work",
   instructions: "Stay focused",
@@ -23,67 +23,67 @@ const PROFILE: TeammateProfileDraftSnapshotInput = {
   speed: "standard",
 };
 
-describe("teammate draft snapshots", () => {
+describe("agent draft snapshots", () => {
   it("ignores whitespace that is removed when saving a profile", () => {
-    expect(teammateProfileDraftSnapshot({
+    expect(agentProfileDraftSnapshot({
       ...PROFILE,
       displayName: " Atlas ",
       role: " Plan work ",
-    })).toBe(teammateProfileDraftSnapshot(PROFILE));
+    })).toBe(agentProfileDraftSnapshot(PROFILE));
   });
 
   it("ignores model option order", () => {
-    expect(teammateProfileDraftSnapshot({
+    expect(agentProfileDraftSnapshot({
       ...PROFILE,
       modelOptions: [...PROFILE.modelOptions].reverse(),
-    })).toBe(teammateProfileDraftSnapshot(PROFILE));
+    })).toBe(agentProfileDraftSnapshot(PROFILE));
   });
 
   it("detects a persisted profile change", () => {
-    expect(teammateProfileDraftSnapshot({ ...PROFILE, effort: "high" }))
-      .not.toBe(teammateProfileDraftSnapshot(PROFILE));
+    expect(agentProfileDraftSnapshot({ ...PROFILE, effort: "high" }))
+      .not.toBe(agentProfileDraftSnapshot(PROFILE));
   });
 
   it("detects execution mode and speed changes", () => {
-    expect(teammateProfileDraftSnapshot({
+    expect(agentProfileDraftSnapshot({
       ...PROFILE,
       providerManagedModel: true,
       modelId: "",
       speed: "fast",
-    })).not.toBe(teammateProfileDraftSnapshot(PROFILE));
+    })).not.toBe(agentProfileDraftSnapshot(PROFILE));
   });
 
   it("derives effort and choice speed summaries", () => {
-    expect(teammateExecutionSummary(PROFILE.modelOptions, null)).toEqual({
+    expect(agentExecutionSummary(PROFILE.modelOptions, null)).toEqual({
       effort: "medium",
       speed: "standard",
     });
-    expect(teammateExecutionSummary([
+    expect(agentExecutionSummary([
       { key: "reasoning_effort", value: { kind: "choice", value: "ultra" } },
       { key: "service_tier", value: { kind: "choice", value: "priority" } },
     ], null)).toEqual({ effort: "ultra", speed: "fast" });
   });
 
   it("derives boolean Fast mode summaries", () => {
-    expect(teammateExecutionSummary([
+    expect(agentExecutionSummary([
       { key: "fastMode", value: { kind: "boolean", value: true } },
     ], null)).toEqual({ effort: null, speed: "fast" });
-    expect(teammateExecutionSummary([
+    expect(agentExecutionSummary([
       { key: "fastMode", value: { kind: "boolean", value: false } },
     ], null)).toEqual({ effort: null, speed: "standard" });
   });
 
 });
 
-describe("teammate instruction bound", () => {
+describe("agent instruction bound", () => {
   it("counts UTF-8 bytes of the trimmed text, not characters", () => {
-    const ascii = "a".repeat(TEAMMATE_INSTRUCTIONS_MAX_BYTES);
-    expect(teammateInstructionsTooLong(ascii)).toBe(false);
-    expect(teammateInstructionsTooLong(`  ${ascii}\n`)).toBe(false);
-    expect(teammateInstructionsTooLong(`${ascii}a`)).toBe(true);
-    const multibyte = "é".repeat(TEAMMATE_INSTRUCTIONS_MAX_BYTES / 2);
-    expect(teammateInstructionsTooLong(multibyte)).toBe(false);
-    expect(teammateInstructionsTooLong(`${multibyte}é`)).toBe(true);
-    expect(teammateInstructionsTooLong("😀".repeat(TEAMMATE_INSTRUCTIONS_MAX_BYTES / 4 + 1))).toBe(true);
+    const ascii = "a".repeat(AGENT_INSTRUCTIONS_MAX_BYTES);
+    expect(agentInstructionsTooLong(ascii)).toBe(false);
+    expect(agentInstructionsTooLong(`  ${ascii}\n`)).toBe(false);
+    expect(agentInstructionsTooLong(`${ascii}a`)).toBe(true);
+    const multibyte = "é".repeat(AGENT_INSTRUCTIONS_MAX_BYTES / 2);
+    expect(agentInstructionsTooLong(multibyte)).toBe(false);
+    expect(agentInstructionsTooLong(`${multibyte}é`)).toBe(true);
+    expect(agentInstructionsTooLong("😀".repeat(AGENT_INSTRUCTIONS_MAX_BYTES / 4 + 1))).toBe(true);
   });
 });

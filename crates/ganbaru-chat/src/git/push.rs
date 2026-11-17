@@ -1,7 +1,7 @@
 //! The commit, remote, and destination branch a push would send, read without a network call,
 //! and the push of exactly that commit.
 //!
-//! A teammate's push request records a [`GitPushTarget`]; a person confirms it, and the push
+//! An agent's push request records a [`GitPushTarget`]; a person confirms it, and the push
 //! sends the recorded commit to the recorded destination only when a fresh read still names
 //! the same target. The push names the commit object, never a local ref, so a branch that
 //! moved after the person looked cannot change what reaches the remote, and it never forces.
@@ -50,7 +50,7 @@ pub enum GitPushTargetError {
     /// other than HTTPS, HTTP, SSH, Git, or a local path, or a destination is not a plain branch.
     Unsupported,
     /// Repository configuration chooses how Git connects or authenticates (a credential helper,
-    /// an SSH or proxy command, a proxy, or TLS trust), which a teammate could have written.
+    /// an SSH or proxy command, a proxy, or TLS trust), which an agent could have written.
     RepositoryConnection,
     /// Git failed or printed something unexpected.
     Failed(ChatError),
@@ -113,7 +113,7 @@ pub async fn push_target(
 /// Pushes the commit `target` names to its destination branch, without forcing, tags, or
 /// submodules. The remote is named, never a URL, and the destination is a full branch ref.
 ///
-/// The push runs as a confirmed teammate request (see [`super::hardened::GitOrigin::Requested`]):
+/// The push runs as a confirmed agent request (see [`super::hardened::GitOrigin::Requested`]):
 /// repository configuration and hooks never apply, whatever this device's trust record says,
 /// and only standard transports are allowed. A local remote runs its `receive-pack` on this
 /// device, so it runs without the remote repository's hooks and programs as well.

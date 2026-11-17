@@ -10,7 +10,7 @@ function signal(assignmentId: string, overrides: Partial<ChatAttentionSignal> = 
     projectId: "project-1",
     channelId: "channel-1",
     replyThreadId: `thread-${assignmentId}`,
-    teammateName: "Ada",
+    agentName: "Ada",
     channelName: "General",
     executedHere: true,
     stateReason: null,

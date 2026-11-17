@@ -164,7 +164,7 @@ export class ChatOrganizationalController {
     this.scheduledMessagesVersion += 1;
   }
 
-  /** Schedules the message a person confirmed from a teammate's schedule proposal. */
+  /** Schedules the message a person confirmed from an agent's schedule proposal. */
   async confirmScheduleProposal(
     request: import("$lib/chat/contracts").ConfirmScheduleProposalRequest,
   ): Promise<ChatScheduledMessageRead> {
@@ -174,7 +174,7 @@ export class ChatOrganizationalController {
   }
 
   /**
-   * Pushes the commit of a teammate's push request in `workingFolderId`, asking for a trust decision
+   * Pushes the commit of an agent's push request in `workingFolderId`, asking for a trust decision
    * about the folder's Git configuration when this device has none, then rereads the open thread so
    * the confirming reply shows.
    */

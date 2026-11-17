@@ -10,7 +10,7 @@ pub const SCHEDULED_CONSENT_DOMAIN: &[u8] = b"ganbaru-scheduled-consent-v1";
 /// Domain of a repeating scheduled message consent digest.
 pub const SCHEDULED_SERIES_CONSENT_DOMAIN: &[u8] = b"ganbaru-scheduled-series-consent-v1";
 
-/// One folder a teammate could run in, with the access it would hold there.
+/// One folder an agent could run in, with the access it would hold there.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AcceptanceGrant {
     pub working_folder_id: String,
@@ -22,13 +22,13 @@ pub struct AcceptanceGrant {
 /// What would run on this device for an assignment.
 #[derive(Clone, Copy, Debug)]
 pub struct AcceptanceSubject<'a> {
-    pub teammate_id: &'a str,
+    pub agent_id: &'a str,
     pub policy_revision_id: &'a str,
     pub instructions: &'a str,
     pub provider_instance_id: &'a str,
     /// Grants sorted by working folder id.
     pub grants: &'a [AcceptanceGrant],
-    /// Effective runtime approval in the teammate's scratch.
+    /// Effective runtime approval in the agent's scratch.
     pub scratch_runtime_approval: &'a str,
 }
 
@@ -36,7 +36,7 @@ pub struct AcceptanceSubject<'a> {
 pub fn acceptance_digest(subject: &AcceptanceSubject<'_>) -> String {
     let mut hasher = Sha256::new();
     hasher.update(ACCEPTANCE_DOMAIN);
-    absorb(&mut hasher, subject.teammate_id);
+    absorb(&mut hasher, subject.agent_id);
     absorb(&mut hasher, subject.policy_revision_id);
     absorb(&mut hasher, subject.instructions);
     absorb(&mut hasher, subject.provider_instance_id);
@@ -109,7 +109,7 @@ mod tests {
     fn acceptance_digest_changes_with_policy_instructions_provider_and_grants() {
         let grants = [grant("folder:a", "read", "ask")];
         let subject = AcceptanceSubject {
-            teammate_id: "participant:agent",
+            agent_id: "participant:agent",
             policy_revision_id: "policy:1",
             instructions: "Review the code",
             provider_instance_id: "provider:a",
@@ -128,7 +128,7 @@ mod tests {
         ];
         let changed = [
             AcceptanceSubject {
-                teammate_id: "participant:other",
+                agent_id: "participant:other",
                 ..subject
             },
             AcceptanceSubject {
@@ -172,7 +172,7 @@ mod tests {
     #[test]
     fn acceptance_digest_keeps_field_boundaries() {
         let split = AcceptanceSubject {
-            teammate_id: "ab",
+            agent_id: "ab",
             policy_revision_id: "c",
             instructions: "",
             provider_instance_id: "",
@@ -180,7 +180,7 @@ mod tests {
             scratch_runtime_approval: "",
         };
         let joined = AcceptanceSubject {
-            teammate_id: "a",
+            agent_id: "a",
             policy_revision_id: "bc",
             ..split
         };
@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn acceptance_digest_differs_from_a_scheduled_consent_of_the_same_values() {
         let subject = AcceptanceSubject {
-            teammate_id: "same",
+            agent_id: "same",
             policy_revision_id: "same",
             instructions: "",
             provider_instance_id: "",

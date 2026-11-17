@@ -38,7 +38,7 @@ const localParticipant: ChatParticipantRead = {
 
 const agentParticipant: ChatParticipantRead = {
   id: "participant:atlas",
-  kind: "ai_teammate",
+  kind: "ai_agent",
   displayName: "Atlas",
   avatar: { schemaVersion: 1, value: {} },
   revision: 1,
@@ -50,7 +50,7 @@ function message(
   author: ChatParticipantRead,
   markdown: string,
   position: number,
-  agentRunId: string | null = author.kind === "ai_teammate" ? "run:test" : null,
+  agentRunId: string | null = author.kind === "ai_agent" ? "run:test" : null,
 ): ChatMessageRead {
   return {
     itemId,
@@ -84,7 +84,7 @@ const run: ChatAgentRunRead = {
   workingFolderId: "folder:test",
   executionEnvironmentId: "environment:test",
   scratchGenerationId: null,
-  teammatePolicyRevisionId: "policy:test",
+  agentPolicyRevisionId: "policy:test",
   effort: "medium",
   providerExecutionTurnId: "turn:test",
   providerExecutionThreadId: "provider-thread:test",
@@ -414,7 +414,7 @@ describe("ChatReplyThreadPanel", () => {
     expect(target.querySelector(".agent-badge")).toBeNull();
   });
 
-  it("names the teammate and a localized reason when its run fails before any output", async () => {
+  it("names the agent and a localized reason when its run fails before any output", async () => {
     const diagnostic = "The provider did not authenticate its internal host tools in time";
     const failedRun: ChatAgentRunRead = { ...run, state: "failed" };
     const unstartedRun: ChatAgentRunRead = {
@@ -478,13 +478,13 @@ describe("ChatReplyThreadPanel", () => {
     expect(target.querySelectorAll(".chat-execution-timeline")).toHaveLength(1);
   });
 
-  it("shows a failure at the bottom of the teammate's message with Retry and the technical detail behind copy", async () => {
+  it("shows a failure at the bottom of the agent's message with Retry and the technical detail behind copy", async () => {
     const diagnostic = "Provider turn timed out after 600 seconds";
     const failedRun: ChatAgentRunRead = { ...run, providerExecutionThreadId: null, state: "failed" };
     const assignment = {
       id: run.assignmentId,
       replyThreadId: page.thread.id,
-      teammate: agentParticipant,
+      agent: agentParticipant,
       triggeringMessageItemId: "root:test",
       previousAssignmentId: null,
       state: "failed",
@@ -636,7 +636,7 @@ describe("ChatReplyThreadPanel", () => {
     const assignment = {
       id: "assignment:test",
       replyThreadId: page.thread.id,
-      teammate: agentParticipant,
+      agent: agentParticipant,
       triggeringMessageItemId: "root:test",
       previousAssignmentId: null,
       state: "waiting_for_answer",
@@ -678,7 +678,7 @@ describe("ChatReplyThreadPanel", () => {
         assignmentId: "assignment:child",
         parentAssignmentId: assignment.id,
         replyThreadId: "reply-thread:child",
-        teammate: agentParticipant,
+        agent: agentParticipant,
         objective: "Run the tests",
         state: "working",
         stateReason: null,

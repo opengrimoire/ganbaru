@@ -23,7 +23,7 @@
   import X from "@lucide/svelte/icons/x";
   import type { ChatChannelRead, ChatMessageSearchResultRead } from "$lib/chat/contracts";
   import { channelAttentionMarker, channelUnreadBadge, reviewQueueCount } from "$lib/chat/review-queue/model";
-  import { chatParticipantDisplayName } from "$lib/chat/teammates/participant-display";
+  import { chatParticipantDisplayName } from "$lib/chat/agents/participant-display";
   import {
     moveChatChannelToSection,
     normalizeChatSidebarSections,

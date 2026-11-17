@@ -3,38 +3,38 @@
 use super::profiles::read_access_profile;
 use super::{
     ChatAccessIssueCode, ChatAccessProfileId, ChatAccessProfileRevisionId,
-    ChatAccessValidationIssue, ChatChannelCapabilities, ChatChannelId, ChatConversationId,
+    ChatAccessValidationIssue, ChatAgentAccessRead, ChatAgentChannelAccessInput,
+    ChatAgentChannelAccessRead, ChatChannelCapabilities, ChatChannelId, ChatConversationId,
     ChatError, ChatErrorCode, ChatFolderGrantRead, ChatHistoryBoundary, ChatParticipantId,
-    ChatResult, ChatRuntimeApprovalPolicy, ChatTeammateAccessRead, ChatTeammateChannelAccessInput,
-    ChatTeammateChannelAccessRead, ProjectWorkingFolderId,
+    ChatResult, ChatRuntimeApprovalPolicy, ProjectWorkingFolderId,
 };
 use super::{ResolvedChannelAccess, history_boundary_is_expansion, issue};
 use crate::chat::channels::{identifier_error, optional_timestamp, persistence_error, u64_value};
 use crate::chat::organization::common::{
-    ACTIVE_FOLDER_GRANTS_SQL, from_grant_lower_order_key, parse_approval_policy,
-    parse_folder_capability, parse_history_boundary, parse_runtime_approval_policy,
-    teammate_runtime_approval,
+    ACTIVE_FOLDER_GRANTS_SQL, agent_runtime_approval, from_grant_lower_order_key,
+    parse_approval_policy, parse_folder_capability, parse_history_boundary,
+    parse_runtime_approval_policy,
 };
 use sqlx::{Row, SqlitePool};
 use std::collections::BTreeSet;
 
-pub(in crate::chat::organization) async fn read_teammate_access(
+pub(in crate::chat::organization) async fn read_agent_access(
     pool: &SqlitePool,
-    teammate_id: &ChatParticipantId,
-) -> ChatResult<ChatTeammateAccessRead> {
+    agent_id: &ChatParticipantId,
+) -> ChatResult<ChatAgentAccessRead> {
     let state = sqlx::query(
         "SELECT access_state.access_revision, policy.safety_mode
-         FROM chat_teammate_access_state access_state
-         JOIN chat_teammates teammate ON teammate.participant_id = access_state.teammate_id
-         JOIN chat_teammate_effective_policies policy
-           ON policy.teammate_id = teammate.participant_id
-         WHERE access_state.teammate_id = ?",
+         FROM chat_agent_access_state access_state
+         JOIN chat_agents agent ON agent.participant_id = access_state.agent_id
+         JOIN chat_agent_effective_policies policy
+           ON policy.agent_id = agent.participant_id
+         WHERE access_state.agent_id = ?",
     )
-    .bind(teammate_id.as_str())
+    .bind(agent_id.as_str())
     .fetch_optional(pool)
     .await
     .map_err(persistence_error)?
-    .ok_or_else(|| ChatError::new(ChatErrorCode::NotFound, "AI teammate was not found", true))?;
+    .ok_or_else(|| ChatError::new(ChatErrorCode::NotFound, "AI agent was not found", true))?;
     let rows = sqlx::query(
         "SELECT channel.id AS channel_id, channel.project_id, project.group_id,
                 channel.conversation_id, channel.name AS channel_name,
@@ -50,19 +50,19 @@ pub(in crate::chat::organization) async fn read_teammate_access(
                 ai.history_from_order_key, ai.runtime_approval_policy,
                 ai.scratch_runtime_approval_policy,
                 membership.revision AS membership_revision, membership.removed_at
-         FROM chat_teammate_channel_memberships ai
+         FROM chat_agent_channel_memberships ai
          JOIN chat_conversation_memberships membership
            ON membership.conversation_id = ai.conversation_id
-          AND membership.participant_id = ai.teammate_id
+          AND membership.participant_id = ai.agent_id
          JOIN chat_channels channel ON channel.conversation_id = ai.conversation_id
          JOIN projects project ON project.id = channel.project_id
          JOIN chat_access_profiles profile ON profile.id = ai.access_profile_id
          JOIN chat_access_profile_effective_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id
-         WHERE ai.teammate_id = ? AND ai.removed_at IS NULL
+         WHERE ai.agent_id = ? AND ai.removed_at IS NULL
          ORDER BY project.group_id, channel.project_id, channel.name COLLATE NOCASE, channel.id",
     )
-    .bind(teammate_id.as_str())
+    .bind(agent_id.as_str())
     .fetch_all(pool)
     .await
     .map_err(persistence_error)?;
@@ -75,7 +75,7 @@ pub(in crate::chat::organization) async fn read_teammate_access(
         .map_err(identifier_error)?;
         let grant_rows = sqlx::query(ACTIVE_FOLDER_GRANTS_SQL)
             .bind(conversation_id.as_str())
-            .bind(teammate_id.as_str())
+            .bind(agent_id.as_str())
             .fetch_all(pool)
             .await
             .map_err(persistence_error)?;
@@ -162,7 +162,7 @@ pub(in crate::chat::organization) async fn read_teammate_access(
         } else {
             stored_history_boundary
         };
-        channels.push(ChatTeammateChannelAccessRead {
+        channels.push(ChatAgentChannelAccessRead {
             channel_id: ChatChannelId::new(
                 row.try_get::<String, _>("channel_id")
                     .map_err(persistence_error)?,
@@ -243,14 +243,14 @@ pub(in crate::chat::organization) async fn read_teammate_access(
             removed_at: optional_timestamp(row.try_get("removed_at").map_err(persistence_error)?)?,
         });
     }
-    Ok(ChatTeammateAccessRead {
-        teammate_id: teammate_id.clone(),
+    Ok(ChatAgentAccessRead {
+        agent_id: agent_id.clone(),
         access_revision: u64_value(
             state
                 .try_get("access_revision")
                 .map_err(persistence_error)?,
         )?,
-        teammate_default_runtime_approval: teammate_runtime_approval(parse_approval_policy(
+        agent_default_runtime_approval: agent_runtime_approval(parse_approval_policy(
             &state
                 .try_get::<String, _>("safety_mode")
                 .map_err(persistence_error)?,
@@ -261,8 +261,8 @@ pub(in crate::chat::organization) async fn read_teammate_access(
 
 pub(super) async fn resolve_channel_access(
     pool: &SqlitePool,
-    teammate_id: &ChatParticipantId,
-    channels: &[ChatTeammateChannelAccessInput],
+    agent_id: &ChatParticipantId,
+    channels: &[ChatAgentChannelAccessInput],
 ) -> ChatResult<(Vec<ResolvedChannelAccess>, Vec<ChatAccessValidationIssue>)> {
     let mut resolved = Vec::with_capacity(channels.len());
     let mut issues = Vec::new();
@@ -304,7 +304,7 @@ pub(super) async fn resolve_channel_access(
             issues.push(issue(
                 ChatAccessIssueCode::ArchivedChannel,
                 &format!("{channel_path}.channelId"),
-                "Archived channels cannot receive teammate access",
+                "Archived channels cannot receive agent access",
             ));
             continue;
         }
@@ -322,7 +322,7 @@ pub(super) async fn resolve_channel_access(
         if profile.latest_revision.id != input.access_profile_revision_id {
             return Err(ChatError::new(
                 ChatErrorCode::StaleRevision,
-                "An access profile changed before teammate access could be previewed",
+                "An access profile changed before agent access could be previewed",
                 true,
             ));
         }
@@ -427,12 +427,12 @@ pub(super) async fn resolve_channel_access(
             ChatHistoryBoundary::Entire => ChatHistoryBoundary::Entire,
             ChatHistoryBoundary::FromGrant { .. } => {
                 let current_lower = sqlx::query_scalar::<_, Option<String>>(
-                    "SELECT history_from_order_key FROM chat_teammate_channel_memberships
-                     WHERE conversation_id = ? AND teammate_id = ? AND removed_at IS NULL
+                    "SELECT history_from_order_key FROM chat_agent_channel_memberships
+                     WHERE conversation_id = ? AND agent_id = ? AND removed_at IS NULL
                        AND history_boundary = 'from_grant'",
                 )
                 .bind(conversation_id.as_str())
-                .bind(teammate_id.as_str())
+                .bind(agent_id.as_str())
                 .fetch_optional(pool)
                 .await
                 .map_err(persistence_error)?
@@ -477,18 +477,18 @@ pub(super) async fn resolve_channel_access(
 }
 
 pub(super) fn proposed_access_read(
-    teammate_id: &ChatParticipantId,
+    agent_id: &ChatParticipantId,
     access_revision: u64,
-    teammate_default_runtime_approval: ChatRuntimeApprovalPolicy,
+    agent_default_runtime_approval: ChatRuntimeApprovalPolicy,
     resolved: &[ResolvedChannelAccess],
-) -> ChatTeammateAccessRead {
-    ChatTeammateAccessRead {
-        teammate_id: teammate_id.clone(),
+) -> ChatAgentAccessRead {
+    ChatAgentAccessRead {
+        agent_id: agent_id.clone(),
         access_revision,
-        teammate_default_runtime_approval,
+        agent_default_runtime_approval,
         channels: resolved
             .iter()
-            .map(|channel| ChatTeammateChannelAccessRead {
+            .map(|channel| ChatAgentChannelAccessRead {
                 channel_id: channel.channel_id.clone(),
                 project_id: channel.project_id.clone(),
                 group_id: channel.group_id.clone(),

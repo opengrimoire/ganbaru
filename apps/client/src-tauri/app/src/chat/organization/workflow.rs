@@ -29,7 +29,7 @@ use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
 #[derive(Clone, Debug)]
 pub(super) struct ResolvedInvocation {
-    pub(super) teammate_id: ChatParticipantId,
+    pub(super) agent_id: ChatParticipantId,
     pub(super) active_assignment: Option<ChatWorkAssignmentRead>,
     pub(super) latest_assignment: Option<ChatWorkAssignmentRead>,
 }
@@ -97,7 +97,7 @@ pub(super) fn require_continuation_scope_is_unchanged(
     Ok(())
 }
 
-pub(super) async fn resolve_invoked_teammate(
+pub(super) async fn resolve_invoked_agent(
     pool: &SqlitePool,
     conversation_id: &ChatConversationId,
     reply_thread_id: Option<&ChatReplyThreadId>,
@@ -120,7 +120,7 @@ pub(super) async fn resolve_invoked_teammate(
                 "A participant reference has stale identity data",
             ));
         }
-        if participant.kind == ChatParticipantKind::AiTeammate {
+        if participant.kind == ChatParticipantKind::AiAgent {
             ai_mentions.push(participant_id.clone());
         }
     }
@@ -129,7 +129,7 @@ pub(super) async fn resolve_invoked_teammate(
     if ai_mentions.len() > 1 {
         return Err(ChatError::validation(
             "references",
-            "Assign one AI teammate at a time",
+            "Assign one AI agent at a time",
         ));
     }
     let latest_assignment = match reply_thread_id {
@@ -140,26 +140,26 @@ pub(super) async fn resolve_invoked_teammate(
         .as_ref()
         .filter(|assignment| assignment.state.accepts_continuation())
         .cloned();
-    let teammate_id = ai_mentions.into_iter().next().or_else(|| {
+    let agent_id = ai_mentions.into_iter().next().or_else(|| {
         latest_assignment
             .as_ref()
-            .map(|assignment| assignment.teammate.id.clone())
+            .map(|assignment| assignment.agent.id.clone())
     });
-    let Some(teammate_id) = teammate_id else {
+    let Some(agent_id) = agent_id else {
         return Ok(None);
     };
     if active_assignment
         .as_ref()
-        .is_some_and(|assignment| assignment.teammate.id != teammate_id)
+        .is_some_and(|assignment| assignment.agent.id != agent_id)
     {
         return Err(ChatError::validation(
             "references",
-            "This reply thread already has an active AI teammate",
+            "This reply thread already has an active AI agent",
         ));
     }
-    require_participating_teammate(pool, conversation_id, &teammate_id).await?;
+    require_participating_agent(pool, conversation_id, &agent_id).await?;
     Ok(Some(ResolvedInvocation {
-        teammate_id,
+        agent_id,
         active_assignment,
         latest_assignment,
     }))
@@ -245,19 +245,19 @@ impl<'a> PostingDevice<'a> {
     }
 }
 
-/// The device an assignment of `teammate_id` runs on when `device` creates it: the teammate's
+/// The device an assignment of `agent_id` runs on when `device` creates it: the agent's
 /// home device when it can write Chat, else the posting device when it can run the work, else
 /// none, so the post records the mention only and a desktop starts the work later. A home
 /// device that a handoff turned into a replica, or that was unlinked, is passed over, since an
 /// assignment it executes would stay queued forever.
 pub(super) async fn new_assignment_executing_device(
     transaction: &mut Transaction<'_, Sqlite>,
-    teammate_id: &ChatParticipantId,
+    agent_id: &ChatParticipantId,
     device: PostingDevice<'_>,
 ) -> ChatResult<Option<String>> {
     let home_device_id: Option<Option<String>> =
-        sqlx::query_scalar("SELECT home_device_id FROM chat_teammates WHERE participant_id = ?")
-            .bind(teammate_id.as_str())
+        sqlx::query_scalar("SELECT home_device_id FROM chat_agents WHERE participant_id = ?")
+            .bind(agent_id.as_str())
             .fetch_optional(&mut **transaction)
             .await
             .map_err(persistence_error)?;
@@ -326,9 +326,9 @@ pub(super) struct PostRoutingChoices<'a> {
     pub(super) followup_routing: Option<ChatFollowupRouting>,
 }
 
-/// Routes the post `message_item_id` to the assignment of the teammate it invokes: an input of
-/// the active assignment, else a new assignment that runs on the teammate's home device or the
-/// posting desktop. A post from a device that cannot execute, for a teammate without a home
+/// Routes the post `message_item_id` to the assignment of the agent it invokes: an input of
+/// the active assignment, else a new assignment that runs on the agent's home device or the
+/// posting desktop. A post from a device that cannot execute, for an agent without a home
 /// device, records the mention only, until a Start creates its work.
 ///
 /// An input of active work follows the `followup_routing` of `choices`: Steer reaches a working
@@ -338,9 +338,9 @@ pub(super) struct PostRoutingChoices<'a> {
 /// A post no one on this executing device consented to leaves existing work as it is. It
 /// records only the mention when the thread has active work. A reply to work that asked for
 /// review becomes a pending reply of that work, which waits for Start here or for a local
-/// acceptance of the teammate before a follow-up settles the review, and this device keeps the
+/// acceptance of the agent before a follow-up settles the review, and this device keeps the
 /// execution target the post chose for that follow-up; a mention of another
-/// teammate there creates that teammate's new work awaiting Start here and leaves the review
+/// agent there creates that agent's new work awaiting Start here and leaves the review
 /// open.
 pub(super) async fn persist_assignment_routing(
     transaction: &mut Transaction<'_, Sqlite>,
@@ -385,8 +385,8 @@ pub(super) async fn persist_assignment_routing(
     let reviewed = latest_assignment
         .filter(|latest| latest.state == ChatWorkAssignmentState::ReadyForReview)
         .filter(|_| device.leaves_existing_work());
-    if reviewed.is_some_and(|reviewed| reviewed.teammate.id != invocation.teammate_id) {
-        // New work for another teammate does not follow the reviewed work, so creating it
+    if reviewed.is_some_and(|reviewed| reviewed.agent.id != invocation.agent_id) {
+        // New work for another agent does not follow the reviewed work, so creating it
         // leaves that review open; it waits for Start here like any unattended new work.
         latest_assignment = None;
     }
@@ -415,7 +415,7 @@ pub(super) async fn persist_assignment_routing(
         });
     }
     let Some(executing_device_id) =
-        new_assignment_executing_device(transaction, &invocation.teammate_id, device).await?
+        new_assignment_executing_device(transaction, &invocation.agent_id, device).await?
     else {
         return Ok(AssignmentWrite::NONE);
     };
@@ -424,7 +424,7 @@ pub(super) async fn persist_assignment_routing(
         NewAssignment {
             reply_thread_id,
             message_item_id,
-            teammate_id: &invocation.teammate_id,
+            agent_id: &invocation.agent_id,
             latest_assignment,
             executing_device_id: &executing_device_id,
             execution_target,
@@ -463,7 +463,7 @@ pub(super) struct NewAssignment<'a> {
     pub(super) reply_thread_id: &'a ChatReplyThreadId,
     /// Message that triggers it.
     pub(super) message_item_id: &'a ChatConversationItemId,
-    pub(super) teammate_id: &'a ChatParticipantId,
+    pub(super) agent_id: &'a ChatParticipantId,
     /// Newest assignment of the reply thread, which the new one follows.
     pub(super) latest_assignment: Option<&'a ChatWorkAssignmentRead>,
     pub(super) executing_device_id: &'a str,
@@ -471,12 +471,12 @@ pub(super) struct NewAssignment<'a> {
     /// Participant who posted the trigger, recorded as the reviewer when the new assignment
     /// follows reviewed work.
     pub(super) poster_participant_id: &'a str,
-    /// The delegation that creates it, when a teammate delegated it. Without one, a successor
+    /// The delegation that creates it, when an agent delegated it. Without one, a successor
     /// of delegated work inherits its predecessor's delegation.
     pub(super) delegation: Option<DelegationWrite<'a>>,
 }
 
-/// The fixed delegation fields of an assignment a teammate delegated.
+/// The fixed delegation fields of an assignment an agent delegated.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct DelegationWrite<'a> {
     pub(super) parent_assignment_id: &'a ChatWorkAssignmentId,
@@ -578,11 +578,8 @@ pub(super) async fn create_assignment(
     now: &UtcTimestamp,
 ) -> ChatResult<ChatWorkAssignmentId> {
     let previous_id = assignment.latest_assignment.map(|latest| &latest.id);
-    let assignment_id = work_assignment_id(
-        assignment.message_item_id,
-        assignment.teammate_id,
-        previous_id,
-    )?;
+    let assignment_id =
+        work_assignment_id(assignment.message_item_id, assignment.agent_id, previous_id)?;
     let inherited = match (assignment.delegation, previous_id) {
         (None, Some(previous_id)) => read_delegation_fields(transaction, previous_id).await?,
         _ => None,
@@ -613,7 +610,7 @@ pub(super) async fn create_assignment(
     }
     sqlx::query(
         "INSERT INTO chat_work_assignments
-            (id, reply_thread_id, teammate_id, triggering_message_item_id,
+            (id, reply_thread_id, agent_id, triggering_message_item_id,
              previous_assignment_id, executing_device_id, state,
              created_at, updated_at, parent_assignment_id, delegation_depth,
              delegation_objective, delegation_expected_result, delegation_folder_ceiling)
@@ -621,7 +618,7 @@ pub(super) async fn create_assignment(
     )
     .bind(assignment_id.as_str())
     .bind(assignment.reply_thread_id.as_str())
-    .bind(assignment.teammate_id.as_str())
+    .bind(assignment.agent_id.as_str())
     .bind(assignment.message_item_id.as_str())
     .bind(previous_id.map(ChatWorkAssignmentId::as_str))
     .bind(assignment.executing_device_id)
@@ -706,7 +703,7 @@ pub(super) async fn create_assignment(
                 &assignment_id,
                 assignment.reply_thread_id,
                 assignment.message_item_id,
-                assignment.teammate_id,
+                assignment.agent_id,
                 assignment.execution_target,
                 now,
             )
@@ -930,7 +927,7 @@ pub(super) async fn queue_assignment_dispatch(
     assignment_id: &ChatWorkAssignmentId,
     reply_thread_id: &ChatReplyThreadId,
     message_item_id: &ChatConversationItemId,
-    teammate_id: &ChatParticipantId,
+    agent_id: &ChatParticipantId,
     execution_target: Option<&ChatExecutionTarget>,
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
@@ -939,7 +936,7 @@ pub(super) async fn queue_assignment_dispatch(
         assignment_id,
         reply_thread_id,
         message_item_id,
-        teammate_id,
+        agent_id,
         execution_target,
         now,
     )
@@ -972,16 +969,16 @@ pub(super) async fn queue_assignment_dispatch(
 pub(super) enum MessageAuthor<'a> {
     /// The person using this device.
     LocalPerson,
-    /// A teammate, as when it delegates work in its channel.
+    /// An agent, as when it delegates work in its channel.
     #[cfg_attr(mobile, allow(dead_code))]
-    Teammate(&'a ChatParticipantId),
+    Agent(&'a ChatParticipantId),
 }
 
 impl MessageAuthor<'_> {
     fn participant_id(&self) -> &str {
         match self {
             Self::LocalPerson => LOCAL_PARTICIPANT_ID,
-            Self::Teammate(teammate_id) => teammate_id.as_str(),
+            Self::Agent(agent_id) => agent_id.as_str(),
         }
     }
 }
@@ -995,7 +992,7 @@ pub(super) struct CommunicationMessageWrite<'a> {
     pub(super) order_key: &'a str,
     pub(super) request: &'a PostChatMessageCommand,
     pub(super) attachments: AttachmentSource<'a>,
-    pub(super) invoked_teammate_id: Option<&'a ChatParticipantId>,
+    pub(super) invoked_agent_id: Option<&'a ChatParticipantId>,
     pub(super) now: &'a UtcTimestamp,
 }
 
@@ -1065,7 +1062,7 @@ async fn insert_message_reference(
 ) -> ChatResult<()> {
     let revision_id = write.revision_id;
     let destination_conversation_id = write.conversation_id;
-    let invoked_teammate_id = write.invoked_teammate_id;
+    let invoked_agent_id = write.invoked_agent_id;
     let now = write.now;
     let metadata = reference.metadata();
     let reference_kind = match reference {
@@ -1174,9 +1171,9 @@ async fn insert_message_reference(
                 "SELECT count(*)
                  FROM chat_conversation_memberships destination
                  JOIN chat_participants participant ON participant.id = destination.participant_id
-                 LEFT JOIN chat_teammate_channel_memberships destination_ai
+                 LEFT JOIN chat_agent_channel_memberships destination_ai
                    ON destination_ai.conversation_id = destination.conversation_id
-                  AND destination_ai.teammate_id = destination.participant_id
+                  AND destination_ai.agent_id = destination.participant_id
                   AND destination_ai.removed_at IS NULL
                  LEFT JOIN chat_access_profiles destination_profile
                    ON destination_profile.id = destination_ai.access_profile_id
@@ -1185,7 +1182,7 @@ async fn insert_message_reference(
                  WHERE destination.conversation_id = ?
                    AND destination.removed_at IS NULL
                    AND (
-                     participant.participant_kind != 'ai_teammate'
+                     participant.participant_kind != 'ai_agent'
                      OR (
                        CASE WHEN destination_ai.read_history_inherits_profile = 1
                          THEN destination_revision.default_read_history
@@ -1197,9 +1194,9 @@ async fn insert_message_reference(
                    AND NOT EXISTS (
                      SELECT 1
                      FROM chat_conversation_memberships source_membership
-                     LEFT JOIN chat_teammate_channel_memberships source_ai
+                     LEFT JOIN chat_agent_channel_memberships source_ai
                        ON source_ai.conversation_id = source_membership.conversation_id
-                      AND source_ai.teammate_id = source_membership.participant_id
+                      AND source_ai.agent_id = source_membership.participant_id
                       AND source_ai.removed_at IS NULL
                      LEFT JOIN chat_access_profiles source_profile
                        ON source_profile.id = source_ai.access_profile_id
@@ -1209,7 +1206,7 @@ async fn insert_message_reference(
                        AND source_membership.participant_id = destination.participant_id
                        AND source_membership.removed_at IS NULL
                        AND (
-                         participant.participant_kind != 'ai_teammate'
+                         participant.participant_kind != 'ai_agent'
                          OR (
                            CASE WHEN source_ai.read_history_inherits_profile = 1
                              THEN source_revision.default_read_history
@@ -1247,7 +1244,7 @@ async fn insert_message_reference(
             let mut source_lower_order_key: String = sqlx::query_scalar(
                 "SELECT coalesce(max(
                    CASE
-                     WHEN participant.participant_kind = 'ai_teammate'
+                     WHEN participant.participant_kind = 'ai_agent'
                        AND CASE WHEN source_ai.history_boundary_inherits_profile = 1
                          THEN source_revision.default_history_boundary
                          WHEN source_revision.default_history_boundary = 'from_grant'
@@ -1259,9 +1256,9 @@ async fn insert_message_reference(
                  ), ?)
                  FROM chat_conversation_memberships destination
                  JOIN chat_participants participant ON participant.id = destination.participant_id
-                 LEFT JOIN chat_teammate_channel_memberships destination_ai
+                 LEFT JOIN chat_agent_channel_memberships destination_ai
                    ON destination_ai.conversation_id = destination.conversation_id
-                  AND destination_ai.teammate_id = destination.participant_id
+                  AND destination_ai.agent_id = destination.participant_id
                   AND destination_ai.removed_at IS NULL
                  LEFT JOIN chat_access_profiles destination_profile
                    ON destination_profile.id = destination_ai.access_profile_id
@@ -1271,9 +1268,9 @@ async fn insert_message_reference(
                    ON source_membership.participant_id = destination.participant_id
                   AND source_membership.conversation_id = ?
                   AND source_membership.removed_at IS NULL
-                 LEFT JOIN chat_teammate_channel_memberships source_ai
+                 LEFT JOIN chat_agent_channel_memberships source_ai
                    ON source_ai.conversation_id = source_membership.conversation_id
-                  AND source_ai.teammate_id = source_membership.participant_id
+                  AND source_ai.agent_id = source_membership.participant_id
                   AND source_ai.removed_at IS NULL
                  LEFT JOIN chat_access_profiles source_profile
                    ON source_profile.id = source_ai.access_profile_id
@@ -1282,7 +1279,7 @@ async fn insert_message_reference(
                  WHERE destination.conversation_id = ?
                    AND destination.removed_at IS NULL
                    AND (
-                     participant.participant_kind != 'ai_teammate'
+                     participant.participant_kind != 'ai_agent'
                      OR (
                        CASE WHEN destination_ai.read_history_inherits_profile = 1
                          THEN destination_revision.default_read_history
@@ -1300,8 +1297,8 @@ async fn insert_message_reference(
             .fetch_one(&mut **transaction)
             .await
             .map_err(persistence_error)?;
-            if let Some(teammate_id) = invoked_teammate_id {
-                let teammate_lower_order_key = sqlx::query_scalar::<_, String>(
+            if let Some(agent_id) = invoked_agent_id {
+                let agent_lower_order_key = sqlx::query_scalar::<_, String>(
                     "SELECT CASE
                               WHEN CASE
                                 WHEN ai_membership.history_boundary_inherits_profile = 1
@@ -1313,9 +1310,9 @@ async fn insert_message_reference(
                               ELSE ?
                             END
                         FROM chat_conversation_memberships membership
-                        JOIN chat_teammate_channel_memberships ai_membership
+                        JOIN chat_agent_channel_memberships ai_membership
                           ON ai_membership.conversation_id = membership.conversation_id
-                         AND ai_membership.teammate_id = membership.participant_id
+                         AND ai_membership.agent_id = membership.participant_id
                          AND ai_membership.removed_at IS NULL
                         JOIN chat_access_profiles profile
                           ON profile.id = ai_membership.access_profile_id
@@ -1333,18 +1330,18 @@ async fn insert_message_reference(
                 .bind(&after_high_order_key)
                 .bind(&first_root_order_key)
                 .bind(&source_conversation_id)
-                .bind(teammate_id.as_str())
+                .bind(agent_id.as_str())
                 .fetch_optional(&mut **transaction)
                 .await
                 .map_err(persistence_error)?;
-                let Some(teammate_lower_order_key) = teammate_lower_order_key else {
+                let Some(agent_lower_order_key) = agent_lower_order_key else {
                     return Err(ChatError::new(
                         ChatErrorCode::Conflict,
-                        "The assigned teammate cannot read the referenced channel history",
+                        "The assigned agent cannot read the referenced channel history",
                         true,
                     ));
                 };
-                source_lower_order_key = source_lower_order_key.max(teammate_lower_order_key);
+                source_lower_order_key = source_lower_order_key.max(agent_lower_order_key);
             }
             if source_lower_order_key > source_high_order_key {
                 return Err(ChatError::new(
@@ -1519,7 +1516,7 @@ pub(super) async fn insert_channel_copy(
     conversation_id: &ChatConversationId,
     request: &PostChatMessageCommand,
     copy: ChannelCopy<'_>,
-    invoked_teammate_id: Option<&ChatParticipantId>,
+    invoked_agent_id: Option<&ChatParticipantId>,
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
     let (item_id, revision_id) = match copy.ids {
@@ -1543,7 +1540,7 @@ pub(super) async fn insert_channel_copy(
             order_key: &order_key,
             request: &copied_request,
             attachments: copy.attachments,
-            invoked_teammate_id,
+            invoked_agent_id,
             now,
         },
     )
@@ -1605,10 +1602,10 @@ pub(super) async fn require_reply_thread(
     Ok(reply_thread_id.clone())
 }
 
-pub(super) async fn require_participating_teammate<'e, E>(
+pub(super) async fn require_participating_agent<'e, E>(
     executor: E,
     conversation_id: &ChatConversationId,
-    teammate_id: &ChatParticipantId,
+    agent_id: &ChatParticipantId,
 ) -> ChatResult<()>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
@@ -1620,12 +1617,12 @@ where
                 profile_revision.default_participate
          FROM chat_conversation_memberships membership
          JOIN chat_participants participant ON participant.id = membership.participant_id
-         JOIN chat_teammates teammate ON teammate.participant_id = membership.participant_id
-         LEFT JOIN chat_teammate_effective_policies policy
-           ON policy.teammate_id = teammate.participant_id
-         JOIN chat_teammate_channel_memberships ai_membership
+         JOIN chat_agents agent ON agent.participant_id = membership.participant_id
+         LEFT JOIN chat_agent_effective_policies policy
+           ON policy.agent_id = agent.participant_id
+         JOIN chat_agent_channel_memberships ai_membership
            ON ai_membership.conversation_id = membership.conversation_id
-          AND ai_membership.teammate_id = membership.participant_id
+          AND ai_membership.agent_id = membership.participant_id
           AND ai_membership.removed_at IS NULL
          JOIN chat_access_profiles profile ON profile.id = ai_membership.access_profile_id
          JOIN chat_access_profile_effective_revisions profile_revision
@@ -1633,15 +1630,12 @@ where
          WHERE membership.conversation_id = ? AND membership.participant_id = ?",
     )
     .bind(conversation_id.as_str())
-    .bind(teammate_id.as_str())
+    .bind(agent_id.as_str())
     .fetch_optional(executor)
     .await
     .map_err(persistence_error)?
     .ok_or_else(|| {
-        ChatError::validation(
-            "references",
-            "The AI teammate is not a member of this channel",
-        )
+        ChatError::validation("references", "The AI agent is not a member of this channel")
     })?;
     let available = row
         .try_get::<Option<String>, _>("removed_at")
@@ -1675,19 +1669,19 @@ where
     if !available {
         return Err(ChatError::new(
             ChatErrorCode::Conflict,
-            "The AI teammate needs setup before it can be assigned",
+            "The AI agent needs setup before it can be assigned",
             true,
         ));
     }
     Ok(())
 }
 
-/// Appends a teammate policy revision and points the teammate's current policy at it.
+/// Appends an agent policy revision and points the agent's current policy at it.
 #[cfg(desktop)]
 pub(super) async fn insert_policy_revision(
     transaction: &mut Transaction<'_, Sqlite>,
-    teammate_id: &ChatParticipantId,
-    policy: &ChatTeammatePolicyInput,
+    agent_id: &ChatParticipantId,
+    policy: &ChatAgentPolicyInput,
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
     let selection = serde_json::to_string(&StoredModelSelection {
@@ -1696,11 +1690,11 @@ pub(super) async fn insert_policy_revision(
         model_options: policy.model_options.clone(),
     })
     .map_err(serialization_error)?;
-    let policy_revision_id = new_id("teammate-policy")?;
+    let policy_revision_id = new_id("agent-policy")?;
     let safety_mode = wire_approval_policy(policy.safety_mode);
     sqlx::query(
-        "INSERT INTO chat_teammate_policy_revisions
-            (id, teammate_id, provider_instance_id,
+        "INSERT INTO chat_agent_policy_revisions
+            (id, agent_id, provider_instance_id,
              safety_mode,
              model_selection_schema_version, model_selection_data, effort, speed,
              provider_options_schema_version, provider_options_data,
@@ -1708,7 +1702,7 @@ pub(super) async fn insert_policy_revision(
          VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 'build', ?)",
     )
     .bind(policy_revision_id.as_str())
-    .bind(teammate_id.as_str())
+    .bind(agent_id.as_str())
     .bind(policy.provider_instance_id.as_str())
     .bind(safety_mode)
     .bind(selection)
@@ -1721,14 +1715,14 @@ pub(super) async fn insert_policy_revision(
     .await
     .map_err(persistence_error)?;
     sqlx::query(
-        "UPDATE chat_teammates
+        "UPDATE chat_agents
          SET current_policy_revision_id = ?, current_policy_safety_mode = ?, updated_at = ?
          WHERE participant_id = ?",
     )
     .bind(policy_revision_id.as_str())
     .bind(safety_mode)
     .bind(now.as_str())
-    .bind(teammate_id.as_str())
+    .bind(agent_id.as_str())
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
@@ -2012,7 +2006,7 @@ pub(super) async fn require_reviewable_assignment(
 #[cfg(desktop)]
 pub(super) const REVIEW_REFUSED_PENDING_REPLIES: &str = "pending_replies";
 
-/// Error detail reason of a Request changes refused because no device can run the teammate.
+/// Error detail reason of a Request changes refused because no device can run the agent.
 pub(super) const REVIEW_REFUSED_NO_EXECUTING_DEVICE: &str = "no_executing_device";
 
 /// A `Conflict` that refuses a review for `reason`, one of the `REVIEW_REFUSED_*` reasons, which

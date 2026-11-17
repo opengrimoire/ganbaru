@@ -19,9 +19,9 @@ interface SettingsLaunchOptions {
   distractionsTab?: DistractionsSettingsTab;
   contactsTab?: ContactsSettingsTab;
   agentsSubsection?: AgentsSettingsSubsection;
-  agentsTeammateId?: string;
+  agentsAgentId?: string;
   agentsChannelId?: string;
-  agentsCreateTeammate?: boolean;
+  agentsCreateAgent?: boolean;
   /** Runs once after the modal closes, however it closes, so the opener can bring back what it had to hide. */
   onClosed?: () => void;
 }
@@ -32,9 +32,9 @@ class SettingsLauncherStore {
   targetDistractionsTab = $state<DistractionsSettingsTab | undefined>(undefined);
   targetContactsTab = $state<ContactsSettingsTab | undefined>(undefined);
   targetAgentsSubsection = $state<AgentsSettingsSubsection | undefined>(undefined);
-  targetAgentsTeammateId = $state<string | undefined>(undefined);
+  targetAgentsAgentId = $state<string | undefined>(undefined);
   targetAgentsChannelId = $state<string | undefined>(undefined);
-  targetAgentsCreateTeammate = $state(false);
+  targetAgentsCreateAgent = $state(false);
   private onClosed: (() => void) | null = null;
 
   /**
@@ -49,9 +49,9 @@ class SettingsLauncherStore {
       : undefined;
     this.targetContactsTab = section === "contacts" ? options.contactsTab : undefined;
     this.targetAgentsSubsection = section === "agents" ? options.agentsSubsection : undefined;
-    this.targetAgentsTeammateId = section === "agents" ? options.agentsTeammateId : undefined;
+    this.targetAgentsAgentId = section === "agents" ? options.agentsAgentId : undefined;
     this.targetAgentsChannelId = section === "agents" ? options.agentsChannelId : undefined;
-    this.targetAgentsCreateTeammate = section === "agents" ? options.agentsCreateTeammate ?? false : false;
+    this.targetAgentsCreateAgent = section === "agents" ? options.agentsCreateAgent ?? false : false;
     this.onClosed = options.onClosed ?? null;
     this.isOpen = true;
   }
@@ -64,9 +64,9 @@ class SettingsLauncherStore {
     this.targetDistractionsTab = undefined;
     this.targetContactsTab = undefined;
     this.targetAgentsSubsection = undefined;
-    this.targetAgentsTeammateId = undefined;
+    this.targetAgentsAgentId = undefined;
     this.targetAgentsChannelId = undefined;
-    this.targetAgentsCreateTeammate = false;
+    this.targetAgentsCreateAgent = false;
     onClosed?.();
   }
 }

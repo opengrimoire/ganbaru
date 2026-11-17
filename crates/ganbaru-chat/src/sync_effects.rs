@@ -13,9 +13,9 @@ pub use channel_access::{
 };
 
 use crate::attachment_files;
-use crate::coordination::reductions::{live_teammate_safety_mode_sql, teammate_policy_covers};
+use crate::coordination::reductions::{agent_policy_covers, live_agent_safety_mode_sql};
 use crate::coordination::revocation::{
-    revoke_assignment_authorizations, revoke_teammate_authorizations,
+    revoke_agent_authorizations, revoke_assignment_authorizations,
 };
 use crate::models::{ChatError, ChatErrorCode, ChatResult};
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -25,10 +25,10 @@ use std::time::SystemTime;
 
 /// Replicated table of Chat participants, keyed by id.
 pub const PARTICIPANTS_TABLE: &str = "chat_participants";
-/// Replicated table of AI teammates, keyed by participant id.
-pub const TEAMMATES_TABLE: &str = "chat_teammates";
-/// Replicated table of teammate policy revisions, keyed by id.
-pub const POLICY_REVISIONS_TABLE: &str = "chat_teammate_policy_revisions";
+/// Replicated table of AI agents, keyed by participant id.
+pub const AGENTS_TABLE: &str = "chat_agents";
+/// Replicated table of agent policy revisions, keyed by id.
+pub const POLICY_REVISIONS_TABLE: &str = "chat_agent_policy_revisions";
 /// Replicated table of conversations, keyed by id.
 pub const CONVERSATIONS_TABLE: &str = "chat_conversations";
 /// Replicated table of access profiles, keyed by id.
@@ -38,9 +38,9 @@ pub const ACCESS_PROFILE_REVISIONS_TABLE: &str = "chat_access_profile_revisions"
 /// Replicated table of conversation memberships, keyed by sync key.
 pub const MEMBERSHIPS_TABLE: &str = "chat_conversation_memberships";
 /// Replicated table of AI channel memberships, keyed by sync key.
-pub const CHANNEL_MEMBERSHIPS_TABLE: &str = "chat_teammate_channel_memberships";
+pub const CHANNEL_MEMBERSHIPS_TABLE: &str = "chat_agent_channel_memberships";
 /// Replicated table of working folder grants, keyed by sync key.
-pub const FOLDER_GRANTS_TABLE: &str = "chat_teammate_working_folder_grants";
+pub const FOLDER_GRANTS_TABLE: &str = "chat_agent_working_folder_grants";
 /// Replicated table of messages, keyed by item id.
 pub const MESSAGES_TABLE: &str = "chat_communication_messages";
 /// Replicated table of message revisions, keyed by id.
@@ -56,32 +56,32 @@ pub const ASSIGNMENT_SETTLED_REASON: &str = "The work assignment settled on anot
 pub const PROFILE_REDUCTION_REASON: &str = "Access profile authority was reduced";
 /// Reason recorded on authorizations revoked because an applied membership or folder grant no
 /// longer covers them, matching the command that saves a reduction.
-pub const ACCESS_REDUCTION_REASON: &str = "Teammate access was reduced";
-/// Reason recorded on authorizations revoked because a synced teammate or profile pointer
+pub const ACCESS_REDUCTION_REASON: &str = "Agent access was reduced";
+/// Reason recorded on authorizations revoked because a synced agent or profile pointer
 /// disagrees with the revision it names.
 pub const MISMATCHED_POINTER_REASON: &str =
-    "Synced teammate policy or access profile disagrees with its revision";
-/// Reason recorded on authorizations revoked because the teammate's applied effective policy no
+    "Synced agent policy or access profile disagrees with its revision";
+/// Reason recorded on authorizations revoked because the agent's applied effective policy no
 /// longer covers the approval they froze.
-pub const TEAMMATE_POLICY_REDUCED_REASON: &str = "Teammate approval behavior was reduced";
-/// Reason recorded on authorizations revoked because the teammate was archived on another device.
-pub const TEAMMATE_ARCHIVED_REASON: &str = "The teammate was archived";
+pub const AGENT_POLICY_REDUCED_REASON: &str = "Agent approval behavior was reduced";
+/// Reason recorded on authorizations revoked because the agent was archived on another device.
+pub const AGENT_ARCHIVED_REASON: &str = "The agent was archived";
 
 /// Device-local state [`after_materialize`] changed, so the caller can wake the services and
 /// views that read it.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ChatSyncEffects {
-    /// Teammates whose access state row was created.
+    /// Agents whose access state row was created.
     pub access_state_created: BTreeSet<String>,
-    /// Teammates whose access revision was bumped.
+    /// Agents whose access revision was bumped.
     pub access_revised: BTreeSet<String>,
     /// Conversations whose audience state was created or whose audience revision was bumped.
     pub audience_revised: BTreeSet<String>,
-    /// Teammates with authorizations revoked and access revocation jobs queued for them.
-    pub revoked_teammates: BTreeSet<String>,
+    /// Agents with authorizations revoked and access revocation jobs queued for them.
+    pub revoked_agents: BTreeSet<String>,
     /// Messages whose search row was rebuilt or removed.
     pub search_rebuilt: BTreeSet<String>,
-    /// Teammates and access profiles whose current pointer copies restrictiveness that
+    /// Agents and access profiles whose current pointer copies restrictiveness that
     /// disagrees with the revision it names, so they have no effective revision.
     pub mismatched_pointers: BTreeSet<String>,
     /// Conversations the apply deleted. The delete cascades away the authorizations that
@@ -116,7 +116,7 @@ impl ChatSyncEffects {
         self.access_state_created.is_empty()
             && self.access_revised.is_empty()
             && self.audience_revised.is_empty()
-            && self.revoked_teammates.is_empty()
+            && self.revoked_agents.is_empty()
             && self.search_rebuilt.is_empty()
             && self.mismatched_pointers.is_empty()
             && self.removed_conversations.is_empty()
@@ -133,19 +133,19 @@ impl ChatSyncEffects {
 /// Recomputes the device-local Chat state derived from the rows of `table` whose keys are in
 /// `changed_keys`, after sync inserted, updated, or deleted them.
 ///
-/// It mirrors the gated command triggers: a teammate gets its access state and a conversation
+/// It mirrors the gated command triggers: an agent gets its access state and a conversation
 /// its audience state, a profile whose effective revision arrived or changed bumps the audience
-/// of the conversations whose teammates use that profile, and a message or revision rebuilds the
+/// of the conversations whose agents use that profile, and a message or revision rebuilds the
 /// message's search row (a deleted message loses it). A revision also creates the attachment and
 /// resource rows of the attachments it names in a working folder this device has, and a changed
 /// revision, message, or deleted conversation removes such rows once nothing on this device
 /// references them. An effective profile revision that narrows
-/// authority also bumps the access revision of those teammates and revokes the active
+/// authority also bumps the access revision of those agents and revokes the active
 /// authorizations granted under a wider revision, as the command that saves a reduction does.
 /// A conversation membership, AI channel membership, or folder grant bumps the audience (for
-/// memberships) and the AI teammate's access revision, and revokes the teammate's authorizations
+/// memberships) and the AI agent's access revision, and revokes the agent's authorizations
 /// once one of them is no longer covered by the rows sync kept. A deleted conversation is
-/// reported, and deleted rows sweep every teammate with an active authorization. Timestamps
+/// reported, and deleted rows sweep every agent with an active authorization. Timestamps
 /// come from the changed rows, except revocations, which happen now on this device.
 /// Running it again for the same keys leaves the same rows, apart from the counters a profile
 /// revision bumps again. A queued work assignment is reported for its executing device to start,
@@ -153,13 +153,13 @@ impl ChatSyncEffects {
 /// still pending names its assignment for delivery. Tables without derived state return no
 /// effects.
 ///
-/// When a teammate or profile pointer copies a safety mode or maximum folder capability that
+/// When an agent or profile pointer copies a safety mode or maximum folder capability that
 /// differs from the revision it names, once both rows are present, it revokes the affected
-/// teammates' authorizations and reports the pointer instead of failing the apply. The effective
+/// agents' authorizations and reports the pointer instead of failing the apply. The effective
 /// revision views already give that pointer no effective revision.
 ///
-/// A teammate or policy revision row revokes the teammate's authorizations once its effective
-/// policy no longer covers an approval they froze, and an archived teammate loses its
+/// An agent or policy revision row revokes the agent's authorizations once its effective
+/// policy no longer covers an approval they froze, and an archived agent loses its
 /// authorizations. Both compare current rows, so arrival order does not matter and a widening or
 /// a repeated apply revokes nothing. While a pointer's revision has not arrived, the safety mode
 /// the pointer copied decides. A later widening or restore does not bring a revoked
@@ -174,16 +174,16 @@ pub async fn after_materialize(
     match table {
         PARTICIPANTS_TABLE => {
             for key in keys {
-                revoke_archived_teammate(connection, key, &mut effects).await?;
+                revoke_archived_agent(connection, key, &mut effects).await?;
             }
         }
-        TEAMMATES_TABLE => {
+        AGENTS_TABLE => {
             for key in keys {
                 create_access_state(connection, key, &mut effects).await?;
                 contain_mismatched_pointer(
                     connection,
-                    POLICY_COPY_MISMATCH_BY_TEAMMATE,
-                    PointerOwner::Teammate,
+                    POLICY_COPY_MISMATCH_BY_AGENT,
+                    PointerOwner::Agent,
                     key,
                     &mut effects,
                 )
@@ -196,20 +196,20 @@ pub async fn after_materialize(
                 contain_mismatched_pointer(
                     connection,
                     POLICY_COPY_MISMATCH_BY_REVISION,
-                    PointerOwner::Teammate,
+                    PointerOwner::Agent,
                     key,
                     &mut effects,
                 )
                 .await?;
-                let teammate_id: Option<String> = sqlx::query_scalar(
-                    "SELECT teammate_id FROM chat_teammate_policy_revisions WHERE id = ?",
+                let agent_id: Option<String> = sqlx::query_scalar(
+                    "SELECT agent_id FROM chat_agent_policy_revisions WHERE id = ?",
                 )
                 .bind(key)
                 .fetch_optional(&mut *connection)
                 .await
                 .map_err(persistence_error)?;
-                if let Some(teammate_id) = teammate_id {
-                    revoke_on_policy_reduction(connection, &teammate_id, &mut effects).await?;
+                if let Some(agent_id) = agent_id {
+                    revoke_on_policy_reduction(connection, &agent_id, &mut effects).await?;
                 }
             }
         }
@@ -478,20 +478,20 @@ async fn reclaim_applied_attachments(
 
 async fn create_access_state(
     connection: &mut SqliteConnection,
-    teammate_id: &str,
+    agent_id: &str,
     effects: &mut ChatSyncEffects,
 ) -> ChatResult<()> {
     let created = sqlx::query(
-        "INSERT OR IGNORE INTO chat_teammate_access_state (teammate_id, updated_at)
-         SELECT participant_id, updated_at FROM chat_teammates WHERE participant_id = ?",
+        "INSERT OR IGNORE INTO chat_agent_access_state (agent_id, updated_at)
+         SELECT participant_id, updated_at FROM chat_agents WHERE participant_id = ?",
     )
-    .bind(teammate_id)
+    .bind(agent_id)
     .execute(&mut *connection)
     .await
     .map_err(persistence_error)?
     .rows_affected();
     if created > 0 {
-        effects.access_state_created.insert(teammate_id.to_string());
+        effects.access_state_created.insert(agent_id.to_string());
     }
     Ok(())
 }
@@ -527,21 +527,21 @@ async fn create_audience_state(
 const MEMBERSHIP_ROW_BY_KEY: &str = "SELECT conversation_id, participant_id, updated_at
      FROM chat_conversation_memberships WHERE sync_key = ?";
 
-/// Conversation, teammate, and change time of the AI channel membership with sync key `?`.
-const CHANNEL_MEMBERSHIP_ROW_BY_KEY: &str = "SELECT conversation_id, teammate_id, updated_at
-     FROM chat_teammate_channel_memberships WHERE sync_key = ?";
+/// Conversation, agent, and change time of the AI channel membership with sync key `?`.
+const CHANNEL_MEMBERSHIP_ROW_BY_KEY: &str = "SELECT conversation_id, agent_id, updated_at
+     FROM chat_agent_channel_memberships WHERE sync_key = ?";
 
-/// Conversation, teammate, and change time of the working folder grant with sync key `?`.
+/// Conversation, agent, and change time of the working folder grant with sync key `?`.
 const FOLDER_GRANT_ROW_BY_KEY: &str =
-    "SELECT conversation_id, teammate_id, coalesce(revoked_at, created_at)
-     FROM chat_teammate_working_folder_grants WHERE sync_key = ?";
+    "SELECT conversation_id, agent_id, coalesce(revoked_at, created_at)
+     FROM chat_agent_working_folder_grants WHERE sync_key = ?";
 
 /// Changed membership or grant rows of one apply.
 struct ChangedAccessRows {
     /// Conversation, participant, and change time of each changed row that is still present.
     present: BTreeSet<(String, String, String)>,
     /// Whether the apply deleted any changed row, directly or by a cascade from a deleted
-    /// conversation, teammate, project, or working folder.
+    /// conversation, agent, project, or working folder.
     deleted: bool,
 }
 
@@ -571,10 +571,10 @@ async fn changed_access_rows(
     Ok(rows)
 }
 
-/// Revokes the active authorizations of every teammate that holds one its current rows no
+/// Revokes the active authorizations of every agent that holds one its current rows no
 /// longer cover, after an apply deleted memberships, grants, or conversations.
 ///
-/// A deleted row no longer names its teammate, so every teammate with an active authorization
+/// A deleted row no longer names its agent, so every agent with an active authorization
 /// is checked. Authorizations that a cascade already removed need no revocation, and covered
 /// ones are kept, so a repeated apply revokes nothing. Each revocation records the reason
 /// [`uncovered_authorization_reason`] names.
@@ -582,22 +582,22 @@ async fn sweep_uncovered_authorizations(
     connection: &mut SqliteConnection,
     effects: &mut ChatSyncEffects,
 ) -> ChatResult<()> {
-    let teammates: Vec<String> = sqlx::query_scalar(
-        "SELECT DISTINCT assignment.teammate_id
+    let agents: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT assignment.agent_id
          FROM chat_assignment_authorization_revisions authorization
          JOIN chat_work_assignments assignment ON assignment.id = authorization.assignment_id
-         WHERE assignment.teammate_id IS NOT NULL
+         WHERE assignment.agent_id IS NOT NULL
            AND authorization.decision_state = 'allowed'
            AND authorization.revoked_at IS NULL
-         ORDER BY assignment.teammate_id",
+         ORDER BY assignment.agent_id",
     )
     .fetch_all(&mut *connection)
     .await
     .map_err(persistence_error)?;
     let now = now();
-    for teammate_id in teammates {
-        if let Some(reason) = uncovered_authorization_reason(connection, &teammate_id).await? {
-            revoke(connection, &teammate_id, &now, reason, effects).await?;
+    for agent_id in agents {
+        if let Some(reason) = uncovered_authorization_reason(connection, &agent_id).await? {
+            revoke(connection, &agent_id, &now, reason, effects).await?;
         }
     }
     Ok(())
@@ -621,14 +621,14 @@ async fn follow_assignment_state(
     effects: &mut ChatSyncEffects,
 ) -> ChatResult<()> {
     let row: Option<(String, String, bool)> = sqlx::query_as(
-        "SELECT state, teammate_id, parent_assignment_id IS NOT NULL
+        "SELECT state, agent_id, parent_assignment_id IS NOT NULL
          FROM chat_work_assignments WHERE id = ?",
     )
     .bind(assignment_id)
     .fetch_optional(&mut *connection)
     .await
     .map_err(persistence_error)?;
-    let Some((state, teammate_id, delegated)) = row else {
+    let Some((state, agent_id, delegated)) = row else {
         // The delete cascaded away the assignment's runs and authorizations, so no revocation
         // job can name them; the report wakes the sweep that stops running work whose
         // authorization no longer exists.
@@ -697,7 +697,7 @@ async fn follow_assignment_state(
             // the launch, which refuses a settled assignment, and the report wakes the drain
             // for a run that started meanwhile.
             if ended_jobs > 0 || revoked > 0 {
-                effects.revoked_teammates.insert(teammate_id);
+                effects.revoked_agents.insert(agent_id);
                 effects
                     .settled_assignments
                     .insert(assignment_id.to_string());
@@ -714,26 +714,26 @@ fn now() -> String {
     now.to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-/// Revokes the teammate's active authorizations, bumps its access revision, and records both.
+/// Revokes the agent's active authorizations, bumps its access revision, and records both.
 async fn revoke(
     connection: &mut SqliteConnection,
-    teammate_id: &str,
+    agent_id: &str,
     now: &str,
     reason: &str,
     effects: &mut ChatSyncEffects,
 ) -> ChatResult<()> {
-    let revoked = revoke_teammate_authorizations(connection, teammate_id, now, reason).await?;
+    let revoked = revoke_agent_authorizations(connection, agent_id, now, reason).await?;
     if revoked > 0 {
-        effects.revoked_teammates.insert(teammate_id.to_string());
+        effects.revoked_agents.insert(agent_id.to_string());
     }
     let revised: Option<String> = sqlx::query_scalar(
-        "UPDATE chat_teammate_access_state
+        "UPDATE chat_agent_access_state
          SET access_revision = access_revision + 1, updated_at = ?
-         WHERE teammate_id = ?
-         RETURNING teammate_id",
+         WHERE agent_id = ?
+         RETURNING agent_id",
     )
     .bind(now)
-    .bind(teammate_id)
+    .bind(agent_id)
     .fetch_optional(&mut *connection)
     .await
     .map_err(persistence_error)?;
@@ -741,19 +741,19 @@ async fn revoke(
     Ok(())
 }
 
-/// Revokes the teammate's active authorizations when its effective policy no longer covers one
+/// Revokes the agent's active authorizations when its effective policy no longer covers one
 /// of them, so a narrowing applied from another device stops the runs it granted.
 async fn revoke_on_policy_reduction(
     connection: &mut SqliteConnection,
-    teammate_id: &str,
+    agent_id: &str,
     effects: &mut ChatSyncEffects,
 ) -> ChatResult<()> {
-    if holds_authorization_beyond_policy(connection, teammate_id).await? {
+    if holds_authorization_beyond_policy(connection, agent_id).await? {
         revoke(
             connection,
-            teammate_id,
+            agent_id,
             &now(),
-            TEAMMATE_POLICY_REDUCED_REASON,
+            AGENT_POLICY_REDUCED_REASON,
             effects,
         )
         .await?;
@@ -761,12 +761,12 @@ async fn revoke_on_policy_reduction(
     Ok(())
 }
 
-/// Revokes the active authorizations of the AI teammate `participant_id` when it is archived.
+/// Revokes the active authorizations of the AI agent `participant_id` when it is archived.
 ///
-/// Archiving on one device refuses while the teammate has active work there, which cannot speak
+/// Archiving on one device refuses while the agent has active work there, which cannot speak
 /// for work running on this device. Only active authorizations revoke, so a repeated apply
 /// changes nothing.
-async fn revoke_archived_teammate(
+async fn revoke_archived_agent(
     connection: &mut SqliteConnection,
     participant_id: &str,
     effects: &mut ChatSyncEffects,
@@ -776,7 +776,7 @@ async fn revoke_archived_teammate(
             connection,
             participant_id,
             &now(),
-            TEAMMATE_ARCHIVED_REASON,
+            AGENT_ARCHIVED_REASON,
             effects,
         )
         .await?;
@@ -784,7 +784,7 @@ async fn revoke_archived_teammate(
     Ok(())
 }
 
-/// Returns whether the AI teammate `participant_id` is archived and still holds an active
+/// Returns whether the AI agent `participant_id` is archived and still holds an active
 /// authorization.
 async fn holds_archived_authorization(
     connection: &mut SqliteConnection,
@@ -794,11 +794,11 @@ async fn holds_archived_authorization(
         "SELECT EXISTS (
              SELECT 1
              FROM chat_participants participant
-             JOIN chat_work_assignments assignment ON assignment.teammate_id = participant.id
+             JOIN chat_work_assignments assignment ON assignment.agent_id = participant.id
              JOIN chat_assignment_authorization_revisions authorization
                ON authorization.assignment_id = assignment.id
              WHERE participant.id = ?
-               AND participant.participant_kind = 'ai_teammate'
+               AND participant.participant_kind = 'ai_agent'
                AND participant.archived_at IS NOT NULL
                AND authorization.decision_state = 'allowed'
                AND authorization.revoked_at IS NULL
@@ -810,11 +810,11 @@ async fn holds_archived_authorization(
     .map_err(persistence_error)
 }
 
-/// Mirrors the command side of saving teammate access for applied membership or grant rows.
+/// Mirrors the command side of saving agent access for applied membership or grant rows.
 ///
 /// A membership change bumps the audience of its conversation when `revises_audience` holds, as
-/// the gated membership triggers do. A change for an AI teammate bumps the teammate's access
-/// revision, and revokes the teammate's active authorizations when one of them is no longer
+/// the gated membership triggers do. A change for an AI agent bumps the agent's access
+/// revision, and revokes the agent's active authorizations when one of them is no longer
 /// covered by the current rows, so a concurrent removal or narrowing that sync kept also stops
 /// the runs it granted. Revoking only uncovered authorizations keeps a widening or a repeated
 /// apply from revoking anything.
@@ -824,7 +824,7 @@ async fn apply_access_rows(
     revises_audience: bool,
     effects: &mut ChatSyncEffects,
 ) -> ChatResult<()> {
-    let mut teammates = BTreeSet::new();
+    let mut agents = BTreeSet::new();
     for (conversation_id, participant_id, changed_at) in rows {
         if revises_audience {
             let revised = sqlx::query(
@@ -843,29 +843,28 @@ async fn apply_access_rows(
             }
         }
         let revised: Option<String> = sqlx::query_scalar(
-            "UPDATE chat_teammate_access_state
+            "UPDATE chat_agent_access_state
              SET access_revision = access_revision + 1, updated_at = ?
-             WHERE teammate_id = ?
-             RETURNING teammate_id",
+             WHERE agent_id = ?
+             RETURNING agent_id",
         )
         .bind(changed_at)
         .bind(participant_id)
         .fetch_optional(&mut *connection)
         .await
         .map_err(persistence_error)?;
-        teammates.extend(revised);
+        agents.extend(revised);
     }
     let now: DateTime<Utc> = SystemTime::now().into();
     let now = now.to_rfc3339_opts(SecondsFormat::Millis, true);
-    for teammate_id in teammates {
-        if let Some(reason) = uncovered_authorization_reason(connection, &teammate_id).await? {
-            let revoked =
-                revoke_teammate_authorizations(connection, &teammate_id, &now, reason).await?;
+    for agent_id in agents {
+        if let Some(reason) = uncovered_authorization_reason(connection, &agent_id).await? {
+            let revoked = revoke_agent_authorizations(connection, &agent_id, &now, reason).await?;
             if revoked > 0 {
-                effects.revoked_teammates.insert(teammate_id.clone());
+                effects.revoked_agents.insert(agent_id.clone());
             }
         }
-        effects.access_revised.insert(teammate_id);
+        effects.access_revised.insert(agent_id);
     }
     Ok(())
 }
@@ -876,14 +875,14 @@ const APPROVAL_RANKS: &str = "approval_rank(policy, rank) AS (
 )";
 
 /// SQL condition that holds when the channel membership `access`, with its profile's effective
-/// revision joined as `profile_revision`, lets the teammate post, as assignment context requires.
+/// revision joined as `profile_revision`, lets the agent post, as assignment context requires.
 const PARTICIPATES: &str = "CASE
     WHEN access.participate_inherits_profile = 1 THEN profile_revision.default_participate
     ELSE access.participate AND profile_revision.default_participate
 END = 1";
 
 /// SQL condition that holds when the channel membership `access`, with its profile's effective
-/// revision joined as `profile_revision`, lets the teammate read history from the lower bound
+/// revision joined as `profile_revision`, lets the agent read history from the lower bound
 /// of the disclosed channel `source`, as the context checks of channel disclosure do.
 const READS_HISTORY_FROM: &str = "(
     CASE
@@ -910,7 +909,7 @@ const READS_HISTORY_FROM: &str = "(
 /// from the destination channel membership `access` in the runtime's precedence: a scratch
 /// target takes the scratch override, a working folder target takes the execution target's
 /// grant override, and either falls back to the channel override. Null when none is set, so
-/// the teammate's own approval behavior applies.
+/// the agent's own approval behavior applies.
 const RESOLVED_OVERRIDE: &str = "CASE
     WHEN EXISTS (
         SELECT 1 FROM chat_execution_environments environment
@@ -921,9 +920,9 @@ const RESOLVED_OVERRIDE: &str = "CASE
         (
             SELECT folder_grant.runtime_approval_policy
             FROM chat_assignment_authorized_folder_sources source
-            JOIN chat_teammate_working_folder_grants folder_grant
+            JOIN chat_agent_working_folder_grants folder_grant
               ON folder_grant.conversation_id = access.conversation_id
-             AND folder_grant.teammate_id = access.teammate_id
+             AND folder_grant.agent_id = access.agent_id
              AND folder_grant.working_folder_id = source.working_folder_id
             WHERE source.authorization_revision_id = authorization.id
               AND source.is_execution_target = 1
@@ -932,23 +931,23 @@ const RESOLVED_OVERRIDE: &str = "CASE
     )
 END";
 
-/// Frozen approvals of the active authorizations of teammate `?1`, each with the override that
-/// governs it and the safety mode that decides coverage (see [`live_teammate_safety_mode_sql`]):
+/// Frozen approvals of the active authorizations of agent `?1`, each with the override that
+/// governs it and the safety mode that decides coverage (see [`live_agent_safety_mode_sql`]):
 /// the execution target of every authorization, then every folder source with its own frozen
 /// approval. A folder source falls back from its grant override to the channel override, as the
 /// live tool check does.
 fn frozen_approvals_sql() -> String {
-    let live_mode = live_teammate_safety_mode_sql("assignment.teammate_id");
+    let live_mode = live_agent_safety_mode_sql("assignment.agent_id");
     format!(
         "SELECT authorization.resolved_runtime_approval_policy AS frozen,
                 {RESOLVED_OVERRIDE} AS approval_override,
                 {live_mode} AS safety_mode
          FROM chat_assignment_authorization_revisions authorization
          JOIN chat_work_assignments assignment ON assignment.id = authorization.assignment_id
-         LEFT JOIN chat_teammate_channel_memberships access
+         LEFT JOIN chat_agent_channel_memberships access
            ON access.conversation_id = authorization.destination_conversation_id
-          AND access.teammate_id = assignment.teammate_id
-         WHERE assignment.teammate_id = ?1
+          AND access.agent_id = assignment.agent_id
+         WHERE assignment.agent_id = ?1
            AND authorization.decision_state = 'allowed'
            AND authorization.revoked_at IS NULL
          UNION ALL
@@ -959,68 +958,68 @@ fn frozen_approvals_sql() -> String {
          JOIN chat_work_assignments assignment ON assignment.id = authorization.assignment_id
          JOIN chat_assignment_authorized_folder_sources source
            ON source.authorization_revision_id = authorization.id
-         LEFT JOIN chat_teammate_channel_memberships access
+         LEFT JOIN chat_agent_channel_memberships access
            ON access.conversation_id = authorization.destination_conversation_id
-          AND access.teammate_id = assignment.teammate_id
-         LEFT JOIN chat_teammate_working_folder_grants folder_grant
+          AND access.agent_id = assignment.agent_id
+         LEFT JOIN chat_agent_working_folder_grants folder_grant
            ON folder_grant.conversation_id = authorization.destination_conversation_id
-          AND folder_grant.teammate_id = assignment.teammate_id
+          AND folder_grant.agent_id = assignment.agent_id
           AND folder_grant.working_folder_id = source.working_folder_id
-         WHERE assignment.teammate_id = ?1
+         WHERE assignment.agent_id = ?1
            AND authorization.decision_state = 'allowed'
            AND authorization.revoked_at IS NULL
            AND source.resolved_runtime_approval_policy IS NOT NULL"
     )
 }
 
-/// Returns whether the teammate holds an active authorization that froze an approval its
-/// policy no longer covers. The safety mode follows [`live_teammate_safety_mode_sql`], so the
+/// Returns whether the agent holds an active authorization that froze an approval its
+/// policy no longer covers. The safety mode follows [`live_agent_safety_mode_sql`], so the
 /// pointer's copied mode decides while its revision is missing, and without any safety mode
-/// nothing is covered, as the live tool checks refuse such a teammate.
+/// nothing is covered, as the live tool checks refuse such an agent.
 async fn holds_authorization_beyond_policy(
     connection: &mut SqliteConnection,
-    teammate_id: &str,
+    agent_id: &str,
 ) -> ChatResult<bool> {
     let approvals: Vec<(String, Option<String>, Option<String>)> =
         sqlx::query_as(sqlx::AssertSqlSafe(frozen_approvals_sql()))
-            .bind(teammate_id)
+            .bind(agent_id)
             .fetch_all(&mut *connection)
             .await
             .map_err(persistence_error)?;
     Ok(approvals.iter().any(|(frozen, approval_override, mode)| {
         !mode
             .as_deref()
-            .is_some_and(|mode| teammate_policy_covers(mode, approval_override.as_deref(), frozen))
+            .is_some_and(|mode| agent_policy_covers(mode, approval_override.as_deref(), frozen))
     }))
 }
 
-/// Returns the revocation reason for the teammate when it holds an active authorization that its
+/// Returns the revocation reason for the agent when it holds an active authorization that its
 /// current rows no longer cover, or `None` when every one is covered.
 ///
-/// An archived teammate records [`TEAMMATE_ARCHIVED_REASON`] and an effective policy that no
-/// longer covers a frozen approval records [`TEAMMATE_POLICY_REDUCED_REASON`], the reasons the
-/// participant and teammate arms record, so the result does not depend on which hook ran first.
+/// An archived agent records [`AGENT_ARCHIVED_REASON`] and an effective policy that no
+/// longer covers a frozen approval records [`AGENT_POLICY_REDUCED_REASON`], the reasons the
+/// participant and agent arms record, so the result does not depend on which hook ran first.
 /// Any other uncovered authorization (see [`holds_uncovered_access`]) records
 /// [`ACCESS_REDUCTION_REASON`].
 async fn uncovered_authorization_reason(
     connection: &mut SqliteConnection,
-    teammate_id: &str,
+    agent_id: &str,
 ) -> ChatResult<Option<&'static str>> {
-    if holds_archived_authorization(connection, teammate_id).await? {
-        return Ok(Some(TEAMMATE_ARCHIVED_REASON));
+    if holds_archived_authorization(connection, agent_id).await? {
+        return Ok(Some(AGENT_ARCHIVED_REASON));
     }
-    if holds_authorization_beyond_policy(connection, teammate_id).await? {
-        return Ok(Some(TEAMMATE_POLICY_REDUCED_REASON));
+    if holds_authorization_beyond_policy(connection, agent_id).await? {
+        return Ok(Some(AGENT_POLICY_REDUCED_REASON));
     }
-    Ok(holds_uncovered_access(connection, teammate_id)
+    Ok(holds_uncovered_access(connection, agent_id)
         .await?
         .then_some(ACCESS_REDUCTION_REASON))
 }
 
-/// Returns whether the teammate holds an active authorization that its current access rows no
+/// Returns whether the agent holds an active authorization that its current access rows no
 /// longer cover.
 ///
-/// An authorization is uncovered when the teammate's conversation membership or AI channel
+/// An authorization is uncovered when the agent's conversation membership or AI channel
 /// membership of its destination has ended, when a channel it disclosed can no longer be read
 /// from the disclosed lower bound, when a folder it was granted has no active grant of at least
 /// the authorized capability inside the destination conversation's project, or when the runtime
@@ -1028,7 +1027,7 @@ async fn uncovered_authorization_reason(
 /// the authorized policy.
 async fn holds_uncovered_access(
     connection: &mut SqliteConnection,
-    teammate_id: &str,
+    agent_id: &str,
 ) -> ChatResult<bool> {
     let sql = format!(
         "WITH {CAPABILITY_RANKS}, {APPROVAL_RANKS}
@@ -1039,15 +1038,15 @@ async fn holds_uncovered_access(
                ON assignment.id = authorization.assignment_id
              JOIN approval_rank authorized_approval
                ON authorized_approval.policy = authorization.resolved_runtime_approval_policy
-             WHERE assignment.teammate_id = ?1
+             WHERE assignment.agent_id = ?1
                AND authorization.decision_state = 'allowed'
                AND authorization.revoked_at IS NULL
                AND (
                    NOT EXISTS (
                        SELECT 1 FROM chat_conversation_memberships membership
-                       JOIN chat_teammate_channel_memberships access
+                       JOIN chat_agent_channel_memberships access
                          ON access.conversation_id = membership.conversation_id
-                        AND access.teammate_id = membership.participant_id
+                        AND access.agent_id = membership.participant_id
                         AND access.removed_at IS NULL
                        JOIN chat_access_profile_effective_revisions profile_revision
                          ON profile_revision.access_profile_id = access.access_profile_id
@@ -1057,10 +1056,10 @@ async fn holds_uncovered_access(
                          AND {PARTICIPATES}
                    )
                    OR EXISTS (
-                       SELECT 1 FROM chat_teammate_channel_memberships access
+                       SELECT 1 FROM chat_agent_channel_memberships access
                        JOIN approval_rank override ON override.policy = {RESOLVED_OVERRIDE}
                        WHERE access.conversation_id = authorization.destination_conversation_id
-                         AND access.teammate_id = ?1
+                         AND access.agent_id = ?1
                          AND override.rank > authorized_approval.rank
                    )
                    OR EXISTS (
@@ -1069,9 +1068,9 @@ async fn holds_uncovered_access(
                          AND NOT EXISTS (
                              SELECT 1
                              FROM chat_conversation_memberships membership
-                             JOIN chat_teammate_channel_memberships access
+                             JOIN chat_agent_channel_memberships access
                                ON access.conversation_id = membership.conversation_id
-                              AND access.teammate_id = membership.participant_id
+                              AND access.agent_id = membership.participant_id
                               AND access.removed_at IS NULL
                              JOIN chat_access_profile_effective_revisions profile_revision
                                ON profile_revision.access_profile_id = access.access_profile_id
@@ -1088,10 +1087,10 @@ async fn holds_uncovered_access(
                        WHERE source.authorization_revision_id = authorization.id
                          AND NOT EXISTS (
                              SELECT 1
-                             FROM chat_teammate_working_folder_grants folder_grant
-                             JOIN chat_teammate_channel_memberships access
+                             FROM chat_agent_working_folder_grants folder_grant
+                             JOIN chat_agent_channel_memberships access
                                ON access.conversation_id = folder_grant.conversation_id
-                              AND access.teammate_id = folder_grant.teammate_id
+                              AND access.agent_id = folder_grant.agent_id
                              JOIN chat_access_profile_effective_revisions profile_revision
                                ON profile_revision.access_profile_id = access.access_profile_id
                              JOIN capability_rank profile_rank
@@ -1104,7 +1103,7 @@ async fn holds_uncovered_access(
                                ON folder.id = folder_grant.working_folder_id
                              WHERE folder_grant.conversation_id
                                    = authorization.destination_conversation_id
-                               AND folder_grant.teammate_id = ?1
+                               AND folder_grant.agent_id = ?1
                                AND folder_grant.working_folder_id = source.working_folder_id
                                AND folder_grant.revoked_at IS NULL
                                AND folder_grant.project_id = conversation.project_id
@@ -1120,19 +1119,19 @@ async fn holds_uncovered_access(
          )"
     );
     sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
-        .bind(teammate_id)
+        .bind(agent_id)
         .fetch_one(&mut *connection)
         .await
         .map_err(persistence_error)
 }
 
-/// Bumps the audiences of the conversations whose teammates use the profile and, when the
-/// profile's effective revision narrows authority, the access of those teammates.
+/// Bumps the audiences of the conversations whose agents use the profile and, when the
+/// profile's effective revision narrows authority, the access of those agents.
 ///
 /// The effective revision is the one the profile's current pointer names, or the newest arrived
 /// revision while that one is missing. It narrows authority when it is narrower than the revision
 /// before it or than any later revision, since a pointer that names an older revision chose it as
-/// the more restrictive one. Teammates are revoked only while one of their active authorizations
+/// the more restrictive one. Agents are revoked only while one of their active authorizations
 /// was granted under a wider revision of the profile, so applying the same effective revision
 /// again never revokes authorizations granted under it. The audience and access revisions are
 /// change counters, so an extra bump only makes readers refresh.
@@ -1157,7 +1156,7 @@ async fn apply_effective_profile_revision(
          SET revision = revision + 1, updated_at = ?
          WHERE conversation_id IN (
              SELECT membership.conversation_id
-             FROM chat_teammate_channel_memberships membership
+             FROM chat_agent_channel_memberships membership
              WHERE membership.access_profile_id = ? AND membership.removed_at IS NULL
          )
          RETURNING conversation_id",
@@ -1171,14 +1170,14 @@ async fn apply_effective_profile_revision(
     if !effective_revision_narrows(connection, &revision_id).await? {
         return Ok(());
     }
-    let teammates: Vec<String> = sqlx::query_scalar(
-        "UPDATE chat_teammate_access_state
+    let agents: Vec<String> = sqlx::query_scalar(
+        "UPDATE chat_agent_access_state
          SET access_revision = access_revision + 1, updated_at = ?
-         WHERE teammate_id IN (
-             SELECT teammate_id FROM chat_teammate_channel_memberships
+         WHERE agent_id IN (
+             SELECT agent_id FROM chat_agent_channel_memberships
              WHERE access_profile_id = ? AND removed_at IS NULL
          )
-         RETURNING teammate_id",
+         RETURNING agent_id",
     )
     .bind(&created_at)
     .bind(profile_id)
@@ -1187,20 +1186,16 @@ async fn apply_effective_profile_revision(
     .map_err(persistence_error)?;
     let now: DateTime<Utc> = SystemTime::now().into();
     let now = now.to_rfc3339_opts(SecondsFormat::Millis, true);
-    for teammate_id in teammates {
-        if holds_wider_authorization(connection, &teammate_id, &revision_id).await? {
-            let revoked = revoke_teammate_authorizations(
-                connection,
-                &teammate_id,
-                &now,
-                PROFILE_REDUCTION_REASON,
-            )
-            .await?;
+    for agent_id in agents {
+        if holds_wider_authorization(connection, &agent_id, &revision_id).await? {
+            let revoked =
+                revoke_agent_authorizations(connection, &agent_id, &now, PROFILE_REDUCTION_REASON)
+                    .await?;
             if revoked > 0 {
-                effects.revoked_teammates.insert(teammate_id.clone());
+                effects.revoked_agents.insert(agent_id.clone());
             }
         }
-        effects.access_revised.insert(teammate_id);
+        effects.access_revised.insert(agent_id);
     }
     Ok(())
 }
@@ -1258,11 +1253,11 @@ async fn effective_revision_narrows(
         .map_err(persistence_error)
 }
 
-/// Returns whether the teammate holds an active authorization granted under a revision of the
+/// Returns whether the agent holds an active authorization granted under a revision of the
 /// same profile that is wider than the effective revision.
 async fn holds_wider_authorization(
     connection: &mut SqliteConnection,
-    teammate_id: &str,
+    agent_id: &str,
     revision_id: &str,
 ) -> ChatResult<bool> {
     let sql = format!(
@@ -1280,7 +1275,7 @@ async fn holds_wider_authorization(
              JOIN capability_rank next_rank ON next_rank.capability = next.maximum_folder_capability
              JOIN capability_rank previous_rank
                ON previous_rank.capability = previous.maximum_folder_capability
-             WHERE assignment.teammate_id = ?
+             WHERE assignment.agent_id = ?
                AND authorization.decision_state = 'allowed'
                AND authorization.revoked_at IS NULL
                AND {NARROWER_THAN_PREVIOUS}
@@ -1288,7 +1283,7 @@ async fn holds_wider_authorization(
     );
     sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
         .bind(revision_id)
-        .bind(teammate_id)
+        .bind(agent_id)
         .fetch_one(&mut *connection)
         .await
         .map_err(persistence_error)
@@ -1335,23 +1330,23 @@ async fn rebuild_message_search(
     Ok(())
 }
 
-/// Teammates with key `?` whose copied safety mode or owner disagrees with the policy revision
+/// Agents with key `?` whose copied safety mode or owner disagrees with the policy revision
 /// their pointer names.
-const POLICY_COPY_MISMATCH_BY_TEAMMATE: &str = "SELECT teammate.participant_id
-     FROM chat_teammates teammate
-     JOIN chat_teammate_policy_revisions policy ON policy.id = teammate.current_policy_revision_id
-     WHERE teammate.participant_id = ?
-       AND (policy.teammate_id IS NOT teammate.participant_id
-            OR policy.safety_mode IS NOT teammate.current_policy_safety_mode)";
+const POLICY_COPY_MISMATCH_BY_AGENT: &str = "SELECT agent.participant_id
+     FROM chat_agents agent
+     JOIN chat_agent_policy_revisions policy ON policy.id = agent.current_policy_revision_id
+     WHERE agent.participant_id = ?
+       AND (policy.agent_id IS NOT agent.participant_id
+            OR policy.safety_mode IS NOT agent.current_policy_safety_mode)";
 
-/// Teammates whose pointer names policy revision `?` and whose copied safety mode or owner
+/// Agents whose pointer names policy revision `?` and whose copied safety mode or owner
 /// disagrees with it.
-const POLICY_COPY_MISMATCH_BY_REVISION: &str = "SELECT teammate.participant_id
-     FROM chat_teammates teammate
-     JOIN chat_teammate_policy_revisions policy ON policy.id = teammate.current_policy_revision_id
+const POLICY_COPY_MISMATCH_BY_REVISION: &str = "SELECT agent.participant_id
+     FROM chat_agents agent
+     JOIN chat_agent_policy_revisions policy ON policy.id = agent.current_policy_revision_id
      WHERE policy.id = ?
-       AND (policy.teammate_id IS NOT teammate.participant_id
-            OR policy.safety_mode IS NOT teammate.current_policy_safety_mode)";
+       AND (policy.agent_id IS NOT agent.participant_id
+            OR policy.safety_mode IS NOT agent.current_policy_safety_mode)";
 
 /// Profiles with key `?` whose copied maximum folder capability or owner disagrees with the
 /// revision their pointer names.
@@ -1376,8 +1371,8 @@ const PROFILE_COPY_MISMATCH_BY_REVISION: &str = "SELECT profile.id
 /// Which pointer a mismatch query finds.
 #[derive(Clone, Copy)]
 enum PointerOwner {
-    /// A teammate's current policy pointer.
-    Teammate,
+    /// An agent's current policy pointer.
+    Agent,
     /// An access profile's current revision pointer.
     Profile,
 }
@@ -1389,9 +1384,9 @@ enum PointerOwner {
 /// Commands write the pointer and its copy together and the merge keeps them in one coupled
 /// group, so a disagreement can only come from a corrupt or dishonest operation that would let
 /// a wider revision outrank a stricter one. The effective revision views give such a pointer no
-/// effective revision, so dispatch, context, and tool checks refuse the teammate (or every
-/// teammate on the profile) until an honest edit replaces the pointer. This hook records the
-/// pointer and revokes the active authorizations of the affected teammates, which were granted
+/// effective revision, so dispatch, context, and tool checks refuse the agent (or every
+/// agent on the profile) until an honest edit replaces the pointer. This hook records the
+/// pointer and revokes the active authorizations of the affected agents, which were granted
 /// before the mismatch arrived. Failing the apply instead would stop every later apply on this
 /// device. The check runs here rather than in a trigger because a pointer row may apply before
 /// the revision it names; this hook runs again when the revision arrives.
@@ -1409,21 +1404,21 @@ async fn contain_mismatched_pointer(
         .map_err(persistence_error)?;
     let now = now();
     for owner_id in mismatched {
-        let teammates = match owner {
-            PointerOwner::Teammate => vec![owner_id.clone()],
+        let agents = match owner {
+            PointerOwner::Agent => vec![owner_id.clone()],
             PointerOwner::Profile => sqlx::query_scalar(
-                "SELECT DISTINCT teammate_id FROM chat_teammate_channel_memberships
-                 WHERE access_profile_id = ? AND removed_at IS NULL ORDER BY teammate_id",
+                "SELECT DISTINCT agent_id FROM chat_agent_channel_memberships
+                 WHERE access_profile_id = ? AND removed_at IS NULL ORDER BY agent_id",
             )
             .bind(&owner_id)
             .fetch_all(&mut *connection)
             .await
             .map_err(persistence_error)?,
         };
-        for teammate_id in teammates {
+        for agent_id in agents {
             revoke(
                 connection,
-                &teammate_id,
+                &agent_id,
                 &now,
                 MISMATCHED_POINTER_REASON,
                 effects,
@@ -1453,10 +1448,10 @@ fn approval_strictness(policy: &str) -> Option<usize> {
 /// `winner` is the override of the version the merge kept and `versions` the overrides of every
 /// concurrent version. An inherited override (`None`) follows the channel override at runtime,
 /// which can be stricter than an explicit grant override the static priority ranks above
-/// inheriting. When a version inherits and the channel override of the grant's teammate is
+/// inheriting. When a version inherits and the channel override of the grant's agent is
 /// stricter than the winner's explicit override, that channel override settles the grant, so a
 /// concurrent widening never loosens what an inheriting edit kept. A winner that inherits, or a
-/// channel without an override, needs no settle: the teammate's default narrows every version
+/// channel without an override, needs no settle: the agent's default narrows every version
 /// alike. The result reads only replicated rows and is stricter than the winner, so the static
 /// priority ranks it above every version.
 pub async fn settled_grant_approval(
@@ -1473,10 +1468,10 @@ pub async fn settled_grant_approval(
     }
     let channel: Option<String> = sqlx::query_scalar(
         "SELECT access.runtime_approval_policy
-         FROM chat_teammate_working_folder_grants grant_row
-         JOIN chat_teammate_channel_memberships access
+         FROM chat_agent_working_folder_grants grant_row
+         JOIN chat_agent_channel_memberships access
            ON access.conversation_id = grant_row.conversation_id
-          AND access.teammate_id = grant_row.teammate_id
+          AND access.agent_id = grant_row.agent_id
          WHERE grant_row.sync_key = ? AND access.removed_at IS NULL",
     )
     .bind(grant_key)

@@ -2,7 +2,7 @@
   import MessageCircle from "@lucide/svelte/icons/message-circle";
   import type { ChatMessageRead, ChatMessageReference, ChatParticipantRead } from "$lib/chat/contracts";
   import { organizationalMessageActionTarget } from "$lib/chat/timeline/message-action-target";
-  import { chatParticipantDisplayName } from "$lib/chat/teammates/participant-display";
+  import { chatParticipantDisplayName } from "$lib/chat/agents/participant-display";
   import { getAllContexts, mount, unmount, untrack } from "svelte";
   import { openChatExternalUrl } from "$lib/api/chat";
   import { ORGANIZATIONAL_REFERENCE_SLOT_ATTRIBUTE, renderOrganizationalMarkdown, type RenderedOrganizationalMarkdown } from "$lib/chat/timeline/organizational-markdown";
@@ -74,7 +74,7 @@
     }
   }
 
-  /** The lead-in naming the teammate and whether it failed before or after output. */
+  /** The lead-in naming the agent and whether it failed before or after output. */
   function failureTitle(cause: ChatAgentFailureCause): string {
     return cause.kind === "launch"
       ? t("chat.runs.outcome.failedBeforeOutput", authorDisplayName)
@@ -95,7 +95,7 @@
   function participantForReference(reference: Extract<ChatMessageReference, { kind: "participant" }>): ChatParticipantRead {
     const current = [
       ...(chat.selectedChannel?.memberships ?? []).map((membership) => membership.participant),
-      ...chat.teammateIdentities.map((teammate) => teammate.participant),
+      ...chat.agentIdentities.map((agent) => agent.participant),
       ...(message.replyThread?.participants ?? []),
       ...(message.author ? [message.author] : []),
     ].find((participant) => participant.id === reference.participantId);

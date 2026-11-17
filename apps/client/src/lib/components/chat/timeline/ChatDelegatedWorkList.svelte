@@ -1,12 +1,12 @@
 <script lang="ts">
   import ArrowUpRight from "@lucide/svelte/icons/arrow-up-right";
   import type { ChatDelegatedChildRead, ChatReplyThreadId } from "$lib/chat/contracts";
-  import { chatParticipantDisplayName } from "$lib/chat/teammates/participant-display";
+  import { chatParticipantDisplayName } from "$lib/chat/agents/participant-display";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
 
-  /** Lists the work teammates delegated from this thread's work, each with its live state. */
+  /** Lists the work agents delegated from this thread's work, each with its live state. */
   let {
     delegatedChildren,
     onOpenThread,
@@ -18,8 +18,8 @@
   const { t } = getLocalization();
   const preferences = getPreferences();
 
-  function teammateName(child: ChatDelegatedChildRead): string {
-    return chatParticipantDisplayName(child.teammate, preferences.profileDisplayName, t("chat.timeline.you"));
+  function agentName(child: ChatDelegatedChildRead): string {
+    return chatParticipantDisplayName(child.agent, preferences.profileDisplayName, t("chat.timeline.you"));
   }
 </script>
 
@@ -27,9 +27,9 @@
   <h3>{t("chat.delegation.delegatedWork")}</h3>
   <ul>
     {#each delegatedChildren as child (child.assignmentId)}
-      {@const name = teammateName(child)}
+      {@const name = agentName(child)}
       <li data-delegated-child={child.assignmentId} data-state={child.state}>
-        <ChatParticipantAvatar participant={child.teammate} size={22} shape="compact" />
+        <ChatParticipantAvatar participant={child.agent} size={22} shape="compact" />
         <div class="child-copy">
           <span class="child-heading"><strong>{name}</strong><span class="child-state">{t(`chat.delegation.states.${child.state}`)}</span></span>
           <p>{child.objective}</p>

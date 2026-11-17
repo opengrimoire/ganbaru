@@ -267,7 +267,7 @@ async fn is_referenced_by_chat(
                        WHERE working_folder_id = ?1)
              OR EXISTS(SELECT 1 FROM chat_scratch_promotions
                        WHERE destination_working_folder_id = ?1)
-             OR EXISTS(SELECT 1 FROM chat_teammate_working_folder_grants
+             OR EXISTS(SELECT 1 FROM chat_agent_working_folder_grants
                        WHERE working_folder_id = ?1)
              OR EXISTS(SELECT 1 FROM chat_working_folder_reference_targets
                        WHERE working_folder_id = ?1)

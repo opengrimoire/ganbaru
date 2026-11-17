@@ -75,7 +75,7 @@ export async function saveChatProviderFile(request: {
 }
 
 /**
- * Sets one allowlisted teammate preference in a provider configuration file, or removes it
+ * Sets one allowlisted agent preference in a provider configuration file, or removes it
  * when `value` is null, and returns the saved file.
  */
 export async function saveChatProviderPreference(request: {

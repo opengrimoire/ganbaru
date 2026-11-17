@@ -14,29 +14,26 @@ const PUSH_URL: &str = "git@example.com:team/app.git";
 /// The destination branch every approval names.
 const BRANCH: &str = "main";
 
-/// The derived key of [`TEAMMATE`]'s approval on [`FOLDER`] for `branch`.
+/// The derived key of [`AGENT`]'s approval on [`FOLDER`] for `branch`.
 fn approval_key(branch: &str) -> String {
-    key(
-        PUSH_APPROVAL_KEY_PREFIX,
-        &[TEAMMATE, FOLDER, PUSH_URL, branch],
-    )
+    key(PUSH_APPROVAL_KEY_PREFIX, &[AGENT, FOLDER, PUSH_URL, branch])
 }
 
-/// SQL approving [`TEAMMATE`]'s pushes from [`FOLDER`] to `branch` at `at` for `policy`, or
+/// SQL approving [`AGENT`]'s pushes from [`FOLDER`] to `branch` at `at` for `policy`, or
 /// approving them again when the row exists, as the confirm path writes it.
 fn approve_sql(branch: &str, policy: &str, at: &str) -> String {
     format!(
         "INSERT INTO chat_push_approvals
-            (teammate_id, working_folder_id, push_url, destination_branch, sync_key,
+            (agent_id, working_folder_id, push_url, destination_branch, sync_key,
              runtime_approval_policy, safety_mode, approved_by_participant_id, approved_at)
-         VALUES ({teammate}, {folder}, {url}, {branch}, {key}, {policy}, 'ask_for_approval',
+         VALUES ({agent}, {folder}, {url}, {branch}, {key}, {policy}, 'ask_for_approval',
                  {owner}, {at})
-         ON CONFLICT (teammate_id, working_folder_id, push_url, destination_branch) DO UPDATE SET
+         ON CONFLICT (agent_id, working_folder_id, push_url, destination_branch) DO UPDATE SET
              runtime_approval_policy = excluded.runtime_approval_policy,
              safety_mode = excluded.safety_mode,
              approved_by_participant_id = excluded.approved_by_participant_id,
              approved_at = excluded.approved_at, revoked_at = NULL, revision = revision + 1;",
-        teammate = quoted(TEAMMATE),
+        agent = quoted(AGENT),
         folder = quoted(FOLDER),
         url = quoted(PUSH_URL),
         branch = quoted(branch),
@@ -69,7 +66,7 @@ async fn approval_state(replica: &mut Replica, branch: &str) -> Option<String> {
         .await
 }
 
-/// Replicas sharing the conversation rows with [`TEAMMATE`] allowed to publish from [`FOLDER`]
+/// Replicas sharing the conversation rows with [`AGENT`] allowed to publish from [`FOLDER`]
 /// and an approval for [`BRANCH`].
 async fn approved_replicas() -> Vec<Replica> {
     let mut replicas = conversation_replicas(2).await;
@@ -151,7 +148,7 @@ fn chat_push_approval_revocation_wins_over_a_concurrent_re_approval() {
     });
 }
 
-/// One device narrows the teammate's grant, which revokes its approvals there, while another
+/// One device narrows the agent's grant, which revokes its approvals there, while another
 /// approves the push again: the narrowing and the revocation win everywhere.
 #[test]
 fn chat_grant_narrowing_revokes_push_approvals_against_a_concurrent_re_approval() {

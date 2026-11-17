@@ -38,7 +38,7 @@
   }
 
   function bytesLabel(bytes: number): string {
-    return t("settings.agents.teammates.scratchManager.bytes", formatNumber(localization.locale, bytes));
+    return t("settings.agents.agents.scratchManager.bytes", formatNumber(localization.locale, bytes));
   }
 
   function locationLabel(row: ChatScratchReclaimRow): string {
@@ -104,19 +104,19 @@
         : t("settings.chat.behavior.reclaimTotal", formatNumber(localization.locale, report.totalBytes))}</p>
       <ul class="flex flex-col gap-2 px-1">
         {#each report.rows as row (row.scratchGenerationId)}
-          {@const generationLabel = t("settings.agents.teammates.scratchManager.generation", row.generation)}
+          {@const generationLabel = t("settings.agents.agents.scratchManager.generation", row.generation)}
           <li class="flex min-w-0 items-center gap-2">
             <div class="min-w-0 flex-1">
-              <p class="truncate text-[0.866667rem] text-foreground">{row.teammateName} · {generationLabel}</p>
+              <p class="truncate text-[0.866667rem] text-foreground">{row.agentName} · {generationLabel}</p>
               <p class="truncate text-[0.733333rem] text-muted-foreground">{locationLabel(row)}</p>
               <p class="truncate text-[0.733333rem] text-muted-foreground">{[
                 reasonLabel(row.reason, report.idleDays),
-                row.deviceAvailability === "available" ? bytesLabel(row.byteSize) : t("settings.agents.teammates.scratchManager.unavailable"),
-                row.deviceAvailability === "available" && row.sizeTruncated ? t("settings.agents.teammates.scratchManager.sizeLimited") : null,
+                row.deviceAvailability === "available" ? bytesLabel(row.byteSize) : t("settings.agents.agents.scratchManager.unavailable"),
+                row.deviceAvailability === "available" && row.sizeTruncated ? t("settings.agents.agents.scratchManager.sizeLimited") : null,
                 activityLabel(row),
               ].filter(Boolean).join(" · ")}</p>
             </div>
-            <button type="button" class={SETTINGS_SECONDARY_BUTTON_CLASS} disabled={reviewing !== null} aria-label={t("settings.chat.behavior.reclaimReviewLabel", row.teammateName, generationLabel)} onclick={() => void review(row)}>{t("settings.chat.behavior.reclaimReview")}</button>
+            <button type="button" class={SETTINGS_SECONDARY_BUTTON_CLASS} disabled={reviewing !== null} aria-label={t("settings.chat.behavior.reclaimReviewLabel", row.agentName, generationLabel)} onclick={() => void review(row)}>{t("settings.chat.behavior.reclaimReview")}</button>
           </li>
         {/each}
       </ul>

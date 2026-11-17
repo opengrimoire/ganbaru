@@ -1,4 +1,4 @@
-//! Durable organizational messages, reply threads, teammates, and work assignments.
+//! Durable organizational messages, reply threads, agents, and work assignments.
 
 #[cfg(desktop)]
 use super::channels::sync_key;
@@ -28,6 +28,7 @@ const MAX_SEARCH_RESULTS: u32 = 100;
 
 #[cfg(desktop)]
 pub mod access;
+mod agent_lifecycle;
 #[cfg(desktop)]
 mod assignments;
 mod channel_notes;
@@ -51,9 +52,10 @@ mod push_requests;
 mod reads;
 pub(crate) mod review_queue;
 mod scheduling;
-mod teammate_lifecycle;
 mod workflow;
 
+#[cfg(desktop)]
+use agent_lifecycle::set_agent_archived;
 #[cfg(desktop)]
 pub(crate) use assignments::{
     continue_queued_replies_after_turn, deliver_delegation_outcomes_of_assignments,
@@ -68,13 +70,13 @@ use common::{
 };
 #[cfg(desktop)]
 pub(crate) use common::{
-    effective_runtime_approval, native_assignment_safety_mode, parse_approval_policy,
-    parse_runtime_approval_policy, teammate_runtime_approval, wire_runtime_approval_policy,
+    agent_runtime_approval, effective_runtime_approval, native_assignment_safety_mode,
+    parse_approval_policy, parse_runtime_approval_policy, wire_runtime_approval_policy,
 };
 #[cfg(desktop)]
 use common::{
-    json_object, require_unused_teammate_name, validate_display_name, validate_policy,
-    validate_profile_text, validate_teammate_role,
+    json_object, require_unused_agent_name, validate_agent_role, validate_display_name,
+    validate_policy, validate_profile_text,
 };
 #[cfg(desktop)]
 pub(crate) use delegation::{
@@ -88,13 +90,11 @@ pub(crate) use reads::read_memberships_for_conversation;
 #[cfg(test)]
 pub(crate) use reads::read_reply_thread_summary;
 use reads::{
-    read_active_or_latest_assignment, read_assignment, read_message, read_reply_thread_page,
-    read_teammate,
+    read_active_or_latest_assignment, read_agent, read_assignment, read_message,
+    read_reply_thread_page,
 };
 #[cfg(desktop)]
 pub(crate) use scheduling::validate_proposed_schedule;
-#[cfg(desktop)]
-use teammate_lifecycle::set_teammate_archived;
 #[cfg(desktop)]
 use workflow::insert_policy_revision;
 use workflow::{
@@ -102,7 +102,7 @@ use workflow::{
     PostingDevice, REVIEW_REFUSED_NO_EXECUTING_DEVICE, insert_channel_copy,
     insert_communication_message, next_item_order_key, persist_assignment_routing,
     read_post_receipt, require_continuation_scope_is_unchanged, require_reply_thread,
-    require_reviewable_assignment, require_reviewed_work_is_latest, resolve_invoked_teammate,
+    require_reviewable_assignment, require_reviewed_work_is_latest, resolve_invoked_agent,
     review_refusal,
 };
 
@@ -120,16 +120,16 @@ enum StoredPostMessageReceipt {
 }
 
 #[tauri::command]
-pub async fn chat_list_teammates(
+pub async fn chat_list_agents(
     app: tauri::AppHandle,
     db_url: String,
     archived: bool,
-) -> ChatResult<Vec<ChatAiTeammateRead>> {
+) -> ChatResult<Vec<ChatAiAgentRead>> {
     let pool = chat_pool(app, db_url).await?;
     let rows = sqlx::query(
         "SELECT participant_id
-         FROM chat_teammates teammate
-         JOIN chat_participants participant ON participant.id = teammate.participant_id
+         FROM chat_agents agent
+         JOIN chat_participants participant ON participant.id = agent.participant_id
          WHERE (participant.archived_at IS NOT NULL) = ?
          ORDER BY participant.display_name COLLATE NOCASE, participant.id",
     )
@@ -137,72 +137,67 @@ pub async fn chat_list_teammates(
     .fetch_all(&pool)
     .await
     .map_err(persistence_error)?;
-    let mut teammates = Vec::with_capacity(rows.len());
+    let mut agents = Vec::with_capacity(rows.len());
     for row in rows {
         let id = ChatParticipantId::new(
             row.try_get::<String, _>("participant_id")
                 .map_err(persistence_error)?,
         )
         .map_err(identifier_error)?;
-        teammates.push(read_teammate(&pool, &id).await?);
+        agents.push(read_agent(&pool, &id).await?);
     }
-    Ok(teammates)
+    Ok(agents)
 }
 
 #[tauri::command]
-pub async fn chat_read_teammate(
+pub async fn chat_read_agent(
     app: tauri::AppHandle,
     db_url: String,
-    teammate_id: ChatParticipantId,
-) -> ChatResult<ChatAiTeammateRead> {
-    read_teammate(&chat_pool(app, db_url).await?, &teammate_id).await
+    agent_id: ChatParticipantId,
+) -> ChatResult<ChatAiAgentRead> {
+    read_agent(&chat_pool(app, db_url).await?, &agent_id).await
 }
 
 #[tauri::command]
 #[cfg(desktop)]
-pub async fn chat_create_teammate(
+pub async fn chat_create_agent(
     app: tauri::AppHandle,
     db_url: String,
-    request: CreateChatTeammateCommand,
-) -> ChatResult<ChatAiTeammateRead> {
+    request: CreateChatAgentCommand,
+) -> ChatResult<ChatAiAgentRead> {
     validate_policy(&app, &request.policy)?;
     let home_device_id = crate::sync::devices::stable_device_id(&app)
         .map_err(crate::chat::settings::device_state_error)?;
     let pool = chat_pool(app, db_url).await?;
-    create_teammate(&pool, &request, &home_device_id).await
+    create_agent(&pool, &request, &home_device_id).await
 }
 
-/// Stores the teammate of `request`, with `home_device_id` as its home device, and its first
+/// Stores the agent of `request`, with `home_device_id` as its home device, and its first
 /// policy revision. The caller has checked the policy against this device's providers.
 #[cfg(desktop)]
-async fn create_teammate(
+async fn create_agent(
     pool: &SqlitePool,
-    request: &CreateChatTeammateCommand,
+    request: &CreateChatAgentCommand,
     home_device_id: &str,
-) -> ChatResult<ChatAiTeammateRead> {
+) -> ChatResult<ChatAiAgentRead> {
     let display_name = validate_display_name(&request.display_name)?;
-    let role = validate_teammate_role(&request.role)?;
+    let role = validate_agent_role(&request.role)?;
     validate_profile_text(
         &request.instructions,
-        continuation::MAX_TEAMMATE_INSTRUCTIONS_BYTES,
+        continuation::MAX_AGENT_INSTRUCTIONS_BYTES,
         "instructions",
     )?;
     let avatar_data = json_object(&request.avatar, "avatar")?;
     let now = now_timestamp()?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
-    require_unused_teammate_name(
-        &mut transaction,
-        &display_name,
-        request.teammate_id.as_str(),
-    )
-    .await?;
+    require_unused_agent_name(&mut transaction, &display_name, request.agent_id.as_str()).await?;
     sqlx::query(
         "INSERT INTO chat_participants
             (id, participant_kind, display_name, avatar_schema_version,
              avatar_data, created_at, updated_at)
-         VALUES (?, 'ai_teammate', ?, ?, ?, ?, ?)",
+         VALUES (?, 'ai_agent', ?, ?, ?, ?, ?)",
     )
-    .bind(request.teammate_id.as_str())
+    .bind(request.agent_id.as_str())
     .bind(display_name)
     .bind(i64::from(request.avatar.schema_version))
     .bind(avatar_data)
@@ -212,11 +207,11 @@ async fn create_teammate(
     .await
     .map_err(persistence_error)?;
     sqlx::query(
-        "INSERT INTO chat_teammates
+        "INSERT INTO chat_agents
             (participant_id, role, instructions, home_device_id, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?)",
     )
-    .bind(request.teammate_id.as_str())
+    .bind(request.agent_id.as_str())
     .bind(role)
     .bind(request.instructions.trim())
     .bind(home_device_id)
@@ -225,28 +220,22 @@ async fn create_teammate(
     .execute(&mut *transaction)
     .await
     .map_err(persistence_error)?;
-    insert_policy_revision(
-        &mut transaction,
-        &request.teammate_id,
-        &request.policy,
-        &now,
-    )
-    .await?;
+    insert_policy_revision(&mut transaction, &request.agent_id, &request.policy, &now).await?;
     transaction.commit().await.map_err(persistence_error)?;
-    read_teammate(pool, &request.teammate_id).await
+    read_agent(pool, &request.agent_id).await
 }
 
 #[tauri::command]
 #[cfg(desktop)]
-pub async fn chat_archive_teammate(
+pub async fn chat_archive_agent(
     app: tauri::AppHandle,
     db_url: String,
-    teammate_id: ChatParticipantId,
+    agent_id: ChatParticipantId,
     expected_revision: u64,
     archived: bool,
-) -> ChatResult<ChatAiTeammateRead> {
+) -> ChatResult<ChatAiAgentRead> {
     let pool = chat_pool(app, db_url).await?;
-    set_teammate_archived(&pool, &teammate_id, expected_revision, archived).await
+    set_agent_archived(&pool, &agent_id, expected_revision, archived).await
 }
 
 #[tauri::command]
@@ -435,7 +424,7 @@ pub(super) async fn post_message(
         }
         if posted.assignment_write.awaits_acceptance && posted.assignment_write.input_queued {
             // A pending reply of reviewed work continues through follow-up recovery, which
-            // starts it only when the teammate holds a local acceptance.
+            // starts it only when the agent holds a local acceptance.
             tauri::async_runtime::spawn(async move {
                 if let Err(error) =
                     assignments::recover_assignment_dispatch_jobs(dispatch_app, dispatch_db_url)
@@ -626,7 +615,7 @@ async fn persist_post_with(
     if let Some(reply_thread_id) = request.reply_thread_id.as_ref() {
         require_reply_thread(pool, reply_thread_id, &channel.conversation_id).await?;
     }
-    let resolved_invocation = resolve_invoked_teammate(
+    let resolved_invocation = resolve_invoked_agent(
         pool,
         &channel.conversation_id,
         request.reply_thread_id.as_ref(),
@@ -704,9 +693,9 @@ async fn persist_post_with(
             order_key: &order_key,
             request,
             attachments,
-            invoked_teammate_id: resolved_invocation
+            invoked_agent_id: resolved_invocation
                 .as_ref()
-                .map(|invocation| &invocation.teammate_id),
+                .map(|invocation| &invocation.agent_id),
             now: &now,
         },
     )
@@ -778,7 +767,7 @@ async fn persist_post_with(
     };
     if let Some(review) = review {
         // Only a follow-up completes the reviewed work and carries its pending replies. Without
-        // one no device can run the teammate, so the note and the replies would reach no run:
+        // one no device can run the agent, so the note and the replies would reach no run:
         // the whole post rolls back and the reviewer keeps the note.
         let continued = assignment_write
             .assignment_id
@@ -787,7 +776,7 @@ async fn persist_post_with(
         if !continued {
             return Err(review_refusal(
                 REVIEW_REFUSED_NO_EXECUTING_DEVICE,
-                "No device can run this teammate, so the changes cannot be requested yet",
+                "No device can run this agent, so the changes cannot be requested yet",
             ));
         }
     }
@@ -810,7 +799,7 @@ async fn persist_post_with(
             },
             resolved_invocation
                 .as_ref()
-                .map(|invocation| &invocation.teammate_id),
+                .map(|invocation| &invocation.agent_id),
             &now,
         )
         .await?;
@@ -910,7 +899,7 @@ pub async fn chat_schedule_message(
     scheduling::schedule_message(app, db_url, request).await
 }
 
-/// Schedules the message a person confirmed from a teammate's schedule proposal.
+/// Schedules the message a person confirmed from an agent's schedule proposal.
 #[tauri::command]
 pub async fn chat_confirm_schedule_proposal(
     app: tauri::AppHandle,
@@ -920,7 +909,7 @@ pub async fn chat_confirm_schedule_proposal(
     scheduling::confirm_schedule_proposal(app, db_url, request).await
 }
 
-/// Hides a teammate's schedule proposal on this device. The dismissal never syncs.
+/// Hides an agent's schedule proposal on this device. The dismissal never syncs.
 #[tauri::command]
 pub fn chat_dismiss_schedule_proposal(
     app: tauri::AppHandle,
@@ -939,7 +928,7 @@ pub async fn chat_read_schedule_proposal_states(
     scheduling::read_schedule_proposal_states(app, db_url, proposal_item_ids).await
 }
 
-/// Pushes the commit a teammate's open push request names, after checking that the folder
+/// Pushes the commit an agent's open push request names, after checking that the folder
 /// still names it, and answers the request.
 #[cfg(desktop)]
 #[tauri::command]
@@ -962,15 +951,15 @@ pub async fn chat_read_push_request_states(
     push_requests::read_push_request_states(app, db_url, request_item_ids).await
 }
 
-/// Lists a teammate's active standing push approvals.
+/// Lists an agent's active standing push approvals.
 #[tauri::command]
 pub async fn chat_list_push_approvals(
     app: tauri::AppHandle,
     db_url: String,
-    teammate_id: ChatParticipantId,
+    agent_id: ChatParticipantId,
 ) -> ChatResult<Vec<ChatPushApprovalRead>> {
     let pool = chat_pool(app, db_url).await?;
-    push_approvals::list_push_approvals(&pool, &teammate_id).await
+    push_approvals::list_push_approvals(&pool, &agent_id).await
 }
 
 /// Revokes a standing push approval, so later matching push requests ask again.
@@ -1024,7 +1013,7 @@ pub async fn chat_delete_channel_note(
     channel_notes::delete_channel_note(&chat_pool(app, db_url).await?, &request).await
 }
 
-/// Saves a teammate's note proposal as a channel note, as suggested or with the person's text.
+/// Saves an agent's note proposal as a channel note, as suggested or with the person's text.
 #[tauri::command]
 pub async fn chat_accept_note_proposal(
     app: tauri::AppHandle,
@@ -1034,7 +1023,7 @@ pub async fn chat_accept_note_proposal(
     channel_notes::accept_note_proposal(&chat_pool(app, db_url).await?, &request).await
 }
 
-/// Dismisses a teammate's note proposal so no device saves it.
+/// Dismisses an agent's note proposal so no device saves it.
 #[tauri::command]
 pub async fn chat_dismiss_note_proposal(
     app: tauri::AppHandle,
@@ -1397,7 +1386,7 @@ pub async fn chat_list_assignment_inputs(
     inputs::list_assignment_inputs_command(app, db_url, assignment_id).await
 }
 
-/// Replaces the text of a reply that has not reached the teammate yet.
+/// Replaces the text of a reply that has not reached the agent yet.
 #[tauri::command]
 pub async fn chat_edit_assignment_input(
     app: tauri::AppHandle,
@@ -1408,7 +1397,7 @@ pub async fn chat_edit_assignment_input(
     inputs::edit_assignment_input_command(app, db_url, input_id, edit).await
 }
 
-/// Cancels a reply that has not reached the teammate yet, keeping it in the thread.
+/// Cancels a reply that has not reached the agent yet, keeping it in the thread.
 #[tauri::command]
 pub async fn chat_cancel_assignment_input(
     app: tauri::AppHandle,
@@ -1457,9 +1446,9 @@ pub async fn chat_start_mentioned_assignment(
     app: tauri::AppHandle,
     db_url: String,
     message_item_id: ChatConversationItemId,
-    teammate_id: ChatParticipantId,
+    agent_id: ChatParticipantId,
 ) -> ChatResult<ChatWorkAssignmentRead> {
-    assignments::start_mentioned_assignment(app, db_url, message_item_id, teammate_id).await
+    assignments::start_mentioned_assignment(app, db_url, message_item_id, agent_id).await
 }
 
 #[cfg(test)]

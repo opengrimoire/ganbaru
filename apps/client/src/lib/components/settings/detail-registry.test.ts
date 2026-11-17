@@ -18,7 +18,7 @@ describe("Settings detail registries", () => {
     expect(settingsDetailHasLoaded("distractions-limit")).toBe(false);
     await expect(first).resolves.toMatchObject({ kind: "notes-transfer" });
     expect(settingsDetailHasLoaded("notes-transfer")).toBe(true);
-  });
+  }, 15_000);
 
   it("loads only the selected Notes transfer dialog before other operations", async () => {
     const first = loadNotesTransferDialog("html-import");

@@ -151,7 +151,7 @@ export function parseProviderProbeResult(value: unknown, label = "provider probe
     versionAdmission: readNullable(record.versionAdmission, `${label}.versionAdmission`, (entry, entryLabel) =>
       readEnum(entry, PROVIDER_VERSION_ADMISSIONS, entryLabel),
     ),
-    teammateMinimumVersion: readNullable(record.teammateMinimumVersion, `${label}.teammateMinimumVersion`, readString),
+    agentMinimumVersion: readNullable(record.agentMinimumVersion, `${label}.agentMinimumVersion`, readString),
   };
 }
 

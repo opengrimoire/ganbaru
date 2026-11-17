@@ -45,7 +45,7 @@ describe("ChatSecretRequests", () => {
     document.body.append(target);
     component = mount(ChatSecretRequests, {
       target,
-      props: { replyThreadId: "reply-thread:deploy", refreshKey: 1, teammateName: "Atlas" },
+      props: { replyThreadId: "reply-thread:deploy", refreshKey: 1, agentName: "Atlas" },
     });
     await settle();
     return target;

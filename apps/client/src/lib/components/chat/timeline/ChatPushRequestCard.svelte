@@ -13,9 +13,9 @@
   import { useChat } from "$lib/stores/chat.svelte";
 
   /**
-   * A teammate's request to push a commit. The push runs when a person confirms it here on a desktop device,
+   * An agent's request to push a commit. The push runs when a person confirms it here on a desktop device,
    * or after the turn ends when the person's standing approval or a full access turn lets it; either way Rust
-   * rechecks the teammate's publish grant and the folder before pushing.
+   * rechecks the agent's publish grant and the folder before pushing.
    */
   let {
     requestItemId,

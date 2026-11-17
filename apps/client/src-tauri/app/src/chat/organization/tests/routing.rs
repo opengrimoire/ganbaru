@@ -382,7 +382,7 @@ fn reviewed_or_continued_work_does_not_continue_again() {
         set_review_state(&pool, "completed").await;
         sqlx::query(
             "INSERT INTO chat_work_assignments
-                 (id, reply_thread_id, teammate_id, triggering_message_item_id,
+                 (id, reply_thread_id, agent_id, triggering_message_item_id,
                   executing_device_id, state, previous_assignment_id, created_at, updated_at)
              VALUES ('assignment:successor', 'reply-thread:review', 'participant:review-agent',
                      'item:review-reply-1', 'device:desk', 'queued', ?1, ?2, ?2)",

@@ -1,4 +1,4 @@
-//! Continuation keys, session transitions, and teammate framing of assignment runs.
+//! Continuation keys, session transitions, and agent framing of assignment runs.
 //!
 //! A native provider session is reused only for a later assignment of the same reply thread, or
 //! for the next run of an assignment whose run completed after asking a question, whose
@@ -156,19 +156,19 @@ pub(super) fn decide_session_transition(input: &TransitionInput<'_>) -> SessionD
     }
 }
 
-/// Placeholder in `TEAMMATE_FRAMING_TEMPLATE` for the teammate's display name.
+/// Placeholder in `AGENT_FRAMING_TEMPLATE` for the agent's display name.
 const NAME_PLACEHOLDER: &str = "{display_name}";
-/// Placeholder in `TEAMMATE_FRAMING_TEMPLATE` for the teammate's role.
+/// Placeholder in `AGENT_FRAMING_TEMPLATE` for the agent's role.
 const ROLE_PLACEHOLDER: &str = "{role}";
 
 /// Tells the session who it is and where its reply goes. The context package format follows
-/// it, then the teammate's own instructions.
-const TEAMMATE_FRAMING_TEMPLATE: &str = "You are {display_name}, an AI teammate in a Ganbaru \
+/// it, then the agent's own instructions.
+const AGENT_FRAMING_TEMPLATE: &str = "You are {display_name}, an AI agent in a Ganbaru \
 channel, with this role: {role}. Your reply is posted in the reply thread that assigned the \
 work, so report your results there.";
 
 /// Largest framing template, in UTF-8 bytes, with its placeholders unfilled.
-pub(super) const MAX_TEAMMATE_FRAMING_BYTES: usize = 1536;
+pub(super) const MAX_AGENT_FRAMING_BYTES: usize = 1536;
 
 /// Largest display name, in UTF-8 bytes, the framing carries: 160 characters of at most four
 /// bytes each, the stored bound on the trimmed name.
@@ -178,21 +178,21 @@ const MAX_FRAMED_NAME_BYTES: usize = 160 * 4;
 /// boundary and marked, so the framing stays within its reserve.
 const MAX_FRAMED_ROLE_BYTES: usize = 1536;
 
-/// Separates the framing, the context package format, and the teammate's instructions.
+/// Separates the framing, the context package format, and the agent's instructions.
 const INSTRUCTIONS_SEPARATOR: &str = "\n\n";
 
 /// Room in the provider developer instruction cap kept for everything dispatch puts before a
-/// teammate's instructions. It is fixed rather than measured so the teammate limit, which the
+/// agent's instructions. It is fixed rather than measured so the agent limit, which the
 /// settings editor mirrors, stays put when the framing grows.
 pub(super) const INSTRUCTIONS_FRAMING_RESERVE_BYTES: usize = 4 * 1024;
 
-/// Largest teammate instructions, in UTF-8 bytes, that still fit the provider developer
+/// Largest agent instructions, in UTF-8 bytes, that still fit the provider developer
 /// instruction cap once dispatch adds the framing and the context package format.
-pub(super) const MAX_TEAMMATE_INSTRUCTIONS_BYTES: usize =
+pub(super) const MAX_AGENT_INSTRUCTIONS_BYTES: usize =
     MAX_DEVELOPER_INSTRUCTIONS_BYTES - INSTRUCTIONS_FRAMING_RESERVE_BYTES;
 
-/// Largest framing and format text dispatch puts before a teammate's instructions.
-const MAX_FRAMING_BYTES: usize = TEAMMATE_FRAMING_TEMPLATE.len()
+/// Largest framing and format text dispatch puts before an agent's instructions.
+const MAX_FRAMING_BYTES: usize = AGENT_FRAMING_TEMPLATE.len()
     + MAX_FRAMED_NAME_BYTES
     + MAX_FRAMED_ROLE_BYTES
     + INSTRUCTIONS_SEPARATOR.len()
@@ -200,8 +200,8 @@ const MAX_FRAMING_BYTES: usize = TEAMMATE_FRAMING_TEMPLATE.len()
     + INSTRUCTIONS_SEPARATOR.len();
 
 const _: () = assert!(
-    TEAMMATE_FRAMING_TEMPLATE.len() <= MAX_TEAMMATE_FRAMING_BYTES,
-    "the teammate framing template must fit its bound"
+    AGENT_FRAMING_TEMPLATE.len() <= MAX_AGENT_FRAMING_BYTES,
+    "the agent framing template must fit its bound"
 );
 const _: () = assert!(
     MAX_FRAMING_BYTES <= INSTRUCTIONS_FRAMING_RESERVE_BYTES,
@@ -219,12 +219,12 @@ fn bounded(value: &str, maximum: usize) -> String {
 
 /// Fills the framing template in one pass with the trimmed name and role, so a name or role
 /// that contains a placeholder is never filled again.
-fn teammate_framing(display_name: &str, role: &str) -> String {
+fn agent_framing(display_name: &str, role: &str) -> String {
     let display_name = bounded(display_name.trim(), MAX_FRAMED_NAME_BYTES);
     let role = bounded(role.trim(), MAX_FRAMED_ROLE_BYTES);
     let mut framing =
-        String::with_capacity(TEAMMATE_FRAMING_TEMPLATE.len() + display_name.len() + role.len());
-    let mut rest = TEAMMATE_FRAMING_TEMPLATE;
+        String::with_capacity(AGENT_FRAMING_TEMPLATE.len() + display_name.len() + role.len());
+    let mut rest = AGENT_FRAMING_TEMPLATE;
     while let Some(start) = rest.find('{') {
         framing.push_str(&rest[..start]);
         let placeholder = &rest[start..];
@@ -243,14 +243,14 @@ fn teammate_framing(display_name: &str, role: &str) -> String {
     framing
 }
 
-/// Composes the system-level instructions of an assignment run: the teammate framing, then the
-/// context package format, then the teammate's own instructions when it has any.
+/// Composes the system-level instructions of an assignment run: the agent framing, then the
+/// context package format, then the agent's own instructions when it has any.
 pub(super) fn compose_system_instructions(
     display_name: &str,
     role: &str,
     instructions: &str,
 ) -> String {
-    let framing = teammate_framing(display_name, role);
+    let framing = agent_framing(display_name, role);
     let format = super::context::CONTEXT_PACKAGE_FORMAT_INSTRUCTIONS;
     if instructions.trim().is_empty() {
         format!("{framing}{INSTRUCTIONS_SEPARATOR}{format}")
@@ -265,7 +265,7 @@ pub(super) const MAX_CONTINUATION_HEADER_BYTES: usize = 256;
 /// Record kind of the header that opens a delta package.
 const CONTINUATION_CONTEXT_KIND: &str = "continuation";
 
-/// Source kind of the record that holds what the teammate was asked.
+/// Source kind of the record that holds what the agent was asked.
 const TRIGGER_SOURCE_KIND: &str = "trigger";
 
 /// The source a frozen package record carries.
@@ -723,9 +723,9 @@ mod tests {
     }
 
     #[test]
-    fn instructions_put_framing_and_format_before_the_teammate_instructions() {
+    fn instructions_put_framing_and_format_before_the_agent_instructions() {
         let format = super::super::context::CONTEXT_PACKAGE_FORMAT_INSTRUCTIONS;
-        let framing = teammate_framing("Reviewer", "Reviews pull requests");
+        let framing = agent_framing("Reviewer", "Reviews pull requests");
         assert!(framing.contains("You are Reviewer,"));
         assert!(framing.contains("with this role: Reviews pull requests."));
         assert_eq!(
@@ -740,7 +740,7 @@ mod tests {
 
     #[test]
     fn a_name_or_role_holding_a_placeholder_is_not_filled_again() {
-        let framing = teammate_framing("{role}", "{display_name}");
+        let framing = agent_framing("{role}", "{display_name}");
         assert!(framing.starts_with("You are {role}, "));
         assert!(framing.contains("with this role: {display_name}."));
     }
@@ -773,53 +773,49 @@ mod tests {
     }
 
     #[test]
-    fn the_longest_valid_teammate_instructions_fit_the_provider_cap_after_framing() {
+    fn the_longest_valid_agent_instructions_fit_the_provider_cap_after_framing() {
         use super::super::common::validate_profile_text;
-        let ascii = "a".repeat(MAX_TEAMMATE_INSTRUCTIONS_BYTES);
-        let multibyte = "é".repeat(MAX_TEAMMATE_INSTRUCTIONS_BYTES / 'é'.len_utf8());
+        let ascii = "a".repeat(MAX_AGENT_INSTRUCTIONS_BYTES);
+        let multibyte = "é".repeat(MAX_AGENT_INSTRUCTIONS_BYTES / 'é'.len_utf8());
         for instructions in [&ascii, &multibyte] {
-            validate_profile_text(
-                instructions,
-                MAX_TEAMMATE_INSTRUCTIONS_BYTES,
-                "instructions",
-            )
-            .unwrap();
+            validate_profile_text(instructions, MAX_AGENT_INSTRUCTIONS_BYTES, "instructions")
+                .unwrap();
             assert!(
                 compose_system_instructions("Reviewer", "Reviews", instructions).len()
                     <= MAX_DEVELOPER_INSTRUCTIONS_BYTES
             );
         }
         let over = format!("{multibyte}é");
-        let refused = validate_profile_text(&over, MAX_TEAMMATE_INSTRUCTIONS_BYTES, "instructions")
+        let refused = validate_profile_text(&over, MAX_AGENT_INSTRUCTIONS_BYTES, "instructions")
             .expect_err("one character over the byte bound is refused");
         assert_eq!(refused.code, ChatErrorCode::Validation);
     }
 
     #[test]
-    fn the_settings_editor_mirrors_the_teammate_instruction_bound() {
-        let editor = include_str!("../../../../../src/lib/chat/teammates/draft.ts");
+    fn the_settings_editor_mirrors_the_agent_instruction_bound() {
+        let editor = include_str!("../../../../../src/lib/chat/agents/draft.ts");
         let mirrored = editor
             .lines()
-            .find_map(|line| line.strip_prefix("export const TEAMMATE_INSTRUCTIONS_MAX_BYTES = "))
+            .find_map(|line| line.strip_prefix("export const AGENT_INSTRUCTIONS_MAX_BYTES = "))
             .and_then(|value| value.strip_suffix(';'))
             .map(|value| value.replace('_', ""))
             .and_then(|value| value.parse::<usize>().ok());
-        assert_eq!(mirrored, Some(MAX_TEAMMATE_INSTRUCTIONS_BYTES));
+        assert_eq!(mirrored, Some(MAX_AGENT_INSTRUCTIONS_BYTES));
     }
 
     #[test]
     fn the_longest_name_and_role_fit_the_framing_reserve() {
         let name = "\u{1F600}".repeat(160);
         let role = "\u{1F600}".repeat(1_000);
-        let teammate = "a".repeat(MAX_TEAMMATE_INSTRUCTIONS_BYTES);
-        let composed = compose_system_instructions(&name, &role, &teammate);
+        let agent = "a".repeat(MAX_AGENT_INSTRUCTIONS_BYTES);
+        let composed = compose_system_instructions(&name, &role, &agent);
         assert!(composed.len() <= MAX_DEVELOPER_INSTRUCTIONS_BYTES);
-        assert!(composed.len() - teammate.len() <= INSTRUCTIONS_FRAMING_RESERVE_BYTES);
-        let framing = teammate_framing(&name, &role);
+        assert!(composed.len() - agent.len() <= INSTRUCTIONS_FRAMING_RESERVE_BYTES);
+        let framing = agent_framing(&name, &role);
         assert!(framing.contains(&name), "a valid name is never cut");
         assert!(framing.contains(SHORTENED_MARKER.trim_start()));
         let short_role = "\u{1F600}".repeat(MAX_FRAMED_ROLE_BYTES / 4);
-        assert!(!teammate_framing(&name, &short_role).contains(SHORTENED_MARKER.trim_start()));
+        assert!(!agent_framing(&name, &short_role).contains(SHORTENED_MARKER.trim_start()));
     }
 
     /// Delta selection over packed test packages and over a stored package.
@@ -882,7 +878,7 @@ mod tests {
                 Some(("item:root", "Plan the release")),
                 &[
                     ("item:human-1", "Looks good"),
-                    ("item:teammate", "Done, the tests pass"),
+                    ("item:agent", "Done, the tests pass"),
                     ("item:human-2", edited),
                 ],
                 0,
@@ -892,7 +888,7 @@ mod tests {
         fn earlier_history(package: &[TestPackageRecord]) -> SessionHistory {
             SessionHistory {
                 delivered: delivered(package, &["item:root", "item:human-1", "item:human-2"]),
-                own_items: HashSet::from(["item:teammate".to_string()]),
+                own_items: HashSet::from(["item:agent".to_string()]),
                 deleted_notes: BTreeSet::new(),
             }
         }
@@ -1044,7 +1040,7 @@ mod tests {
 
         #[test]
         fn context_overhead_stays_within_budget() {
-            assert!(TEAMMATE_FRAMING_TEMPLATE.len() <= MAX_TEAMMATE_FRAMING_BYTES);
+            assert!(AGENT_FRAMING_TEMPLATE.len() <= MAX_AGENT_FRAMING_BYTES);
 
             let trigger_id = "i".repeat(MAX_ORGANIZATIONAL_IDENTIFIER_BYTES);
             let text = "Please run the tests";
@@ -1121,7 +1117,7 @@ mod tests {
                 Some(("item:root", "Plan the release")),
                 &[
                     ("item:human", "Looks good"),
-                    ("item:teammate", "Done, the tests pass"),
+                    ("item:agent", "Done, the tests pass"),
                     ("item:resent", "Check the logs"),
                 ],
                 0,
@@ -1146,12 +1142,12 @@ mod tests {
                      '2026-10-20T12:00:00.000Z');
                  INSERT INTO chat_conversation_items
                     (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
-                 SELECT 'item:teammate', conversation_id, id, 'message', 'a9',
+                 SELECT 'item:agent', conversation_id, id, 'message', 'a9',
                         '2026-10-20T12:00:00.000Z'
                  FROM chat_reply_threads WHERE id = 'reply:folders';
                  INSERT INTO chat_work_semantic_updates
                     (item_id, assignment_id, update_kind, payload_data, created_at)
-                 VALUES ('item:teammate', 'assignment:folders', 'result',
+                 VALUES ('item:agent', 'assignment:folders', 'result',
                          '{{\"agentRunId\":\"run:working\"}}', '2026-10-20T12:00:00.000Z');",
                 root = sha("item:root"),
                 human = sha("item:human"),
@@ -1223,11 +1219,11 @@ mod tests {
                          '2026-10-20T12:30:00.000Z', '2026-10-20T12:30:00.000Z');
                  INSERT INTO chat_agent_runs
                     (id, assignment_id, project_id, working_folder_id, execution_environment_id,
-                     teammate_policy_revision_id, authorization_revision_id,
+                     agent_policy_revision_id, authorization_revision_id,
                      authorization_scope_digest, provider_turn_id, provider_thread_id, state,
                      run_ordinal, attempt_reason, handoff_reason, created_at, updated_at)
                  SELECT 'run:later', assignment_id, project_id, working_folder_id,
-                        execution_environment_id, teammate_policy_revision_id,
+                        execution_environment_id, agent_policy_revision_id,
                         authorization_revision_id, authorization_scope_digest, 'turn:later',
                         provider_thread_id, 'working', 3, 'handoff', 'native_session_lost',
                         '2026-10-20T12:30:00.000Z', '2026-10-20T12:30:00.000Z'

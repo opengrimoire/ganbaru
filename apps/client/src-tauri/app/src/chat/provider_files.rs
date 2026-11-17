@@ -58,7 +58,7 @@ pub struct ProviderFileRead {
     pub exists: bool,
     pub contents: String,
     pub revision: String,
-    /// Teammate preferences of a configuration file whose provider keeps an allowlist.
+    /// Agent preferences of a configuration file whose provider keeps an allowlist.
     pub preferences: Option<ProviderPreferencesRead>,
 }
 
@@ -79,7 +79,7 @@ pub struct SaveProviderFileRequest {
     pub expected_revision: String,
 }
 
-/// An edit of one teammate preference in a provider configuration file.
+/// An edit of one agent preference in a provider configuration file.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveProviderPreferenceRequest {
@@ -164,7 +164,7 @@ pub fn chat_save_provider_file(
     )
 }
 
-/// Sets or removes one allowlisted teammate preference in a provider configuration file,
+/// Sets or removes one allowlisted agent preference in a provider configuration file,
 /// keeping every other key of the document.
 #[tauri::command]
 pub fn chat_save_provider_preference(

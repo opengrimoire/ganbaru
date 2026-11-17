@@ -19,7 +19,7 @@
   import { requestConfirmation } from "$lib/components/ui/confirmation.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
-  import ChatTeammateDraftAction from "./ChatTeammateDraftAction.svelte";
+  import ChatAgentDraftAction from "./ChatAgentDraftAction.svelte";
   import type { DraftExtraction } from "$lib/chat/source-control/draft-extraction";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
@@ -158,13 +158,13 @@
 
   async function readCommitDraftContext(): Promise<ChatCommitDraftContextRead> {
     const workingFolderId = workspace;
-    if (!workingFolderId) throw new LocalizedError(t("chat.sourceControl.teammateDraftUnavailable"));
+    if (!workingFolderId) throw new LocalizedError(t("chat.sourceControl.agentDraftUnavailable"));
     return chatApi.readCommitDraftContext(workingFolderId, folderEnvironmentId);
   }
 
   async function readChangeRequestDraftContext(): Promise<ChatCommitDraftContextRead> {
     const workingFolderId = workspace;
-    if (!workingFolderId) throw new LocalizedError(t("chat.sourceControl.teammateDraftUnavailable"));
+    if (!workingFolderId) throw new LocalizedError(t("chat.sourceControl.agentDraftUnavailable"));
     return chatApi.readChangeRequestDraftContext(
       workingFolderId,
       changeRequestBase.trim(),
@@ -651,7 +651,7 @@
         <input class="field" bind:value={changeRequestTitle} maxlength="1024" placeholder={t("chat.sourceControl.changeRequestTitle")} aria-label={t("chat.sourceControl.changeRequestTitle")} />
         <div><input class="field" bind:value={changeRequestBase} maxlength="1024" placeholder={t("chat.sourceControl.baseBranch")} aria-label={t("chat.sourceControl.baseBranch")} /><input class="field" bind:value={changeRequestHead} maxlength="1024" placeholder={t("chat.sourceControl.headBranch")} aria-label={t("chat.sourceControl.headBranch")} /></div>
         <textarea class="field" bind:value={changeRequestBody} maxlength="262144" rows="3" placeholder={t("chat.sourceControl.changeRequestBody")} aria-label={t("chat.sourceControl.changeRequestBody")}></textarea>
-        <ChatTeammateDraftAction
+        <ChatAgentDraftAction
           kind="change_request"
           scopeKey={`${workspace ?? ""}\n${folderEnvironmentId ?? ""}`}
           fieldValue={`${changeRequestTitle}\n${changeRequestBody}`}
@@ -732,7 +732,7 @@
       <label for="chat-commit-message">{t("chat.sourceControl.commitMessage")}</label>
       <textarea class="field" id="chat-commit-message" maxlength={COMMIT_MESSAGE_MAX_BYTES} rows="3" bind:value={commitMessage} placeholder={t("chat.sourceControl.commitPlaceholder")} aria-describedby={commitTooLong ? "chat-commit-message-error" : undefined} aria-invalid={commitTooLong ? "true" : undefined}></textarea>
       {#if commitTooLong}<small id="chat-commit-message-error" class="field-error" role="alert">{t("chat.sourceControl.commitMessageTooLong")}</small>{/if}
-      <ChatTeammateDraftAction
+      <ChatAgentDraftAction
         kind="commit"
         scopeKey={`${workspace ?? ""}\n${folderEnvironmentId ?? ""}`}
         fieldValue={commitMessage}

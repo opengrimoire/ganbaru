@@ -1,21 +1,21 @@
 //! Preferences the Agent files page edits in the configuration files of providers whose
-//! teammates read that configuration themselves.
+//! agents read that configuration themselves.
 //!
-//! Codex, Grok, and OpenCode teammates load the user's file natively, so these catalogs only
+//! Codex, Grok, and OpenCode agents load the user's file natively, so these catalogs only
 //! make common entries editable without raw TOML or JSON. Like the Claude and Cursor
 //! allowlists, they hold entries that shape answers, limits, history, sharing, or what the CLI
-//! reports, and leave out models and effort, which Ganbaru picks per teammate, and approvals,
+//! reports, and leave out models and effort, which Ganbaru picks per agent, and approvals,
 //! sandboxes, permissions, tools, servers, providers, hooks, and credentials.
 
-use ganbaru_chat_providers::teammate_preferences::{
-    PreferenceType, TeammatePreference, setting, teammate_preferences,
+use ganbaru_chat_providers::agent_preferences::{
+    AgentPreference, PreferenceType, agent_preferences, setting,
 };
 
 use super::{DocumentSyntax, PreferenceCatalog};
 use crate::chat::provider_files::ProviderFileFormat;
 
 /// Codex `config.toml` entries, as the Codex configuration reference documents them.
-const CODEX_PREFERENCES: &[TeammatePreference] = &[
+const CODEX_PREFERENCES: &[AgentPreference] = &[
     setting(
         &["model_reasoning_summary"],
         PreferenceType::Choice(&["auto", "concise", "detailed", "none"]),
@@ -44,7 +44,7 @@ const CODEX_PREFERENCES: &[TeammatePreference] = &[
 ];
 
 /// Grok `config.toml` entries, as the Grok settings reference documents them.
-const GROK_PREFERENCES: &[TeammatePreference] = &[
+const GROK_PREFERENCES: &[AgentPreference] = &[
     setting(
         &["session", "auto_compact_threshold_percent"],
         PreferenceType::Percentage,
@@ -68,7 +68,7 @@ const GROK_PREFERENCES: &[TeammatePreference] = &[
 
 /// OpenCode `opencode.json` and `opencode.jsonc` entries, as the OpenCode configuration schema
 /// documents them.
-const OPENCODE_PREFERENCES: &[TeammatePreference] = &[
+const OPENCODE_PREFERENCES: &[AgentPreference] = &[
     setting(
         &["share"],
         PreferenceType::Choice(&["manual", "auto", "disabled"]),
@@ -92,7 +92,7 @@ pub(in crate::chat::provider_files) fn file_preferences(
 ) -> Option<PreferenceCatalog> {
     let (syntax, preferences) = match (family_id, format) {
         ("claude" | "cursor", ProviderFileFormat::Json) => {
-            (DocumentSyntax::Json, teammate_preferences(family_id))
+            (DocumentSyntax::Json, agent_preferences(family_id))
         }
         ("codex", ProviderFileFormat::Toml) => (DocumentSyntax::Toml, CODEX_PREFERENCES),
         ("grok", ProviderFileFormat::Toml) => (DocumentSyntax::Toml, GROK_PREFERENCES),
@@ -115,17 +115,14 @@ mod tests {
     #[test]
     fn identifiers_are_unique_settings() {
         for catalog in [CODEX_PREFERENCES, GROK_PREFERENCES, OPENCODE_PREFERENCES] {
-            let mut ids = catalog
-                .iter()
-                .map(TeammatePreference::id)
-                .collect::<Vec<_>>();
+            let mut ids = catalog.iter().map(AgentPreference::id).collect::<Vec<_>>();
             let count = ids.len();
             ids.sort();
             ids.dedup();
             assert_eq!(ids.len(), count);
             assert!(catalog.iter().all(|preference| matches!(
                 preference.location,
-                ganbaru_chat_providers::teammate_preferences::PreferenceLocation::Setting(_)
+                ganbaru_chat_providers::agent_preferences::PreferenceLocation::Setting(_)
             )));
         }
     }

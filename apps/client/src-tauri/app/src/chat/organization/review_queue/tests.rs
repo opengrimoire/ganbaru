@@ -1,22 +1,22 @@
 use super::{MAX_REVIEW_QUEUE_ITEMS, MAX_REVIEW_QUEUE_REASON_CHARS, read_review_queue};
 use crate::chat::channels::failure_window_start;
 use crate::chat::tests::attention::{
-    SeedAssignment, days_ago, seed_assignment, seed_channel, seed_project, seed_reply_thread,
-    seed_review_update, seed_teammate,
+    SeedAssignment, days_ago, seed_agent, seed_assignment, seed_channel, seed_project,
+    seed_reply_thread, seed_review_update,
 };
 use crate::chat::tests::repository::pool_with_thread;
 use chrono::Utc;
 use ganbaru_chat_contracts::models::{ChatReviewQueueKind, ChatReviewQueueRead};
 
-const TEAMMATE: &str = "participant:queue-agent";
+const AGENT: &str = "participant:queue-agent";
 const THIS_DEVICE: &str = "device:desk";
 /// A window start before every fixture timestamp, so only tests of the window drop failures.
 const OPEN_WINDOW: &str = "2026-01-01T00:00:00.000Z";
 
-/// A pool with the queue teammate and one channel of the seeded project holding `threads`.
+/// A pool with the queue agent and one channel of the seeded project holding `threads`.
 async fn pool_with_channel(threads: &[&str]) -> sqlx::SqlitePool {
     let pool = pool_with_thread().await;
-    seed_teammate(&pool, TEAMMATE, "Queue agent").await;
+    seed_agent(&pool, AGENT, "Queue agent").await;
     let conversation_id =
         seed_channel(&pool, "project-chat", "channel:queue", "queue", false).await;
     for thread in threads {
@@ -55,7 +55,7 @@ async fn review_queue_orders_by_kind_then_recency() {
     for (id, thread, state, minutes) in rows {
         seed_assignment(
             &pool,
-            &SeedAssignment::new(id, thread, TEAMMATE, state, minutes),
+            &SeedAssignment::new(id, thread, AGENT, state, minutes),
         )
         .await;
     }
@@ -92,38 +92,32 @@ async fn review_queue_orders_by_kind_then_recency() {
     assert_eq!(answer.channel_id.as_str(), "channel:queue");
     assert_eq!(answer.channel_name, "queue");
     assert_eq!(answer.reply_thread_id.as_str(), "t:5");
-    assert_eq!(answer.teammate_participant_id.as_str(), TEAMMATE);
-    assert_eq!(answer.teammate_display_name, "Queue agent");
+    assert_eq!(answer.agent_participant_id.as_str(), AGENT);
+    assert_eq!(answer.agent_display_name, "Queue agent");
     assert_eq!(answer.revision, 1);
 }
 
 #[tokio::test]
 async fn review_queue_skips_continued_stale_and_delegated_failures() {
     let pool = pool_with_channel(&["t:1", "t:2", "t:3", "t:4", "t:5"]).await;
-    let mut continued = SeedAssignment::new("assignment:continued", "t:1", TEAMMATE, "failed", 1);
+    let mut continued = SeedAssignment::new("assignment:continued", "t:1", AGENT, "failed", 1);
     continued.settled_at = Some(days_ago(1));
     seed_assignment(&pool, &continued).await;
-    let mut successor = SeedAssignment::new("assignment:successor", "t:1", TEAMMATE, "working", 2);
+    let mut successor = SeedAssignment::new("assignment:successor", "t:1", AGENT, "working", 2);
     successor.previous_assignment_id = Some("assignment:continued");
     seed_assignment(&pool, &successor).await;
-    let mut stale = SeedAssignment::new("assignment:stale", "t:2", TEAMMATE, "failed", 1);
+    let mut stale = SeedAssignment::new("assignment:stale", "t:2", AGENT, "failed", 1);
     stale.settled_at = Some(days_ago(8));
     seed_assignment(&pool, &stale).await;
-    let mut recent = SeedAssignment::new("assignment:recent", "t:3", TEAMMATE, "failed", 1);
+    let mut recent = SeedAssignment::new("assignment:recent", "t:3", AGENT, "failed", 1);
     recent.settled_at = Some(days_ago(6));
     seed_assignment(&pool, &recent).await;
     seed_assignment(
         &pool,
-        &SeedAssignment::new(
-            "assignment:parent",
-            "t:4",
-            TEAMMATE,
-            "waiting_for_answer",
-            1,
-        ),
+        &SeedAssignment::new("assignment:parent", "t:4", AGENT, "waiting_for_answer", 1),
     )
     .await;
-    let mut child = SeedAssignment::new("assignment:child", "t:5", TEAMMATE, "failed", 1);
+    let mut child = SeedAssignment::new("assignment:child", "t:5", AGENT, "failed", 1);
     child.settled_at = Some(days_ago(1));
     child.parent_assignment_id = Some("assignment:parent");
     seed_assignment(&pool, &child).await;
@@ -141,7 +135,7 @@ async fn review_queue_leaves_out_archived_channels_and_projects() {
     let pool = pool_with_channel(&["t:live"]).await;
     seed_assignment(
         &pool,
-        &SeedAssignment::new("assignment:live", "t:live", TEAMMATE, "ready_for_review", 1),
+        &SeedAssignment::new("assignment:live", "t:live", AGENT, "ready_for_review", 1),
     )
     .await;
     let archived_channel =
@@ -152,7 +146,7 @@ async fn review_queue_leaves_out_archived_channels_and_projects() {
         &SeedAssignment::new(
             "assignment:archived-channel",
             "t:archived-channel",
-            TEAMMATE,
+            AGENT,
             "ready_for_review",
             2,
         ),
@@ -173,7 +167,7 @@ async fn review_queue_leaves_out_archived_channels_and_projects() {
         &SeedAssignment::new(
             "assignment:archived-project",
             "t:archived-project",
-            TEAMMATE,
+            AGENT,
             "ready_for_review",
             3,
         ),
@@ -184,13 +178,7 @@ async fn review_queue_leaves_out_archived_channels_and_projects() {
     seed_reply_thread(&pool, &other, "t:other").await;
     seed_assignment(
         &pool,
-        &SeedAssignment::new(
-            "assignment:other",
-            "t:other",
-            TEAMMATE,
-            "ready_for_review",
-            4,
-        ),
+        &SeedAssignment::new("assignment:other", "t:other", AGENT, "ready_for_review", 4),
     )
     .await;
     sqlx::query("UPDATE projects SET status = 'archived' WHERE id = 'project-archived'")
@@ -219,7 +207,7 @@ async fn review_queue_reports_total_and_truncation_past_its_cap() {
         let id = format!("assignment:{index:03}");
         seed_assignment(
             &pool,
-            &SeedAssignment::new(&id, &thread, TEAMMATE, "ready_for_review", i64::from(index)),
+            &SeedAssignment::new(&id, &thread, AGENT, "ready_for_review", i64::from(index)),
         )
         .await;
     }
@@ -244,7 +232,7 @@ async fn review_queue_counts_distinct_changed_files_across_review_updates() {
         &SeedAssignment::new(
             "assignment:changed",
             "t:changed",
-            TEAMMATE,
+            AGENT,
             "ready_for_review",
             2,
         ),
@@ -252,13 +240,7 @@ async fn review_queue_counts_distinct_changed_files_across_review_updates() {
     .await;
     seed_assignment(
         &pool,
-        &SeedAssignment::new(
-            "assignment:clean",
-            "t:clean",
-            TEAMMATE,
-            "ready_for_review",
-            1,
-        ),
+        &SeedAssignment::new("assignment:clean", "t:clean", AGENT, "ready_for_review", 1),
     )
     .await;
     seed_review_update(
@@ -288,14 +270,13 @@ async fn review_queue_counts_distinct_changed_files_across_review_updates() {
 #[tokio::test]
 async fn review_queue_marks_work_this_device_executed() {
     let pool = pool_with_channel(&["t:here", "t:elsewhere", "t:unassigned"]).await;
-    let mut here =
-        SeedAssignment::new("assignment:here", "t:here", TEAMMATE, "ready_for_review", 3);
+    let mut here = SeedAssignment::new("assignment:here", "t:here", AGENT, "ready_for_review", 3);
     here.executing_device_id = Some(THIS_DEVICE);
     seed_assignment(&pool, &here).await;
     let mut elsewhere = SeedAssignment::new(
         "assignment:elsewhere",
         "t:elsewhere",
-        TEAMMATE,
+        AGENT,
         "ready_for_review",
         2,
     );
@@ -306,7 +287,7 @@ async fn review_queue_marks_work_this_device_executed() {
         &SeedAssignment::new(
             "assignment:unassigned",
             "t:unassigned",
-            TEAMMATE,
+            AGENT,
             "ready_for_review",
             1,
         ),
@@ -334,11 +315,11 @@ async fn review_queue_marks_work_this_device_executed() {
 async fn review_queue_clips_reasons_at_a_character_boundary() {
     let pool = pool_with_channel(&["t:long", "t:short"]).await;
     let long_reason = "é".repeat(MAX_REVIEW_QUEUE_REASON_CHARS + 10);
-    let mut long = SeedAssignment::new("assignment:long", "t:long", TEAMMATE, "failed", 2);
+    let mut long = SeedAssignment::new("assignment:long", "t:long", AGENT, "failed", 2);
     long.state_reason = Some(&long_reason);
     seed_assignment(&pool, &long).await;
     let exact_reason = "ü".repeat(MAX_REVIEW_QUEUE_REASON_CHARS);
-    let mut short = SeedAssignment::new("assignment:short", "t:short", TEAMMATE, "failed", 1);
+    let mut short = SeedAssignment::new("assignment:short", "t:short", AGENT, "failed", 1);
     short.state_reason = Some(&exact_reason);
     seed_assignment(&pool, &short).await;
 

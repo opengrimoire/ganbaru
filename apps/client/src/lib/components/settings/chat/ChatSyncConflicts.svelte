@@ -72,7 +72,7 @@
   function title(conflict: ChatConflict): string {
     switch (conflict.target) {
       case "participant": return t("chat.conflict.participantTitle");
-      case "teammate": return t("chat.conflict.teammateTitle");
+      case "agent": return t("chat.conflict.agentTitle");
       case "channel": return t("chat.conflict.channelTitle");
       case "channel_note": return t("chat.conflict.channelNoteTitle");
       case "message": return t("chat.conflict.messageTitle");

@@ -101,7 +101,7 @@ describe("provider files", () => {
     expect(Object.keys(PROVIDER_PREFERENCE_OPTION_NAMES)).toContain("notify");
   });
 
-  it("marks only families whose teammates keep an allowlist of preferences", () => {
+  it("marks only families whose agents keep an allowlist of preferences", () => {
     expect(providerPreferencesAllowlisted("claude")).toBe(true);
     expect(providerPreferencesAllowlisted("cursor")).toBe(true);
     expect(providerPreferencesAllowlisted("codex")).toBe(false);

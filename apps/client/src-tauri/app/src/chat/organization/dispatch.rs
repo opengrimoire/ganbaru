@@ -108,7 +108,7 @@ pub(super) struct AssignmentLaunch {
 #[derive(Debug)]
 pub(super) struct ClaimedDispatch {
     pub(super) token: String,
-    /// The teammate framing, the context package format, and the teammate's instructions.
+    /// The agent framing, the context package format, and the agent's instructions.
     pub(super) instructions: String,
 }
 
@@ -117,7 +117,7 @@ pub(super) struct ClaimedDispatch {
 /// device-local dispatch job.
 ///
 /// The job starts only what it consented to: when the current subject is not its consented
-/// digest, or cannot be read (as for an archived teammate), the job is dropped so the
+/// digest, or cannot be read (as for an archived agent), the job is dropped so the
 /// assignment stays queued and waits for Start here again.
 pub(super) async fn claim_dispatch_job(
     pool: &SqlitePool,
@@ -374,7 +374,7 @@ async fn dispatch_claimed_assignment(
     {
         return Err(ChatError::new(
             ChatErrorCode::Permission,
-            "The teammate is no longer available for organizational work",
+            "The agent is no longer available for organizational work",
             true,
         ));
     }
@@ -404,15 +404,15 @@ async fn dispatch_claimed_assignment(
             true,
         ));
     }
-    let teammate_id = ChatParticipantId::new(
-        row.try_get::<String, _>("teammate_id")
+    let agent_id = ChatParticipantId::new(
+        row.try_get::<String, _>("agent_id")
             .map_err(persistence_error)?,
     )
     .map_err(identifier_error)?;
     let policy_revision_id: String = row
-        .try_get("teammate_policy_revision_id")
+        .try_get("agent_policy_revision_id")
         .map_err(persistence_error)?;
-    let policy = read_policy(pool, &teammate_id, &policy_revision_id).await?;
+    let policy = read_policy(pool, &agent_id, &policy_revision_id).await?;
     let frozen_runtime_approval: String = row
         .try_get("resolved_runtime_approval_policy")
         .map_err(persistence_error)?;
@@ -460,7 +460,7 @@ async fn dispatch_claimed_assignment(
             pool,
             authorization_revision_id.as_str(),
             &destination_conversation_id,
-            teammate_id.as_str(),
+            agent_id.as_str(),
             working_folder_id.as_str(),
         )
         .await?;
@@ -470,7 +470,7 @@ async fn dispatch_claimed_assignment(
             pool,
             scratch_generation_id,
             &destination_conversation_id,
-            teammate_id.as_str(),
+            agent_id.as_str(),
             &requester_participant_id,
             Some(&frozen_runtime_approval),
         )
@@ -532,7 +532,7 @@ async fn dispatch_claimed_assignment(
     let candidate_scope = CandidateScope {
         assignment_id,
         reply_thread_id: &reply_thread_id,
-        teammate_id: &teammate_id,
+        agent_id: &agent_id,
         working_folder_id: working_folder_id.as_ref(),
         scratch_generation_id: scratch_generation_id.as_deref(),
         execution_environment_id: execution_environment_id.as_deref(),
@@ -710,7 +710,7 @@ async fn dispatch_claimed_assignment(
                     run_id: run_id.clone(),
                     assignment_id: assignment_id.clone(),
                     project_id,
-                    teammate_policy_revision_id: policy.id,
+                    agent_policy_revision_id: policy.id,
                     authorization_revision_id,
                     authorization_scope_digest,
                     working_folder_id: working_folder_id
@@ -733,7 +733,7 @@ async fn dispatch_claimed_assignment(
     })
 }
 
-/// Reads the frozen context, latest authorization, teammate access, and dispatch job that the
+/// Reads the frozen context, latest authorization, agent access, and dispatch job that the
 /// dispatch of `assignment_id` starts from. Conversation-only work has no execution
 /// environment; an authorization that names one starts only while it is available.
 pub(super) async fn read_dispatch_row(
@@ -743,13 +743,13 @@ pub(super) async fn read_dispatch_row(
     sqlx::query(
         "SELECT
             assignment.reply_thread_id,
-            assignment.teammate_id,
+            assignment.agent_id,
             assignment.triggering_message_item_id,
             assignment.state,
             context.id AS context_package_id,
             context.serialized_text,
             authorization.id AS authorization_revision_id,
-            authorization.teammate_policy_revision_id,
+            authorization.agent_policy_revision_id,
             authorization.requester_participant_id,
             authorization.destination_conversation_id,
             authorization.working_folder_id,
@@ -773,10 +773,10 @@ pub(super) async fn read_dispatch_row(
             FROM chat_assignment_authorization_revisions candidate
             WHERE candidate.assignment_id = assignment.id
           )
-         JOIN chat_teammate_policy_revisions policy
-           ON policy.id = authorization.teammate_policy_revision_id
-         JOIN chat_teammates teammate ON teammate.participant_id = assignment.teammate_id
-         JOIN chat_participants participant ON participant.id = assignment.teammate_id
+         JOIN chat_agent_policy_revisions policy
+           ON policy.id = authorization.agent_policy_revision_id
+         JOIN chat_agents agent ON agent.participant_id = assignment.agent_id
+         JOIN chat_participants participant ON participant.id = assignment.agent_id
          JOIN chat_channels channel
            ON channel.conversation_id = authorization.destination_conversation_id
          JOIN projects project ON project.id = channel.project_id
@@ -786,11 +786,11 @@ pub(super) async fn read_dispatch_row(
           AND environment.archived_at IS NULL
          JOIN chat_conversation_memberships membership
            ON membership.conversation_id = authorization.destination_conversation_id
-          AND membership.participant_id = assignment.teammate_id
+          AND membership.participant_id = assignment.agent_id
           AND membership.removed_at IS NULL
-         JOIN chat_teammate_channel_memberships channel_access
+         JOIN chat_agent_channel_memberships channel_access
            ON channel_access.conversation_id = membership.conversation_id
-          AND channel_access.teammate_id = membership.participant_id
+          AND channel_access.agent_id = membership.participant_id
           AND channel_access.removed_at IS NULL
          JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
          JOIN chat_access_profile_effective_revisions profile_revision
@@ -945,7 +945,7 @@ async fn package_sources(
 struct CandidateScope<'a> {
     assignment_id: &'a ChatWorkAssignmentId,
     reply_thread_id: &'a ChatReplyThreadId,
-    teammate_id: &'a ChatParticipantId,
+    agent_id: &'a ChatParticipantId,
     working_folder_id: Option<&'a ProjectWorkingFolderId>,
     scratch_generation_id: Option<&'a str>,
     execution_environment_id: Option<&'a str>,
@@ -970,7 +970,7 @@ impl StoredCandidate {
     }
 }
 
-/// Reads the newest completed run of another completed assignment of the same teammate in the
+/// Reads the newest completed run of another completed assignment of the same agent in the
 /// same reply thread and execution target whose provider thread is still open. Its key and
 /// authorization are returned rather than filtered, so the transition records why a new
 /// session starts.
@@ -995,7 +995,7 @@ async fn read_continuation_candidate(
          JOIN chat_threads thread ON thread.id = run.provider_thread_id
          WHERE previous_assignment.reply_thread_id = ?
            AND previous_assignment.id != ?
-           AND previous_assignment.teammate_id = ?
+           AND previous_assignment.agent_id = ?
            AND previous_assignment.state = 'completed'
            AND run.state = 'completed'
            AND run.working_folder_id IS ?
@@ -1008,7 +1008,7 @@ async fn read_continuation_candidate(
     )
     .bind(scope.reply_thread_id.as_str())
     .bind(scope.assignment_id.as_str())
-    .bind(scope.teammate_id.as_str())
+    .bind(scope.agent_id.as_str())
     .bind(scope.working_folder_id.map(ProjectWorkingFolderId::as_str))
     .bind(scope.scratch_generation_id)
     .bind(scope.execution_environment_id)
@@ -1089,21 +1089,21 @@ async fn require_live_folder_target(
     pool: &SqlitePool,
     authorization_revision_id: &str,
     destination_conversation_id: &str,
-    teammate_id: &str,
+    agent_id: &str,
     working_folder_id: &str,
 ) -> ChatResult<()> {
     let valid: bool = sqlx::query_scalar(
         "SELECT EXISTS(
            SELECT 1
            FROM chat_assignment_authorized_folder_sources frozen
-           JOIN chat_teammate_working_folder_grants live
+           JOIN chat_agent_working_folder_grants live
              ON live.conversation_id = ?
-            AND live.teammate_id = ?
+            AND live.agent_id = ?
             AND live.working_folder_id = frozen.working_folder_id
             AND live.revoked_at IS NULL
-           JOIN chat_teammate_channel_memberships channel_access
+           JOIN chat_agent_channel_memberships channel_access
              ON channel_access.conversation_id = live.conversation_id
-            AND channel_access.teammate_id = live.teammate_id
+            AND channel_access.agent_id = live.agent_id
             AND channel_access.removed_at IS NULL
            JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
            JOIN chat_access_profile_effective_revisions profile_revision
@@ -1134,7 +1134,7 @@ async fn require_live_folder_target(
          )",
     )
     .bind(destination_conversation_id)
-    .bind(teammate_id)
+    .bind(agent_id)
     .bind(authorization_revision_id)
     .bind(working_folder_id)
     .fetch_one(pool)
@@ -1162,7 +1162,7 @@ pub(super) enum DispatchSettlement {
 
 /// Settles the claim `claim_token` of `assignment_id` after its dispatch returned `error`.
 ///
-/// When the teammate was archived, for example by a linked device after this device claimed
+/// When the agent was archived, for example by a linked device after this device claimed
 /// the work, the still queued assignment is not failed: its job is dropped so the work waits,
 /// and after a restore it is started again like any other unaccepted work. Any other error
 /// fails the assignment.
@@ -1177,7 +1177,7 @@ pub(super) async fn settle_dispatch_error(
          WHERE assignment_id = ?1 AND claim_token = ?2
            AND EXISTS (
              SELECT 1 FROM chat_work_assignments assignment
-             JOIN chat_participants participant ON participant.id = assignment.teammate_id
+             JOIN chat_participants participant ON participant.id = assignment.agent_id
              WHERE assignment.id = ?1 AND assignment.state = 'queued'
                AND participant.archived_at IS NOT NULL
            )",
@@ -1277,7 +1277,7 @@ struct PreparedAssignmentInput {
 
 /// Reads the pending steer input `message_item_id` of `assignment_id` and frames it as a follow-up
 /// context record for the latest working run, while that run's authorization is allowed and the
-/// teammate may still participate in the conversation. Returns `None` when no working run can
+/// agent may still participate in the conversation. Returns `None` when no working run can
 /// take it, so it stays pending.
 async fn prepare_assignment_input(
     pool: &SqlitePool,
@@ -1321,11 +1321,11 @@ async fn prepare_assignment_input(
          JOIN chat_work_assignments assignment ON assignment.id = run.assignment_id
          JOIN chat_conversation_memberships membership
            ON membership.conversation_id = authorization.destination_conversation_id
-          AND membership.participant_id = assignment.teammate_id
+          AND membership.participant_id = assignment.agent_id
           AND membership.removed_at IS NULL
-         JOIN chat_teammate_channel_memberships channel_access
+         JOIN chat_agent_channel_memberships channel_access
            ON channel_access.conversation_id = membership.conversation_id
-          AND channel_access.teammate_id = membership.participant_id
+          AND channel_access.agent_id = membership.participant_id
           AND channel_access.removed_at IS NULL
          JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
          JOIN chat_access_profile_effective_revisions profile_revision
@@ -1381,7 +1381,7 @@ async fn prepare_assignment_input(
         u64_value(row.try_get("revision").map_err(persistence_error)?)?,
         row.try_get("normalized_markdown")
             .map_err(persistence_error)?,
-        super::context::message_teammate_authored(pool, message_item_id.as_str()).await?,
+        super::context::message_agent_authored(pool, message_item_id.as_str()).await?,
     )?;
     Ok(Some(PreparedAssignmentInput {
         thread_id,
@@ -1481,18 +1481,15 @@ pub(super) async fn deliver_assignment_input(
 
 /// Chooses the turn modes for an organizational assignment. Native targets run
 /// with the frozen effective runtime approval, which is never broader than the
-/// teammate's own approval behavior; targetless assignments stay conversational.
+/// agent's own approval behavior; targetless assignments stay conversational.
 fn assignment_turn_modes(
-    teammate_approval: ChatApprovalPolicy,
+    agent_approval: ChatApprovalPolicy,
     resolved_runtime_approval: ChatRuntimeApprovalPolicy,
     has_native_target: bool,
 ) -> TurnModeSnapshot {
     if has_native_target {
         return TurnModeSnapshot {
-            safety_mode: native_assignment_safety_mode(
-                teammate_approval,
-                resolved_runtime_approval,
-            ),
+            safety_mode: native_assignment_safety_mode(agent_approval, resolved_runtime_approval),
             interaction_mode: InteractionMode::Build,
         };
     }
@@ -1564,12 +1561,9 @@ mod tests {
                 SafetyMode::Custom,
             ),
         ];
-        for (teammate, resolved, expected) in cases {
-            let modes = assignment_turn_modes(teammate, resolved, true);
-            assert_eq!(
-                modes.safety_mode, expected,
-                "{teammate:?} with {resolved:?}"
-            );
+        for (agent, resolved, expected) in cases {
+            let modes = assignment_turn_modes(agent, resolved, true);
+            assert_eq!(modes.safety_mode, expected, "{agent:?} with {resolved:?}");
             assert_eq!(modes.interaction_mode, InteractionMode::Build);
         }
     }
@@ -1688,7 +1682,7 @@ mod tests {
             pool
         }
 
-        async fn candidate_for(pool: &SqlitePool, teammate: &str) -> Option<StoredCandidate> {
+        async fn candidate_for(pool: &SqlitePool, agent: &str) -> Option<StoredCandidate> {
             let environment: String = sqlx::query_scalar(
                 "SELECT execution_environment_id FROM chat_agent_runs WHERE id = 'run:working'",
             )
@@ -1700,7 +1694,7 @@ mod tests {
                 &CandidateScope {
                     assignment_id: &ChatWorkAssignmentId::new("assignment:later").unwrap(),
                     reply_thread_id: &ChatReplyThreadId::new("reply:folders").unwrap(),
-                    teammate_id: &ChatParticipantId::new(teammate).unwrap(),
+                    agent_id: &ChatParticipantId::new(agent).unwrap(),
                     working_folder_id: Some(&ProjectWorkingFolderId::new("workspace-1").unwrap()),
                     scratch_generation_id: None,
                     execution_environment_id: Some(&environment),
@@ -1711,7 +1705,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn a_completed_run_of_the_same_teammate_is_the_candidate_with_its_stored_key() {
+        async fn a_completed_run_of_the_same_agent_is_the_candidate_with_its_stored_key() {
             let pool = completed_pool().await;
             let provider: String = sqlx::query_scalar(
                 "SELECT provider_instance_id FROM chat_threads WHERE id = 'thread-1'",
@@ -1736,7 +1730,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn another_teammate_in_the_thread_never_continues_the_session() {
+        async fn another_agent_in_the_thread_never_continues_the_session() {
             let pool = completed_pool().await;
             assert!(
                 candidate_for(&pool, "participant:other-agent")
@@ -1858,8 +1852,7 @@ mod tests {
                 run_id: ChatAgentRunId::new("run:working").unwrap(),
                 assignment_id: assignment(),
                 project_id: "project-chat".to_string(),
-                teammate_policy_revision_id: ChatTeammatePolicyRevisionId::new("policy:folders")
-                    .unwrap(),
+                agent_policy_revision_id: ChatAgentPolicyRevisionId::new("policy:folders").unwrap(),
                 authorization_revision_id: ChatAuthorizationRevisionId::new(
                     "authorization:working",
                 )

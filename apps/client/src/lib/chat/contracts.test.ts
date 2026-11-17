@@ -20,7 +20,7 @@ import {
   parseChatRecurrenceSpec,
   parseChatScheduleProposal,
   parseChatScheduleProposalStates,
-  parseChatTeammateAccess,
+  parseChatAgentAccess,
   parseChatConfiguration,
   parseCanonicalRuntimeEvent,
   parseCanonicalStoredEvent,
@@ -242,7 +242,7 @@ describe("Chat provider contracts", () => {
             plainTextProjection: "@Ágata",
           },
           participantId: "participant:agata",
-          participantKind: "ai_teammate",
+          participantKind: "ai_agent",
         }],
       }],
     });
@@ -386,7 +386,7 @@ describe("Chat provider contracts", () => {
     expect(() => parseProviderFiles(fixture)).toThrow("provider files must be an object");
   });
 
-  it("validates typed teammate preferences on provider files", () => {
+  it("validates typed agent preferences on provider files", () => {
     const entry = {
       id: "CLAUDE_CODE_DISABLE_1M_CONTEXT",
       valueType: "switch",
@@ -674,7 +674,7 @@ describe("Chat provider contracts", () => {
       checkedAt: timestamp,
       detail: "Newer than the tested version 2.1.322",
       versionAdmission: "untested_newer",
-      teammateMinimumVersion: null,
+      agentMinimumVersion: null,
     };
     expect(parseProviderProbeResult(probe)).toEqual(probe);
     expect(parseProviderProbeResult({ ...probe, versionAdmission: null }).versionAdmission).toBeNull();
@@ -684,9 +684,9 @@ describe("Chat provider contracts", () => {
     expect(parseProviderProbeResult({ ...probe, authSource: null }).authSource).toBeNull();
     expect(() => parseProviderProbeResult({ ...probe, authSource: "browser" }))
       .toThrow("authSource has an unsupported value");
-    expect(parseProviderProbeResult({ ...probe, teammateMinimumVersion: "2.1.325" }).teammateMinimumVersion).toBe("2.1.325");
-    expect(() => parseProviderProbeResult({ ...probe, teammateMinimumVersion: 2 }))
-      .toThrow("teammateMinimumVersion must be a string");
+    expect(parseProviderProbeResult({ ...probe, agentMinimumVersion: "2.1.325" }).agentMinimumVersion).toBe("2.1.325");
+    expect(() => parseProviderProbeResult({ ...probe, agentMinimumVersion: 2 }))
+      .toThrow("agentMinimumVersion must be a string");
   });
 
   it("reads the newest tested CLI version from provider metadata", () => {
@@ -1137,7 +1137,7 @@ describe("Chat read and error contracts", () => {
       workingFolderId: "workspace-1",
       executionEnvironmentId: "current-folder:workspace-1",
       scratchGenerationId: null,
-      teammatePolicyRevisionId: "policy:1",
+      agentPolicyRevisionId: "policy:1",
       effort: null,
       providerExecutionTurnId: "turn-1",
       providerExecutionThreadId: "thread-1",
@@ -1215,7 +1215,7 @@ describe("Chat read and error contracts", () => {
     expect(() => parseChatError({ ...fixture, details: undefined })).toThrow("details is not valid JSON");
   });
 
-  it("keeps the effective profile revision id of teammate channel access", () => {
+  it("keeps the effective profile revision id of agent channel access", () => {
     const channel = {
       channelId: "channel:general",
       conversationId: "conversation:general",
@@ -1234,21 +1234,21 @@ describe("Chat read and error contracts", () => {
       removedAt: null,
     };
     const access = {
-      teammateId: "participant:agent",
+      agentId: "participant:agent",
       accessRevision: 3,
-      teammateDefaultRuntimeApproval: "autoApprove",
+      agentDefaultRuntimeApproval: "autoApprove",
       channels: [channel],
     };
 
-    expect(parseChatTeammateAccess(access)).toEqual(access);
-    expect(() => parseChatTeammateAccess({
+    expect(parseChatAgentAccess(access)).toEqual(access);
+    expect(() => parseChatAgentAccess({
       ...access,
       channels: [{ ...channel, accessProfileRevisionId: undefined }],
     })).toThrow("accessProfileRevisionId");
 
     const ungrouped = { ...access, channels: [{ ...channel, groupId: null }] };
-    expect(parseChatTeammateAccess(ungrouped)).toEqual(ungrouped);
-    expect(() => parseChatTeammateAccess({
+    expect(parseChatAgentAccess(ungrouped)).toEqual(ungrouped);
+    expect(() => parseChatAgentAccess({
       ...access,
       channels: [{ ...channel, groupId: "" }],
     })).toThrow("groupId");
@@ -1397,7 +1397,7 @@ describe("chat push request contracts", () => {
   it("parses standing push approvals and refuses a push URL with a password", () => {
     const approval = {
       approvalId: "push-approval-1",
-      teammateId: "participant:atlas",
+      agentId: "participant:atlas",
       workingFolderId: "folder:1",
       workingFolderName: "App",
       pushUrl: "git@example.invalid:org/repo.git",

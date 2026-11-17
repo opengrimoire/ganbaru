@@ -2,7 +2,7 @@
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
 
   /**
-   * The compact action that sits right after a heading, as Settings > Chat > Teammates does for channel access. Its
+   * The compact action that sits right after a heading, as Settings > Chat > Agents does for channel access. Its
    * height never exceeds the heading line, so sections with and without an action share the same baseline.
    */
   let {

@@ -46,7 +46,7 @@ export const chatErrors = {
     profile_ceiling_exceeded: "Este acceso supera lo que permite el perfil vinculado, así que redúcelo o elige otro perfil.",
     profile_not_found: "El perfil de acceso vinculado ya no existe, así que elige otro.",
     retained_reference_disclosure: "Los mensajes anteriores mencionan canales que este agente no puede leer, así que empieza su historial desde que se concede el acceso.",
-    teammate_not_found: "Este agente ya no existe.",
+    agent_not_found: "Este agente ya no existe.",
   },
   actions: {
     loadChat: "No se pudo cargar el chat.",

@@ -351,7 +351,7 @@
     if (!provider.configuration.enabled) return t("settings.agents.providers.disabled");
     if (provider.duplicateOf) return t("settings.agents.providers.duplicateShort");
     if (provider.lastProbe?.state === "healthy") {
-      if (provider.lastProbe.teammateMinimumVersion) return t("settings.agents.providers.teammatesNeedUpdate");
+      if (provider.lastProbe.agentMinimumVersion) return t("settings.agents.providers.agentsNeedUpdate");
       if (availableUpdate(provider)) return t("settings.agents.providers.updateAvailableShort");
       return t("settings.agents.providers.healthy");
     }
@@ -366,7 +366,7 @@
   function providerState(provider: ProviderInstanceRead): ProviderDisplayState {
     if (!provider.configuration.enabled) return "disabled";
     if (provider.duplicateOf) return "attention";
-    return provider.lastProbe?.state === "healthy" && !provider.lastProbe.teammateMinimumVersion
+    return provider.lastProbe?.state === "healthy" && !provider.lastProbe.agentMinimumVersion
       ? "healthy"
       : "attention";
   }
@@ -374,10 +374,10 @@
   /** The sentence explaining a version notice, naming the update command when the family has one. */
   function versionNoticeMessage(notice: ProviderVersionNotice): string {
     if (notice.kind === "too_new") return t("settings.agents.providers.newerThanSupported");
-    if (notice.kind === "teammates") {
+    if (notice.kind === "agents") {
       return notice.updateCommand
-        ? t("settings.agents.providers.teammateVersionCommand", notice.minimumVersion, notice.updateCommand)
-        : t("settings.agents.providers.teammateVersion", notice.minimumVersion);
+        ? t("settings.agents.providers.agentVersionCommand", notice.minimumVersion, notice.updateCommand)
+        : t("settings.agents.providers.agentVersion", notice.minimumVersion);
     }
     if (!notice.minimumVersion) return t("settings.agents.providers.olderVersion");
     return notice.updateCommand

@@ -576,12 +576,9 @@ fn organizational_runs_require_the_verified_opencode_version() {
     ensure_organizational_version(&json!({ "version": "1.20.0" })).unwrap();
     let old = ensure_organizational_version(&json!({ "version": "1.19.4" })).unwrap_err();
     assert_eq!(old.code, ChatErrorCode::UnsupportedVersion);
-    assert_eq!(
-        teammate_minimum_version("1.19.4").as_deref(),
-        Some("1.19.5")
-    );
-    assert_eq!(teammate_minimum_version("1.19.5"), None);
-    assert_eq!(teammate_minimum_version("dev"), None);
+    assert_eq!(agent_minimum_version("1.19.4").as_deref(), Some("1.19.5"));
+    assert_eq!(agent_minimum_version("1.19.5"), None);
+    assert_eq!(agent_minimum_version("dev"), None);
     for health in [
         json!({ "healthy": true }),
         json!({ "version": 1 }),

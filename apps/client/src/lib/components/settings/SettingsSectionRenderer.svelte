@@ -29,9 +29,9 @@
     initialDistractionsTab,
     initialContactsTab,
     activeAgentsSubsection,
-    initialAgentsTeammateId,
+    initialAgentsAgentId,
     initialAgentsChannelId,
-    initialAgentsCreateTeammate,
+    initialAgentsCreateAgent,
     onOpenDistractionsLimitEditor,
     onOpenNotesTransferPanel,
     onOpenChatProviderSetup,
@@ -93,13 +93,13 @@
 {:else if activeSection === "agents"}
   <AgentsSection
     initialSubsection={activeAgentsSubsection}
-    initialTeammateId={initialAgentsTeammateId}
+    initialAgentId={initialAgentsAgentId}
     initialChannelId={initialAgentsChannelId}
-    initialCreateTeammate={initialAgentsCreateTeammate}
+    initialCreateAgent={initialAgentsCreateAgent}
     onOpenProviderSetup={onOpenChatProviderSetup}
     onSubsectionChange={onAgentsSubsectionChange}
     {onRequestNavigation}
-    onTeammateDraftStateChange={(open: boolean) => onDraftStateChange(open ? "teammate" : null)}
+    onAgentDraftStateChange={(open: boolean) => onDraftStateChange(open ? "agent" : null)}
   />
 {:else if activeSection === "data"}
   {#if DataSection}

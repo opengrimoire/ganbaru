@@ -43,7 +43,7 @@ fn file(label: &str, text: &str) -> InstructionFile {
 }
 
 #[test]
-fn only_providers_that_skip_files_in_teammate_runs_get_them_as_text() {
+fn only_providers_that_skip_files_in_agent_runs_get_them_as_text() {
     assert_eq!(
         InstructionFileFamily::from_family_id("claude"),
         Some(InstructionFileFamily::Claude)

@@ -1,4 +1,4 @@
-//! Kernel confinement of Cursor teammates.
+//! Kernel confinement of Cursor agents.
 //!
 //! An organizational Cursor launch on a device with an enforcing helper starts Cursor's bundled
 //! Node runtime directly under the `ganbaru-sandbox` helper, in place of the `cursor-agent`
@@ -14,14 +14,14 @@
 //! watches the folder's Git and Cursor configuration with the metadata guard.
 
 use super::AcpFolderAccess;
+use crate::agent_preferences::{
+    CURSOR_PREFERENCES, PreferenceLocation, checked_setting, insert_at, value_at,
+};
 use crate::confinement::{
     DEVICE_WRITE, PROVIDER_API_PORT, existing_paths, resolver_configuration, scope_refusal,
 };
 use crate::cursor::executable::{CursorVersion, parse_version};
 use crate::models::*;
-use crate::teammate_preferences::{
-    CURSOR_PREFERENCES, PreferenceLocation, checked_setting, insert_at, value_at,
-};
 use ganbaru_sandbox::{NetworkAccess, SandboxHelper, SandboxPolicy};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 mod tests;
 
-/// Teammate provider named in confinement refusals.
+/// Agent provider named in confinement refusals.
 const PROVIDER: &str = "Cursor";
 /// Oldest Cursor build whose confined launch was verified: its runtime layout, environment,
 /// and configuration folder match what this module grants.
@@ -69,7 +69,7 @@ const LOADER_CANDIDATES: &[&str] = &[
 /// Longest Cursor data folder path; Cursor places local sockets in it.
 const MAX_DATA_FOLDER_BYTES: usize = 83;
 /// Folder under the state directory that holds one configuration folder per working folder.
-const TEAMMATE_STATE_FOLDER: &str = "ganbaru/cursor-teammates";
+const AGENT_STATE_FOLDER: &str = "ganbaru/cursor-agents";
 /// Cursor CLI configuration Ganbaru writes on every confined launch: shell commands are denied
 /// without asking, and Cursor's own sandbox is off because the helper confines the process.
 const CURSOR_CLI_CONFIGURATION: &str = r#"{"version":1,"permissions":{"allow":[],"deny":["Shell(*)"]},"approvalMode":"allowlist","sandbox":{"mode":"disabled"}}"#;
@@ -88,7 +88,7 @@ const RESERVED_ENVIRONMENT: &[&str] = &[
     "TMPDIR",
 ];
 
-/// Boundaries a Cursor teammate holds, given whether the sandbox confines its process.
+/// Boundaries a Cursor agent holds, given whether the sandbox confines its process.
 ///
 /// Without the sandbox only a conversation is held: Cursor writes files itself without a
 /// permission request or a client file callback, and a project `.cursor/cli.json` allowlist runs
@@ -122,7 +122,7 @@ pub(in crate::cursor) fn cursor_confinement(
     match (access, helper) {
         (None, _) => Ok(None),
         (Some(AcpFolderAccess::Commands), _) => Err(scope_refusal(
-            "acp_command_outside_scope: Cursor teammates may not run commands in this folder",
+            "acp_command_outside_scope: Cursor agents may not run commands in this folder",
         )),
         (Some(_), Some(helper)) => Ok(Some(helper)),
         (Some(AcpFolderAccess::Conversation), None) => Ok(None),
@@ -200,7 +200,7 @@ pub(in crate::cursor) fn ensure_confined_endpoint(endpoint: Option<&str>) -> Cha
     } else {
         Err(ChatError::new(
             ChatErrorCode::Permission,
-            "A Cursor teammate in a folder can only use an HTTPS endpoint on port 443",
+            "A Cursor agent in a folder can only use an HTTPS endpoint on port 443",
             false,
         ))
     }
@@ -315,7 +315,7 @@ pub(in crate::cursor) fn prepare_cursor_launch(
     {
         return Err(ChatError::validation(
             "environment",
-            format!("A Cursor teammate in a folder cannot set {name}"),
+            format!("A Cursor agent in a folder cannot set {name}"),
         ));
     }
     let installation = cursor_installation(executable, Path::is_file)?;
@@ -347,7 +347,7 @@ pub(in crate::cursor) fn prepare_cursor_launch(
     let configuration = prepare_configuration_folder(
         &user_folder("XDG_STATE_HOME", ".local/state"),
         workspace,
-        &teammate_cli_configuration(user_configuration.as_deref()),
+        &agent_cli_configuration(user_configuration.as_deref()),
     )?;
     prepare_running_marker(&installation.directory)?;
     let directory = crate::probe_directory::ProbeDirectory::create_with_prefix(
@@ -438,7 +438,7 @@ fn user_cli_configuration_path(
 
 /// The CLI configuration a confined launch writes: the fixed shell deny and approval mode, plus
 /// the allowlisted boolean preferences of the user's configuration document, when it parses.
-fn teammate_cli_configuration(user: Option<&[u8]>) -> String {
+fn agent_cli_configuration(user: Option<&[u8]>) -> String {
     let Ok(serde_json::Value::Object(mut configuration)) =
         serde_json::from_str::<serde_json::Value>(CURSOR_CLI_CONFIGURATION)
     else {
@@ -476,10 +476,7 @@ fn prepare_configuration_folder(
         .take(8)
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    let folder = state_home
-        .join(TEAMMATE_STATE_FOLDER)
-        .join(key)
-        .join("config");
+    let folder = state_home.join(AGENT_STATE_FOLDER).join(key).join("config");
     create_private_folder(&folder).map_err(|_| sandbox_policy_error())?;
     let folder = std::fs::canonicalize(folder).map_err(|_| sandbox_policy_error())?;
     for name in REMOVED_CONFIGURATION_ENTRIES

@@ -511,7 +511,7 @@ pub(super) fn refuse_git_metadata_write(workspace: &Path, requested: &Path) -> C
     if names_git_metadata {
         return Err(ChatError::new(
             ChatErrorCode::Permission,
-            "acp_git_metadata_write_refused: teammates may not write Git metadata",
+            "acp_git_metadata_write_refused: agents may not write Git metadata",
             true,
         ));
     }

@@ -1,7 +1,7 @@
 import type { ModelOptionSelection, ProviderModel, SafetyMode } from "$lib/chat/contracts";
 import { isKnownModelOption, modelOptionRole } from "$lib/chat/composer/model-picker-model";
 
-export interface TeammateProfileDraftSnapshotInput {
+export interface AgentProfileDraftSnapshotInput {
   displayName: string;
   role: string;
   instructions: string;
@@ -14,18 +14,18 @@ export interface TeammateProfileDraftSnapshotInput {
   speed: string | null;
 }
 
-export interface TeammateExecutionSummary {
+export interface AgentExecutionSummary {
   effort: string | null;
   speed: "standard" | "fast" | null;
 }
 
 /**
- * Derives stable teammate policy summaries from provider model options.
+ * Derives stable agent policy summaries from provider model options.
  */
-export function teammateExecutionSummary(
+export function agentExecutionSummary(
   options: readonly ModelOptionSelection[],
   model: ProviderModel | null,
-): TeammateExecutionSummary {
+): AgentExecutionSummary {
   const effortDefinition = model?.options.find((option) => (
     isKnownModelOption(option) && modelOptionRole(option) === "effort"
   ));
@@ -61,10 +61,10 @@ export function teammateExecutionSummary(
 }
 
 /**
- * Creates a canonical snapshot of persisted teammate profile and execution fields.
+ * Creates a canonical snapshot of persisted agent profile and execution fields.
  */
-export function teammateProfileDraftSnapshot(
-  input: TeammateProfileDraftSnapshotInput,
+export function agentProfileDraftSnapshot(
+  input: AgentProfileDraftSnapshotInput,
 ): string {
   const modelOptions = [...input.modelOptions].sort((left, right) => left.key.localeCompare(right.key));
   return JSON.stringify({
@@ -82,17 +82,17 @@ export function teammateProfileDraftSnapshot(
 }
 
 /**
- * Largest teammate instructions, in UTF-8 bytes, that the backend accepts. Mirrors the Rust
+ * Largest agent instructions, in UTF-8 bytes, that the backend accepts. Mirrors the Rust
  * bound, which keeps room in the provider developer instruction cap for the context package
  * framing that dispatch adds before the instructions.
  */
-export const TEAMMATE_INSTRUCTIONS_MAX_BYTES = 61_440;
+export const AGENT_INSTRUCTIONS_MAX_BYTES = 61_440;
 
 const utf8Encoder = new TextEncoder();
 
 /**
  * Whether `instructions`, trimmed as saving trims them, pass the backend byte bound.
  */
-export function teammateInstructionsTooLong(instructions: string): boolean {
-  return utf8Encoder.encode(instructions.trim()).length > TEAMMATE_INSTRUCTIONS_MAX_BYTES;
+export function agentInstructionsTooLong(instructions: string): boolean {
+  return utf8Encoder.encode(instructions.trim()).length > AGENT_INSTRUCTIONS_MAX_BYTES;
 }

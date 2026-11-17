@@ -1,7 +1,7 @@
 use super::*;
-use ganbaru_sync_contracts::chat_usage::teammate_usage_key;
+use ganbaru_sync_contracts::chat_usage::agent_usage_key;
 
-const TEAMMATE: &str = "participant:usage";
+const AGENT: &str = "participant:usage";
 const ASSIGNMENT: &str = "assignment:usage";
 /// 2026-11-12T23:30:00Z, which is already 2026-11-13 in Tokyo.
 const EPOCH_MS: i64 = 1_794_526_200_000;
@@ -18,15 +18,15 @@ async fn migrated_pool() -> SqlitePool {
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "PRAGMA foreign_keys=OFF;
          UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
-         INSERT INTO chat_teammates (participant_id, role, created_at, updated_at)
-         VALUES ('{TEAMMATE}', 'Counts', '2026-11-12T23:00:00.000Z', '2026-11-12T23:00:00.000Z');
+         INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
+         VALUES ('{AGENT}', 'Counts', '2026-11-12T23:00:00.000Z', '2026-11-12T23:00:00.000Z');
          INSERT INTO chat_work_assignments
-            (id, reply_thread_id, teammate_id, triggering_message_item_id, state, created_at,
+            (id, reply_thread_id, agent_id, triggering_message_item_id, state, created_at,
              updated_at)
-         VALUES ('{ASSIGNMENT}', 'reply-thread:usage', '{TEAMMATE}', 'item:usage', 'working',
+         VALUES ('{ASSIGNMENT}', 'reply-thread:usage', '{AGENT}', 'item:usage', 'working',
                  '2026-11-12T23:00:00.000Z', '2026-11-12T23:00:00.000Z');
          INSERT INTO chat_agent_runs
-            (id, assignment_id, project_id, teammate_policy_revision_id,
+            (id, assignment_id, project_id, agent_policy_revision_id,
              authorization_revision_id, authorization_scope_digest, provider_turn_id,
              provider_thread_id, state, run_ordinal, started_at, created_at, updated_at)
          VALUES ('run:usage', '{ASSIGNMENT}', 'project-usage', 'policy:usage',
@@ -46,7 +46,7 @@ async fn migrated_pool() -> SqlitePool {
 }
 
 #[tokio::test]
-async fn teammate_usage_flushes_on_the_local_date_and_reads_summed_across_devices() {
+async fn agent_usage_flushes_on_the_local_date_and_reads_summed_across_devices() {
     let pool = migrated_pool().await;
     let tokyo = TimeZone::get("Asia/Tokyo").unwrap();
     assert_eq!(
@@ -56,34 +56,27 @@ async fn teammate_usage_flushes_on_the_local_date_and_reads_summed_across_device
         1
     );
     sqlx::query(
-        "INSERT INTO chat_teammate_usage_daily
-            (id, device_id, teammate_id, local_date, counted_tokens, working_seconds, run_count)
+        "INSERT INTO chat_agent_usage_daily
+            (id, device_id, agent_id, local_date, counted_tokens, working_seconds, run_count)
          VALUES (?, 'device-b', ?, '2026-11-13', 100, 10, 1)",
     )
     .bind(
-        teammate_usage_key("device-b", TEAMMATE, "2026-11-13")
+        agent_usage_key("device-b", AGENT, "2026-11-13")
             .unwrap()
             .to_string(),
     )
-    .bind(TEAMMATE)
+    .bind(AGENT)
     .execute(&pool)
     .await
     .unwrap();
 
-    let teammate = ChatParticipantId::new(TEAMMATE).unwrap();
-    let days = read_usage_at(
-        &pool,
-        &teammate,
-        "2026-11-01",
-        "2026-11-30",
-        EPOCH_MS,
-        &tokyo,
-    )
-    .await
-    .unwrap();
+    let agent = ChatParticipantId::new(AGENT).unwrap();
+    let days = read_usage_at(&pool, &agent, "2026-11-01", "2026-11-30", EPOCH_MS, &tokyo)
+        .await
+        .unwrap();
     assert_eq!(
         days,
-        [ChatTeammateUsageDayRead {
+        [ChatAgentUsageDayRead {
             local_date: "2026-11-13".to_owned(),
             counted_tokens: 500,
             working_seconds: 100,
@@ -102,7 +95,7 @@ async fn teammate_usage_flushes_on_the_local_date_and_reads_summed_across_device
         .unwrap();
     let utc_days = read_usage_at(
         &pool,
-        &teammate,
+        &agent,
         "2026-11-12",
         "2026-11-12",
         EPOCH_MS,

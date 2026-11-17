@@ -1,13 +1,13 @@
-//! Pushes a teammate asks a person to confirm.
+//! Pushes an agent asks a person to confirm.
 //!
-//! A teammate never pushes. It asks: a push request is a host question in its reply thread whose
+//! An agent never pushes. It asks: a push request is a host question in its reply thread whose
 //! payload records the commit, the remote, the destination branch, and the push URL a push would
 //! reach, read by Ganbaru from the folder, with the digest of the folder's whole effective Git
 //! configuration. A request may also carry a commit message: Ganbaru then commits the working tree
 //! on that commit at confirmation, and records the tree, author, signing, and changed paths it
 //! read. The assignment waits for an answer like any question. Only a person who confirms the
 //! request pushes, and only while a fresh read still names the same target and tree, so a
-//! teammate cannot change what reaches the remote after the person looked.
+//! agent cannot change what reaches the remote after the person looked.
 
 use super::contracts::ChatPushRequestState;
 use super::reports::{
@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::SqliteConnection;
 
-/// Longest summary a teammate may give for a push request, in characters.
+/// Longest summary an agent may give for a push request, in characters.
 pub const MAX_PUSH_SUMMARY_CHARS: usize = 1_000;
 /// Longest remote name or ID a push request may record, in bytes.
 const MAX_PUSH_FIELD_BYTES: usize = 1_024;
@@ -31,11 +31,11 @@ const MAX_PUSH_FIELD_BYTES: usize = 1_024;
 const PUSH_REQUEST_ID_PART: &str = "push-request";
 /// Id part every id a confirmation derives starts with, followed by the request item id.
 const PUSH_CONFIRMATION_ID_PART: &str = "push-confirmation";
-/// Prefix of the id of the teammate mention a confirmation reply carries; its presence marks
+/// Prefix of the id of the agent mention a confirmation reply carries; its presence marks
 /// the request pushed.
 pub const PUSH_CONFIRMATION_REFERENCE_PREFIX: &str = "message-reference";
 
-/// What a teammate asks to push, as Ganbaru read it from the folder.
+/// What an agent asks to push, as Ganbaru read it from the folder.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PushRequest {
@@ -55,7 +55,7 @@ pub struct PushRequest {
     pub commit: Option<PushRequestCommit>,
 }
 
-/// A commit a push request asks Ganbaru to make at confirmation: the teammate's message on the
+/// A commit a push request asks Ganbaru to make at confirmation: the agent's message on the
 /// working tree Ganbaru read, whose parent is the target commit.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -99,7 +99,7 @@ impl PushRequest {
     }
 }
 
-/// Why a push request was refused, to the teammate asking or the person confirming.
+/// Why a push request was refused, to the agent asking or the person confirming.
 /// [`PushRequestRefusal::code`] is the tool error code or the `reason` detail.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PushRequestRefusal {
@@ -270,9 +270,9 @@ pub struct StoredPushRequest {
     pub authorization_revision_id: Option<String>,
     pub channel_id: String,
     pub reply_thread_id: String,
-    pub teammate_id: String,
-    /// The teammate's current name, `None` when it was removed or archived.
-    pub teammate_name: Option<String>,
+    pub agent_id: String,
+    /// The agent's current name, `None` when it was removed or archived.
+    pub agent_name: Option<String>,
 }
 
 /// The row a stored push request is read from.
@@ -288,9 +288,9 @@ struct PushRequestRow {
     person_replied_after: bool,
     reply_thread_id: Option<String>,
     channel_id: String,
-    teammate_id: String,
-    teammate_name: Option<String>,
-    teammate_kind: Option<String>,
+    agent_id: String,
+    agent_name: Option<String>,
+    agent_kind: Option<String>,
 }
 
 /// Reads the push request posted as the conversation item `item_id` and whether it is open.
@@ -329,9 +329,9 @@ pub async fn read_push_request(
                     AND (reply.order_key > item.order_key
                       OR (reply.order_key = item.order_key AND reply.id > item.id))
                 ) AS person_replied_after,
-                item.reply_thread_id, channel.id AS channel_id, assignment.teammate_id,
-                participant.display_name AS teammate_name,
-                participant.participant_kind AS teammate_kind
+                item.reply_thread_id, channel.id AS channel_id, assignment.agent_id,
+                participant.display_name AS agent_name,
+                participant.participant_kind AS agent_kind
          FROM chat_work_semantic_updates semantic
          JOIN chat_conversation_items item ON item.id = semantic.item_id
          JOIN chat_communication_messages message ON message.item_id = semantic.item_id
@@ -341,7 +341,7 @@ pub async fn read_push_request(
            ON run.id = json_extract(semantic.payload_data, '$.agentRunId')
           AND run.assignment_id = semantic.assignment_id
          LEFT JOIN chat_participants participant
-           ON participant.id = assignment.teammate_id AND participant.archived_at IS NULL
+           ON participant.id = assignment.agent_id AND participant.archived_at IS NULL
          WHERE semantic.item_id = ? AND semantic.update_kind = 'question'
            AND json_extract(semantic.payload_data, '$.payload.source') = ?
            AND json_type(semantic.payload_data, '$.payload.push') = 'object'
@@ -378,10 +378,10 @@ pub async fn read_push_request(
         authorization_revision_id: row.authorization_revision_id,
         channel_id: row.channel_id,
         reply_thread_id,
-        teammate_id: row.teammate_id,
-        teammate_name: row
-            .teammate_name
-            .filter(|_| row.teammate_kind.as_deref() == Some("ai_teammate")),
+        agent_id: row.agent_id,
+        agent_name: row
+            .agent_name
+            .filter(|_| row.agent_kind.as_deref() == Some("ai_agent")),
     })
 }
 

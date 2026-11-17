@@ -111,8 +111,8 @@ chat_identifier!(
     MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
 );
 chat_identifier!(
-    ChatTeammatePolicyRevisionId,
-    "Chat teammate policy revision ID",
+    ChatAgentPolicyRevisionId,
+    "Chat agent policy revision ID",
     MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
 );
 chat_identifier!(

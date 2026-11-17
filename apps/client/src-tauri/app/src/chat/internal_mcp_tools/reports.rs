@@ -1,4 +1,4 @@
-//! The ask and report host tools: a teammate asks the person who assigned the work, or posts a
+//! The ask and report host tools: an agent asks the person who assigned the work, or posts a
 //! plan, replan, result, or channel note proposal in the reply thread.
 //!
 //! Both write in one transaction through the organizational coordination services, which keep
@@ -114,7 +114,7 @@ pub(super) fn host_call<'a>(
     }
 }
 
-/// The trimmed body of a `kind` report. An empty or oversized body is a typed refusal, so the teammate can
+/// The trimmed body of a `kind` report. An empty or oversized body is a typed refusal, so the agent can
 /// shorten it; any other malformed body is denied generically.
 fn report_body(kind: ReportKind, arguments: &Map<String, Value>) -> ChatResult<String> {
     let body = arguments
@@ -176,7 +176,7 @@ pub(super) fn client_request_id(arguments: &Map<String, Value>) -> ChatResult<&s
 fn persistence_error(_error: sqlx::Error) -> ChatError {
     ChatError::new(
         ChatErrorCode::Persistence,
-        "Chat teammate report could not be saved",
+        "Chat agent report could not be saved",
         true,
     )
 }

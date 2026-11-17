@@ -121,7 +121,7 @@ pub enum UsageCountError {
     UnknownScope,
     /// A thread total fell below the total this run already counted.
     TotalWentBackwards,
-    /// Adding to a daily teammate summary would pass the bound every replica accepts.
+    /// Adding to a daily agent summary would pass the bound every replica accepts.
     SummaryOverflow,
 }
 

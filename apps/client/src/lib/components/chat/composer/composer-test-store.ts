@@ -305,7 +305,7 @@ export function modelSettings(): ChatSettingsRead {
         checkedAt: "2026-07-22T12:00:00.000Z",
         detail: null,
         versionAdmission: "supported",
-        teammateMinimumVersion: null,
+        agentMinimumVersion: null,
       },
       lastSuccessfulProbeAt: "2026-07-22T12:00:00.000Z",
       usageLimits: null,

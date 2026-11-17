@@ -1110,9 +1110,9 @@
         initialDistractionsTab={settingsLauncher.targetDistractionsTab}
         initialContactsTab={settingsLauncher.targetContactsTab}
         initialAgentsSubsection={settingsLauncher.targetAgentsSubsection}
-        initialAgentsTeammateId={settingsLauncher.targetAgentsTeammateId}
+        initialAgentsAgentId={settingsLauncher.targetAgentsAgentId}
         initialAgentsChannelId={settingsLauncher.targetAgentsChannelId}
-        initialAgentsCreateTeammate={settingsLauncher.targetAgentsCreateTeammate}
+        initialAgentsCreateAgent={settingsLauncher.targetAgentsCreateAgent}
         onClose={closeSettings}
       />
     </div>

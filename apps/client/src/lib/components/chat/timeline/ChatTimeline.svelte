@@ -23,8 +23,8 @@
   import { chatScrollBehavior } from "$lib/chat/responsive-layout";
   import type { ChatParticipantRead, ChatThreadShellRead, ChatTimelinePageRead, ChatTurnId, ProviderInstanceId, ProviderProbeResult } from "$lib/chat/contracts";
   import { activityFilePath, fileChangePresentation, fileReadActivityPresentation, fileSearchActivityPresentation, isFileReadActivity, isFileSearchActivity, isImageViewActivity, summarizeActivityKinds, transientActivitySummary, type ActivitySummaryCount } from "$lib/chat/timeline/activity-presentation";
-  import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/teammates/participant-display";
-  import { chatModelParticipant, type ChatModelParticipant } from "$lib/chat/teammates/participant-identity";
+  import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/agents/participant-display";
+  import { chatModelParticipant, type ChatModelParticipant } from "$lib/chat/agents/participant-identity";
   import { buildTimelineDisplayRows, includeOptimisticTimelineMessage, projectTimelineReadModel, stabilizeTimelineRows, timelineActivityShowsLiveStatus, timelineActivitySupportsDisclosure, timelineFinishedRenderKey, timelineModelGroupStartIds, timelineRowsForTurn, type TimelineActivityGroupRow, type TimelineActivityRow, type TimelineDisplayRow, type TimelineMessageRow, type TimelinePlanRow, type TimelineRow, type TimelineTurnFoldRow } from "$lib/chat/timeline/model";
   import { computeTimelineVirtualWindow, nextTimelineUnreadCount, scrollTopForPreservedAnchor, timelineMinimapRows, timelineScrollbarThumbGeometry, timelineScrollIntent, type TimelineScrollbarThumbGeometry, type TimelineScrollIntent } from "$lib/chat/timeline/virtualization";
   import { formatDateTime, formatList, formatNumber } from "$lib/i18n/formatters";
@@ -54,7 +54,7 @@
     bottomInsetPx = 0,
     embedded = false,
     hideUserMessages = false,
-    teammate = null,
+    agent = null,
     turnId = null,
     timelinePage = null,
     executionThread = null,
@@ -62,7 +62,7 @@
     bottomInsetPx?: number;
     embedded?: boolean;
     hideUserMessages?: boolean;
-    teammate?: ChatParticipantRead | null;
+    agent?: ChatParticipantRead | null;
     turnId?: ChatTurnId | null;
     timelinePage?: ChatTimelinePageRead | null;
     executionThread?: ChatThreadShellRead | null;
@@ -1026,8 +1026,8 @@
               {@const identity = modelIdentityForRow(row)}
               {@const actionMessage = row.turnId ? assistantActionMessages.get(row.turnId) : undefined}
               <div class="chat-participant-row">
-                <ChatIdentityButton participant={teammate} model={identity.model} presentation="avatar" size={embedded ? 34 : 36} currentResponseSettings={embedded} usageThreadId={embedded ? selectedThread?.id ?? null : null} />
-                <div class="chat-participant-content"><div class="chat-participant-header"><strong><ChatIdentityButton participant={teammate} model={identity.model} presentation="name" triggerLabel={teammate?.displayName ?? identity.model.displayName} currentResponseSettings={embedded} usageThreadId={embedded ? selectedThread?.id ?? null : null} /></strong><span>{timestampLabel(row.createdAt)}</span></div>{#if actionMessage}<ChatMessageActionToolbar target={executionMessageActionTarget(actionMessage)} visible={hoveredActionTurnId === row.turnId || heldMessageActionsKey() === touchActionsKey(row)} onError={reportError} />{/if}{@render modelRowContent(row)}</div>
+                <ChatIdentityButton participant={agent} model={identity.model} presentation="avatar" size={embedded ? 34 : 36} currentResponseSettings={embedded} usageThreadId={embedded ? selectedThread?.id ?? null : null} />
+                <div class="chat-participant-content"><div class="chat-participant-header"><strong><ChatIdentityButton participant={agent} model={identity.model} presentation="name" triggerLabel={agent?.displayName ?? identity.model.displayName} currentResponseSettings={embedded} usageThreadId={embedded ? selectedThread?.id ?? null : null} /></strong><span>{timestampLabel(row.createdAt)}</span></div>{#if actionMessage}<ChatMessageActionToolbar target={executionMessageActionTarget(actionMessage)} visible={hoveredActionTurnId === row.turnId || heldMessageActionsKey() === touchActionsKey(row)} onError={reportError} />{/if}{@render modelRowContent(row)}</div>
               </div>
             {:else}
               <div class="chat-participant-followup">{@render modelRowContent(row)}</div>
@@ -1037,8 +1037,8 @@
               {@const identity = modelIdentityForRow(row)}
               {@const actionMessage = row.turnId ? assistantActionMessages.get(row.turnId) : undefined}
               <div class="chat-participant-row">
-                <ChatIdentityButton participant={teammate} model={identity.model} presentation="avatar" size={embedded ? 34 : 36} currentResponseSettings={embedded} usageThreadId={embedded ? selectedThread?.id ?? null : null} />
-                <div class="chat-participant-content"><div class="chat-participant-header"><strong><ChatIdentityButton participant={teammate} model={identity.model} presentation="name" triggerLabel={teammate?.displayName ?? identity.model.displayName} currentResponseSettings={embedded} usageThreadId={embedded ? selectedThread?.id ?? null : null} /></strong><span>{timestampLabel(row.createdAt)}</span></div>{#if actionMessage}<ChatMessageActionToolbar target={executionMessageActionTarget(actionMessage)} visible={hoveredActionTurnId === row.turnId || heldMessageActionsKey() === touchActionsKey(row)} onError={reportError} />{/if}{@render modelRowContent(row)}</div>
+                <ChatIdentityButton participant={agent} model={identity.model} presentation="avatar" size={embedded ? 34 : 36} currentResponseSettings={embedded} usageThreadId={embedded ? selectedThread?.id ?? null : null} />
+                <div class="chat-participant-content"><div class="chat-participant-header"><strong><ChatIdentityButton participant={agent} model={identity.model} presentation="name" triggerLabel={agent?.displayName ?? identity.model.displayName} currentResponseSettings={embedded} usageThreadId={embedded ? selectedThread?.id ?? null : null} /></strong><span>{timestampLabel(row.createdAt)}</span></div>{#if actionMessage}<ChatMessageActionToolbar target={executionMessageActionTarget(actionMessage)} visible={hoveredActionTurnId === row.turnId || heldMessageActionsKey() === touchActionsKey(row)} onError={reportError} />{/if}{@render modelRowContent(row)}</div>
               </div>
             {:else}
               <div class="chat-participant-followup">{@render modelRowContent(row)}</div>

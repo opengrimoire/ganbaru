@@ -16,7 +16,7 @@ const RANDOM_ID_BYTES: usize = 16;
 pub const REPLY_THREAD_ID_PREFIX: &str = "reply-thread";
 /// Derived id prefix of a work assignment input, keyed by its message item id.
 pub const ASSIGNMENT_INPUT_ID_PREFIX: &str = "assignment-input";
-/// Derived id prefix of a work assignment, keyed by its triggering message, its teammate, and
+/// Derived id prefix of a work assignment, keyed by its triggering message, its agent, and
 /// the assignment it follows when it has one.
 pub const WORK_ASSIGNMENT_ID_PREFIX: &str = "work-assignment";
 /// Derived id prefix of a scheduled message recurrence, keyed by its scheduled message id.

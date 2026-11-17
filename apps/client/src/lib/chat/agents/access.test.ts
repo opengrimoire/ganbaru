@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ChatTeammateChannelAccessInput } from "$lib/chat/contracts";
+import type { ChatAgentChannelAccessInput } from "$lib/chat/contracts";
 import {
   applyAccessProfileToScope,
   applyChannelPresetToScope,
@@ -9,14 +9,14 @@ import {
   impliedFolderGrantId,
   resolveRuntimeApproval,
   selectionState,
-  teammateAccessConfirmationImpact,
-  teammateAccessDraftErrors,
-  teammateAccessDraftSnapshot,
-  teammateAccessNeedsConfirmation,
+  agentAccessConfirmationImpact,
+  agentAccessDraftErrors,
+  agentAccessDraftSnapshot,
+  agentAccessNeedsConfirmation,
   toggleSelectionGroup,
 } from "./access";
 
-function access(channelId: string): ChatTeammateChannelAccessInput {
+function access(channelId: string): ChatAgentChannelAccessInput {
   return {
     channelId,
     accessProfileId: "profile:build",
@@ -29,7 +29,7 @@ function access(channelId: string): ChatTeammateChannelAccessInput {
   };
 }
 
-describe("teammate access", () => {
+describe("agent access", () => {
   it("maps independent channel capabilities to presets", () => {
     expect(channelCapabilityPreset(capabilitiesForPreset("contextSource"))).toBe("contextSource");
     expect(channelCapabilityPreset(capabilitiesForPreset("isolatedResponder"))).toBe("isolatedResponder");
@@ -43,7 +43,7 @@ describe("teammate access", () => {
   });
 
   it("resolves the most local runtime approval", () => {
-    expect(resolveRuntimeApproval("ask", null, null)).toEqual({ policy: "ask", source: "teammate" });
+    expect(resolveRuntimeApproval("ask", null, null)).toEqual({ policy: "ask", source: "agent" });
     expect(resolveRuntimeApproval("ask", "autoApprove", null)).toEqual({
       policy: "autoApprove", source: "channel",
     });
@@ -93,17 +93,17 @@ describe("teammate access", () => {
   });
 
   it("creates order-independent atomic snapshots", () => {
-    expect(teammateAccessDraftSnapshot([access("channel:b"), access("channel:a")]))
-      .toBe(teammateAccessDraftSnapshot([access("channel:a"), access("channel:b")]));
+    expect(agentAccessDraftSnapshot([access("channel:b"), access("channel:a")]))
+      .toBe(agentAccessDraftSnapshot([access("channel:a"), access("channel:b")]));
   });
 
   it("does not require another confirmation for ordinary responder membership", () => {
     const responder = access("channel:a");
     responder.capabilities = capabilitiesForPreset("isolatedResponder");
 
-    const impact = teammateAccessConfirmationImpact([], [responder]);
+    const impact = agentAccessConfirmationImpact([], [responder]);
 
-    expect(teammateAccessNeedsConfirmation(impact)).toBe(false);
+    expect(agentAccessNeedsConfirmation(impact)).toBe(false);
   });
 
   it("identifies history, executable folder, publishing, and removal consequences", () => {
@@ -122,7 +122,7 @@ describe("teammate access", () => {
     const boundedHistory = access("channel:bounded");
     boundedHistory.historyBoundary = { kind: "fromGrant" };
 
-    const impact = teammateAccessConfirmationImpact(
+    const impact = agentAccessConfirmationImpact(
       [retained, removed],
       [nextRetained, boundedHistory],
     );
@@ -134,7 +134,7 @@ describe("teammate access", () => {
       publishFolderIds: ["folder:publish"],
       removedChannelIds: ["channel:removed"],
     });
-    expect(teammateAccessNeedsConfirmation(impact)).toBe(true);
+    expect(agentAccessNeedsConfirmation(impact)).toBe(true);
   });
 
   it("keeps scratch approval overrides in atomic drafts", () => {
@@ -142,8 +142,8 @@ describe("teammate access", () => {
     const second = access("channel:a");
     second.scratchRuntimeApprovalOverride = "unattended";
 
-    expect(teammateAccessDraftSnapshot([first]))
-      .not.toBe(teammateAccessDraftSnapshot([second]));
+    expect(agentAccessDraftSnapshot([first]))
+      .not.toBe(agentAccessDraftSnapshot([second]));
   });
 
   it("keeps the reviewed profile revision in atomic drafts", () => {
@@ -151,8 +151,8 @@ describe("teammate access", () => {
     const second = access("channel:a");
     second.accessProfileRevisionId = "profile:build:revision:2";
 
-    expect(teammateAccessDraftSnapshot([first]))
-      .not.toBe(teammateAccessDraftSnapshot([second]));
+    expect(agentAccessDraftSnapshot([first]))
+      .not.toBe(agentAccessDraftSnapshot([second]));
   });
 
   it("rejects duplicated channels and grants above the profile ceiling", () => {
@@ -163,7 +163,7 @@ describe("teammate access", () => {
       isDefault: true,
       runtimeApprovalOverride: null,
     }];
-    const errors = teammateAccessDraftErrors(
+    const errors = agentAccessDraftErrors(
       [first, access("channel:a")],
       new Map([["profile:build", "execute"]]),
     );
@@ -179,7 +179,7 @@ describe("teammate access", () => {
       isDefault: false,
       runtimeApprovalOverride: null,
     }];
-    expect(teammateAccessDraftErrors(
+    expect(agentAccessDraftErrors(
       [draft],
       new Map([["profile:build", "execute"]]),
     )).toEqual([]);

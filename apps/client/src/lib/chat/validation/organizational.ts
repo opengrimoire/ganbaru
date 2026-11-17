@@ -21,7 +21,7 @@ import {
   CHAT_SCRATCH_SCOPE_LIFECYCLE_STATES,
   CHAT_REVIEW_QUEUE_KINDS,
   CHAT_SCHEDULED_MESSAGE_STATES,
-  CHAT_TEAMMATE_CONFIGURATION_STATES,
+  CHAT_AGENT_CONFIGURATION_STATES,
   CHAT_WORK_ASSIGNMENT_STATES,
   SAFETY_MODES,
   type ChatAgentRunRead,
@@ -29,11 +29,11 @@ import {
   type ChatAccessProfileRead,
   type ChatAccessProfileImpactPreviewRead,
   type ChatAccessProfileRevision,
-  type ChatAiTeammateRead,
+  type ChatAiAgentRead,
   type ChatAssignmentAcceptanceFolderRead,
   type ChatAssignmentDelegationRead,
   type ChatAssignmentAcceptanceOfferRead,
-  type ChatTeammateUsageDayRead,
+  type ChatAgentUsageDayRead,
   type ChatAssignmentReview,
   type ChatAssignmentTargetRead,
   type ChatChannelPageRead,
@@ -68,11 +68,11 @@ import {
   type ChatScratchScopeRead,
   type ChatScratchSourceSummaryRead,
   type ChatSecretRequestRead,
-  type ChatTeammatePolicyRead,
-  type ChatTeammateAccessPreviewRead,
-  type ChatTeammateAccessPreviewIssue,
-  type ChatTeammateAccessRead,
-  type ChatTeammateChannelAccess,
+  type ChatAgentPolicyRead,
+  type ChatAgentAccessPreviewRead,
+  type ChatAgentAccessPreviewIssue,
+  type ChatAgentAccessRead,
+  type ChatAgentChannelAccess,
   type ChatWaitingAssignmentRead,
   type ChatWaitingAssignmentsRead,
   type ChatWorkAssignmentRead,
@@ -139,11 +139,11 @@ export function parseChatParticipant(value: unknown, label = "Chat participant")
   };
 }
 
-export function parseChatTeammatePolicy(value: unknown, label = "Chat teammate policy"): ChatTeammatePolicyRead {
+export function parseChatAgentPolicy(value: unknown, label = "Chat agent policy"): ChatAgentPolicyRead {
   const record = readRecord(value, label);
   return {
     id: readIdentifier(record.id, `${label}.id`),
-    teammateId: readIdentifier(record.teammateId, `${label}.teammateId`),
+    agentId: readIdentifier(record.agentId, `${label}.agentId`),
     revision: readNonNegativeSafeInteger(record.revision, `${label}.revision`),
     providerInstanceId: readIdentifier(record.providerInstanceId, `${label}.providerInstanceId`),
     safetyMode: readEnum(record.safetyMode, SAFETY_MODES, `${label}.safetyMode`),
@@ -157,7 +157,7 @@ export function parseChatTeammatePolicy(value: unknown, label = "Chat teammate p
   };
 }
 
-export function parseChatAiTeammate(value: unknown, label = "Chat AI teammate"): ChatAiTeammateRead {
+export function parseChatAiAgent(value: unknown, label = "Chat AI agent"): ChatAiAgentRead {
   const record = readRecord(value, label);
   return {
     participant: parseChatParticipant(record.participant, `${label}.participant`),
@@ -165,10 +165,10 @@ export function parseChatAiTeammate(value: unknown, label = "Chat AI teammate"):
     instructions: readString(record.instructions, `${label}.instructions`),
     configurationState: readEnum(
       record.configurationState,
-      CHAT_TEAMMATE_CONFIGURATION_STATES,
+      CHAT_AGENT_CONFIGURATION_STATES,
       `${label}.configurationState`,
     ),
-    latestPolicy: readNullable(record.latestPolicy, `${label}.latestPolicy`, parseChatTeammatePolicy),
+    latestPolicy: readNullable(record.latestPolicy, `${label}.latestPolicy`, parseChatAgentPolicy),
     channelCount: readNonNegativeSafeInteger(record.channelCount, `${label}.channelCount`),
     activeAssignmentCount: readNonNegativeSafeInteger(
       record.activeAssignmentCount,
@@ -177,8 +177,8 @@ export function parseChatAiTeammate(value: unknown, label = "Chat AI teammate"):
   };
 }
 
-export function parseChatAiTeammates(value: unknown, label = "Chat AI teammates"): ChatAiTeammateRead[] {
-  return readArray(value, label, parseChatAiTeammate);
+export function parseChatAiAgents(value: unknown, label = "Chat AI agents"): ChatAiAgentRead[] {
+  return readArray(value, label, parseChatAiAgent);
 }
 
 export function parseChatConversationMembership(
@@ -277,7 +277,7 @@ export function parseChatChannelMembershipRemovalPreview(
 ): ChatChannelMembershipRemovalPreview {
   const record = readRecord(value, label);
   return {
-    teammateId: readIdentifier(record.teammateId, `${label}.teammateId`),
+    agentId: readIdentifier(record.agentId, `${label}.agentId`),
     channelId: readIdentifier(record.channelId, `${label}.channelId`),
     activeAssignmentCount: readNonNegativeSafeInteger(
       record.activeAssignmentCount,
@@ -288,14 +288,14 @@ export function parseChatChannelMembershipRemovalPreview(
       `${label}.activeAuthorizationCount`,
     ),
     willRevokeActiveWork: readBoolean(record.willRevokeActiveWork, `${label}.willRevokeActiveWork`),
-    proposedAccess: parseChatTeammateAccess(record.proposedAccess, `${label}.proposedAccess`),
+    proposedAccess: parseChatAgentAccess(record.proposedAccess, `${label}.proposedAccess`),
   };
 }
 
-export function parseChatTeammateChannelAccess(
+export function parseChatAgentChannelAccess(
   value: unknown,
-  label = "Chat teammate channel access",
-): ChatTeammateChannelAccess {
+  label = "Chat agent channel access",
+): ChatAgentChannelAccess {
   const record = readRecord(value, label);
   const capabilities = readRecord(record.capabilities, `${label}.capabilities`);
   return {
@@ -337,20 +337,20 @@ export function parseChatTeammateChannelAccess(
   };
 }
 
-export function parseChatTeammateAccess(
+export function parseChatAgentAccess(
   value: unknown,
-  label = "Chat teammate access",
-): ChatTeammateAccessRead {
+  label = "Chat agent access",
+): ChatAgentAccessRead {
   const record = readRecord(value, label);
   return {
-    teammateId: readIdentifier(record.teammateId, `${label}.teammateId`),
+    agentId: readIdentifier(record.agentId, `${label}.agentId`),
     accessRevision: readNonNegativeSafeInteger(record.accessRevision, `${label}.accessRevision`),
-    teammateDefaultRuntimeApproval: readEnum(
-      record.teammateDefaultRuntimeApproval,
+    agentDefaultRuntimeApproval: readEnum(
+      record.agentDefaultRuntimeApproval,
       CHAT_RUNTIME_APPROVAL_POLICIES,
-      `${label}.teammateDefaultRuntimeApproval`,
+      `${label}.agentDefaultRuntimeApproval`,
     ),
-    channels: readArray(record.channels, `${label}.channels`, parseChatTeammateChannelAccess),
+    channels: readArray(record.channels, `${label}.channels`, parseChatAgentChannelAccess),
   };
 }
 
@@ -422,10 +422,10 @@ export function parseChatAccessProfiles(
   return readArray(value, label, parseChatAccessProfile);
 }
 
-function parseChatTeammateAccessPreviewIssue(
+function parseChatAgentAccessPreviewIssue(
   value: unknown,
   label: string,
-): ChatTeammateAccessPreviewIssue {
+): ChatAgentAccessPreviewIssue {
   const record = readRecord(value, label);
   return {
     code: readEnum(record.code, CHAT_ACCESS_ISSUE_CODES, `${label}.code`),
@@ -434,17 +434,17 @@ function parseChatTeammateAccessPreviewIssue(
   };
 }
 
-export function parseChatTeammateAccessPreview(
+export function parseChatAgentAccessPreview(
   value: unknown,
-  label = "Chat teammate access preview",
-): ChatTeammateAccessPreviewRead {
+  label = "Chat agent access preview",
+): ChatAgentAccessPreviewRead {
   const record = readRecord(value, label);
   return {
-    proposed: readNullable(record.proposed, `${label}.proposed`, parseChatTeammateAccess),
+    proposed: readNullable(record.proposed, `${label}.proposed`, parseChatAgentAccess),
     isExpansion: readBoolean(record.isExpansion, `${label}.isExpansion`),
     addedChannelIds: readArray(record.addedChannelIds, `${label}.addedChannelIds`, readIdentifier),
     removedChannelIds: readArray(record.removedChannelIds, `${label}.removedChannelIds`, readIdentifier),
-    issues: readArray(record.issues, `${label}.issues`, parseChatTeammateAccessPreviewIssue),
+    issues: readArray(record.issues, `${label}.issues`, parseChatAgentAccessPreviewIssue),
   };
 }
 
@@ -458,9 +458,9 @@ export function parseChatAccessProfileImpactPreview(
     currentRevision: parseChatAccessProfileRevision(record.currentRevision, `${label}.currentRevision`),
     isExpansion: readBoolean(record.isExpansion, `${label}.isExpansion`),
     isReduction: readBoolean(record.isReduction, `${label}.isReduction`),
-    affectedTeammateIds: readArray(
-      record.affectedTeammateIds,
-      `${label}.affectedTeammateIds`,
+    affectedAgentIds: readArray(
+      record.affectedAgentIds,
+      `${label}.affectedAgentIds`,
       readIdentifier,
     ),
     affectedChannelIds: readArray(
@@ -472,7 +472,7 @@ export function parseChatAccessProfileImpactPreview(
       record.activeAuthorizationCount,
       `${label}.activeAuthorizationCount`,
     ),
-    issues: readArray(record.issues, `${label}.issues`, parseChatTeammateAccessPreviewIssue),
+    issues: readArray(record.issues, `${label}.issues`, parseChatAgentAccessPreviewIssue),
   };
 }
 
@@ -692,8 +692,8 @@ export function parseChatScratchScope(
   return {
     id: readIdentifier(record.id, `${label}.id`),
     replyThreadId: readIdentifier(record.replyThreadId, `${label}.replyThreadId`),
-    teammateId: readIdentifier(record.teammateId, `${label}.teammateId`),
-    teammateName: readString(record.teammateName, `${label}.teammateName`),
+    agentId: readIdentifier(record.agentId, `${label}.agentId`),
+    agentName: readString(record.agentName, `${label}.agentName`),
     channelId: readIdentifier(record.channelId, `${label}.channelId`),
     channelName: readString(record.channelName, `${label}.channelName`),
     projectId: readIdentifier(record.projectId, `${label}.projectId`),
@@ -887,7 +887,7 @@ function parseChatScratchReclaimRow(
     ),
     replyThreadId: readIdentifier(record.replyThreadId, `${label}.replyThreadId`),
     generation: readNonNegativeSafeInteger(record.generation, `${label}.generation`),
-    teammateName: readString(record.teammateName, `${label}.teammateName`),
+    agentName: readString(record.agentName, `${label}.agentName`),
     channelName: readString(record.channelName, `${label}.channelName`),
     projectName: readString(record.projectName, `${label}.projectName`),
     groupName: readNullable(record.groupName, `${label}.groupName`, readString),
@@ -988,7 +988,7 @@ export function parseChatWorkAssignment(
   return {
     id: readIdentifier(record.id, `${label}.id`),
     replyThreadId: readIdentifier(record.replyThreadId, `${label}.replyThreadId`),
-    teammate: parseChatParticipant(record.teammate, `${label}.teammate`),
+    agent: parseChatParticipant(record.agent, `${label}.agent`),
     triggeringMessageItemId: readIdentifier(record.triggeringMessageItemId, `${label}.triggeringMessageItemId`),
     previousAssignmentId: readNullable(record.previousAssignmentId, `${label}.previousAssignmentId`, readIdentifier),
     state,
@@ -1010,8 +1010,8 @@ export function parseChatWorkAssignment(
 
 const LOCAL_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
-/** Validates one local day of a teammate's usage. */
-export function parseChatTeammateUsageDay(value: unknown, label = "Chat teammate usage day"): ChatTeammateUsageDayRead {
+/** Validates one local day of an agent's usage. */
+export function parseChatAgentUsageDay(value: unknown, label = "Chat agent usage day"): ChatAgentUsageDayRead {
   const record = readRecord(value, label);
   const localDate = readString(record.localDate, `${label}.localDate`);
   if (!LOCAL_DATE_PATTERN.test(localDate)) throw new Error(`${label}.localDate must be a YYYY-MM-DD date`);
@@ -1075,7 +1075,7 @@ function parseDelegatedChild(value: unknown, label: string): ChatDelegatedChildR
     assignmentId: readIdentifier(record.assignmentId, `${label}.assignmentId`),
     parentAssignmentId: readIdentifier(record.parentAssignmentId, `${label}.parentAssignmentId`),
     replyThreadId: readIdentifier(record.replyThreadId, `${label}.replyThreadId`),
-    teammate: parseChatParticipant(record.teammate, `${label}.teammate`),
+    agent: parseChatParticipant(record.agent, `${label}.agent`),
     objective: readString(record.objective, `${label}.objective`),
     state: readEnum(record.state, CHAT_WORK_ASSIGNMENT_STATES, `${label}.state`),
     stateReason: readNullable(record.stateReason, `${label}.stateReason`, readString),
@@ -1113,7 +1113,7 @@ function parseWaitingAssignment(value: unknown, label: string): ChatWaitingAssig
     channelId: readIdentifier(record.channelId, `${label}.channelId`),
     channelName: readString(record.channelName, `${label}.channelName`),
     replyThreadId: readIdentifier(record.replyThreadId, `${label}.replyThreadId`),
-    teammateDisplayName: readString(record.teammateDisplayName, `${label}.teammateDisplayName`),
+    agentDisplayName: readString(record.agentDisplayName, `${label}.agentDisplayName`),
     createdAt: readUtcTimestamp(record.createdAt, `${label}.createdAt`),
   };
 }
@@ -1141,8 +1141,8 @@ function parseReviewQueueItem(value: unknown, label: string): ChatReviewQueueIte
     channelId: readIdentifier(record.channelId, `${label}.channelId`),
     channelName: readString(record.channelName, `${label}.channelName`),
     replyThreadId: readIdentifier(record.replyThreadId, `${label}.replyThreadId`),
-    teammateParticipantId: readIdentifier(record.teammateParticipantId, `${label}.teammateParticipantId`),
-    teammateDisplayName: readString(record.teammateDisplayName, `${label}.teammateDisplayName`),
+    agentParticipantId: readIdentifier(record.agentParticipantId, `${label}.agentParticipantId`),
+    agentDisplayName: readString(record.agentDisplayName, `${label}.agentDisplayName`),
     stateReason: readNullable(record.stateReason, `${label}.stateReason`, readString),
     changedFileCount: readNonNegativeSafeInteger(record.changedFileCount, `${label}.changedFileCount`),
     executedHere: readBoolean(record.executedHere, `${label}.executedHere`),
@@ -1216,7 +1216,7 @@ export function parseChatAgentRun(value: unknown, label = "Chat agent run"): Cha
       `${label}.scratchGenerationId`,
       readIdentifier,
     ),
-    teammatePolicyRevisionId: readIdentifier(record.teammatePolicyRevisionId, `${label}.teammatePolicyRevisionId`),
+    agentPolicyRevisionId: readIdentifier(record.agentPolicyRevisionId, `${label}.agentPolicyRevisionId`),
     effort: readNullable(record.effort, `${label}.effort`, readString),
     providerExecutionTurnId: readIdentifier(record.providerExecutionTurnId, `${label}.providerExecutionTurnId`),
     providerExecutionThreadId: readNullable(

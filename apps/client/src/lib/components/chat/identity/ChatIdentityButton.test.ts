@@ -3,12 +3,12 @@
 import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
-  ChatAiTeammateRead,
+  ChatAiAgentRead,
   ChatChannelRead,
   ChatParticipantRead,
   ChatRuntimeApprovalPolicy,
 } from "$lib/chat/contracts";
-import type { ChatModelParticipant } from "$lib/chat/teammates/participant-identity";
+import type { ChatModelParticipant } from "$lib/chat/agents/participant-identity";
 import { getChat } from "$lib/stores/chat.svelte";
 import { getPreferences } from "$lib/stores/preferences.svelte";
 import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
@@ -33,23 +33,23 @@ const model: ChatModelParticipant = {
   defaultReasoning: "Medium",
 };
 
-const teammateParticipant: ChatParticipantRead = {
+const agentParticipant: ChatParticipantRead = {
   id: "participant:atlas",
-  kind: "ai_teammate",
+  kind: "ai_agent",
   displayName: "Atlas",
   avatar: { schemaVersion: 1, value: {} },
   revision: 1,
   archivedAt: null,
 };
 
-const teammate: ChatAiTeammateRead = {
-  participant: teammateParticipant,
-  role: "Coding teammate",
+const agent: ChatAiAgentRead = {
+  participant: agentParticipant,
+  role: "Coding agent",
   instructions: "",
   configurationState: "healthy",
   latestPolicy: {
     id: "policy:atlas:1",
-    teammateId: teammateParticipant.id,
+    agentId: agentParticipant.id,
     revision: 1,
     providerInstanceId: "codex-local",
     safetyMode: "ask_for_approval",
@@ -75,7 +75,7 @@ function channel(runtimeApprovalOverride: ChatRuntimeApprovalPolicy): ChatChanne
     isDefault: true,
     memberships: [{
       conversationId: "conversation:general",
-      participant: teammateParticipant,
+      participant: agentParticipant,
       aiAccess: {
         accessProfileId: "access-profile:conversation-only",
         accessProfileRevision: 1,
@@ -113,8 +113,8 @@ describe("ChatIdentityButton", () => {
   const originalDisplayName = preferences.profileDisplayName;
   const originalFullName = preferences.profileFullName;
   const originalSettings = chat.settings;
-  const originalTeammates = chat.teammates;
-  const originalArchivedTeammates = chat.archivedTeammates;
+  const originalAgents = chat.agents;
+  const originalArchivedAgents = chat.archivedAgents;
   const originalActiveChannels = chat.activeChannels;
   const originalSelectedChannelId = chat.selectedChannelId;
 
@@ -133,8 +133,8 @@ describe("ChatIdentityButton", () => {
     preferences.setProfileDisplayName(originalDisplayName);
     preferences.setProfileFullName(originalFullName);
     chat.settings = originalSettings;
-    chat.teammates = originalTeammates;
-    chat.archivedTeammates = originalArchivedTeammates;
+    chat.agents = originalAgents;
+    chat.archivedAgents = originalArchivedAgents;
     chat.activeChannels = originalActiveChannels;
     chat.selectedChannelId = originalSelectedChannelId;
     settings.close();
@@ -165,9 +165,9 @@ describe("ChatIdentityButton", () => {
     expect(settings.targetSection).toBe("profile");
   });
 
-  it.each(["name", "mention"] as const)("uses the same teammate identity card from a %s trigger", async (presentation) => {
+  it.each(["name", "mention"] as const)("uses the same agent identity card from a %s trigger", async (presentation) => {
     chat.settings = modelSettings();
-    chat.teammates = [teammate];
+    chat.agents = [agent];
     chat.activeChannels = [channel("unattended")];
     chat.selectedChannelId = "channel:general";
     target = document.createElement("div");
@@ -175,7 +175,7 @@ describe("ChatIdentityButton", () => {
     component = mount(ChatIdentityButton, {
       target,
       props: {
-        participant: teammateParticipant,
+        participant: agentParticipant,
         model,
         presentation,
       },
@@ -185,7 +185,7 @@ describe("ChatIdentityButton", () => {
     await tick();
     const card = document.body.querySelector<HTMLElement>(".identity-card");
     expect(card?.querySelector(".identity-heading strong")?.textContent).toBe("Atlas");
-    expect(card?.querySelector(".identity-heading small")?.textContent).toBe("Coding teammate");
+    expect(card?.querySelector(".identity-heading small")?.textContent).toBe("Coding agent");
     expect(card?.querySelector(".identity-status-dot")?.getAttribute("aria-label")).toBe("Available");
     expect(card?.querySelector(".identity-settings-label")?.textContent).toBe("Default settings");
     expect(card?.querySelector(".identity-model-name")?.textContent).toBe("5.6 Terra");
@@ -202,12 +202,12 @@ describe("ChatIdentityButton", () => {
 
   it("reads the context usage of its provider thread only when the card opens", async () => {
     const read = vi.spyOn(chatApi, "readChatInteractionState").mockResolvedValue(interactionState());
-    chat.teammates = [teammate];
+    chat.agents = [agent];
     target = document.createElement("div");
     document.body.append(target);
     component = mount(ChatIdentityButton, {
       target,
-      props: { participant: teammateParticipant, presentation: "name", usageThreadId: "thread:atlas" },
+      props: { participant: agentParticipant, presentation: "name", usageThreadId: "thread:atlas" },
     });
     await tick();
     expect(read).not.toHaveBeenCalled();
@@ -223,12 +223,12 @@ describe("ChatIdentityButton", () => {
 
   it("says context usage is unavailable when the usage read fails", async () => {
     const read = vi.spyOn(chatApi, "readChatInteractionState").mockRejectedValue(new Error("offline"));
-    chat.teammates = [teammate];
+    chat.agents = [agent];
     target = document.createElement("div");
     document.body.append(target);
     component = mount(ChatIdentityButton, {
       target,
-      props: { participant: teammateParticipant, presentation: "name", usageThreadId: "thread:atlas" },
+      props: { participant: agentParticipant, presentation: "name", usageThreadId: "thread:atlas" },
     });
 
     target.querySelector<HTMLButtonElement>(".identity-trigger")?.click();
@@ -243,12 +243,12 @@ describe("ChatIdentityButton", () => {
     let resolve: (read: ReturnType<typeof interactionState>) => void = () => {};
     const read = vi.spyOn(chatApi, "readChatInteractionState")
       .mockReturnValue(new Promise((settle) => { resolve = settle; }));
-    chat.teammates = [teammate];
+    chat.agents = [agent];
     target = document.createElement("div");
     document.body.append(target);
     component = mount(ChatIdentityButton, {
       target,
-      props: { participant: teammateParticipant, presentation: "name", usageThreadId: "thread:atlas" },
+      props: { participant: agentParticipant, presentation: "name", usageThreadId: "thread:atlas" },
     });
 
     await tick();
@@ -270,17 +270,17 @@ describe("ChatIdentityButton", () => {
 
   it("omits the fast icon for standard speed", async () => {
     chat.settings = modelSettings();
-    chat.teammates = [{
-      ...teammate,
-      latestPolicy: teammate.latestPolicy
-        ? { ...teammate.latestPolicy, speed: "standard" }
+    chat.agents = [{
+      ...agent,
+      latestPolicy: agent.latestPolicy
+        ? { ...agent.latestPolicy, speed: "standard" }
         : null,
     }];
     target = document.createElement("div");
     document.body.append(target);
     component = mount(ChatIdentityButton, {
       target,
-      props: { participant: teammateParticipant, presentation: "name", currentResponseSettings: true },
+      props: { participant: agentParticipant, presentation: "name", currentResponseSettings: true },
     });
 
     target.querySelector<HTMLButtonElement>(".identity-trigger")?.click();

@@ -153,16 +153,16 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_terminal_layouts",
             "idx_chat_terminal_layouts_working_folder",
             "chat_participants",
-            "chat_teammates",
-            "chat_teammate_policy_revisions",
+            "chat_agents",
+            "chat_agent_policy_revisions",
             "chat_conversations",
             "chat_channels",
             "chat_conversation_memberships",
-            "chat_teammate_working_folder_grants",
+            "chat_agent_working_folder_grants",
             "chat_access_profiles",
             "chat_access_profile_revisions",
-            "chat_teammate_access_state",
-            "chat_teammate_channel_memberships",
+            "chat_agent_access_state",
+            "chat_agent_channel_memberships",
             "chat_conversation_audience_state",
             "chat_message_references",
             "chat_participant_reference_targets",
@@ -199,7 +199,7 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_agent_runs",
             "chat_agent_run_delivered_sources",
             "chat_agent_run_usage",
-            "chat_teammate_usage_daily",
+            "chat_agent_usage_daily",
             "chat_secret_requests",
             "chat_agent_run_attempt_immutable",
             "chat_assignment_dispatch_jobs",
@@ -243,9 +243,9 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "idx_chat_channels_conversation",
             "chat_participants_local_user_identity",
             "idx_chat_conversation_memberships_participant",
-            "idx_chat_teammate_working_folder_grants_folder",
+            "idx_chat_agent_working_folder_grants_folder",
             "idx_chat_access_profiles_builtin",
-            "idx_chat_teammate_channel_memberships_teammate",
+            "idx_chat_agent_channel_memberships_agent",
             "idx_chat_assignment_authorization_revisions_active",
             "idx_chat_host_tool_invocations_authorization",
             "idx_chat_secret_requests_run",
@@ -259,7 +259,7 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "idx_chat_conversation_items_order",
             "idx_chat_reply_threads_conversation",
             "idx_chat_message_references_revision",
-            "idx_chat_work_assignments_teammate",
+            "idx_chat_work_assignments_agent",
             "chat_reply_threads_root_item_insert",
             "chat_conversation_items_reply_thread_insert",
             "chat_communication_message_current_revision_update",
@@ -417,8 +417,8 @@ fn fresh_vaults_seed_primary_folders_but_no_chat_conversations_or_pending_keys()
         }
         for table in [
             "chat_conversation_memberships",
-            "chat_teammate_channel_memberships",
-            "chat_teammate_working_folder_grants",
+            "chat_agent_channel_memberships",
+            "chat_agent_working_folder_grants",
             "chat_conversation_read_cursors",
             "chat_reply_thread_read_cursors",
         ] {
@@ -448,8 +448,8 @@ fn fresh_chat_has_only_the_local_owner_and_unprivileged_profile_recipes() {
         .fetch_one(&pool)
         .await
         .unwrap();
-        let ai_teammates: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM chat_participants WHERE participant_kind = 'ai_teammate'",
+        let ai_agents: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM chat_participants WHERE participant_kind = 'ai_agent'",
         )
         .fetch_one(&pool)
         .await
@@ -461,19 +461,19 @@ fn fresh_chat_has_only_the_local_owner_and_unprivileged_profile_recipes() {
 
         assert_eq!(participants, 1);
         assert_eq!(local_owners, 1);
-        assert_eq!(ai_teammates, 0);
+        assert_eq!(ai_agents, 0);
         assert_eq!(profiles, 5);
     });
 }
 
 #[test]
-fn standalone_teammate_identity_is_inert_until_access_is_replaced() {
+fn standalone_agent_identity_is_inert_until_access_is_replaced() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
         sqlx::query(
             "INSERT INTO chat_participants
                 (id, participant_kind, display_name, created_at, updated_at)
-             VALUES ('teammate:inert', 'ai_teammate', 'Inert teammate', ?, ?)",
+             VALUES ('agent:inert', 'ai_agent', 'Inert agent', ?, ?)",
         )
         .bind(NOW)
         .bind(NOW)
@@ -481,9 +481,9 @@ fn standalone_teammate_identity_is_inert_until_access_is_replaced() {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO chat_teammates
+            "INSERT INTO chat_agents
                 (participant_id, role, instructions, created_at, updated_at)
-             VALUES ('teammate:inert', 'General support', '', ?, ?)",
+             VALUES ('agent:inert', 'General support', '', ?, ?)",
         )
         .bind(NOW)
         .bind(NOW)
@@ -492,36 +492,36 @@ fn standalone_teammate_identity_is_inert_until_access_is_replaced() {
         .unwrap();
 
         let access_revision: i64 = sqlx::query_scalar(
-            "SELECT access_revision FROM chat_teammate_access_state
-             WHERE teammate_id = 'teammate:inert'",
+            "SELECT access_revision FROM chat_agent_access_state
+             WHERE agent_id = 'agent:inert'",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
         let memberships: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM chat_conversation_memberships
-             WHERE participant_id = 'teammate:inert'",
+             WHERE participant_id = 'agent:inert'",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
         let ai_access: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM chat_teammate_channel_memberships
-             WHERE teammate_id = 'teammate:inert'",
+            "SELECT count(*) FROM chat_agent_channel_memberships
+             WHERE agent_id = 'agent:inert'",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
         let folder_grants: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM chat_teammate_working_folder_grants
-             WHERE teammate_id = 'teammate:inert'",
+            "SELECT count(*) FROM chat_agent_working_folder_grants
+             WHERE agent_id = 'agent:inert'",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
 
         let stored_runtime_default: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM pragma_table_info('chat_teammate_access_state')
+            "SELECT count(*) FROM pragma_table_info('chat_agent_access_state')
              WHERE name = 'runtime_approval_policy'",
         )
         .fetch_one(&pool)
@@ -534,7 +534,7 @@ fn standalone_teammate_identity_is_inert_until_access_is_replaced() {
         assert_eq!(folder_grants, 0);
         assert_eq!(
             stored_runtime_default, 0,
-            "the teammate default runtime approval derives from its approval behavior"
+            "the agent default runtime approval derives from its approval behavior"
         );
     });
 }
@@ -575,7 +575,7 @@ fn access_profile_revisions_are_immutable_and_do_not_create_memberships() {
         .execute(&pool)
         .await;
         let memberships: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM chat_teammate_channel_memberships")
+            sqlx::query_scalar("SELECT count(*) FROM chat_agent_channel_memberships")
                 .fetch_one(&pool)
                 .await
                 .unwrap();
@@ -596,7 +596,7 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
         sqlx::query(
             "INSERT INTO chat_participants
                 (id, participant_kind, display_name, created_at, updated_at)
-             VALUES ('teammate:profile-test', 'ai_teammate', 'Profile test', ?, ?)",
+             VALUES ('agent:profile-test', 'ai_agent', 'Profile test', ?, ?)",
         )
         .bind(NOW)
         .bind(NOW)
@@ -604,9 +604,9 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO chat_teammates
+            "INSERT INTO chat_agents
                 (participant_id, role, instructions, created_at, updated_at)
-             VALUES ('teammate:profile-test', 'Tester', '', ?, ?)",
+             VALUES ('agent:profile-test', 'Tester', '', ?, ?)",
         )
         .bind(NOW)
         .bind(NOW)
@@ -639,7 +639,7 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
             "INSERT INTO chat_conversation_memberships
                 (conversation_id, participant_id, sync_key, membership_role, created_at,
                  updated_at)
-             VALUES (?, 'teammate:profile-test', 'membership:profile-test', 'member', ?, ?)",
+             VALUES (?, 'agent:profile-test', 'membership:profile-test', 'member', ?, ?)",
         )
         .bind(&conversation_id)
         .bind(NOW)
@@ -648,13 +648,13 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO chat_teammate_channel_memberships
-                (conversation_id, teammate_id, sync_key, access_profile_id,
+            "INSERT INTO chat_agent_channel_memberships
+                (conversation_id, agent_id, sync_key, access_profile_id,
                  read_history, read_history_inherits_profile,
                  participate, participate_inherits_profile,
                  history_boundary, history_boundary_inherits_profile,
                  created_at, updated_at)
-             VALUES (?, 'teammate:profile-test', 'channel-membership:profile-test',
+             VALUES (?, 'agent:profile-test', 'channel-membership:profile-test',
                      'access-profile:test',
                      1, 1, 1, 1, 'entire', 1, ?, ?)",
         )
@@ -676,10 +676,10 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO chat_teammate_working_folder_grants
-                (conversation_id, teammate_id, project_id, working_folder_id, sync_key,
+            "INSERT INTO chat_agent_working_folder_grants
+                (conversation_id, agent_id, project_id, working_folder_id, sync_key,
                  capability, capability_inherits_profile, created_at)
-             VALUES (?, 'teammate:profile-test', ?, ?, 'grant:profile-test', 'read', 1, ?)",
+             VALUES (?, 'agent:profile-test', ?, ?, 'grant:profile-test', 'read', 1, ?)",
         )
         .bind(&conversation_id)
         .bind(project_id)
@@ -710,18 +710,18 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
         .unwrap();
 
         let access_revision: i64 = sqlx::query_scalar(
-            "SELECT access_revision FROM chat_teammate_access_state
-             WHERE teammate_id = 'teammate:profile-test'",
+            "SELECT access_revision FROM chat_agent_access_state
+             WHERE agent_id = 'agent:profile-test'",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
         let latest_profile_revision: i64 = sqlx::query_scalar(
             "SELECT revision.revision
-             FROM chat_teammate_channel_memberships membership
+             FROM chat_agent_channel_memberships membership
              JOIN chat_access_profile_effective_revisions revision
                ON revision.access_profile_id = membership.access_profile_id
-             WHERE membership.teammate_id = 'teammate:profile-test'",
+             WHERE membership.agent_id = 'agent:profile-test'",
         )
         .fetch_one(&pool)
         .await
@@ -735,7 +735,7 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
         .await
         .unwrap();
         let pinned_column: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM pragma_table_info('chat_teammate_channel_memberships')
+            "SELECT count(*) FROM pragma_table_info('chat_agent_channel_memberships')
              WHERE name = 'access_profile_revision'",
         )
         .fetch_one(&pool)
@@ -745,14 +745,14 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
             "SELECT CASE WHEN grant_row.capability_inherits_profile = 1
                     THEN revision.maximum_folder_capability
                     ELSE grant_row.capability END
-             FROM chat_teammate_working_folder_grants grant_row
-             JOIN chat_teammate_channel_memberships membership
+             FROM chat_agent_working_folder_grants grant_row
+             JOIN chat_agent_channel_memberships membership
                ON membership.conversation_id = grant_row.conversation_id
-              AND membership.teammate_id = grant_row.teammate_id
+              AND membership.agent_id = grant_row.agent_id
              JOIN chat_access_profiles profile ON profile.id = membership.access_profile_id
              JOIN chat_access_profile_effective_revisions revision
                ON revision.access_profile_id = profile.id
-             WHERE grant_row.teammate_id = 'teammate:profile-test'",
+             WHERE grant_row.agent_id = 'agent:profile-test'",
         )
         .fetch_one(&pool)
         .await
@@ -853,7 +853,7 @@ fn authorization_source_snapshots_are_immutable_and_folder_policy_is_required() 
         sqlx::query(
             "INSERT INTO chat_assignment_authorization_revisions
                 (id, assignment_id, revision, requester_participant_id,
-                 teammate_policy_revision_id, teammate_access_revision,
+                 agent_policy_revision_id, agent_access_revision,
                  destination_conversation_id, access_profile_revision_id,
                  resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
              VALUES ('authorization:test', 'assignment:test', 1, 'participant:local-owner',
@@ -1498,11 +1498,11 @@ fn delegated_assignments_sit_one_level_below_a_bounded_parent() {
                         ceiling: Option<&str>| {
             sqlx::query(
                 "INSERT INTO chat_work_assignments
-                     (id, reply_thread_id, teammate_id, triggering_message_item_id, state,
+                     (id, reply_thread_id, agent_id, triggering_message_item_id, state,
                       parent_assignment_id, delegation_depth, delegation_objective,
                       delegation_expected_result, delegation_folder_ceiling, created_at,
                       updated_at)
-                 VALUES (?, 'reply-thread', 'participant-teammate', 'item-root', 'queued',
+                 VALUES (?, 'reply-thread', 'participant-agent', 'item-root', 'queued',
                          ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(id.to_owned())
@@ -1627,10 +1627,10 @@ fn assignment_model_override_schema_keeps_version_and_selection_together() {
         let insert = |id: &str, version: Option<i64>, data: Option<&str>| {
             sqlx::query(
                 "INSERT INTO chat_work_assignments
-                    (id, reply_thread_id, teammate_id, triggering_message_item_id,
+                    (id, reply_thread_id, agent_id, triggering_message_item_id,
                      previous_assignment_id, state, created_at, updated_at,
                      override_model_selection_schema_version, override_model_selection_data)
-                 VALUES (?, 'reply-thread', 'participant-teammate', 'item-root',
+                 VALUES (?, 'reply-thread', 'participant-agent', 'item-root',
                          'assignment-1', 'queued', ?, ?, ?, ?)",
             )
             .bind(id.to_owned())
@@ -1684,7 +1684,7 @@ fn mention_override_schema_keeps_version_and_selection_together() {
                 "INSERT INTO chat_participant_reference_targets
                     (reference_id, participant_id, override_model_selection_schema_version,
                      override_model_selection_data)
-                 VALUES (?, 'participant-teammate', ?, ?)",
+                 VALUES (?, 'participant-agent', ?, ?)",
             )
             .bind(id)
             .bind(version)
@@ -1980,7 +1980,7 @@ fn chat_work_carries_no_token_or_working_time_limits() {
         .unwrap();
         assert_eq!(budget_tables, 0);
         let limit_columns: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM pragma_table_info('chat_teammate_policy_revisions')
+            "SELECT count(*) FROM pragma_table_info('chat_agent_policy_revisions')
              WHERE name = 'default_assignment_token_limit'",
         )
         .fetch_one(&pool)
@@ -1999,16 +1999,16 @@ fn chat_work_carries_no_token_or_working_time_limits() {
 }
 
 #[test]
-fn teammate_usage_days_check_dates_and_counts_and_follow_their_teammate() {
+fn agent_usage_days_check_dates_and_counts_and_follow_their_agent() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
         load_project_chat_graph(&pool).await;
         let insert = |id: &str, date: &str, tokens: i64, seconds: i64, runs: i64| {
             sqlx::query(
-                "INSERT INTO chat_teammate_usage_daily
-                     (id, device_id, teammate_id, local_date, counted_tokens, working_seconds,
+                "INSERT INTO chat_agent_usage_daily
+                     (id, device_id, agent_id, local_date, counted_tokens, working_seconds,
                       run_count)
-                 VALUES (?, 'device-a', 'participant-teammate', ?, ?, ?, ?)",
+                 VALUES (?, 'device-a', 'participant-agent', ?, ?, ?, ?)",
             )
             .bind(id.to_owned())
             .bind(date.to_owned())
@@ -2048,15 +2048,15 @@ fn teammate_usage_days_check_dates_and_counts_and_follow_their_teammate() {
 
         for statement in [
             "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
-             VALUES ('participant-idle', 'ai_teammate', 'Idle',
+             VALUES ('participant-idle', 'ai_agent', 'Idle',
                      '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z')",
-            "INSERT INTO chat_teammates (participant_id, role, created_at, updated_at)
+            "INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
              VALUES ('participant-idle', 'Waits', '2026-10-23T00:00:00.000Z',
                      '2026-10-23T00:00:00.000Z')",
-            "INSERT INTO chat_teammate_usage_daily
-                 (id, device_id, teammate_id, local_date, counted_tokens, working_seconds, run_count)
+            "INSERT INTO chat_agent_usage_daily
+                 (id, device_id, agent_id, local_date, counted_tokens, working_seconds, run_count)
              VALUES ('usage-idle', 'device-a', 'participant-idle', '2026-11-12', 1, 1, 1)",
-            "DELETE FROM chat_teammates WHERE participant_id = 'participant-idle'",
+            "DELETE FROM chat_agents WHERE participant_id = 'participant-idle'",
         ] {
             sqlx::query(AssertSqlSafe(statement))
                 .execute(&pool)
@@ -2064,7 +2064,7 @@ fn teammate_usage_days_check_dates_and_counts_and_follow_their_teammate() {
                 .unwrap();
         }
         let remaining: Vec<String> =
-            sqlx::query_scalar("SELECT id FROM chat_teammate_usage_daily ORDER BY id")
+            sqlx::query_scalar("SELECT id FROM chat_agent_usage_daily ORDER BY id")
                 .fetch_all(&pool)
                 .await
                 .unwrap();
@@ -2510,11 +2510,7 @@ fn channel_notes_are_written_only_by_people_outside_the_sync_applier() {
         .unwrap();
         let refused = "Channel notes are edited by people";
 
-        for editor in [
-            Some("participant-teammate"),
-            None,
-            Some("participant-missing"),
-        ] {
+        for editor in [Some("participant-agent"), None, Some("participant-missing")] {
             let error = insert_channel_note(&pool, "note-agent", "Fact", editor)
                 .await
                 .unwrap_err()
@@ -2537,9 +2533,9 @@ fn channel_notes_are_written_only_by_people_outside_the_sync_applier() {
 
         for update in [
             "UPDATE chat_channel_notes SET body = 'Changed',
-                 edited_by_participant_id = 'participant-teammate' WHERE id = 'note-owner'",
+                 edited_by_participant_id = 'participant-agent' WHERE id = 'note-owner'",
             "UPDATE chat_channel_notes SET deleted_at = '2026-07-20T12:05:00.000Z',
-                 edited_by_participant_id = 'participant-teammate' WHERE id = 'note-owner'",
+                 edited_by_participant_id = 'participant-agent' WHERE id = 'note-owner'",
             "UPDATE chat_channel_notes SET edited_by_participant_id = NULL, body = 'Changed'
              WHERE id = 'note-owner'",
         ] {
@@ -2559,7 +2555,7 @@ fn channel_notes_are_written_only_by_people_outside_the_sync_applier() {
         .unwrap();
 
         set_sync_applying(&pool, true).await;
-        insert_channel_note(&pool, "note-applied", "Fact", Some("participant-teammate"))
+        insert_channel_note(&pool, "note-applied", "Fact", Some("participant-agent"))
             .await
             .unwrap();
         sqlx::query(
@@ -2590,7 +2586,7 @@ fn channel_notes_are_written_only_by_people_outside_the_sync_applier() {
     });
 }
 
-/// Inserts a standing push approval of the fixture teammate for the managed folder, made by
+/// Inserts a standing push approval of the fixture agent for the managed folder, made by
 /// `approver`.
 async fn insert_push_approval(
     pool: &sqlx::SqlitePool,
@@ -2599,9 +2595,9 @@ async fn insert_push_approval(
 ) -> Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error> {
     sqlx::query(
         "INSERT INTO chat_push_approvals
-             (teammate_id, working_folder_id, push_url, destination_branch, sync_key,
+             (agent_id, working_folder_id, push_url, destination_branch, sync_key,
               runtime_approval_policy, safety_mode, approved_by_participant_id, approved_at)
-         VALUES ('participant-teammate', 'folder-managed', 'git@example.com:team/app.git', ?,
+         VALUES ('participant-agent', 'folder-managed', 'git@example.com:team/app.git', ?,
                  'push-approval-' || ?, 'ask', 'ask_for_approval', ?, ?)",
     )
     .bind(branch)
@@ -2667,11 +2663,7 @@ fn push_approvals_are_made_only_by_people_outside_the_sync_applier() {
         .unwrap();
         let refused = "Push approvals are made by people";
 
-        for approver in [
-            Some("participant-teammate"),
-            None,
-            Some("participant-missing"),
-        ] {
+        for approver in [Some("participant-agent"), None, Some("participant-missing")] {
             let error = insert_push_approval(&pool, "main", approver)
                 .await
                 .unwrap_err()
@@ -2693,7 +2685,7 @@ fn push_approvals_are_made_only_by_people_outside_the_sync_applier() {
         .unwrap();
 
         for update in [
-            "UPDATE chat_push_approvals SET approved_by_participant_id = 'participant-teammate'
+            "UPDATE chat_push_approvals SET approved_by_participant_id = 'participant-agent'
              WHERE destination_branch = 'main'",
             "UPDATE chat_push_approvals SET approved_by_participant_id = NULL,
                  runtime_approval_policy = 'unattended' WHERE destination_branch = 'main'",
@@ -2709,7 +2701,7 @@ fn push_approvals_are_made_only_by_people_outside_the_sync_applier() {
         }
 
         set_sync_applying(&pool, true).await;
-        insert_push_approval(&pool, "applied", Some("participant-teammate"))
+        insert_push_approval(&pool, "applied", Some("participant-agent"))
             .await
             .unwrap();
         set_sync_applying(&pool, false).await;
@@ -2731,36 +2723,36 @@ fn push_approvals_are_made_only_by_people_outside_the_sync_applier() {
 }
 
 #[test]
-fn push_approvals_are_revoked_when_the_teammate_loses_publish_access() {
+fn push_approvals_are_revoked_when_the_agent_loses_publish_access() {
     let narrowings: [(&str, &[&str]); 9] = [
         (
             "grant narrows",
-            &["UPDATE chat_teammate_working_folder_grants SET capability = 'execute'
+            &["UPDATE chat_agent_working_folder_grants SET capability = 'execute'
                WHERE sync_key = 'grant-managed'"],
         ),
         (
             "grant revoked",
-            &["UPDATE chat_teammate_working_folder_grants SET revoked_at = '2026-07-20T12:05:00.000Z'
+            &["UPDATE chat_agent_working_folder_grants SET revoked_at = '2026-07-20T12:05:00.000Z'
                WHERE sync_key = 'grant-managed'"],
         ),
         (
             "grant approval override",
-            &["UPDATE chat_teammate_working_folder_grants SET runtime_approval_policy = 'unattended'
+            &["UPDATE chat_agent_working_folder_grants SET runtime_approval_policy = 'unattended'
                WHERE sync_key = 'grant-managed'"],
         ),
         (
             "grant deleted",
-            &["DELETE FROM chat_teammate_working_folder_grants WHERE sync_key = 'grant-managed'"],
+            &["DELETE FROM chat_agent_working_folder_grants WHERE sync_key = 'grant-managed'"],
         ),
         (
             "membership removed",
-            &["UPDATE chat_teammate_channel_memberships SET removed_at = '2026-07-20T12:05:00.000Z'
-               WHERE sync_key = 'channel-membership-teammate'"],
+            &["UPDATE chat_agent_channel_memberships SET removed_at = '2026-07-20T12:05:00.000Z'
+               WHERE sync_key = 'channel-membership-agent'"],
         ),
         (
             "membership profile changed",
-            &["UPDATE chat_teammate_channel_memberships SET access_profile_id = 'access-profile:read-only'
-               WHERE sync_key = 'channel-membership-teammate'"],
+            &["UPDATE chat_agent_channel_memberships SET access_profile_id = 'access-profile:read-only'
+               WHERE sync_key = 'channel-membership-agent'"],
         ),
         (
             "profile narrows",
@@ -2768,15 +2760,15 @@ fn push_approvals_are_revoked_when_the_teammate_loses_publish_access() {
                WHERE id = 'access-profile:custom-publish'"],
         ),
         (
-            "teammate archived",
+            "agent archived",
             &["UPDATE chat_participants SET archived_at = '2026-07-20T12:05:00.000Z'
-               WHERE id = 'participant-teammate'"],
+               WHERE id = 'participant-agent'"],
         ),
         (
             "safety mode changed",
-            &["UPDATE chat_teammates SET current_policy_revision_id = 'policy-1',
+            &["UPDATE chat_agents SET current_policy_revision_id = 'policy-1',
                    current_policy_safety_mode = 'full_access'
-               WHERE participant_id = 'participant-teammate'"],
+               WHERE participant_id = 'participant-agent'"],
         ),
     ];
     super::block_on(async {
@@ -2785,15 +2777,15 @@ fn push_approvals_are_revoked_when_the_teammate_loses_publish_access() {
             load_project_chat_graph(&pool).await;
             insert_publish_profile(&pool).await;
             sqlx::query(
-                "UPDATE chat_teammate_channel_memberships
+                "UPDATE chat_agent_channel_memberships
                  SET access_profile_id = 'access-profile:custom-publish'
-                 WHERE sync_key = 'channel-membership-teammate'",
+                 WHERE sync_key = 'channel-membership-agent'",
             )
             .execute(&pool)
             .await
             .unwrap();
             sqlx::query(
-                "UPDATE chat_teammate_working_folder_grants
+                "UPDATE chat_agent_working_folder_grants
                  SET capability = 'publish', capability_inherits_profile = 0
                  WHERE sync_key = 'grant-managed'",
             )
@@ -2802,7 +2794,7 @@ fn push_approvals_are_revoked_when_the_teammate_loses_publish_access() {
             .unwrap();
             if case == "profile narrows" {
                 sqlx::query(
-                    "UPDATE chat_teammate_working_folder_grants SET capability_inherits_profile = 1
+                    "UPDATE chat_agent_working_folder_grants SET capability_inherits_profile = 1
                      WHERE sync_key = 'grant-managed'",
                 )
                 .execute(&pool)
@@ -2832,7 +2824,7 @@ fn push_approvals_survive_unrelated_and_applied_changes() {
         load_project_chat_graph(&pool).await;
         insert_publish_profile(&pool).await;
         sqlx::query(
-            "UPDATE chat_teammate_working_folder_grants SET capability = 'publish'
+            "UPDATE chat_agent_working_folder_grants SET capability = 'publish'
              WHERE sync_key = 'grant-managed'",
         )
         .execute(&pool)
@@ -2842,17 +2834,17 @@ fn push_approvals_survive_unrelated_and_applied_changes() {
             .await
             .unwrap();
         for statement in [
-            "UPDATE chat_teammate_working_folder_grants SET capability = 'none'
+            "UPDATE chat_agent_working_folder_grants SET capability = 'none'
              WHERE sync_key = 'grant-archived'",
             "UPDATE chat_access_profiles SET current_maximum_folder_capability = 'edit'
              WHERE id = 'access-profile:custom-publish'",
-            "UPDATE chat_participants SET display_name = 'Renamed' WHERE id = 'participant-teammate'",
+            "UPDATE chat_participants SET display_name = 'Renamed' WHERE id = 'participant-agent'",
         ] {
             sqlx::query(statement).execute(&pool).await.unwrap();
         }
         set_sync_applying(&pool, true).await;
         sqlx::query(
-            "UPDATE chat_teammate_working_folder_grants SET capability = 'edit'
+            "UPDATE chat_agent_working_folder_grants SET capability = 'edit'
              WHERE sync_key = 'grant-managed'",
         )
         .execute(&pool)

@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { ChatTeammateChannelAccessInput } from "$lib/chat/contracts";
+import type { ChatAgentChannelAccessInput } from "$lib/chat/contracts";
 import {
-  compareChatTeammateStudioDrafts,
-  rebaseChatTeammateStudioDraft,
-  type ChatTeammateStudioDraft,
+  compareChatAgentStudioDrafts,
+  rebaseChatAgentStudioDraft,
+  type ChatAgentStudioDraft,
 } from "./access-conflict";
 
 function channel(
   channelId: string,
   participate = true,
-): ChatTeammateChannelAccessInput {
+): ChatAgentChannelAccessInput {
   return {
     channelId,
     accessProfileId: "profile:conversation",
@@ -22,7 +22,7 @@ function channel(
   };
 }
 
-function draft(overrides: Partial<ChatTeammateStudioDraft> = {}): ChatTeammateStudioDraft {
+function draft(overrides: Partial<ChatAgentStudioDraft> = {}): ChatAgentStudioDraft {
   return {
     profile: {
       displayName: "Atlas",
@@ -42,7 +42,7 @@ function draft(overrides: Partial<ChatTeammateStudioDraft> = {}): ChatTeammateSt
   };
 }
 
-describe("teammate access conflict recovery", () => {
+describe("agent access conflict recovery", () => {
   it("summarizes identity, policy, and channel differences", () => {
     const durable = draft({
       channels: [channel("channel:general"), channel("channel:remote")],
@@ -56,7 +56,7 @@ describe("teammate access conflict recovery", () => {
       channels: [channel("channel:general", false), channel("channel:local")],
     });
 
-    expect(compareChatTeammateStudioDrafts(local, durable)).toEqual({
+    expect(compareChatAgentStudioDrafts(local, durable)).toEqual({
       identityChanged: true,
       policyChanged: true,
       addedChannelCount: 1,
@@ -80,7 +80,7 @@ describe("teammate access conflict recovery", () => {
       channels: [channel("channel:general"), channel("channel:remote")],
     });
 
-    const rebased = rebaseChatTeammateStudioDraft(baseline, local, durable);
+    const rebased = rebaseChatAgentStudioDraft(baseline, local, durable);
 
     expect(rebased.profile.role).toBe("Lead engineer");
     expect(rebased.profile.modelId).toBe("gpt-5.1");

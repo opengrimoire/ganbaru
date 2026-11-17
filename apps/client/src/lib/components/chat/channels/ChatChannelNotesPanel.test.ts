@@ -13,7 +13,7 @@ import ChatChannelNotesPanel from "./ChatChannelNotesPanel.svelte";
 const timestamp = "2026-11-12T12:00:00.000Z";
 const chat = vi.hoisted(() => ({
   channelNotesVersion: 0,
-  teammates: [{ participant: { id: "participant:atlas", kind: "ai_teammate", displayName: "Atlas" } }],
+  agents: [{ participant: { id: "participant:atlas", kind: "ai_agent", displayName: "Atlas" } }],
   channelNotesChanged: vi.fn<(channelId: string) => void>(),
 }));
 vi.mock("$lib/stores/chat.svelte", () => ({ useChat: () => chat }));

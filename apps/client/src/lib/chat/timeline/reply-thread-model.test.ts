@@ -41,7 +41,7 @@ function agentRun(id: string, providerExecutionThreadId: string | null): ChatAge
     workingFolderId: "folder-1",
     executionEnvironmentId: "environment-1",
     scratchGenerationId: null,
-    teammatePolicyRevisionId: "policy-1",
+    agentPolicyRevisionId: "policy-1",
     effort: "medium",
     providerExecutionTurnId: `turn-${id}`,
     providerExecutionThreadId,
@@ -102,7 +102,7 @@ function message(
     revision: 1,
     author: {
       id: authorId,
-      kind: "ai_teammate",
+      kind: "ai_agent",
       displayName: "Atlas",
       avatar: { schemaVersion: 1, value: {} },
       revision: 1,
@@ -124,16 +124,16 @@ function message(
 describe("reply thread execution placement", () => {
   it("replaces run projections with exact turns at their durable positions", () => {
     const replies = [
-      message("approval", "teammate-1", "2026-08-02T08:00:00Z", {
+      message("approval", "agent-1", "2026-08-02T08:00:00Z", {
         type: "agent_update",
         agentRunId: "run-1",
       }, 1),
-      message("failure", "teammate-1", "2026-08-02T08:01:00Z", {
+      message("failure", "agent-1", "2026-08-02T08:01:00Z", {
         type: "agent_update",
         agentRunId: "run-1",
       }, 2),
       message("retry", "local-user", "2026-08-02T09:00:00Z", { type: "doc" }, 3),
-      message("result", "teammate-1", "2026-08-02T09:01:00Z", {
+      message("result", "agent-1", "2026-08-02T09:01:00Z", {
         type: "agent_update",
         agentRunId: "run-2",
       }, 4),
@@ -157,9 +157,9 @@ describe("reply thread execution placement", () => {
         : { kind, source: "host_tool" },
     });
     const replies = [
-      message("plan", "teammate-1", "2026-08-02T08:00:00Z", hostUpdate("plan"), 1),
-      message("projection", "teammate-1", "2026-08-02T08:01:00Z", { type: "agent_update", agentRunId: "run-1" }, 2),
-      message("question", "teammate-1", "2026-08-02T08:02:00Z", hostUpdate("question"), 3),
+      message("plan", "agent-1", "2026-08-02T08:00:00Z", hostUpdate("plan"), 1),
+      message("projection", "agent-1", "2026-08-02T08:01:00Z", { type: "agent_update", agentRunId: "run-1" }, 2),
+      message("question", "agent-1", "2026-08-02T08:02:00Z", hostUpdate("question"), 3),
     ];
     const run = agentRun("run-1", "thread-1");
 
@@ -167,7 +167,7 @@ describe("reply thread execution placement", () => {
       .toEqual(["plan", "execution:run-1", "question"]);
     expect(repliesWithoutRenderedRunProjection(replies, "run-1").map((reply) => reply.itemId))
       .toEqual(["plan", "question"]);
-    expect(shouldGroupReplyMessages(replies[0] ?? null, message("next", "teammate-1", "2026-08-02T08:00:30Z")))
+    expect(shouldGroupReplyMessages(replies[0] ?? null, message("next", "agent-1", "2026-08-02T08:00:30Z")))
       .toBe(false);
   });
 
@@ -175,7 +175,7 @@ describe("reply thread execution placement", () => {
     const replies = [
       message("c-note", "local-user", "2026-08-02T08:02:00Z", { type: "doc" }, 3),
       message("b-retry", "local-user", "2026-08-02T08:00:00Z", { type: "doc" }, 2),
-      message("a-result", "teammate-1", "2026-08-02T08:01:00Z", {
+      message("a-result", "agent-1", "2026-08-02T08:01:00Z", {
         type: "agent_update",
         agentRunId: "run-1",
       }, 2),
@@ -187,7 +187,7 @@ describe("reply thread execution placement", () => {
   });
 
   it("retains projections owned by a settled run whose exact turn is not loaded", () => {
-    const projection = message("other-run", "teammate-1", "2026-08-02T08:00:00Z", {
+    const projection = message("other-run", "agent-1", "2026-08-02T08:00:00Z", {
       type: "agent_update",
       agentRunId: "run-1",
     });
@@ -218,7 +218,7 @@ describe("reply thread run status lines", () => {
   });
 
   it("keeps the projected replies of an unloaded active run and follows them with its status line", () => {
-    const projection = message("progress", "teammate-1", "2026-08-02T08:00:30Z", {
+    const projection = message("progress", "agent-1", "2026-08-02T08:00:30Z", {
       type: "agent_update",
       agentRunId: "run-1",
     }, 1);
@@ -269,7 +269,7 @@ describe("reply thread failures", () => {
     position: number,
     assignmentId = "assignment-1",
   ): ChatMessageRead {
-    return message(itemId, "teammate-1", createdAt, {
+    return message(itemId, "agent-1", createdAt, {
       type: "agent_update",
       updateKind: "failure",
       assignmentId,
@@ -437,19 +437,19 @@ describe("reply thread run outcomes", () => {
 
 describe("reply thread message grouping", () => {
   it("groups nearby participant messages from the same author", () => {
-    const previous = message("first", "teammate-1", "2026-08-02T08:00:00Z");
-    const current = message("second", "teammate-1", "2026-08-02T08:04:00Z");
+    const previous = message("first", "agent-1", "2026-08-02T08:00:00Z");
+    const current = message("second", "agent-1", "2026-08-02T08:04:00Z");
 
     expect(shouldGroupReplyMessages(previous, current)).toBe(true);
   });
 
   it("keeps projected approval and failure updates independently attributed", () => {
-    const approval = message("approval", "teammate-1", "2026-08-02T08:00:00Z", {
+    const approval = message("approval", "agent-1", "2026-08-02T08:00:00Z", {
       type: "agent_update",
       agentRunId: "run-1",
       updateKind: "approval",
     });
-    const failure = message("failure", "teammate-1", "2026-08-02T08:01:00Z", {
+    const failure = message("failure", "agent-1", "2026-08-02T08:01:00Z", {
       type: "agent_update",
       agentRunId: "run-1",
       updateKind: "failure",
@@ -459,26 +459,26 @@ describe("reply thread message grouping", () => {
   });
 
   it("does not group messages across authors or long pauses", () => {
-    const previous = message("first", "teammate-1", "2026-08-02T08:00:00Z");
+    const previous = message("first", "agent-1", "2026-08-02T08:00:00Z");
 
     expect(shouldGroupReplyMessages(
       previous,
-      message("other-author", "teammate-2", "2026-08-02T08:01:00Z"),
+      message("other-author", "agent-2", "2026-08-02T08:01:00Z"),
     )).toBe(false);
     expect(shouldGroupReplyMessages(
       previous,
-      message("later", "teammate-1", "2026-08-02T08:06:00Z"),
+      message("later", "agent-1", "2026-08-02T08:06:00Z"),
     )).toBe(false);
   });
 
   it("does not group messages that carry only an author label", () => {
-    const unattributed = { ...message("first", "teammate-1", "2026-08-02T08:00:00Z"), author: null };
-    const next = { ...message("second", "teammate-1", "2026-08-02T08:01:00Z"), author: null };
+    const unattributed = { ...message("first", "agent-1", "2026-08-02T08:00:00Z"), author: null };
+    const next = { ...message("second", "agent-1", "2026-08-02T08:01:00Z"), author: null };
 
     expect(shouldGroupReplyMessages(unattributed, next)).toBe(false);
     expect(shouldGroupReplyMessages(
       unattributed,
-      message("attributed", "teammate-1", "2026-08-02T08:01:00Z"),
+      message("attributed", "agent-1", "2026-08-02T08:01:00Z"),
     )).toBe(false);
   });
 });

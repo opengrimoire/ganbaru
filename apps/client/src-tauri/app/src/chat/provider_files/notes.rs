@@ -1,5 +1,5 @@
 //! Notes about instruction sources a provider loads that the shown files do not cover, such as
-//! account-held rules, override files, and home folders teammate runs skip.
+//! account-held rules, override files, and home folders agent runs skip.
 
 use super::{
     ProviderFileFormat, ProviderFileKind, ProviderFileRead, configured_environment, display_path,
@@ -36,7 +36,7 @@ pub enum ProviderFileNoteKind {
     GrokPrivateHome,
     /// Grok loads the Markdown files of the rules folder in its home.
     GrokRules,
-    /// Grok also loads Claude and Cursor home instructions, which teammates receive as text.
+    /// Grok also loads Claude and Cursor home instructions, which agents receive as text.
     GrokOtherHomeInstructions,
     /// Codex uses a non-empty `AGENTS.override.md` instead of `AGENTS.md`.
     CodexOverride,
@@ -44,7 +44,7 @@ pub enum ProviderFileNoteKind {
     OpencodeClaudeFallback,
     /// OpenCode also loads the files a configuration lists under `instructions`.
     OpencodeInstructions,
-    /// Teammates receive the Markdown rules of Claude's user rules folder.
+    /// Agents receive the Markdown rules of Claude's user rules folder.
     ClaudeRules,
 }
 

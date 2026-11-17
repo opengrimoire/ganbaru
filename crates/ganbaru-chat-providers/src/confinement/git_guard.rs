@@ -1,9 +1,9 @@
-//! Detection of command-bearing metadata changes made by confined teammates.
+//! Detection of command-bearing metadata changes made by confined agents.
 //!
 //! A confined command writes the working folder, and the Git directory inside it, because Git
 //! itself must update refs, objects, and the index. A command could also plant a hook or a
 //! command-bearing configuration key that a later unconfined Git process would run, and a
-//! teammate that writes files could plant a Cursor MCP server, hook, or command allowlist that a
+//! agent that writes files could plant a Cursor MCP server, hook, or command allowlist that a
 //! later unconfined Cursor run would start. The guard records a digest of that command-bearing
 //! metadata when the session starts and compares it after every confined command and file
 //! write. A change is detected, never reverted: the
@@ -112,7 +112,7 @@ pub(crate) const GIT_METADATA_CHANGED_CODE: &str = "acp_git_metadata_changed";
 pub(crate) fn changed_error() -> ChatError {
     ChatError::new(
         ChatErrorCode::Permission,
-        "acp_git_metadata_changed: a confined teammate changed the Git hooks or configuration, \
+        "acp_git_metadata_changed: a confined agent changed the Git hooks or configuration, \
          or the Cursor configuration, of this folder, so Ganbaru stopped the session and runs \
          no more commands in it",
         false,

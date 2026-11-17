@@ -1,13 +1,13 @@
-//! User preferences that Claude teammate runs keep although they load no settings files.
+//! User preferences that Claude agent runs keep although they load no settings files.
 //!
-//! Teammate launches pass `--restricted` and `--setting-sources ""`, so nothing in the user
+//! Agent launches pass `--restricted` and `--setting-sources ""`, so nothing in the user
 //! settings file applies to them. Ganbaru copies the entries of
-//! [`CLAUDE_PREFERENCES`](crate::teammate_preferences::CLAUDE_PREFERENCES) from the user
+//! [`CLAUDE_PREFERENCES`](crate::agent_preferences::CLAUDE_PREFERENCES) from the user
 //! settings file into the launch: settings keys through `--settings` and `env` variables through
 //! the process environment. Each value is checked against its type, and a value of the wrong
 //! type is left out, as the CLI would reject it.
 
-use crate::teammate_preferences::{
+use crate::agent_preferences::{
     CLAUDE_PREFERENCES, PreferenceLocation, allowlisted_settings, checked_variable, scalar_text,
 };
 use serde_json::{Map, Value};

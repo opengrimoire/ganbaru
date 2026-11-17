@@ -8,8 +8,8 @@ use ganbaru_chat_contracts::models::{
 pub enum ChatAccessDenial {
     RequesterCannotReadSource,
     DestinationAudienceCannotReadSource,
-    TeammateCannotReadSource,
-    TeammateCannotParticipate,
+    AgentCannotReadSource,
+    AgentCannotParticipate,
     FolderCapabilityExceeded,
 }
 
@@ -46,10 +46,10 @@ pub fn evaluate_authority(input: &ChatAuthorityEvaluationInput) -> ChatAuthority
         denials.push(ChatAccessDenial::DestinationAudienceCannotReadSource);
     }
     if !input.source_read_history {
-        denials.push(ChatAccessDenial::TeammateCannotReadSource);
+        denials.push(ChatAccessDenial::AgentCannotReadSource);
     }
     if !input.destination_capabilities.participate {
-        denials.push(ChatAccessDenial::TeammateCannotParticipate);
+        denials.push(ChatAccessDenial::AgentCannotParticipate);
     }
     if input.requested_folder_capability.rank() > effective_folder_capability.rank() {
         denials.push(ChatAccessDenial::FolderCapabilityExceeded);
@@ -63,13 +63,13 @@ pub fn evaluate_authority(input: &ChatAuthorityEvaluationInput) -> ChatAuthority
 
 /// Applies the most local runtime approval override.
 pub fn resolve_runtime_approval(
-    teammate_default: ChatRuntimeApprovalPolicy,
+    agent_default: ChatRuntimeApprovalPolicy,
     channel_override: Option<ChatRuntimeApprovalPolicy>,
     folder_override: Option<ChatRuntimeApprovalPolicy>,
 ) -> ChatRuntimeApprovalPolicy {
     folder_override
         .or(channel_override)
-        .unwrap_or(teammate_default)
+        .unwrap_or(agent_default)
 }
 
 /// Returns whether the proposed history boundary expands stored visibility.

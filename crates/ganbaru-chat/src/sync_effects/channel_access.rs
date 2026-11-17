@@ -35,9 +35,9 @@ pub struct ChannelAccess {
     pub history_boundary: String,
     /// Whether the history boundary follows the profile.
     pub history_boundary_inherits_profile: bool,
-    /// Lowest message order key a `from_grant` boundary lets the teammate read.
+    /// Lowest message order key a `from_grant` boundary lets the agent read.
     pub history_from_order_key: Option<String>,
-    /// Channel approval override, `None` when the teammate's default applies.
+    /// Channel approval override, `None` when the agent's default applies.
     pub runtime_approval_policy: Option<String>,
     /// Scratch approval override, `None` when the channel override applies.
     pub scratch_runtime_approval_policy: Option<String>,
@@ -46,9 +46,9 @@ pub struct ChannelAccess {
 /// What an access profile's effective revision grants.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProfileDefaults {
-    /// Whether teammates read history by default.
+    /// Whether agents read history by default.
     pub read_history: bool,
-    /// Whether teammates participate by default.
+    /// Whether agents participate by default.
     pub participate: bool,
     /// Default history boundary.
     pub history_boundary: String,
@@ -56,7 +56,7 @@ pub struct ProfileDefaults {
     pub folder_capability_rank: i64,
 }
 
-/// History a version lets the teammate read, ordered from widest to narrowest.
+/// History a version lets the agent read, ordered from widest to narrowest.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Readable {
     /// Every message.
@@ -274,7 +274,7 @@ fn explicitly_from_grant(access: &ChannelAccess) -> bool {
     !access.history_boundary_inherits_profile && access.history_boundary == FROM_GRANT
 }
 
-/// The history `access` lets the teammate read under `profile`, resolved as the runtime does: an
+/// The history `access` lets the agent read under `profile`, resolved as the runtime does: an
 /// inherited boundary is the profile's, and an explicit one starts at the grant when either the
 /// membership or the profile says so.
 fn readable(access: &ChannelAccess, profile: &ProfileDefaults) -> Readable {

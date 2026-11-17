@@ -27,7 +27,7 @@ const PERMANENT_DELETE_CLEANUP_GRACE: Duration = Duration::from_secs(24 * 60 * 6
 const PROVIDER_LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(30);
 const THREAD_DELETE_STOP_TIMEOUT: Duration = Duration::from_secs(15);
 /// Approval mode for a fork of an organizational thread, whose stored mode came from a
-/// teammate authorization rather than from the forking user.
+/// agent authorization rather than from the forking user.
 const DIRECT_FORK_SAFETY_MODE: &str = "ask_for_approval";
 
 #[derive(Clone, Debug, Deserialize)]

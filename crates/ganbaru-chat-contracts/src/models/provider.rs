@@ -136,7 +136,7 @@ impl ProviderCapabilities {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderAuthoritySupport {
-    /// The adapter can run a teammate from an application-managed neutral
+    /// The adapter can run an agent from an application-managed neutral
     /// directory without receiving project-folder or persistent-scratch grants.
     pub isolated_conversation: bool,
     pub internal_host_tools: bool,
@@ -274,10 +274,10 @@ pub struct ProviderProbeResult {
     /// without a range or when no version was read.
     #[serde(default)]
     pub version_admission: Option<ProviderVersionAdmission>,
-    /// The oldest CLI version every teammate launch on this device accepts, present only when
-    /// the probed version is older, so teammate runs fail while direct threads still start.
+    /// The oldest CLI version every agent launch on this device accepts, present only when
+    /// the probed version is older, so agent runs fail while direct threads still start.
     #[serde(default)]
-    pub teammate_minimum_version: Option<String>,
+    pub agent_minimum_version: Option<String>,
     /// Usage limits the provider reported during the probe; `None` when it cannot report them
     /// without a turn. The app keeps them as the device's newest limit observation rather
     /// than inside the stored probe.

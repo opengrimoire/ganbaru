@@ -77,7 +77,7 @@ pub(super) async fn retained_reference_issues(
                 issues.push(issue(
                     ChatAccessIssueCode::RetainedReferenceDisclosure,
                     &format!("channels[{index}].historyBoundary"),
-                    "Use From access grant because earlier channel references are not readable by this teammate",
+                    "Use From access grant because earlier channel references are not readable by this agent",
                 ));
                 break;
             }
@@ -149,7 +149,7 @@ pub(super) async fn retained_reference_issues_in_transaction(
                 issues.push(issue(
                     ChatAccessIssueCode::RetainedReferenceDisclosure,
                     &format!("channels[{index}].historyBoundary"),
-                    "Use From access grant because earlier channel references are not readable by this teammate",
+                    "Use From access grant because earlier channel references are not readable by this agent",
                 ));
                 break;
             }
@@ -162,23 +162,22 @@ pub(super) async fn retained_profile_reference_issues_in_transaction(
     transaction: &mut Transaction<'_, Sqlite>,
     access_profile_id: &ChatAccessProfileId,
 ) -> ChatResult<Vec<ChatAccessValidationIssue>> {
-    let teammate_ids = sqlx::query_scalar::<_, String>(
-        "SELECT DISTINCT ai.teammate_id
-         FROM chat_teammate_channel_memberships ai
+    let agent_ids = sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT ai.agent_id
+         FROM chat_agent_channel_memberships ai
          JOIN chat_conversation_memberships membership
            ON membership.conversation_id = ai.conversation_id
-          AND membership.participant_id = ai.teammate_id
+          AND membership.participant_id = ai.agent_id
          WHERE ai.access_profile_id = ? AND ai.removed_at IS NULL AND membership.removed_at IS NULL
-         ORDER BY ai.teammate_id",
+         ORDER BY ai.agent_id",
     )
     .bind(access_profile_id.as_str())
     .fetch_all(&mut **transaction)
     .await
     .map_err(persistence_error)?;
-    for teammate_id in teammate_ids {
+    for agent_id in agent_ids {
         let resolved =
-            read_effective_disclosure_access_in_transaction(transaction, teammate_id.as_str())
-                .await?;
+            read_effective_disclosure_access_in_transaction(transaction, agent_id.as_str()).await?;
         if !retained_reference_issues_in_transaction(transaction, &resolved)
             .await?
             .is_empty()
@@ -186,7 +185,7 @@ pub(super) async fn retained_profile_reference_issues_in_transaction(
             return Ok(vec![issue(
                 ChatAccessIssueCode::RetainedReferenceDisclosure,
                 "revision.defaultHistoryBoundary",
-                "This profile expansion would expose retained channel references to a teammate without source access",
+                "This profile expansion would expose retained channel references to an agent without source access",
             )]);
         }
     }
@@ -195,7 +194,7 @@ pub(super) async fn retained_profile_reference_issues_in_transaction(
 
 async fn read_effective_disclosure_access_in_transaction(
     transaction: &mut Transaction<'_, Sqlite>,
-    teammate_id: &str,
+    agent_id: &str,
 ) -> ChatResult<Vec<ResolvedChannelAccess>> {
     let rows = sqlx::query(
         "SELECT channel.id AS channel_id, channel.project_id, project.group_id,
@@ -211,19 +210,19 @@ async fn read_effective_disclosure_access_in_transaction(
                 ai.history_boundary, ai.history_boundary_inherits_profile,
                 ai.history_from_order_key, ai.runtime_approval_policy,
                 ai.scratch_runtime_approval_policy
-         FROM chat_teammate_channel_memberships ai
+         FROM chat_agent_channel_memberships ai
          JOIN chat_conversation_memberships membership
            ON membership.conversation_id = ai.conversation_id
-          AND membership.participant_id = ai.teammate_id
+          AND membership.participant_id = ai.agent_id
          JOIN chat_channels channel ON channel.conversation_id = ai.conversation_id
          JOIN projects project ON project.id = channel.project_id
          JOIN chat_access_profiles profile ON profile.id = ai.access_profile_id
          JOIN chat_access_profile_effective_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id
-         WHERE ai.teammate_id = ? AND ai.removed_at IS NULL AND membership.removed_at IS NULL
+         WHERE ai.agent_id = ? AND ai.removed_at IS NULL AND membership.removed_at IS NULL
          ORDER BY project.group_id, channel.project_id, channel.name COLLATE NOCASE, channel.id",
     )
-    .bind(teammate_id)
+    .bind(agent_id)
     .fetch_all(&mut **transaction)
     .await
     .map_err(persistence_error)?;

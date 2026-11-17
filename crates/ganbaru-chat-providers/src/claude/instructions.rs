@@ -1,6 +1,6 @@
 //! Session instructions in the Claude system prompt.
 //!
-//! Teammate instructions join the system prompt once, when the process starts, through
+//! Agent instructions join the system prompt once, when the process starts, through
 //! `--append-system-prompt` or, above the inline bound, `--append-system-prompt-file`. They
 //! never travel in user message text. Ganbaru never sends `appendSystemPrompt` in
 //! `initialize`, because the CLI replaces launch-argument append text with it.

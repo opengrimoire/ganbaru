@@ -39,7 +39,7 @@ async fn seed_assignment(pool: &SqlitePool, executing_device_id: &str) {
         pool,
         format!(
             "INSERT INTO chat_work_assignments
-                (id, reply_thread_id, teammate_id, triggering_message_item_id, state,
+                (id, reply_thread_id, agent_id, triggering_message_item_id, state,
                  executing_device_id, created_at, updated_at)
              VALUES ('{ASSIGNMENT}', 'reply:pair', 'participant:helper', 'item:root',
                      'ready_for_review', '{executing_device_id}', '{NOW}', '{NOW}');"
@@ -87,7 +87,7 @@ async fn seed_run(
              UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
              INSERT INTO chat_agent_runs
                 (id, assignment_id, project_id, working_folder_id, execution_environment_id,
-                 teammate_policy_revision_id, authorization_revision_id,
+                 agent_policy_revision_id, authorization_revision_id,
                  authorization_scope_digest, provider_turn_id, provider_thread_id, state,
                  run_ordinal, created_at, updated_at)
              VALUES ('run:pair-{ordinal}', '{ASSIGNMENT}', 'project:pair', {folder},

@@ -687,7 +687,7 @@ async fn resolve_turn_target(
     }
 }
 
-/// Checks that a teammate run still matches its stored authorization and that the provider
+/// Checks that an agent run still matches its stored authorization and that the provider
 /// enforces the authorized target, returning the scope the driver must enforce.
 ///
 /// # Errors
@@ -703,10 +703,10 @@ pub(super) async fn validate_organizational_authority(
     let authorization = sqlx::query(
         "SELECT authorization.resolved_runtime_approval_policy, authorization.working_folder_id,
                 authorization.execution_environment_id,
-                policy.safety_mode AS teammate_safety_mode
+                policy.safety_mode AS agent_safety_mode
          FROM chat_assignment_authorization_revisions authorization
-         JOIN chat_teammate_policy_revisions policy
-           ON policy.id = authorization.teammate_policy_revision_id
+         JOIN chat_agent_policy_revisions policy
+           ON policy.id = authorization.agent_policy_revision_id
          WHERE authorization.id = ? AND authorization.assignment_id = ?
            AND authorization.scope_digest = ?
            AND authorization.decision_state = 'allowed' AND authorization.revoked_at IS NULL",
@@ -748,9 +748,9 @@ pub(super) async fn validate_organizational_authority(
             "Assignment execution target does not match its authorization",
         ));
     }
-    let teammate_approval = crate::chat::organization::parse_approval_policy(
+    let agent_approval = crate::chat::organization::parse_approval_policy(
         &authorization
-            .try_get::<String, _>("teammate_safety_mode")
+            .try_get::<String, _>("agent_safety_mode")
             .map_err(|_| provider_authority_error("Assignment authority is invalid"))?,
     )
     .map_err(|_| provider_authority_error("Assignment authority is invalid"))?;
@@ -758,17 +758,14 @@ pub(super) async fn validate_organizational_authority(
         .map_err(|_| provider_authority_error("Assignment authority is invalid"))?;
     if has_native_target
         && runtime_approval == ChatRuntimeApprovalPolicy::ProviderCustom
-        && teammate_approval != ChatApprovalPolicy::Custom
+        && agent_approval != ChatApprovalPolicy::Custom
     {
         return Err(provider_authority_error(
             "Provider-custom approval cannot prove this assignment's exact authority",
         ));
     }
     let permitted_safety_mode = if has_native_target {
-        crate::chat::organization::native_assignment_safety_mode(
-            teammate_approval,
-            runtime_approval,
-        )
+        crate::chat::organization::native_assignment_safety_mode(agent_approval, runtime_approval)
     } else {
         SafetyMode::AskForApproval
     };
@@ -859,7 +856,7 @@ fn organizational_scope(
 /// Commands are confined when the provider confines them itself, or when every command reaches
 /// the person for approval and the run's effective approval policy is Ask, so each approval is
 /// the boundary for that command. Publish also needs the provider to classify publication: a
-/// teammate reaches a remote only through the push request host tool, which a person confirms.
+/// agent reaches a remote only through the push request host tool, which a person confirms.
 pub(super) fn provider_enforces_scope(
     support: ProviderAuthoritySupport,
     scope: ProviderOrganizationalScope,
@@ -895,14 +892,14 @@ pub(super) async fn load_internal_mcp_scope(
                 authorization.execution_environment_id, run.provider_turn_id,
                 assignment.delegation_depth,
                 EXISTS (
-                  SELECT 1 FROM chat_teammate_channel_memberships other
-                  JOIN chat_participants participant ON participant.id = other.teammate_id
+                  SELECT 1 FROM chat_agent_channel_memberships other
+                  JOIN chat_participants participant ON participant.id = other.agent_id
                   JOIN chat_conversation_memberships membership
                     ON membership.conversation_id = other.conversation_id
-                   AND membership.participant_id = other.teammate_id
+                   AND membership.participant_id = other.agent_id
                    AND membership.removed_at IS NULL
                   WHERE other.conversation_id = authorization.destination_conversation_id
-                    AND other.teammate_id <> assignment.teammate_id
+                    AND other.agent_id <> assignment.agent_id
                     AND other.removed_at IS NULL AND participant.archived_at IS NULL
                 ) AS delegation_target_available
          FROM chat_assignment_authorization_revisions authorization
@@ -946,14 +943,14 @@ pub(super) async fn load_internal_mcp_scope(
            ON authorization.id = frozen.authorization_revision_id
          JOIN chat_work_assignments assignment
            ON assignment.id = authorization.assignment_id
-         JOIN chat_teammate_working_folder_grants live
+         JOIN chat_agent_working_folder_grants live
            ON live.conversation_id = authorization.destination_conversation_id
-          AND live.teammate_id = assignment.teammate_id
+          AND live.agent_id = assignment.agent_id
           AND live.working_folder_id = frozen.working_folder_id
           AND live.revoked_at IS NULL
-         JOIN chat_teammate_channel_memberships channel_access
+         JOIN chat_agent_channel_memberships channel_access
            ON channel_access.conversation_id = live.conversation_id
-          AND channel_access.teammate_id = live.teammate_id
+          AND channel_access.agent_id = live.agent_id
           AND channel_access.removed_at IS NULL
          WHERE frozen.authorization_revision_id = ?
          ORDER BY frozen.working_folder_id",

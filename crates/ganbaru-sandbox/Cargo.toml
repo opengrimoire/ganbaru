@@ -1,7 +1,7 @@
 [package]
 name = "ganbaru-sandbox"
 version = "0.1.0"
-description = "Kernel-enforced confinement for the processes Chat teammates run"
+description = "Kernel-enforced confinement for the processes Chat agents run"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true

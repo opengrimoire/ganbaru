@@ -16,7 +16,7 @@
    */
   let {
     run,
-    teammateName,
+    agentName,
     timelinePage,
     replies,
     fallbackDetail = null,
@@ -25,14 +25,14 @@
     onActionError,
   }: {
     run: ChatAgentRunRead;
-    /** Display name of the teammate that ran, or `null` when the thread does not name one. */
-    teammateName: string | null;
+    /** Display name of the agent that ran, or `null` when the thread does not name one. */
+    agentName: string | null;
     /** The run's exact provider turn page, when it had one and it is loaded. */
     timelinePage: ChatTimelinePageRead | null;
     replies: readonly ChatMessageRead[];
     /** Diagnostic text to offer when the run's turn has none, such as the assignment's state reason. */
     fallbackDetail?: string | null;
-    /** Whether a visible failure message of the teammate already explains how the run failed. */
+    /** Whether a visible failure message of the agent already explains how the run failed. */
     failureShownElsewhere?: boolean;
     /** Retries the failed work, offered on the status line that still stands for it. */
     onRetryFailure?: () => unknown;
@@ -51,7 +51,7 @@
     agentRunShowedOutput(run, timelinePage, replies),
     fallbackDetail,
   ));
-  const name = $derived(teammateName ?? t("chat.runs.outcome.teammateFallback"));
+  const name = $derived(agentName ?? t("chat.runs.outcome.agentFallback"));
 
   async function stop(): Promise<void> {
     if (stopping) return;

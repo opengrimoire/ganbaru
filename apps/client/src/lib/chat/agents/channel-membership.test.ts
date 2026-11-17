@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type {
   ChatAccessProfileRead,
-  ChatAiTeammateRead,
+  ChatAiAgentRead,
   ChatFolderCapability,
-  ChatTeammateAccessRead,
-  ChatTeammateChannelAccess,
+  ChatAgentAccessRead,
+  ChatAgentChannelAccess,
   ProviderAuthoritySupport,
   ProviderInstanceRead,
 } from "$lib/chat/contracts";
@@ -14,9 +14,9 @@ import {
   conversationAccessProfile,
   defaultChannelAccessInput,
   resolveChannelMemberChanges,
-  teammateCommandSupport,
+  agentCommandSupport,
   type ChannelAccessDefaults,
-  type TeammateCommandSupport,
+  type AgentCommandSupport,
 } from "./channel-membership";
 
 function profile(
@@ -58,7 +58,7 @@ const claudeAuthority: ProviderAuthoritySupport = {
   personApprovedCommands: true,
 };
 
-const claude: TeammateCommandSupport = { authority: claudeAuthority, safetyMode: "ask_for_approval" };
+const claude: AgentCommandSupport = { authority: claudeAuthority, safetyMode: "ask_for_approval" };
 
 function defaults(overrides: Partial<ChannelAccessDefaults> = {}): ChannelAccessDefaults {
   return { profiles: [conversation, build], projectWorkingFolderId: "folder:project", ...overrides };
@@ -66,8 +66,8 @@ function defaults(overrides: Partial<ChannelAccessDefaults> = {}): ChannelAccess
 
 function channelAccess(
   channelId: string,
-  overrides: Partial<ChatTeammateChannelAccess> = {},
-): ChatTeammateChannelAccess {
+  overrides: Partial<ChatAgentChannelAccess> = {},
+): ChatAgentChannelAccess {
   return {
     channelId,
     conversationId: `conversation:${channelId}`,
@@ -107,11 +107,11 @@ function channelAccess(
   };
 }
 
-function access(channels: ChatTeammateChannelAccess[]): ChatTeammateAccessRead {
+function access(channels: ChatAgentChannelAccess[]): ChatAgentAccessRead {
   return {
-    teammateId: "participant:bot",
+    agentId: "participant:bot",
     accessRevision: 7,
-    teammateDefaultRuntimeApproval: "ask",
+    agentDefaultRuntimeApproval: "ask",
     channels,
   };
 }
@@ -161,20 +161,20 @@ describe("channel membership", () => {
       .toBe("");
   });
 
-  it("reads command support from the teammate policy and its provider probe", () => {
+  it("reads command support from the agent policy and its provider probe", () => {
     const provider = {
       configuration: { instanceId: "provider:claude" },
       lastProbe: { authoritySupport: claudeAuthority },
     } as unknown as ProviderInstanceRead;
-    const teammate = {
+    const agent = {
       latestPolicy: { providerInstanceId: "provider:claude", safetyMode: "approve_for_me" },
-    } as unknown as ChatAiTeammateRead;
-    expect(teammateCommandSupport(teammate, [provider])).toEqual({
+    } as unknown as ChatAiAgentRead;
+    expect(agentCommandSupport(agent, [provider])).toEqual({
       authority: claudeAuthority,
       safetyMode: "approve_for_me",
     });
-    expect(teammateCommandSupport(teammate, [])).toEqual({ authority: null, safetyMode: "approve_for_me" });
-    expect(teammateCommandSupport(null, [provider])).toEqual({ authority: null, safetyMode: null });
+    expect(agentCommandSupport(agent, [])).toEqual({ authority: null, safetyMode: "approve_for_me" });
+    expect(agentCommandSupport(null, [provider])).toEqual({ authority: null, safetyMode: null });
   });
 
   it("removes one channel while preserving the other channels' grants and dropping revoked folders", () => {
@@ -192,7 +192,7 @@ describe("channel membership", () => {
     ]);
   });
 
-  it("ignores channels the teammate already left", () => {
+  it("ignores channels the agent already left", () => {
     const current = access([
       channelAccess("channel:a", { removedAt: "2026-10-03T00:00:00.000Z" }),
       channelAccess("channel:b"),
@@ -215,12 +215,12 @@ describe("channel membership", () => {
     const current = new Set(["participant:a", "participant:b"]);
     const selected = new Set(["participant:b", "participant:c"]);
     expect(resolveChannelMemberChanges(current, selected)).toEqual({
-      addedTeammateIds: ["participant:c"],
-      removedTeammateIds: ["participant:a"],
+      addedAgentIds: ["participant:c"],
+      removedAgentIds: ["participant:a"],
     });
     expect(resolveChannelMemberChanges(current, current)).toEqual({
-      addedTeammateIds: [],
-      removedTeammateIds: [],
+      addedAgentIds: [],
+      removedAgentIds: [],
     });
   });
 });

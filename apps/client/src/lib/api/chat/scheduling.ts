@@ -32,7 +32,7 @@ export async function readChatQuietState(): Promise<ChatQuietStateRead> {
   return parseChatQuietState(await invoke<unknown>("chat_read_quiet_state"));
 }
 
-/** Schedules the message a person confirmed from a teammate's schedule proposal. */
+/** Schedules the message a person confirmed from an agent's schedule proposal. */
 export async function confirmChatScheduleProposal(
   request: ConfirmScheduleProposalRequest,
 ): Promise<ChatScheduledMessageRead> {

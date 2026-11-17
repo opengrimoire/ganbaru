@@ -35,7 +35,7 @@ const message: ChatMessageRead = {
       plainTextProjection: "@Atlas",
     },
     participantId: "participant:atlas",
-    participantKind: "ai_teammate",
+    participantKind: "ai_agent",
   }],
   replyThread: null,
   orderKey: "c001",

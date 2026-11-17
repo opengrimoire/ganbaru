@@ -6,7 +6,7 @@ use sqlx::SqlitePool;
 pub(crate) const NOW: &str = "2026-11-12T09:00:00.000Z";
 const LATER: &str = "2026-11-12T09:05:00.000Z";
 pub(crate) const PROJECT_ID: &str = "project-host-reports";
-pub(crate) const TEAMMATE: &str = "participant:reports-helper";
+pub(crate) const AGENT: &str = "participant:reports-helper";
 pub(crate) const OWNER: &str = "participant:local-owner";
 pub(crate) const ASSIGNMENT: &str = "assignment:reports";
 pub(crate) const RUN: &str = "run:reports-1";
@@ -54,9 +54,9 @@ pub(crate) async fn seed(pool: &SqlitePool, assignment_state: &str, run_state: &
     let digest = "a".repeat(64);
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
-         VALUES ('{TEAMMATE}', 'ai_teammate', 'Helper', '{NOW}', '{NOW}');
-         INSERT INTO chat_teammates (participant_id, role, created_at, updated_at)
-         VALUES ('{TEAMMATE}', 'Helper', '{NOW}', '{NOW}');
+         VALUES ('{AGENT}', 'ai_agent', 'Helper', '{NOW}', '{NOW}');
+         INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
+         VALUES ('{AGENT}', 'Helper', '{NOW}', '{NOW}');
          INSERT INTO chat_conversation_items (id, conversation_id, item_kind, order_key, created_at)
          VALUES ('item:root', '{conversation}', 'message', 'c000', '{NOW}');
          INSERT INTO chat_communication_messages (item_id, author_participant_id, created_at)
@@ -70,13 +70,13 @@ pub(crate) async fn seed(pool: &SqlitePool, assignment_state: &str, run_state: &
             (id, conversation_id, root_item_id, last_activity_at, created_at, updated_at)
          VALUES ('{THREAD}', '{conversation}', 'item:root', '{NOW}', '{NOW}', '{NOW}');
          INSERT INTO chat_work_assignments
-            (id, reply_thread_id, teammate_id, triggering_message_item_id, state,
+            (id, reply_thread_id, agent_id, triggering_message_item_id, state,
              created_at, updated_at)
-         VALUES ('{ASSIGNMENT}', '{THREAD}', '{TEAMMATE}', 'item:root', '{assignment_state}',
+         VALUES ('{ASSIGNMENT}', '{THREAD}', '{AGENT}', 'item:root', '{assignment_state}',
                  '{NOW}', '{NOW}');
          UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
          INSERT INTO chat_agent_runs
-            (id, assignment_id, project_id, teammate_policy_revision_id,
+            (id, assignment_id, project_id, agent_policy_revision_id,
              authorization_revision_id, authorization_scope_digest, provider_turn_id,
              provider_thread_id, state, run_ordinal, created_at, updated_at)
          VALUES ('{RUN}', '{ASSIGNMENT}', '{PROJECT_ID}', 'policy:reports', 'authorization:reports',
@@ -161,7 +161,7 @@ pub(crate) async fn states(pool: &SqlitePool) -> (String, String) {
     .unwrap()
 }
 
-/// Every teammate update in the reply thread, as `(update kind, markdown)`.
+/// Every agent update in the reply thread, as `(update kind, markdown)`.
 pub(crate) async fn updates(pool: &SqlitePool) -> Vec<(String, String)> {
     sqlx::query_as(
         "SELECT semantic.update_kind, revision.normalized_markdown
@@ -285,7 +285,7 @@ async fn a_run_posts_at_most_three_note_proposals() {
         "UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
          UPDATE chat_agent_runs SET state = 'completed' WHERE id = '{RUN}';
          INSERT INTO chat_agent_runs
-            (id, assignment_id, project_id, teammate_policy_revision_id,
+            (id, assignment_id, project_id, agent_policy_revision_id,
              authorization_revision_id, authorization_scope_digest, provider_turn_id,
              provider_thread_id, state, run_ordinal, created_at, updated_at)
          VALUES ('run:reports-2', '{ASSIGNMENT}', '{PROJECT_ID}', 'policy:reports',
@@ -420,15 +420,15 @@ async fn an_answer_to_a_working_run_resumes_the_assignment() {
     let pool = migrated_pool().await;
     seed(&pool, "working", "working").await;
     ask(&pool, "ask-1", "Keep the old page?").await.unwrap();
-    post_input(&pool, "item:teammate-note", TEAMMATE, "steer").await;
+    post_input(&pool, "item:agent-note", AGENT, "steer").await;
     post_input(&pool, "item:answer", OWNER, "steer").await;
 
     let mut connection = pool.acquire().await.unwrap();
     assert!(
-        !resume_answered_question(&mut connection, ASSIGNMENT, "item:teammate-note", LATER)
+        !resume_answered_question(&mut connection, ASSIGNMENT, "item:agent-note", LATER)
             .await
             .unwrap(),
-        "a teammate message is not an answer"
+        "an agent message is not an answer"
     );
     assert!(
         resume_answered_question(&mut connection, ASSIGNMENT, "item:answer", LATER)
@@ -468,8 +468,8 @@ async fn only_a_person_answer_after_the_asking_run_ended_awaits_dispatch() {
         .unwrap();
     assert!(!awaiting(pool.clone()).await, "nobody answered yet");
 
-    post_input(&pool, "item:teammate-note", TEAMMATE, "queued_continuation").await;
-    assert!(!awaiting(pool.clone()).await, "a teammate does not answer");
+    post_input(&pool, "item:agent-note", AGENT, "queued_continuation").await;
+    assert!(!awaiting(pool.clone()).await, "an agent does not answer");
 
     post_input(&pool, "item:answer", OWNER, "queued_continuation").await;
     assert!(awaiting(pool.clone()).await);
@@ -618,7 +618,7 @@ async fn the_answered_question_holds_the_question_and_only_person_answers_in_ord
     };
     assert_eq!(read(pool.clone()).await, None, "nobody answered yet");
 
-    post_message(&pool, "item:note", TEAMMATE, "queued_continuation", "Noted").await;
+    post_message(&pool, "item:note", AGENT, "queued_continuation", "Noted").await;
     post_message(&pool, "item:first", OWNER, "queued_continuation", "Keep it").await;
     post_message(&pool, "item:second", OWNER, "steer", "And link it").await;
     let answered = read(pool.clone()).await.expect("answered");

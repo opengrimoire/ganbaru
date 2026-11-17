@@ -1,7 +1,7 @@
 use super::*;
 use crate::coordination::reports::HostReportRefusal;
 use crate::coordination::reports::tests::{
-    ASSIGNMENT, NOW, TEAMMATE, THREAD, call, migrated_pool, seed,
+    AGENT, ASSIGNMENT, NOW, THREAD, call, migrated_pool, seed,
 };
 use crate::scheduling::{QuietPolicy, RecurrenceRule, WeekdaySet};
 use sqlx::SqlitePool;
@@ -46,7 +46,7 @@ async fn count(pool: &SqlitePool, sql: &str) -> i64 {
 }
 
 #[tokio::test]
-async fn a_proposal_posts_a_teammate_card_in_the_reply_thread_and_schedules_nothing() {
+async fn a_proposal_posts_a_agent_card_in_the_reply_thread_and_schedules_nothing() {
     let pool = migrated_pool().await;
     seed(&pool, "working", "working").await;
     let proposed = proposal("Post the standup summary");
@@ -66,8 +66,8 @@ async fn a_proposal_posts_a_teammate_card_in_the_reply_thread_and_schedules_noth
     drop(connection);
     assert_eq!(stored.proposal, proposed);
     assert_eq!(stored.reply_thread_id, THREAD);
-    assert_eq!(stored.teammate_id, TEAMMATE);
-    assert_eq!(stored.teammate_name.as_deref(), Some("Helper"));
+    assert_eq!(stored.agent_id, AGENT);
+    assert_eq!(stored.agent_name.as_deref(), Some("Helper"));
     assert_eq!(
         count(&pool, "SELECT count(*) FROM chat_scheduled_messages").await,
         0
@@ -83,7 +83,7 @@ async fn a_proposal_posts_a_teammate_card_in_the_reply_thread_and_schedules_noth
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(author, TEAMMATE);
+    assert_eq!(author, AGENT);
     assert_eq!(markdown, "Post the standup summary");
     let source: String = sqlx::query_scalar(
         "SELECT json_extract(payload_data, '$.payload.source')
@@ -195,7 +195,7 @@ fn proposal_text_is_trimmed_and_bounded_in_characters() {
 }
 
 #[tokio::test]
-async fn reading_refuses_other_kinds_malformed_payloads_and_removed_teammates() {
+async fn reading_refuses_other_kinds_malformed_payloads_and_removed_agents() {
     let pool = migrated_pool().await;
     seed(&pool, "working", "working").await;
     propose(&pool, "request-1", &proposal("Nudge"), accept)
@@ -211,14 +211,14 @@ async fn reading_refuses_other_kinds_malformed_payloads_and_removed_teammates() 
     assert_eq!(missing.code, ChatErrorCode::NotFound);
     sqlx::query("UPDATE chat_participants SET archived_at = ? WHERE id = ?")
         .bind(NOW)
-        .bind(TEAMMATE)
+        .bind(AGENT)
         .execute(&mut *connection)
         .await
         .unwrap();
     let archived = read_schedule_proposal(&mut connection, &item_id)
         .await
         .unwrap();
-    assert_eq!(archived.teammate_name, None);
+    assert_eq!(archived.agent_name, None);
     // A replicated payload is not validated per kind, so a peer can deliver a malformed one.
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;

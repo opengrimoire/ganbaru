@@ -1,10 +1,10 @@
-//! Comparison of teammate approval behavior against the runtime approval work was frozen under.
+//! Comparison of agent approval behavior against the runtime approval work was frozen under.
 //!
-//! The command that saves teammate access, the live tool checks, and the sync materialize hook
+//! The command that saves agent access, the live tool checks, and the sync materialize hook
 //! share these rules, so a reduction saved on this device and one applied from another device
 //! agree on what still covers running work. Policies use their stored wire spelling.
 
-/// Stored runtime approval that a teammate's provider configuration decides.
+/// Stored runtime approval that an agent's provider configuration decides.
 const PROVIDER_CUSTOM: &str = "provider_custom";
 
 /// Orders runtime approval policies from narrowest to broadest. Provider-custom approval and
@@ -40,9 +40,9 @@ pub fn approval_covers(live: &str, frozen: &str) -> bool {
         )
 }
 
-/// Returns the runtime approval a stored teammate safety mode stands for, or `None` for an
+/// Returns the runtime approval a stored agent safety mode stands for, or `None` for an
 /// unknown safety mode.
-fn teammate_default_approval(safety_mode: &str) -> Option<&'static str> {
+fn agent_default_approval(safety_mode: &str) -> Option<&'static str> {
     match safety_mode {
         "ask_for_approval" => Some("ask"),
         "approve_for_me" => Some("auto_approve"),
@@ -52,56 +52,54 @@ fn teammate_default_approval(safety_mode: &str) -> Option<&'static str> {
     }
 }
 
-/// Returns whether a teammate with `safety_mode`, under the runtime approval override that
+/// Returns whether an agent with `safety_mode`, under the runtime approval override that
 /// governs the work, still covers the `frozen` approval.
 ///
-/// The live approval is the narrower of the teammate's default and the override. A Custom
-/// teammate cannot be ranked against an override, so the override alone governs it, as it does
+/// The live approval is the narrower of the agent's default and the override. A Custom
+/// agent cannot be ranked against an override, so the override alone governs it, as it does
 /// when the work freezes. An unknown safety mode covers nothing.
-pub fn teammate_policy_covers(
+pub fn agent_policy_covers(
     safety_mode: &str,
     approval_override: Option<&str>,
     frozen: &str,
 ) -> bool {
-    let Some(teammate_default) = teammate_default_approval(safety_mode) else {
+    let Some(agent_default) = agent_default_approval(safety_mode) else {
         return false;
     };
-    let granted = approval_override.unwrap_or(teammate_default);
-    let live = match (approval_rank(teammate_default), approval_rank(granted)) {
-        (Some(teammate_rank), Some(granted_rank)) if teammate_rank < granted_rank => {
-            teammate_default
-        }
+    let granted = approval_override.unwrap_or(agent_default);
+    let live = match (approval_rank(agent_default), approval_rank(granted)) {
+        (Some(agent_rank), Some(granted_rank)) if agent_rank < granted_rank => agent_default,
         _ => granted,
     };
     approval_covers(live, frozen)
 }
 
-/// Returns an SQL scalar expression for the safety mode that decides coverage for the teammate
-/// whose participant id is `teammate_id`, a column or parameter of the enclosing query.
+/// Returns an SQL scalar expression for the safety mode that decides coverage for the agent
+/// whose participant id is `agent_id`, a column or parameter of the enclosing query.
 ///
-/// While the teammate's pointer names a revision that has not arrived on this device, the safety
+/// While the agent's pointer names a revision that has not arrived on this device, the safety
 /// mode the pointer copied decides instead of the newest arrived revision the effective policy
 /// view falls back to, which can be a concurrent narrower one the pointer did not choose.
 /// Coverage depends only on the safety mode, so an honest copy decides as its revision will, a
 /// dishonest copy is contained when its revision arrives, and a pointer whose revision never
 /// arrives still refuses work its copied mode does not cover. Otherwise the effective policy
-/// decides. The expression is null when the teammate has neither, which covers nothing.
-pub fn live_teammate_safety_mode_sql(teammate_id: &str) -> String {
+/// decides. The expression is null when the agent has neither, which covers nothing.
+pub fn live_agent_safety_mode_sql(agent_id: &str) -> String {
     format!(
         "(SELECT CASE
-             WHEN live_teammate.current_policy_revision_id IS NOT NULL
+             WHEN live_agent.current_policy_revision_id IS NOT NULL
               AND NOT EXISTS (
-                  SELECT 1 FROM chat_teammate_policy_revisions named
-                  WHERE named.id = live_teammate.current_policy_revision_id
+                  SELECT 1 FROM chat_agent_policy_revisions named
+                  WHERE named.id = live_agent.current_policy_revision_id
               )
-             THEN live_teammate.current_policy_safety_mode
+             THEN live_agent.current_policy_safety_mode
              ELSE (
-                 SELECT live_policy.safety_mode FROM chat_teammate_effective_policies live_policy
-                 WHERE live_policy.teammate_id = live_teammate.participant_id
+                 SELECT live_policy.safety_mode FROM chat_agent_effective_policies live_policy
+                 WHERE live_policy.agent_id = live_agent.participant_id
              )
            END
-           FROM chat_teammates live_teammate
-           WHERE live_teammate.participant_id = {teammate_id})"
+           FROM chat_agents live_agent
+           WHERE live_agent.participant_id = {agent_id})"
     )
 }
 
@@ -119,38 +117,30 @@ mod tests {
     }
 
     #[test]
-    fn a_narrower_or_widened_teammate_is_compared_with_the_frozen_approval() {
-        assert!(!teammate_policy_covers(
+    fn a_narrower_or_widened_agent_is_compared_with_the_frozen_approval() {
+        assert!(!agent_policy_covers(
             "ask_for_approval",
             None,
             "auto_approve"
         ));
-        assert!(teammate_policy_covers(
-            "approve_for_me",
-            None,
-            "auto_approve"
-        ));
-        assert!(teammate_policy_covers("full_access", None, "auto_approve"));
-        assert!(!teammate_policy_covers(
-            "approve_for_me",
-            None,
-            "unattended"
-        ));
+        assert!(agent_policy_covers("approve_for_me", None, "auto_approve"));
+        assert!(agent_policy_covers("full_access", None, "auto_approve"));
+        assert!(!agent_policy_covers("approve_for_me", None, "unattended"));
     }
 
     #[test]
-    fn an_override_narrows_the_teammate_and_never_widens_it() {
-        assert!(!teammate_policy_covers(
+    fn an_override_narrows_the_agent_and_never_widens_it() {
+        assert!(!agent_policy_covers(
             "full_access",
             Some("ask"),
             "auto_approve"
         ));
-        assert!(!teammate_policy_covers(
+        assert!(!agent_policy_covers(
             "ask_for_approval",
             Some("unattended"),
             "auto_approve"
         ));
-        assert!(teammate_policy_covers(
+        assert!(agent_policy_covers(
             "full_access",
             Some("auto_approve"),
             "ask"
@@ -158,30 +148,26 @@ mod tests {
     }
 
     #[test]
-    fn a_custom_teammate_leaves_the_override_in_charge() {
-        assert!(teammate_policy_covers("custom", Some("ask"), "ask"));
-        assert!(teammate_policy_covers(
+    fn a_custom_agent_leaves_the_override_in_charge() {
+        assert!(agent_policy_covers("custom", Some("ask"), "ask"));
+        assert!(agent_policy_covers(
             "custom",
             Some("unattended"),
             "auto_approve"
         ));
-        assert!(!teammate_policy_covers("custom", Some("ask"), "unattended"));
-        assert!(teammate_policy_covers("custom", None, PROVIDER_CUSTOM));
+        assert!(!agent_policy_covers("custom", Some("ask"), "unattended"));
+        assert!(agent_policy_covers("custom", None, PROVIDER_CUSTOM));
     }
 
     #[test]
     fn leaving_custom_or_entering_it_without_an_override_covers_no_ranked_freeze() {
-        assert!(!teammate_policy_covers("custom", None, "unattended"));
-        assert!(!teammate_policy_covers(
-            "full_access",
-            None,
-            PROVIDER_CUSTOM
-        ));
+        assert!(!agent_policy_covers("custom", None, "unattended"));
+        assert!(!agent_policy_covers("full_access", None, PROVIDER_CUSTOM));
     }
 
     #[test]
     fn an_unknown_safety_mode_covers_nothing() {
-        assert!(!teammate_policy_covers("reckless", None, "ask"));
-        assert!(!teammate_policy_covers("reckless", Some("ask"), "ask"));
+        assert!(!agent_policy_covers("reckless", None, "ask"));
+        assert!(!agent_policy_covers("reckless", Some("ask"), "ask"));
     }
 }

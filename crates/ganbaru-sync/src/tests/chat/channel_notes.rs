@@ -11,7 +11,7 @@ use ganbaru_sync_contracts::chat_channel_notes::{
 /// A note a person wrote.
 const NOTE: &str = "channel-note:style";
 
-/// The teammate update a proposal came from.
+/// The agent update a proposal came from.
 const PROPOSAL: &str = "item:proposal";
 
 /// Seeds of the delete against edit scenario.
@@ -26,7 +26,7 @@ fn proposal_note() -> String {
 }
 
 /// SQL saving note `id` in [`CHANNEL`] with `body` by [`OWNER`], with `provenance` naming the
-/// source item and the proposing teammate when given, deleted when `deleted_at` is given.
+/// source item and the proposing agent when given, deleted when `deleted_at` is given.
 fn note_sql(
     id: &str,
     body: &str,
@@ -95,7 +95,7 @@ async fn conflicts(replica: &mut Replica) -> i64 {
         .await
 }
 
-/// Replicas sharing the conversation rows and the teammate update [`PROPOSAL`] names.
+/// Replicas sharing the conversation rows and the agent update [`PROPOSAL`] names.
 async fn proposal_replicas(count: usize) -> Vec<Replica> {
     let mut replicas = conversation_replicas(count).await;
     replicas[0]
@@ -117,7 +117,7 @@ fn chat_channel_notes_round_trip() {
                 note_sql(
                     &proposal_note(),
                     "Prefer short replies",
-                    Some((PROPOSAL, TEAMMATE)),
+                    Some((PROPOSAL, AGENT)),
                     None
                 ),
             ))
@@ -146,7 +146,7 @@ fn chat_channel_notes_round_trip() {
                     quoted(&proposal_note())
                 ))
                 .await,
-            Some(format!("Prefer short replies {PROPOSAL} {TEAMMATE}"))
+            Some(format!("Prefer short replies {PROPOSAL} {AGENT}"))
         );
     });
 }
@@ -242,7 +242,7 @@ fn chat_two_accepts_of_one_proposal_give_one_note() {
         let accepted = note_sql(
             &proposal_note(),
             "Prefer short replies",
-            Some((PROPOSAL, TEAMMATE)),
+            Some((PROPOSAL, AGENT)),
             None,
         );
         replicas[0].exec(&accepted).await;
@@ -275,7 +275,7 @@ fn chat_accept_against_dismiss_of_one_proposal_ends_deleted() {
             .exec(&note_sql(
                 &proposal_note(),
                 "Prefer short replies in English",
-                Some((PROPOSAL, TEAMMATE)),
+                Some((PROPOSAL, AGENT)),
                 None,
             ))
             .await;
@@ -283,7 +283,7 @@ fn chat_accept_against_dismiss_of_one_proposal_ends_deleted() {
             .exec(&note_sql(
                 &proposal_note(),
                 "Prefer short replies",
-                Some((PROPOSAL, TEAMMATE)),
+                Some((PROPOSAL, AGENT)),
                 Some(&at(1, 0)),
             ))
             .await;

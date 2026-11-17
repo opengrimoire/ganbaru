@@ -41,7 +41,7 @@
   import ChatRequestPanel from "./ChatRequestPanel.svelte";
   import { answerableHostQuestion } from "$lib/chat/timeline/agent-update";
   import { chatComposerDocumentFromText, chatComposerDocumentVersioned, chatComposerMarkdown } from "$lib/chat/composer/rich-text";
-  import { chatParticipantDisplayName } from "$lib/chat/teammates/participant-display";
+  import { chatParticipantDisplayName } from "$lib/chat/agents/participant-display";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import ChatDelegatedWorkList from "./ChatDelegatedWorkList.svelte";
   import ChatDelegationOrigin from "./ChatDelegationOrigin.svelte";
@@ -88,18 +88,18 @@
   /** Whether the composer dock floats over the thread end. */
   const composerDocked = $derived(Boolean(page) && !chat.selectedChannel?.archivedAt);
   const assignment = $derived(page?.assignment ?? null);
-  const executionTeammate = $derived(assignment?.teammate
-    ?? page?.thread.participants.find((participant) => participant.kind === "ai_teammate")
+  const executionAgent = $derived(assignment?.agent
+    ?? page?.thread.participants.find((participant) => participant.kind === "ai_agent")
     ?? null);
   const executionRun = $derived(latestRenderableAgentRun(page?.agentRuns ?? []));
   const hasPrivateScratch = $derived((page?.agentRuns ?? []).some((run) => (
     run.scratchGenerationId !== null
   )));
   const runLocation = $derived(agentRunLocation(page?.agentRuns ?? [], chat.workingFolders));
-  /** Whether the run's teammate holds a folder grant in this channel, read only when its newest run is conversation only. */
+  /** Whether the run's agent holds a folder grant in this channel, read only when its newest run is conversation only. */
   let conversationOnlyHasGrants = $state(false);
   let conversationOnlyAccessRequest = 0;
-  const conversationOnlyTeammateId = $derived(runLocation?.kind === "conversation" ? executionTeammate?.id ?? null : null);
+  const conversationOnlyAgentId = $derived(runLocation?.kind === "conversation" ? executionAgent?.id ?? null : null);
   const runLocationLabel = $derived(runLocation?.kind === "folder"
     ? t("chat.organization.workingIn", runLocation.name)
     : runLocation?.kind === "conversation" && conversationOnlyHasGrants
@@ -134,8 +134,8 @@
   /** Changes to remount the composer after its draft was replaced from outside, such as by an answer choice. */
   let composerRevision = $state(0);
   const answerableQuestion = $derived(answerableHostQuestion(page?.replies ?? [], assignment));
-  const executionTeammateName = $derived(executionTeammate
-    ? chatParticipantDisplayName(executionTeammate, preferences.profileDisplayName, t("chat.timeline.you"))
+  const executionAgentName = $derived(executionAgent
+    ? chatParticipantDisplayName(executionAgent, preferences.profileDisplayName, t("chat.timeline.you"))
     : null);
 
   /** Replaces the composer text with a suggested answer, keeping its attachments and target. */
@@ -346,12 +346,12 @@
   });
 
   $effect(() => {
-    const teammateId = conversationOnlyTeammateId;
+    const agentId = conversationOnlyAgentId;
     const channelId = chat.selectedChannel?.id ?? null;
     const request = ++conversationOnlyAccessRequest;
     conversationOnlyHasGrants = false;
-    if (teammateId === null || channelId === null) return;
-    void chatApi.readChatTeammateAccess(teammateId)
+    if (agentId === null || channelId === null) return;
+    void chatApi.readChatAgentAccess(agentId)
       .then((access) => {
         if (request === conversationOnlyAccessRequest) {
           conversationOnlyHasGrants = channelHasFolderGrants(access, channelId);
@@ -359,7 +359,7 @@
       })
       .catch((cause: unknown) => {
         // The line only explains conversation-only work, so a failed read leaves it out.
-        console.warn("Could not read teammate access for the reply location", cause);
+        console.warn("Could not read agent access for the reply location", cause);
       });
   });
 
@@ -501,7 +501,7 @@
               <ChatExecutionTimeline
                 embedded
                 hideUserMessages
-                teammate={executionTeammate}
+                agent={executionAgent}
                 turnId={entry.run.providerExecutionTurnId}
                 timelinePage={exactExecution?.timelinePage ?? null}
                 executionThread={exactExecution?.thread ?? null}
@@ -509,7 +509,7 @@
             {/if}
             <ChatAgentRunStatus
               run={entry.run}
-              teammateName={executionTeammateName}
+              agentName={executionAgentName}
               timelinePage={exactExecution?.timelinePage ?? null}
               replies={page.replies}
               fallbackDetail={entry.run.id === page.agentRuns.at(-1)?.id ? assignment?.stateReason ?? null : null}
@@ -530,7 +530,7 @@
     <div class="thread-dock" use:chatComposerDock={{ onMeasure: reserveDockSpace, scroller }}>
       {#if chat.interaction?.pendingRequest}<div class="thread-request"><ChatRequestPanel pending={chat.interaction.pendingRequest} /></div>{/if}
       {#if localExecutionAvailable && chat.openReplyThreadId}
-        <div class="thread-secrets"><ChatSecretRequests replyThreadId={chat.openReplyThreadId} refreshKey={page} teammateName={executionTeammateName} /></div>
+        <div class="thread-secrets"><ChatSecretRequests replyThreadId={chat.openReplyThreadId} refreshKey={page} agentName={executionAgentName} /></div>
       {/if}
       <div class="thread-composer">
         {#key `${destination}:${composerRevision}`}

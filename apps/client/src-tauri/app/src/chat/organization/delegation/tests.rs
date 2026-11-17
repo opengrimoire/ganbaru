@@ -6,10 +6,10 @@ use std::collections::BTreeSet;
 const NOW: &str = "2026-10-20T12:00:00.000Z";
 const DEVICE: &str = "device:delegation";
 const PARENT: &str = "assignment:folders";
-const PARENT_TEAMMATE: &str = "participant:folder-agent";
+const PARENT_AGENT: &str = "participant:folder-agent";
 const HELPER: &str = "participant:helper";
 
-/// The revocation fixture with a second teammate, `Helper`, in the channel. Helper's own grants
+/// The revocation fixture with a second agent, `Helper`, in the channel. Helper's own grants
 /// are broader than the parent's on `workspace-2`, so a delegated child shows the ceiling
 /// narrowing them. The parent's queued follow-up holds the same folders as its working run.
 async fn pool_with_helper() -> SqlitePool {
@@ -19,26 +19,26 @@ async fn pool_with_helper() -> SqlitePool {
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "INSERT INTO chat_participants
             (id, participant_kind, display_name, created_at, updated_at)
-         VALUES ('{HELPER}', 'ai_teammate', 'Helper', '{NOW}', '{NOW}');
-         INSERT INTO chat_teammates (participant_id, role, created_at, updated_at)
+         VALUES ('{HELPER}', 'ai_agent', 'Helper', '{NOW}', '{NOW}');
+         INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
          VALUES ('{HELPER}', 'Test', '{NOW}', '{NOW}');
-         INSERT INTO chat_teammate_policy_revisions
-            (id, teammate_id, provider_instance_id, model_selection_data, created_at)
+         INSERT INTO chat_agent_policy_revisions
+            (id, agent_id, provider_instance_id, model_selection_data, created_at)
          VALUES ('policy:helper', '{HELPER}', 'codex-personal', '{{}}', '{NOW}');
-         UPDATE chat_teammate_access_state
+         UPDATE chat_agent_access_state
          SET access_revision = 1, updated_at = '{NOW}'
-         WHERE teammate_id IN ('{HELPER}', '{PARENT_TEAMMATE}');
+         WHERE agent_id IN ('{HELPER}', '{PARENT_AGENT}');
          INSERT INTO chat_conversation_memberships
             (conversation_id, participant_id, sync_key, membership_role, created_at,
              updated_at)
          VALUES ('{conversation}', '{HELPER}', 'membership:helper', 'member', '{NOW}', '{NOW}');
-         INSERT INTO chat_teammate_channel_memberships
-            (conversation_id, teammate_id, sync_key, access_profile_id,
+         INSERT INTO chat_agent_channel_memberships
+            (conversation_id, agent_id, sync_key, access_profile_id,
              read_history, participate, history_boundary, created_at, updated_at)
          VALUES ('{conversation}', '{HELPER}', 'channel-membership:helper',
                  'access-profile:build-and-test', 1, 1, 'entire', '{NOW}', '{NOW}');
-         INSERT INTO chat_teammate_working_folder_grants
-            (conversation_id, teammate_id, project_id, working_folder_id, sync_key,
+         INSERT INTO chat_agent_working_folder_grants
+            (conversation_id, agent_id, project_id, working_folder_id, sync_key,
              capability, capability_inherits_profile, is_default, created_at)
          VALUES
             ('{conversation}', '{HELPER}', 'project-chat', 'workspace-1',
@@ -98,14 +98,14 @@ impl Caller {
 async fn delegate(
     pool: &SqlitePool,
     caller: &Caller,
-    teammate: &str,
+    agent: &str,
     folders: &[DelegatedFolder],
     client_request_id: &str,
 ) -> Result<CreatedChild, DelegationRefusal> {
     delegate_with(
         pool,
         caller,
-        teammate,
+        agent,
         folders,
         client_request_id,
         "Check the build",
@@ -116,14 +116,14 @@ async fn delegate(
 async fn delegate_with(
     pool: &SqlitePool,
     caller: &Caller,
-    teammate: &str,
+    agent: &str,
     folders: &[DelegatedFolder],
     client_request_id: &str,
     objective: &str,
 ) -> Result<CreatedChild, DelegationRefusal> {
     let writers = ChatWriters::new([DEVICE.to_owned()]);
     let conversation = conversation_id();
-    let teammate = ChatParticipantId::new(teammate).unwrap();
+    let agent = ChatParticipantId::new(agent).unwrap();
     persist_delegation(
         pool,
         DEVICE,
@@ -132,7 +132,7 @@ async fn delegate_with(
             parent_assignment_id: &caller.parent,
             parent_authorization_revision_id: &caller.authorization,
             conversation_id: &conversation,
-            teammate_id: &teammate,
+            agent_id: &agent,
             objective,
             expected_result: "A short report",
             folders,
@@ -233,7 +233,7 @@ async fn delegation_creates_a_queued_child_narrowed_to_the_parent_ceiling() {
     let row = sqlx::query(
         "SELECT assignment.parent_assignment_id, assignment.delegation_depth,
                 assignment.delegation_folder_ceiling, assignment.reply_thread_id,
-                message.author_participant_id, target.participant_id AS invoked_teammate_id,
+                message.author_participant_id, target.participant_id AS invoked_agent_id,
                 revision.normalized_markdown
          FROM chat_work_assignments assignment
          JOIN chat_communication_messages message
@@ -260,11 +260,8 @@ async fn delegation_creates_a_queued_child_narrowed_to_the_parent_ceiling() {
         row.get::<String, _>("reply_thread_id"),
         created.child.reply_thread_id.as_str()
     );
-    assert_eq!(
-        row.get::<String, _>("author_participant_id"),
-        PARENT_TEAMMATE
-    );
-    assert_eq!(row.get::<String, _>("invoked_teammate_id"), HELPER);
+    assert_eq!(row.get::<String, _>("author_participant_id"), PARENT_AGENT);
+    assert_eq!(row.get::<String, _>("invoked_agent_id"), HELPER);
     assert_eq!(
         row.get::<String, _>("normalized_markdown"),
         "@Helper Check the build\n\nExpected result: A short report"
@@ -347,7 +344,7 @@ async fn delegation_refuses_a_level_below_the_depth_limit() {
         .await
         .unwrap();
     let child = start_working(&pool, &child.child.assignment_id).await;
-    let grandchild = delegate(&pool, &child, PARENT_TEAMMATE, &parent_folders(), "level-2")
+    let grandchild = delegate(&pool, &child, PARENT_AGENT, &parent_folders(), "level-2")
         .await
         .unwrap();
     let depth: i64 =
@@ -373,7 +370,7 @@ async fn delegation_refuses_a_synced_parent_whose_depth_disagrees_with_its_chain
         .await
         .unwrap();
     let child = start_working(&pool, &child.child.assignment_id).await;
-    let grandchild = delegate(&pool, &child, PARENT_TEAMMATE, &parent_folders(), "level-2")
+    let grandchild = delegate(&pool, &child, PARENT_AGENT, &parent_folders(), "level-2")
         .await
         .unwrap();
     let grandchild = start_working(&pool, &grandchild.child.assignment_id).await;
@@ -441,7 +438,7 @@ async fn delegation_refuses_the_caller_a_stranger_and_an_inactive_parent() {
     let pool = pool_with_helper().await;
     let caller = Caller::root();
     assert_eq!(
-        delegate(&pool, &caller, PARENT_TEAMMATE, &parent_folders(), "self")
+        delegate(&pool, &caller, PARENT_AGENT, &parent_folders(), "self")
             .await
             .unwrap_err(),
         DelegationRefusal::TargetUnavailable
@@ -595,7 +592,7 @@ async fn revocation_of_the_parent_run_cascades_to_its_child_and_grandchild() {
     .await
     .unwrap();
     let child = start_working(&pool, &created.child.assignment_id).await;
-    let grandchild = delegate(&pool, &child, PARENT_TEAMMATE, &parent_folders(), "level-2")
+    let grandchild = delegate(&pool, &child, PARENT_AGENT, &parent_folders(), "level-2")
         .await
         .unwrap();
     let grandchild = start_working(&pool, &grandchild.child.assignment_id).await;
@@ -1114,7 +1111,7 @@ async fn delegation_reads_show_the_child_origin_and_the_parent_delegated_work() 
         .unwrap();
     assert_eq!(children.len(), 1);
     assert_eq!(children[0].assignment_id, *child);
-    assert_eq!(children[0].teammate.id.as_str(), HELPER);
+    assert_eq!(children[0].agent.id.as_str(), HELPER);
     assert_eq!(children[0].objective, "Check the build");
     assert_eq!(children[0].reply_thread_id, created.child.reply_thread_id);
     let none = super::super::reads::read_delegated_children(&pool, &created.child.reply_thread_id)

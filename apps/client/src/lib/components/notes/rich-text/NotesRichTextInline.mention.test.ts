@@ -115,17 +115,17 @@ describe("rich-text object mention rendering", () => {
   });
 
   it("keeps people mentions as plain chips that do not navigate", () => {
-    const root = editableRoot([createUserMentionRichText(PROJECT_ID, "Teammate")]);
+    const root = editableRoot([createUserMentionRichText(PROJECT_ID, "Agent")]);
     const chip = root.querySelector("[data-notes-mention-chip]");
     expect(chip?.getAttribute("data-notes-mention-type")).toBe("user");
     expect(chip?.hasAttribute("role")).toBe(false);
-    expect(notesPlainTextFromEditableRoot(root)).toBe("Teammate");
+    expect(notesPlainTextFromEditableRoot(root)).toBe("Agent");
   });
 
   it("opens the date editor from a date chip with the stored item, but not while text is selected", () => {
     const onEdit = vi.fn<(item: NotesDateMentionRichText, anchor: HTMLElement) => void>();
     const date = createDateMentionRichText(createDateMentionValue("2026-10-12", false), "Tomorrow");
-    const root = editableRoot([date, createUserMentionRichText(PROJECT_ID, "Teammate")], onEdit);
+    const root = editableRoot([date, createUserMentionRichText(PROJECT_ID, "Agent")], onEdit);
     const [dateChip, userChip] = root.querySelectorAll<HTMLElement>("[data-notes-mention-chip]");
     expect(dateChip.getAttribute("aria-haspopup")).toBe("dialog");
     expect(userChip.hasAttribute("aria-haspopup")).toBe(false);
@@ -168,9 +168,9 @@ describe("rich-text mention previews", () => {
   });
 
   it("previews non-navigable people mentions without a route", async () => {
-    const root = editableRoot([createUserMentionRichText(PROJECT_ID, "Teammate")]);
+    const root = editableRoot([createUserMentionRichText(PROJECT_ID, "Agent")]);
     const card = await hoverPreview(root.querySelector("[data-notes-mention-chip]"));
-    expect(previewParts(card)).toEqual({ route: undefined, title: "Teammate" });
+    expect(previewParts(card)).toEqual({ route: undefined, title: "Agent" });
   });
 
   it("spells out a date mention and notes its reminder", async () => {

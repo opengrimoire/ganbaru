@@ -7,16 +7,16 @@ import type {
   ChatParticipantId,
   ChatReplyThreadId,
   ChatWorkAssignmentId,
-  ChatTeammateUsageDayRead,
+  ChatAgentUsageDayRead,
   ChatAssignmentInputEditRequest,
   ChatAssignmentInputId,
   ChatAssignmentInputRead,
   ChatAssignmentReviewRequest,
-  ChatAiTeammateRead,
+  ChatAiAgentRead,
   ChatAccessProfileRead,
   ChatAccessProfileImpactPreviewRead,
-  ChatTeammateAccessPreviewRead,
-  ChatTeammateAccessRead,
+  ChatAgentAccessPreviewRead,
+  ChatAgentAccessRead,
   ChatChannelRosterRead,
   ChatChannelMembershipRemovalPreview,
   PreviewChatChannelMembershipRemovalRequest,
@@ -36,8 +36,8 @@ import type {
   ChatChannelPageRead,
   ChatReplyThreadPageRead,
   ChatMessageSearchResultRead,
-  CreateChatTeammateRequest,
-  ReplaceChatTeammateAccessRequest,
+  CreateChatAgentRequest,
+  ReplaceChatAgentAccessRequest,
   CreateChatAccessProfileRequest,
   DuplicateChatAccessProfileRequest,
   PublishChatAccessProfileRevisionRequest,
@@ -58,15 +58,15 @@ import type {
 } from "$lib/chat/contracts";
 import {
   parseChatChannel,
-  parseChatTeammateUsageDay,
+  parseChatAgentUsageDay,
   parseChatChannels,
-  parseChatAiTeammate,
-  parseChatAiTeammates,
+  parseChatAiAgent,
+  parseChatAiAgents,
   parseChatAccessProfiles,
   parseChatAccessProfile,
   parseChatAccessProfileImpactPreview,
-  parseChatTeammateAccess,
-  parseChatTeammateAccessPreview,
+  parseChatAgentAccess,
+  parseChatAgentAccessPreview,
   parseChatChannelRoster,
   parseChatChannelMembershipRemovalPreview,
   parseChatAssignmentTargets,
@@ -153,15 +153,15 @@ export async function setChatChannelRead(channelId: ChatChannelId, read: boolean
   }));
 }
 
-export async function listChatTeammates(archived = false): Promise<ChatAiTeammateRead[]> {
-  return parseChatAiTeammates(await invoke<unknown>("chat_list_teammates", {
+export async function listChatAgents(archived = false): Promise<ChatAiAgentRead[]> {
+  return parseChatAiAgents(await invoke<unknown>("chat_list_agents", {
     dbUrl: await ensureDbUrl(), archived,
   }));
 }
 
-export async function readChatTeammate(teammateId: ChatParticipantId): Promise<ChatAiTeammateRead> {
-  return parseChatAiTeammate(await invoke<unknown>("chat_read_teammate", {
-    dbUrl: await ensureDbUrl(), teammateId,
+export async function readChatAgent(agentId: ChatParticipantId): Promise<ChatAiAgentRead> {
+  return parseChatAiAgent(await invoke<unknown>("chat_read_agent", {
+    dbUrl: await ensureDbUrl(), agentId,
   }));
 }
 
@@ -212,43 +212,43 @@ export async function archiveChatAccessProfile(
   }));
 }
 
-export async function readChatTeammateAccess(
-  teammateId: ChatParticipantId,
-): Promise<ChatTeammateAccessRead> {
-  return parseChatTeammateAccess(await invoke<unknown>("chat_read_teammate_access", {
-    dbUrl: await ensureDbUrl(), teammateId,
+export async function readChatAgentAccess(
+  agentId: ChatParticipantId,
+): Promise<ChatAgentAccessRead> {
+  return parseChatAgentAccess(await invoke<unknown>("chat_read_agent_access", {
+    dbUrl: await ensureDbUrl(), agentId,
   }));
 }
 
-export async function previewChatTeammateAccess(
-  request: ReplaceChatTeammateAccessRequest,
-): Promise<ChatTeammateAccessPreviewRead> {
-  return parseChatTeammateAccessPreview(await invoke<unknown>("chat_preview_teammate_access", {
+export async function previewChatAgentAccess(
+  request: ReplaceChatAgentAccessRequest,
+): Promise<ChatAgentAccessPreviewRead> {
+  return parseChatAgentAccessPreview(await invoke<unknown>("chat_preview_agent_access", {
     dbUrl: await ensureDbUrl(), request,
   }));
 }
 
-export async function replaceChatTeammateAccess(
-  request: ReplaceChatTeammateAccessRequest,
-): Promise<ChatTeammateAccessRead> {
-  return parseChatTeammateAccess(await invoke<unknown>("chat_replace_teammate_access", {
+export async function replaceChatAgentAccess(
+  request: ReplaceChatAgentAccessRequest,
+): Promise<ChatAgentAccessRead> {
+  return parseChatAgentAccess(await invoke<unknown>("chat_replace_agent_access", {
     dbUrl: await ensureDbUrl(), request,
   }));
 }
 
-export async function createChatTeammate(request: CreateChatTeammateRequest): Promise<ChatAiTeammateRead> {
-  return parseChatAiTeammate(await invoke<unknown>("chat_create_teammate", {
+export async function createChatAgent(request: CreateChatAgentRequest): Promise<ChatAiAgentRead> {
+  return parseChatAiAgent(await invoke<unknown>("chat_create_agent", {
     dbUrl: await ensureDbUrl(), request,
   }));
 }
 
-export async function archiveChatTeammate(
-  teammateId: ChatParticipantId,
+export async function archiveChatAgent(
+  agentId: ChatParticipantId,
   expectedRevision: number,
   archived: boolean,
-): Promise<ChatAiTeammateRead> {
-  return parseChatAiTeammate(await invoke<unknown>("chat_archive_teammate", {
-    dbUrl: await ensureDbUrl(), teammateId, expectedRevision, archived,
+): Promise<ChatAiAgentRead> {
+  return parseChatAiAgent(await invoke<unknown>("chat_archive_agent", {
+    dbUrl: await ensureDbUrl(), agentId, expectedRevision, archived,
   }));
 }
 
@@ -270,11 +270,11 @@ export async function listChatAssignmentTargets(
 }
 
 export async function listChatScratchScopes(
-  teammateId: ChatParticipantId | null = null,
+  agentId: ChatParticipantId | null = null,
   replyThreadId: ChatReplyThreadId | null = null,
 ): Promise<ChatScratchScopeRead[]> {
   return parseChatScratchScopes(await invoke<unknown>("chat_list_scratch_scopes", {
-    dbUrl: await ensureDbUrl(), teammateId, replyThreadId,
+    dbUrl: await ensureDbUrl(), agentId, replyThreadId,
   }));
 }
 
@@ -556,7 +556,7 @@ export async function listChatAssignmentInputs(assignmentId: ChatWorkAssignmentI
   }));
 }
 
-/** Replaces the text of a reply that has not reached the teammate yet. */
+/** Replaces the text of a reply that has not reached the agent yet. */
 export async function editChatAssignmentInput(
   inputId: ChatAssignmentInputId,
   edit: ChatAssignmentInputEditRequest,
@@ -566,7 +566,7 @@ export async function editChatAssignmentInput(
   }));
 }
 
-/** Cancels a reply that has not reached the teammate yet, keeping it in the thread. */
+/** Cancels a reply that has not reached the agent yet, keeping it in the thread. */
 export async function cancelChatAssignmentInput(inputId: ChatAssignmentInputId): Promise<ChatAssignmentInputRead> {
   return parseChatAssignmentInput(await invoke<unknown>("chat_cancel_assignment_input", {
     dbUrl: await ensureDbUrl(), inputId,
@@ -583,7 +583,7 @@ export async function setChatAssignmentInputHeld(
   }));
 }
 
-/** Sends one waiting reply into the teammate's current turn now, resuming it when held. */
+/** Sends one waiting reply into the agent's current turn now, resuming it when held. */
 export async function steerChatAssignmentInput(inputId: ChatAssignmentInputId): Promise<ChatAssignmentInputRead> {
   return parseChatAssignmentInput(await invoke<unknown>("chat_steer_assignment_input", {
     dbUrl: await ensureDbUrl(), inputId,
@@ -606,15 +606,15 @@ export async function reorderChatAssignmentInputs(
   }));
 }
 
-/** Reads a teammate's usage per local day from `fromDate` to `toDate` (`YYYY-MM-DD`, both included). */
-export async function readChatTeammateUsage(
-  teammateId: ChatParticipantId,
+/** Reads an agent's usage per local day from `fromDate` to `toDate` (`YYYY-MM-DD`, both included). */
+export async function readChatAgentUsage(
+  agentId: ChatParticipantId,
   fromDate: string,
   toDate: string,
-): Promise<ChatTeammateUsageDayRead[]> {
-  const days = await invoke<unknown>("chat_read_teammate_usage", {
-    dbUrl: await ensureDbUrl(), teammateId, fromDate, toDate,
+): Promise<ChatAgentUsageDayRead[]> {
+  const days = await invoke<unknown>("chat_read_agent_usage", {
+    dbUrl: await ensureDbUrl(), agentId, fromDate, toDate,
   });
-  if (!Array.isArray(days)) throw new Error("Chat teammate usage must be an array");
-  return days.map((day: unknown, index) => parseChatTeammateUsageDay(day, `Chat teammate usage day ${index}`));
+  if (!Array.isArray(days)) throw new Error("Chat agent usage must be an array");
+  return days.map((day: unknown, index) => parseChatAgentUsageDay(day, `Chat agent usage day ${index}`));
 }

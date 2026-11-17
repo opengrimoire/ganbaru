@@ -1,10 +1,10 @@
-//! Push requests a teammate posts and a person confirms.
+//! Push requests an agent posts and a person confirms.
 //!
 //! A confirmation pushes only while the request is open, the asking run's publish grant still
 //! holds, the folder's repository configuration chooses nothing about how Git connects, and a
 //! fresh read of the folder names the recorded commit, remote, destination, push URL, and Git
 //! configuration, and for a request with a commit the recorded working tree. It then answers the
-//! request with a reply by the local person that mentions the teammate, whose ids derive from the
+//! request with a reply by the local person that mentions the agent, whose ids derive from the
 //! request, so confirming one request on two devices posts one reply.
 
 use super::{PostOutcome, chat_pool, identifier_error, persistence_error, post_message};
@@ -60,15 +60,15 @@ enum PushAuthority {
 /// What lets a push request push without a person confirming it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StandingPermission {
-    /// An active approval names the teammate, folder, push URL, and destination branch, and
-    /// still records the run's approval policy and the teammate's safety mode.
+    /// An active approval names the agent, folder, push URL, and destination branch, and
+    /// still records the run's approval policy and the agent's safety mode.
     Approval,
     /// The asking run's grant resolved to the unattended approval policy.
     FullAccess,
 }
 
 impl StandingPermission {
-    /// The reply the push posts after the teammate mention.
+    /// The reply the push posts after the agent mention.
     const fn reply(self) -> &'static str {
         match self {
             Self::Approval => STANDING_APPROVAL_REPLY,
@@ -77,10 +77,10 @@ impl StandingPermission {
     }
 }
 
-/// Pushes the commit a teammate's open push request names and answers the request with
-/// `request.normalized_markdown` after a mention of the teammate. When
+/// Pushes the commit an agent's open push request names and answers the request with
+/// `request.normalized_markdown` after a mention of the agent. When
 /// `request.remember_approval` is set and the push succeeds, later matching requests of the
-/// teammate push without asking.
+/// agent push without asking.
 ///
 /// # Errors
 ///
@@ -268,7 +268,7 @@ async fn release_claim(pool: &SqlitePool, claim: &ClaimedPush<'_>) {
 }
 
 /// What lets the open request `stored` push without a person, given the asking run's publish
-/// `source`, or `None` when a person must confirm it. An archived or removed teammate never
+/// `source`, or `None` when a person must confirm it. An archived or removed agent never
 /// pushes on its own.
 ///
 /// # Errors
@@ -279,7 +279,7 @@ async fn standing_permission(
     stored: &StoredPushRequest,
     source: &InternalMcpFolderSource,
 ) -> ChatResult<Option<StandingPermission>> {
-    if stored.teammate_name.is_none() {
+    if stored.agent_name.is_none() {
         return Ok(None);
     }
     if source.runtime_approval_policy == ChatRuntimeApprovalPolicy::Unattended {
@@ -288,14 +288,14 @@ async fn standing_permission(
     let approved: bool = sqlx::query_scalar(
         "SELECT EXISTS(
            SELECT 1 FROM chat_push_approvals approval
-           JOIN chat_teammates teammate ON teammate.participant_id = approval.teammate_id
-           WHERE approval.teammate_id = ? AND approval.working_folder_id = ?
+           JOIN chat_agents agent ON agent.participant_id = approval.agent_id
+           WHERE approval.agent_id = ? AND approval.working_folder_id = ?
              AND approval.push_url = ? AND approval.destination_branch = ?
              AND approval.revoked_at IS NULL AND approval.runtime_approval_policy = ?
-             AND approval.safety_mode = teammate.current_policy_safety_mode
+             AND approval.safety_mode = agent.current_policy_safety_mode
          )",
     )
-    .bind(&stored.teammate_id)
+    .bind(&stored.agent_id)
     .bind(&stored.request.working_folder_id)
     .bind(&stored.request.target.push_url)
     .bind(&stored.request.target.destination_branch)
@@ -308,10 +308,10 @@ async fn standing_permission(
     Ok(approved.then_some(StandingPermission::Approval))
 }
 
-/// Records, after a person's confirmed push succeeded, that later pushes of the teammate from
+/// Records, after a person's confirmed push succeeded, that later pushes of the agent from
 /// the folder to the same push URL and destination branch need no confirmation while the run's
-/// approval policy `source` resolved to and the teammate's current safety mode stay the same.
-/// Approving again clears an earlier revocation. A teammate without a current policy gets no
+/// approval policy `source` resolved to and the agent's current safety mode stay the same.
+/// Approving again clears an earlier revocation. An agent without a current policy gets no
 /// approval.
 ///
 /// # Errors
@@ -327,7 +327,7 @@ async fn remember_push_approval(
     let sync_key = derived_id(
         PUSH_APPROVAL_KEY_PREFIX,
         &[
-            &stored.teammate_id,
+            &stored.agent_id,
             &request.working_folder_id,
             &request.target.push_url,
             &request.target.destination_branch,
@@ -336,12 +336,12 @@ async fn remember_push_approval(
     let now = now_timestamp()?;
     sqlx::query(
         "INSERT INTO chat_push_approvals
-            (teammate_id, working_folder_id, push_url, destination_branch, sync_key,
+            (agent_id, working_folder_id, push_url, destination_branch, sync_key,
              runtime_approval_policy, safety_mode, approved_by_participant_id, approved_at)
-         SELECT teammate.participant_id, ?, ?, ?, ?, ?, teammate.current_policy_safety_mode, ?, ?
-         FROM chat_teammates teammate
-         WHERE teammate.participant_id = ? AND teammate.current_policy_safety_mode IS NOT NULL
-         ON CONFLICT (teammate_id, working_folder_id, push_url, destination_branch) DO UPDATE SET
+         SELECT agent.participant_id, ?, ?, ?, ?, ?, agent.current_policy_safety_mode, ?, ?
+         FROM chat_agents agent
+         WHERE agent.participant_id = ? AND agent.current_policy_safety_mode IS NOT NULL
+         ON CONFLICT (agent_id, working_folder_id, push_url, destination_branch) DO UPDATE SET
              runtime_approval_policy = excluded.runtime_approval_policy,
              safety_mode = excluded.safety_mode,
              approved_by_participant_id = excluded.approved_by_participant_id,
@@ -356,7 +356,7 @@ async fn remember_push_approval(
     ))
     .bind(super::LOCAL_PARTICIPANT_ID)
     .bind(now.as_str())
-    .bind(&stored.teammate_id)
+    .bind(&stored.agent_id)
     .execute(pool)
     .await
     .map_err(persistence_error)?;
@@ -400,7 +400,7 @@ pub(in crate::chat::organization) async fn read_push_request_states(
 /// folder's mutation guard, and pushes the recorded commit when nothing changed. A request with a
 /// commit also needs the working tree to record the same tree, author, signing, and paths; the
 /// commit is made on the recorded commit and pushed, and the local branch then moves to it. Every
-/// run is a confirmed teammate request, so it never runs the folder's repository programs or
+/// run is a confirmed agent request, so it never runs the folder's repository programs or
 /// hooks and needs no trust decision for the folder's Git configuration.
 ///
 /// `claim` records the commit before it is pushed and marks it pushed after. When `interrupted`
@@ -588,12 +588,12 @@ async fn publish_source(
     })
 }
 
-/// The reply that answers the request `item_id`: `text` after a mention of the asking teammate,
+/// The reply that answers the request `item_id`: `text` after a mention of the asking agent,
 /// in the request's reply thread, under ids derived from the request.
 ///
 /// # Errors
 ///
-/// Returns a validation error for empty text, and a conflict when the teammate was removed.
+/// Returns a validation error for empty text, and a conflict when the agent was removed.
 fn confirmation_post(
     stored: &StoredPushRequest,
     item_id: &str,
@@ -606,31 +606,30 @@ fn confirmation_post(
             "Message content is required",
         ));
     }
-    let teammate_name = stored.teammate_name.clone().ok_or_else(|| {
+    let agent_name = stored.agent_name.clone().ok_or_else(|| {
         ChatError::new(
             ChatErrorCode::Conflict,
-            "The teammate that requested this push was removed",
+            "The agent that requested this push was removed",
             false,
         )
     })?;
-    let mention = format!("@{teammate_name}");
-    let end_offset = u64::try_from(mention.len()).map_err(|_| {
-        ChatError::validation("normalizedMarkdown", "The teammate name is too long")
-    })?;
+    let mention = format!("@{agent_name}");
+    let end_offset = u64::try_from(mention.len())
+        .map_err(|_| ChatError::validation("normalizedMarkdown", "The agent name is too long"))?;
     let normalized_markdown = format!("{mention} {text}");
     let derived = |prefix: &str| push_confirmation_id(prefix, item_id);
     let reference = ChatMessageReference::Participant {
         metadata: ChatReferenceMetadata {
             reference_id: ChatMessageReferenceId::new(derived(PUSH_CONFIRMATION_REFERENCE_PREFIX)?)
                 .map_err(identifier_error)?,
-            label_snapshot: teammate_name,
+            label_snapshot: agent_name,
             start_offset: 0,
             end_offset,
             plain_text_projection: mention,
         },
-        participant_id: ChatParticipantId::new(stored.teammate_id.clone())
+        participant_id: ChatParticipantId::new(stored.agent_id.clone())
             .map_err(identifier_error)?,
-        participant_kind: ChatParticipantKind::AiTeammate,
+        participant_kind: ChatParticipantKind::AiAgent,
     };
     Ok(PostChatMessageCommand {
         client_command_id: ChatCommandId::new(derived("command")?).map_err(identifier_error)?,
@@ -654,7 +653,7 @@ fn confirmation_post(
 fn publish_denied() -> ChatError {
     ChatError::new(
         ChatErrorCode::Permission,
-        "The teammate may no longer publish from this folder",
+        "The agent may no longer publish from this folder",
         false,
     )
 }

@@ -955,7 +955,7 @@ fn launch_settings_merge_into_one_object_or_none() {
 }
 
 #[test]
-fn teammate_launch_settings_carry_user_preferences_below_ganbaru_keys() {
+fn agent_launch_settings_carry_user_preferences_below_ganbaru_keys() {
     let user_settings = json!({ "language": "Spanish", "alwaysThinkingEnabled": false });
     let user_settings = user_settings.as_object().unwrap();
     let settings = launch_settings(

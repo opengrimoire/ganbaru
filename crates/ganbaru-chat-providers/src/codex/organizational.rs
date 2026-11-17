@@ -59,7 +59,7 @@ const DISABLED_ORGANIZATIONAL_FEATURES: &[&str] = &[
     "workspace_dependencies",
 ];
 /// OpenTelemetry exporters an organizational run turns off. They send turn activity to a
-/// destination the user configured for their own sessions, outside the scope a teammate holds.
+/// destination the user configured for their own sessions, outside the scope an agent holds.
 const DISABLED_TELEMETRY_EXPORTERS: &[&str] = &["exporter", "trace_exporter", "metrics_exporter"];
 /// Codex features that load a shell tool, off unless the scope runs commands.
 const SHELL_FEATURES: &[&str] = &["shell_tool", "unified_exec"];

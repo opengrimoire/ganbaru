@@ -3,7 +3,7 @@ use super::toolchains::{self, ToolchainGrants};
 use super::*;
 use ganbaru_sandbox::NetworkAccess;
 
-/// Teammate provider named in refusals by these tests.
+/// Agent provider named in refusals by these tests.
 const PROVIDER: &str = "Grok";
 
 #[test]

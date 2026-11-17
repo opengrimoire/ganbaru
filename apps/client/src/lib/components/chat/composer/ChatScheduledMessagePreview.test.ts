@@ -66,7 +66,7 @@ describe("ChatScheduledMessagePreview", () => {
     const mention: ChatMessageReference = {
       kind: "participant",
       participantId: "participant:atlas",
-      participantKind: "ai_teammate",
+      participantKind: "ai_agent",
       metadata: { referenceId: "reference:atlas", labelSnapshot: "Atlas", startOffset: 0, endOffset: 6, plainTextProjection: "@Atlas" },
     };
     const root = mountPreview(scheduledMessage({ normalizedMarkdown: "@Atlas ship the **release**", references: [mention] }));

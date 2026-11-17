@@ -14,14 +14,14 @@ export const CHAT_MAX_CHANNEL_NOTE_CHARS = 1_000;
 /** Most note proposals one state read may name. */
 export const CHAT_MAX_NOTE_PROPOSAL_STATE_READS = 200;
 
-/** A live note people keep for every teammate working in one channel. */
+/** A live note people keep for every agent working in one channel. */
 export interface ChatChannelNoteRead {
   id: ChatChannelNoteId;
   channelId: ChatChannelId;
   body: string;
-  /** The teammate proposal the note was saved from, when it came from one. */
+  /** The agent proposal the note was saved from, when it came from one. */
   sourceItemId: ChatConversationItemId | null;
-  /** The teammate that proposed the note, when it came from a proposal. */
+  /** The agent that proposed the note, when it came from a proposal. */
   proposedBy: ChatParticipantId | null;
   /** The person who last saved the note, or `null` when that person was removed. */
   editedBy: ChatParticipantId | null;
@@ -52,14 +52,14 @@ export interface DeleteChatChannelNoteRequest {
   expectedRevision: number;
 }
 
-/** A person saves a teammate's note proposal, with `body` replacing the suggested text when given. */
+/** A person saves an agent's note proposal, with `body` replacing the suggested text when given. */
 export interface AcceptChatNoteProposalRequest {
   clientCommandId: ChatCommandId;
   itemId: ChatConversationItemId;
   body?: string;
 }
 
-/** A person declines a teammate's note proposal on every device. */
+/** A person declines an agent's note proposal on every device. */
 export interface DismissChatNoteProposalRequest {
   clientCommandId: ChatCommandId;
   itemId: ChatConversationItemId;

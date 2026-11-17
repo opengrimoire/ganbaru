@@ -35,7 +35,7 @@ export function summarizePlanProgress(steps: readonly PlanStep[]): PlanProgressS
 }
 
 /**
- * Reads the steps of the latest structured plan update a teammate posted for one assignment.
+ * Reads the steps of the latest structured plan update an agent posted for one assignment.
  *
  * Plan updates reach a reply thread as replicated agent update replies, so every linked device reads
  * the same plan. Proposed plans carry no steps and are skipped.

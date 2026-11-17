@@ -35,8 +35,8 @@
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
 
   /**
-   * The notes people keep for every teammate working in a channel, opened from the members panel. People
-   * add, reword, and delete notes here; teammates only suggest them in their reply threads.
+   * The notes people keep for every agent working in a channel, opened from the members panel. People
+   * add, reword, and delete notes here; agents only suggest them in their reply threads.
    */
   let {
     anchor = null,
@@ -67,7 +67,7 @@
   const nameSources = $derived<ChannelNoteNameSources>({
     participants: [
       ...channel.memberships.map((membership) => membership.participant),
-      ...chat.teammates.map((teammate) => teammate.participant),
+      ...chat.agents.map((agent) => agent.participant),
     ],
     localProfileDisplayName: preferences.profileDisplayName,
     localFallback: t("contacts.you"),

@@ -9,14 +9,14 @@ import { notifyChatSyncChanged } from "./sync-events";
 /** Replicated Chat tables, as sync names them in applied notices, conflicts, and recovery offers. */
 export const CHAT_SYNC_TABLES: readonly string[] = [
   "chat_participants",
-  "chat_teammates",
-  "chat_teammate_policy_revisions",
+  "chat_agents",
+  "chat_agent_policy_revisions",
   "chat_access_profiles",
   "chat_access_profile_revisions",
   "chat_conversations",
   "chat_conversation_memberships",
-  "chat_teammate_channel_memberships",
-  "chat_teammate_working_folder_grants",
+  "chat_agent_channel_memberships",
+  "chat_agent_working_folder_grants",
   "chat_channels",
   "chat_reply_threads",
   "chat_conversation_items",
@@ -51,9 +51,9 @@ const TABLE_PRESENTATIONS: Readonly<Record<string, SyncTablePresentation>> = {
     conflicts: (t, count) => t("chat.sync.participantConflicts", count),
     recovery: discardOnly((t) => t("chat.sync.participantUntitled")),
   },
-  chat_teammates: {
-    conflicts: (t, count) => t("chat.sync.teammateConflicts", count),
-    recovery: discardOnly((t) => t("chat.sync.teammateUntitled")),
+  chat_agents: {
+    conflicts: (t, count) => t("chat.sync.agentConflicts", count),
+    recovery: discardOnly((t) => t("chat.sync.agentUntitled")),
   },
   chat_conversations: { recovery: discardOnly((t) => t("chat.sync.channelUntitled")) },
   chat_channels: {

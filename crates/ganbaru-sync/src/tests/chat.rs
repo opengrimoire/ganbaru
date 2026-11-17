@@ -1,6 +1,6 @@
-//! Chat identity and policy across replicas: participants, teammates, and access profiles
+//! Chat identity and policy across replicas: participants, agents, and access profiles
 //! arrive with their revisions, a crash while sealing or applying them leaves nothing partial,
-//! and concurrent edits of a teammate's current policy or a profile's current revision keep the
+//! and concurrent edits of an agent's current policy or a profile's current revision keep the
 //! more restrictive one whatever order the replicas exchange in. Conversations, channels,
 //! memberships, AI channel access, and working folder grants follow them: a concurrent removal or
 //! revocation wins over a concurrent widening, and a later re-add that saw the removal wins over
@@ -42,7 +42,7 @@ use crate::validate;
 use crate::{Engine, HoldReason, MAX_UNSEEN_PRESENTATIONS, StoreOutcome, SyncError, SyncResult};
 
 const SALT: u64 = 73;
-const TEAMMATE: &str = "participant:reviewer";
+const AGENT: &str = "participant:reviewer";
 const PROFILE: &str = "access-profile:reviewers";
 const CREATED: &str = "2026-10-24T09:00:00.000Z";
 
@@ -52,7 +52,7 @@ const POLICY_SEEDS: u64 = 8;
 /// Edit rounds of one policy scenario.
 const POLICY_ROUNDS: usize = 4;
 
-/// Teammate safety modes, least restrictive first, as the adapter ranks them. Custom defers to the
+/// Agent safety modes, least restrictive first, as the adapter ranks them. Custom defers to the
 /// provider's own configuration, which can grant anything, so it ranks lowest.
 const SAFETY_MODES: [&str; 4] = [
     "custom",
@@ -192,7 +192,7 @@ fn builtin_key_claim_leaves_referrers_of_the_seeded_row_visible() {
         assert_eq!(
             receiver
                 .count(&format!(
-                    "SELECT count(*) FROM chat_teammate_channel_memberships
+                    "SELECT count(*) FROM chat_agent_channel_memberships
                      WHERE access_profile_id = {}",
                     quoted(SEEDED)
                 ))
@@ -227,33 +227,33 @@ fn at(minute: usize, second: usize) -> String {
     )
 }
 
-/// SQL creating [`TEAMMATE`] with an avatar and a home device.
-fn teammate_sql() -> String {
+/// SQL creating [`AGENT`] with an avatar and a home device.
+fn agent_sql() -> String {
     format!(
         "INSERT INTO chat_participants
             (id, participant_kind, display_name, avatar_data, created_at, updated_at)
-         VALUES ({teammate}, 'ai_teammate', 'Reviewer', {avatar}, {created}, {created});
-         INSERT INTO chat_teammates
+         VALUES ({agent}, 'ai_agent', 'Reviewer', {avatar}, {created}, {created});
+         INSERT INTO chat_agents
             (participant_id, role, instructions, home_device_id, created_at, updated_at)
-         VALUES ({teammate}, 'Reviews changes', 'Be brief', 'device-0', {created}, {created});",
-        teammate = quoted(TEAMMATE),
+         VALUES ({agent}, 'Reviews changes', 'Be brief', 'device-0', {created}, {created});",
+        agent = quoted(AGENT),
         avatar = quoted(r#"{"kind":"emoji","emoji":"R"}"#),
         created = quoted(CREATED),
     )
 }
 
-/// SQL adding policy revision `id` of [`TEAMMATE`] with `safety` and making it current.
+/// SQL adding policy revision `id` of [`AGENT`] with `safety` and making it current.
 fn policy_sql(id: &str, safety: &str, created_at: &str) -> String {
     format!(
-        "INSERT INTO chat_teammate_policy_revisions
-            (id, teammate_id, provider_instance_id, model_selection_data, safety_mode, created_at)
-         VALUES ({id}, {teammate}, 'codex-personal', '{{}}', {safety}, {created_at});
-         UPDATE chat_teammates
+        "INSERT INTO chat_agent_policy_revisions
+            (id, agent_id, provider_instance_id, model_selection_data, safety_mode, created_at)
+         VALUES ({id}, {agent}, 'codex-personal', '{{}}', {safety}, {created_at});
+         UPDATE chat_agents
          SET current_policy_revision_id = {id}, current_policy_safety_mode = {safety},
              updated_at = {created_at}
-         WHERE participant_id = {teammate};",
+         WHERE participant_id = {agent};",
         id = quoted(id),
-        teammate = quoted(TEAMMATE),
+        agent = quoted(AGENT),
         safety = quoted(safety),
         created_at = quoted(created_at),
     )
@@ -287,12 +287,12 @@ fn profile_revision_sql(id: &str, capability: &str, created_at: &str) -> String 
     )
 }
 
-/// The identity rows every scenario starts from: the teammate with its first policy and the
+/// The identity rows every scenario starts from: the agent with its first policy and the
 /// profile with its first revision.
 fn identity_sql() -> String {
     format!(
         "{}{}{}{}",
-        teammate_sql(),
+        agent_sql(),
         policy_sql("policy-0", "approve_for_me", CREATED),
         profile_sql(),
         profile_revision_sql("profile-revision-0", "edit", CREATED),
@@ -311,21 +311,21 @@ async fn assert_converged(replicas: &mut [Replica]) {
     }
 }
 
-/// The current policy safety mode of [`TEAMMATE`] and the safety mode of the revision it names.
+/// The current policy safety mode of [`AGENT`] and the safety mode of the revision it names.
 async fn current_policy(replica: &mut Replica) -> (String, String) {
     let copied = replica
         .scalar_text(
-            "SELECT current_policy_safety_mode FROM chat_teammates
+            "SELECT current_policy_safety_mode FROM chat_agents
              WHERE participant_id = 'participant:reviewer'",
         )
         .await
-        .expect("the teammate names a policy");
+        .expect("the agent names a policy");
     let named = replica
         .scalar_text(
-            "SELECT policy.safety_mode FROM chat_teammates teammate
-             JOIN chat_teammate_policy_revisions policy
-               ON policy.id = teammate.current_policy_revision_id
-             WHERE teammate.participant_id = 'participant:reviewer'",
+            "SELECT policy.safety_mode FROM chat_agents agent
+             JOIN chat_agent_policy_revisions policy
+               ON policy.id = agent.current_policy_revision_id
+             WHERE agent.participant_id = 'participant:reviewer'",
         )
         .await
         .expect("the named policy arrived");
@@ -384,7 +384,7 @@ fn chat_identity_rows_round_trip_with_every_replicated_value() {
                     "SELECT display_name || ' ' || avatar_data || ' ' || role || ' '
                             || instructions || ' ' || home_device_id
                      FROM chat_participants participant
-                     JOIN chat_teammates teammate ON teammate.participant_id = participant.id
+                     JOIN chat_agents agent ON agent.participant_id = participant.id
                      WHERE participant.id = 'participant:reviewer'",
                 )
                 .await
@@ -404,7 +404,7 @@ fn chat_identity_rows_round_trip_with_every_replicated_value() {
             reader
                 .scalar_text(
                     "SELECT group_concat(id || '=' || revision, ' ')
-                     FROM (SELECT id, revision FROM chat_teammate_policy_revisions_numbered
+                     FROM (SELECT id, revision FROM chat_agent_policy_revisions_numbered
                            ORDER BY revision)",
                 )
                 .await
@@ -413,7 +413,7 @@ fn chat_identity_rows_round_trip_with_every_replicated_value() {
         );
         assert_eq!(
             reader
-                .scalar_text("SELECT id || '=' || revision FROM chat_teammate_effective_policies",)
+                .scalar_text("SELECT id || '=' || revision FROM chat_agent_effective_policies",)
                 .await
                 .as_deref(),
             Some("policy-1=2")
@@ -474,7 +474,9 @@ fn chat_a_crash_while_sealing_or_applying_identity_rows_leaves_nothing_partial()
         reader.receive(&ops).await;
         assert_eq!(
             reader
-                .count("SELECT count(*) FROM chat_teammates WHERE participant_id = 'participant:reviewer'")
+                .count(
+                    "SELECT count(*) FROM chat_agents WHERE participant_id = 'participant:reviewer'"
+                )
                 .await,
             0
         );
@@ -528,7 +530,7 @@ fn chat_concurrent_current_revisions_keep_the_more_restrictive_one() {
             // Both revisions arrived and keep their display numbers.
             assert_eq!(
                 replica
-                    .count("SELECT count(*) FROM chat_teammate_policy_revisions")
+                    .count("SELECT count(*) FROM chat_agent_policy_revisions")
                     .await,
                 3
             );
@@ -613,20 +615,20 @@ fn chat_device_local_rows_stay_on_their_device() {
         let mut replicas = replicas(2).await;
         replicas[0].exec(&identity_sql()).await;
         let before = replicas[1]
-            .count("SELECT count(*) FROM chat_teammate_access_state")
+            .count("SELECT count(*) FROM chat_agent_access_state")
             .await;
         converge(&mut replicas).await;
         // The command trigger created access state on the author only; the applier stands it
         // down, so the reader's state comes from the Chat hook the app registers.
         assert_eq!(
             replicas[0]
-                .count("SELECT count(*) FROM chat_teammate_access_state")
+                .count("SELECT count(*) FROM chat_agent_access_state")
                 .await,
             1
         );
         assert_eq!(
             replicas[1]
-                .count("SELECT count(*) FROM chat_teammate_access_state")
+                .count("SELECT count(*) FROM chat_agent_access_state")
                 .await,
             before
         );
@@ -649,7 +651,7 @@ const ACCESS_ROUNDS: usize = 4;
 const ROLES: [&str; 2] = ["owner", "member"];
 
 /// Runtime approval overrides, least restrictive first, as the adapter ranks them; `None`
-/// inherits the teammate's policy, which an override can only narrow.
+/// inherits the agent's policy, which an override can only narrow.
 const APPROVALS: [Option<&str>; 5] = [
     None,
     Some("provider_custom"),
@@ -668,8 +670,8 @@ fn optional(text: Option<&str>) -> String {
     text.map_or_else(|| "NULL".to_owned(), quoted)
 }
 
-/// SQL creating [`CONVERSATION`] with its channel, the owner and [`TEAMMATE`] as members,
-/// [`TEAMMATE`]'s AI channel access through [`PROFILE`], and its default `edit` grant on
+/// SQL creating [`CONVERSATION`] with its channel, the owner and [`AGENT`] as members,
+/// [`AGENT`]'s AI channel access through [`PROFILE`], and its default `edit` grant on
 /// [`FOLDER`]. It needs the rows of [`identity_sql`].
 fn conversation_sql() -> String {
     conversation_on(PROJECT, FOLDER)
@@ -691,68 +693,65 @@ fn conversation_on(project: &str, folder: &str) -> String {
          INSERT INTO chat_conversation_memberships
             (conversation_id, participant_id, sync_key, membership_role, created_at, updated_at)
          VALUES ({conversation}, {owner}, {owner_key}, 'owner', {created}, {created}),
-                ({conversation}, {teammate}, {teammate_key}, 'member', {created}, {created});
-         INSERT INTO chat_teammate_channel_memberships
-            (conversation_id, teammate_id, sync_key, access_profile_id, read_history,
+                ({conversation}, {agent}, {agent_key}, 'member', {created}, {created});
+         INSERT INTO chat_agent_channel_memberships
+            (conversation_id, agent_id, sync_key, access_profile_id, read_history,
              participate, created_at, updated_at)
-         VALUES ({conversation}, {teammate}, {access_key}, {profile}, 1, 1, {created}, {created});
-         INSERT INTO chat_teammate_working_folder_grants
-            (conversation_id, teammate_id, working_folder_id, sync_key, project_id, capability,
+         VALUES ({conversation}, {agent}, {access_key}, {profile}, 1, 1, {created}, {created});
+         INSERT INTO chat_agent_working_folder_grants
+            (conversation_id, agent_id, working_folder_id, sync_key, project_id, capability,
              is_default, created_at)
-         VALUES ({conversation}, {teammate}, {folder}, {grant_key}, {project}, 'edit', 1,
+         VALUES ({conversation}, {agent}, {folder}, {grant_key}, {project}, 'edit', 1,
                  {created});",
         conversation = quoted(CONVERSATION),
         channel = quoted(CHANNEL),
         project = quoted(project),
         folder = quoted(folder),
         owner = quoted(OWNER),
-        teammate = quoted(TEAMMATE),
+        agent = quoted(AGENT),
         profile = quoted(PROFILE),
         created = quoted(CREATED),
         owner_key = quoted(&key(MEMBERSHIP_KEY_PREFIX, &[CONVERSATION, OWNER])),
-        teammate_key = quoted(&key(MEMBERSHIP_KEY_PREFIX, &[CONVERSATION, TEAMMATE])),
-        access_key = quoted(&key(
-            CHANNEL_MEMBERSHIP_KEY_PREFIX,
-            &[CONVERSATION, TEAMMATE]
-        )),
+        agent_key = quoted(&key(MEMBERSHIP_KEY_PREFIX, &[CONVERSATION, AGENT])),
+        access_key = quoted(&key(CHANNEL_MEMBERSHIP_KEY_PREFIX, &[CONVERSATION, AGENT])),
         grant_key = quoted(&key(
             FOLDER_GRANT_KEY_PREFIX,
-            &[CONVERSATION, TEAMMATE, folder]
+            &[CONVERSATION, AGENT, folder]
         )),
     )
 }
 
-/// SQL setting [`TEAMMATE`]'s grant to `capability` with `approval`, revoked at `revoked_at`
+/// SQL setting [`AGENT`]'s grant to `capability` with `approval`, revoked at `revoked_at`
 /// when given.
 fn grant_sql(capability: &str, approval: Option<&str>, revoked_at: Option<&str>) -> String {
     format!(
-        "UPDATE chat_teammate_working_folder_grants
+        "UPDATE chat_agent_working_folder_grants
          SET capability = {capability}, runtime_approval_policy = {approval},
              revoked_at = {revoked_at}, revision = revision + 1
-         WHERE teammate_id = {teammate};",
+         WHERE agent_id = {agent};",
         capability = quoted(capability),
         approval = optional(approval),
         revoked_at = optional(revoked_at),
-        teammate = quoted(TEAMMATE),
+        agent = quoted(AGENT),
     )
 }
 
-/// SQL setting [`TEAMMATE`]'s conversation membership to `role`, removed at `removed_at` when
+/// SQL setting [`AGENT`]'s conversation membership to `role`, removed at `removed_at` when
 /// given.
 fn membership_sql(role: &str, removed_at: Option<&str>, updated_at: &str) -> String {
     format!(
         "UPDATE chat_conversation_memberships
          SET membership_role = {role}, removed_at = {removed_at}, updated_at = {updated_at},
              revision = revision + 1
-         WHERE participant_id = {teammate};",
+         WHERE participant_id = {agent};",
         role = quoted(role),
         removed_at = optional(removed_at),
         updated_at = quoted(updated_at),
-        teammate = quoted(TEAMMATE),
+        agent = quoted(AGENT),
     )
 }
 
-/// SQL setting [`TEAMMATE`]'s AI channel access to `read_history` and `participate`, removed at
+/// SQL setting [`AGENT`]'s AI channel access to `read_history` and `participate`, removed at
 /// `removed_at` when given.
 fn access_sql(
     read_history: bool,
@@ -761,32 +760,32 @@ fn access_sql(
     updated_at: &str,
 ) -> String {
     format!(
-        "UPDATE chat_teammate_channel_memberships
+        "UPDATE chat_agent_channel_memberships
          SET read_history = {read}, participate = {participate}, removed_at = {removed_at},
              updated_at = {updated_at}
-         WHERE teammate_id = {teammate};",
+         WHERE agent_id = {agent};",
         read = i32::from(read_history),
         participate = i32::from(participate),
         removed_at = optional(removed_at),
         updated_at = quoted(updated_at),
-        teammate = quoted(TEAMMATE),
+        agent = quoted(AGENT),
     )
 }
 
-/// [`TEAMMATE`]'s grant as `capability approval active|revoked`.
+/// [`AGENT`]'s grant as `capability approval active|revoked`.
 async fn grant_state(replica: &mut Replica) -> String {
     replica
         .scalar_text(
             "SELECT capability || ' ' || coalesce(runtime_approval_policy, 'inherit') || ' '
                     || CASE WHEN revoked_at IS NULL THEN 'active' ELSE 'revoked' END
-             FROM chat_teammate_working_folder_grants
-             WHERE teammate_id = 'participant:reviewer'",
+             FROM chat_agent_working_folder_grants
+             WHERE agent_id = 'participant:reviewer'",
         )
         .await
         .expect("the grant arrived")
 }
 
-/// [`TEAMMATE`]'s conversation membership as `role active|removed`.
+/// [`AGENT`]'s conversation membership as `role active|removed`.
 async fn membership_state(replica: &mut Replica) -> String {
     replica
         .scalar_text(
@@ -799,13 +798,13 @@ async fn membership_state(replica: &mut Replica) -> String {
         .expect("the membership arrived")
 }
 
-/// [`TEAMMATE`]'s AI channel access as the number of cleared capabilities, or `None` once
+/// [`AGENT`]'s AI channel access as the number of cleared capabilities, or `None` once
 /// removed.
 async fn access_cleared(replica: &mut Replica) -> Option<i64> {
     let removed = replica
         .count(
-            "SELECT count(*) FROM chat_teammate_channel_memberships
-             WHERE teammate_id = 'participant:reviewer' AND removed_at IS NOT NULL",
+            "SELECT count(*) FROM chat_agent_channel_memberships
+             WHERE agent_id = 'participant:reviewer' AND removed_at IS NOT NULL",
         )
         .await;
     if removed > 0 {
@@ -816,8 +815,8 @@ async fn access_cleared(replica: &mut Replica) -> Option<i64> {
             .count(
                 "SELECT (read_history = 0) + (participate = 0)
                         + (history_boundary = 'from_grant')
-                 FROM chat_teammate_channel_memberships
-                 WHERE teammate_id = 'participant:reviewer'",
+                 FROM chat_agent_channel_memberships
+                 WHERE agent_id = 'participant:reviewer'",
             )
             .await,
     )
@@ -853,14 +852,11 @@ fn chat_conversation_rows_round_trip_with_their_derived_keys() {
         assert_eq!(
             reader
                 .scalar_text(
-                    "SELECT sync_key FROM chat_teammate_working_folder_grants
-                     WHERE teammate_id = 'participant:reviewer'",
+                    "SELECT sync_key FROM chat_agent_working_folder_grants
+                     WHERE agent_id = 'participant:reviewer'",
                 )
                 .await,
-            Some(key(
-                FOLDER_GRANT_KEY_PREFIX,
-                &[CONVERSATION, TEAMMATE, FOLDER]
-            ))
+            Some(key(FOLDER_GRANT_KEY_PREFIX, &[CONVERSATION, AGENT, FOLDER]))
         );
         assert_eq!(
             reader
@@ -912,27 +908,27 @@ fn chat_concurrent_revocation_and_widening_keep_the_revocation() {
     });
 }
 
-/// SQL setting [`TEAMMATE`]'s AI channel approval override to `approval`, keeping its
+/// SQL setting [`AGENT`]'s AI channel approval override to `approval`, keeping its
 /// capabilities.
 fn access_approval_sql(approval: Option<&str>, updated_at: &str) -> String {
     format!(
-        "UPDATE chat_teammate_channel_memberships
+        "UPDATE chat_agent_channel_memberships
          SET runtime_approval_policy = {approval}, updated_at = {updated_at}
-         WHERE teammate_id = {teammate};",
+         WHERE agent_id = {agent};",
         approval = optional(approval),
         updated_at = quoted(updated_at),
-        teammate = quoted(TEAMMATE),
+        agent = quoted(AGENT),
     )
 }
 
-/// [`TEAMMATE`]'s AI channel access as `read_history participate approval`.
+/// [`AGENT`]'s AI channel access as `read_history participate approval`.
 async fn access_state(replica: &mut Replica) -> String {
     replica
         .scalar_text(
             "SELECT read_history || ' ' || participate || ' '
                     || coalesce(runtime_approval_policy, 'inherit')
-             FROM chat_teammate_channel_memberships
-             WHERE teammate_id = 'participant:reviewer'",
+             FROM chat_agent_channel_memberships
+             WHERE agent_id = 'participant:reviewer'",
         )
         .await
         .expect("the access arrived")
@@ -954,7 +950,7 @@ fn chat_concurrent_inherited_approval_does_not_replace_an_explicit_narrowing() {
         converge(&mut replicas).await;
 
         // Replica 0 narrows both overrides to unattended; replica 1 later clears them, which
-        // falls back to the teammate default that may be wider.
+        // falls back to the agent default that may be wider.
         replicas[0]
             .exec(&format!(
                 "{}{}",
@@ -978,31 +974,31 @@ fn chat_concurrent_inherited_approval_does_not_replace_an_explicit_narrowing() {
     });
 }
 
-/// SQL setting [`TEAMMATE`]'s scratch runtime approval override.
+/// SQL setting [`AGENT`]'s scratch runtime approval override.
 fn scratch_approval_sql(approval: Option<&str>, updated_at: &str) -> String {
     format!(
-        "UPDATE chat_teammate_channel_memberships
+        "UPDATE chat_agent_channel_memberships
          SET scratch_runtime_approval_policy = {approval}, updated_at = {updated_at}
-         WHERE teammate_id = {teammate};",
+         WHERE agent_id = {agent};",
         approval = optional(approval),
         updated_at = quoted(updated_at),
-        teammate = quoted(TEAMMATE),
+        agent = quoted(AGENT),
     )
 }
 
-/// [`TEAMMATE`]'s scratch runtime approval override, or `inherit`.
+/// [`AGENT`]'s scratch runtime approval override, or `inherit`.
 async fn scratch_state(replica: &mut Replica) -> String {
     replica
         .scalar_text(
             "SELECT coalesce(scratch_runtime_approval_policy, 'inherit')
-             FROM chat_teammate_channel_memberships
-             WHERE teammate_id = 'participant:reviewer'",
+             FROM chat_agent_channel_memberships
+             WHERE agent_id = 'participant:reviewer'",
         )
         .await
         .expect("the access arrived")
 }
 
-/// [`TEAMMATE`]'s folder and scratch approval overrides as the runtime resolves them, each
+/// [`AGENT`]'s folder and scratch approval overrides as the runtime resolves them, each
 /// falling back to the channel override: `folder scratch`.
 async fn resolved_target_approvals(replica: &mut Replica) -> String {
     replica
@@ -1011,11 +1007,11 @@ async fn resolved_target_approvals(replica: &mut Replica) -> String {
                              'inherit')
                     || ' ' || coalesce(access.scratch_runtime_approval_policy,
                                        access.runtime_approval_policy, 'inherit')
-             FROM chat_teammate_channel_memberships access
-             JOIN chat_teammate_working_folder_grants folder_grant
+             FROM chat_agent_channel_memberships access
+             JOIN chat_agent_working_folder_grants folder_grant
                ON folder_grant.conversation_id = access.conversation_id
-              AND folder_grant.teammate_id = access.teammate_id
-             WHERE access.teammate_id = 'participant:reviewer'",
+              AND folder_grant.agent_id = access.agent_id
+             WHERE access.agent_id = 'participant:reviewer'",
         )
         .await
         .expect("the access and grant arrived")
@@ -1131,19 +1127,19 @@ fn chat_a_re_add_after_a_seen_removal_converges_to_active() {
     });
 }
 
-/// Raw replicated values of [`TEAMMATE`]'s grant that [`grant_sql`] writes.
+/// Raw replicated values of [`AGENT`]'s grant that [`grant_sql`] writes.
 const GRANT_VALUE: &str = "SELECT capability || '|' || coalesce(runtime_approval_policy, '') || '|'
         || coalesce(revoked_at, '')
-     FROM chat_teammate_working_folder_grants WHERE teammate_id = 'participant:reviewer'";
+     FROM chat_agent_working_folder_grants WHERE agent_id = 'participant:reviewer'";
 
-/// Raw replicated values of [`TEAMMATE`]'s membership that [`membership_sql`] writes.
+/// Raw replicated values of [`AGENT`]'s membership that [`membership_sql`] writes.
 const MEMBERSHIP_VALUE: &str = "SELECT membership_role || '|' || coalesce(removed_at, '')
      FROM chat_conversation_memberships WHERE participant_id = 'participant:reviewer'";
 
-/// Raw replicated values of [`TEAMMATE`]'s AI channel access that [`access_sql`] writes.
+/// Raw replicated values of [`AGENT`]'s AI channel access that [`access_sql`] writes.
 const ACCESS_VALUE: &str = "SELECT read_history || '|' || participate || '|'
         || coalesce(removed_at, '')
-     FROM chat_teammate_channel_memberships WHERE teammate_id = 'participant:reviewer'";
+     FROM chat_agent_channel_memberships WHERE agent_id = 'participant:reviewer'";
 
 /// Runs `sql` on `replica` and says whether it changed the value `value` reads. A write that
 /// leaves a group's value as it was captures nothing, so it is no concurrent edit.
@@ -2120,7 +2116,7 @@ fn chat_a_crash_while_sealing_or_applying_attachment_references_leaves_nothing_p
     });
 }
 
+mod agent_usage;
 mod assignments;
 mod channel_notes;
 mod push_approvals;
-mod teammate_usage;

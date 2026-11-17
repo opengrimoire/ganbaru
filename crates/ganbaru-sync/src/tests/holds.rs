@@ -13,8 +13,8 @@ use crate::domains::themes::PALETTE_SIZE;
 use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
 use crate::manifest::vault::chat::{
-    PARTICIPANTS_TABLE, POLICY_REVISIONS_TABLE, PROFILE_REVISIONS_TABLE, PROFILES_TABLE,
-    TEAMMATES_TABLE,
+    AGENTS_TABLE, PARTICIPANTS_TABLE, POLICY_REVISIONS_TABLE, PROFILE_REVISIONS_TABLE,
+    PROFILES_TABLE,
 };
 use crate::manifest::vault::contacts::{CARD_KEY, CARD_TABLE, CONTACTS_TABLE};
 use crate::manifest::vault::distractions::{SETTINGS_KEY, SETTINGS_TABLE};
@@ -48,7 +48,7 @@ const NEVER_DELETED: [(TableId, &str); 7] = [
     (CARD_TABLE, CARD_KEY),
     (SETTINGS_TABLE, SETTINGS_KEY),
     (PARTICIPANTS_TABLE, "participant:reviewer"),
-    (TEAMMATES_TABLE, "participant:reviewer"),
+    (AGENTS_TABLE, "participant:reviewer"),
     (POLICY_REVISIONS_TABLE, "policy-0"),
     (PROFILES_TABLE, "access-profile:read-only"),
     (

@@ -26,7 +26,7 @@ fn review_queue_from_sql() -> String {
          JOIN chat_reply_threads thread ON thread.id = assignment.reply_thread_id
          JOIN chat_channels channel ON channel.conversation_id = thread.conversation_id
          JOIN projects project ON project.id = channel.project_id
-         JOIN chat_participants participant ON participant.id = assignment.teammate_id
+         JOIN chat_participants participant ON participant.id = assignment.agent_id
          WHERE assignment.state IN ({PERSON_ATTENTION_STATES_SQL})
            AND {ASSIGNMENT_ATTENTION_PREDICATE_SQL}
            AND channel.archived_at IS NULL
@@ -76,8 +76,8 @@ pub(crate) async fn read_review_queue(
     let items_sql = format!(
         "SELECT assignment.id, assignment.revision, assignment.state, assignment.state_reason,
                 assignment.executing_device_id, assignment.updated_at,
-                assignment.reply_thread_id, assignment.teammate_id,
-                participant.display_name AS teammate_display_name,
+                assignment.reply_thread_id, assignment.agent_id,
+                participant.display_name AS agent_display_name,
                 channel.id AS channel_id, channel.name AS channel_name,
                 project.id AS project_id, project.name AS project_name
          {from}
@@ -142,13 +142,13 @@ fn item_from_row(
                 .map_err(persistence_error)?,
         )
         .map_err(identifier_error)?,
-        teammate_participant_id: ChatParticipantId::new(
-            row.try_get::<String, _>("teammate_id")
+        agent_participant_id: ChatParticipantId::new(
+            row.try_get::<String, _>("agent_id")
                 .map_err(persistence_error)?,
         )
         .map_err(identifier_error)?,
-        teammate_display_name: row
-            .try_get("teammate_display_name")
+        agent_display_name: row
+            .try_get("agent_display_name")
             .map_err(persistence_error)?,
         state_reason: state_reason.map(|reason| clip_reason(&reason)),
         executed_here: executing_device_id.as_deref() == Some(device_id),

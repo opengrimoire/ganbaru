@@ -1,16 +1,16 @@
 <script lang="ts">
-  import type { ChatAiTeammateRead, ChatParticipantRead } from "$lib/chat/contracts";
-  import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/teammates/participant-display";
+  import type { ChatAiAgentRead, ChatParticipantRead } from "$lib/chat/contracts";
+  import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/agents/participant-display";
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
   import ProfileAvatar from "$lib/components/profile/ProfileAvatar.svelte";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
 
-  /** A member shown in the stack; teammates pass their read so the model avatar resolves. */
+  /** A member shown in the stack; agents pass their read so the model avatar resolves. */
   export interface ParticipantAvatarStackItem {
     participant: ChatParticipantRead;
-    teammate?: ChatAiTeammateRead | null;
+    agent?: ChatAiAgentRead | null;
   }
 
   let {
@@ -45,7 +45,7 @@
   </span>
   {#each visible as item (item.participant.id)}
     <span class="avatar-slot">
-      <ChatParticipantAvatar participant={item.participant} teammate={item.teammate ?? null} {size} />
+      <ChatParticipantAvatar participant={item.participant} agent={item.agent ?? null} {size} />
     </span>
   {/each}
   {#if overflow > 0}

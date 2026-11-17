@@ -4,7 +4,7 @@ use sqlx::SqlitePool;
 use std::collections::BTreeSet;
 
 const NOW: &str = "2026-10-24T09:00:00.000Z";
-const TEAMMATE_ID: &str = "participant:chat-sync-hook";
+const AGENT_ID: &str = "participant:chat-sync-hook";
 
 /// Collects reported notices the way the engine's change sink does.
 #[derive(Default)]
@@ -67,7 +67,7 @@ fn chat_derives_sync_keys_with_the_manifest_prefixes() {
 fn every_replicated_table_with_derived_chat_state_has_a_hook() {
     let derived = [
         sync_effects::PARTICIPANTS_TABLE,
-        sync_effects::TEAMMATES_TABLE,
+        sync_effects::AGENTS_TABLE,
         sync_effects::POLICY_REVISIONS_TABLE,
         sync_effects::CONVERSATIONS_TABLE,
         sync_effects::ACCESS_PROFILES_TABLE,
@@ -290,7 +290,7 @@ fn only_revocations_removals_and_assignment_work_are_reported() {
             access_state_created: BTreeSet::from(["participant:created".to_string()]),
             access_revised: BTreeSet::from(["participant:revised".to_string()]),
             audience_revised: BTreeSet::from(["conversation:revised".to_string()]),
-            revoked_teammates: BTreeSet::from([
+            revoked_agents: BTreeSet::from([
                 "participant:b".to_string(),
                 "participant:a".to_string(),
             ]),
@@ -332,11 +332,11 @@ fn only_revocations_removals_and_assignment_work_are_reported() {
 fn revocation_notices_wake_the_drain_and_other_notices_do_not() {
     let revoked = ChangeNotice {
         topic: CHAT_ACCESS_REVOKED_TOPIC,
-        key: TEAMMATE_ID.to_string(),
+        key: AGENT_ID.to_string(),
     };
     let unrelated = ChangeNotice {
         topic: "music-root",
-        key: TEAMMATE_ID.to_string(),
+        key: AGENT_ID.to_string(),
     };
     let removed = ChangeNotice {
         topic: CHAT_CONVERSATION_REMOVED_TOPIC,
@@ -369,7 +369,7 @@ fn assignment_notices_hand_queued_and_started_work_and_pending_inputs_to_dispatc
         notice(CHAT_DELEGATION_SETTLED_TOPIC, "assignment:delegated"),
         notice(CHAT_ASSIGNMENT_STARTED_TOPIC, "assignment:started"),
         notice(CHAT_ASSIGNMENT_QUEUED_TOPIC, "assignment:queued"),
-        notice(CHAT_ACCESS_REVOKED_TOPIC, TEAMMATE_ID),
+        notice(CHAT_ACCESS_REVOKED_TOPIC, AGENT_ID),
     ]);
     assert_eq!(
         work,
@@ -387,7 +387,7 @@ fn assignment_notices_hand_queued_and_started_work_and_pending_inputs_to_dispatc
 }
 
 #[tokio::test]
-async fn materialized_teammates_get_access_state_without_waking_the_drain() {
+async fn materialized_agents_get_access_state_without_waking_the_drain() {
     let pool = migrated_pool().await;
     sqlx::query("UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1")
         .execute(&pool)
@@ -395,16 +395,16 @@ async fn materialized_teammates_get_access_state_without_waking_the_drain() {
         .unwrap();
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
-         VALUES ('{TEAMMATE_ID}', 'ai_teammate', 'Hook agent', '{NOW}', '{NOW}');
-         INSERT INTO chat_teammates (participant_id, role, created_at, updated_at)
-         VALUES ('{TEAMMATE_ID}', 'Test', '{NOW}', '{NOW}');"
+         VALUES ('{AGENT_ID}', 'ai_agent', 'Hook agent', '{NOW}', '{NOW}');
+         INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
+         VALUES ('{AGENT_ID}', 'Test', '{NOW}', '{NOW}');"
     )))
     .execute(&pool)
     .await
     .unwrap();
     let access_rows: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM chat_teammate_access_state WHERE teammate_id = ?")
-            .bind(TEAMMATE_ID)
+        sqlx::query_scalar("SELECT COUNT(*) FROM chat_agent_access_state WHERE agent_id = ?")
+            .bind(AGENT_ID)
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -415,8 +415,8 @@ async fn materialized_teammates_get_access_state_without_waking_the_drain() {
     ChatApplyHook
         .after_materialize(
             &mut connection,
-            &chat::TEAMMATES,
-            &[TEAMMATE_ID.to_string()],
+            &chat::AGENTS,
+            &[AGENT_ID.to_string()],
             &mut sink,
         )
         .await
@@ -424,8 +424,8 @@ async fn materialized_teammates_get_access_state_without_waking_the_drain() {
     drop(connection);
 
     let access_rows: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM chat_teammate_access_state WHERE teammate_id = ?")
-            .bind(TEAMMATE_ID)
+        sqlx::query_scalar("SELECT COUNT(*) FROM chat_agent_access_state WHERE agent_id = ?")
+            .bind(AGENT_ID)
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -444,17 +444,17 @@ async fn a_mismatched_pointer_applies_without_effective_access_or_blocking_later
         .unwrap();
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
-         VALUES ('{TEAMMATE_ID}', 'ai_teammate', 'Hook agent', '{NOW}', '{NOW}'),
-                ('participant:later', 'ai_teammate', 'Later agent', '{NOW}', '{NOW}');
-         INSERT INTO chat_teammates (participant_id, role, created_at, updated_at)
-         VALUES ('{TEAMMATE_ID}', 'Test', '{NOW}', '{NOW}'),
+         VALUES ('{AGENT_ID}', 'ai_agent', 'Hook agent', '{NOW}', '{NOW}'),
+                ('participant:later', 'ai_agent', 'Later agent', '{NOW}', '{NOW}');
+         INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
+         VALUES ('{AGENT_ID}', 'Test', '{NOW}', '{NOW}'),
                 ('participant:later', 'Test', '{NOW}', '{NOW}');
-         INSERT INTO chat_teammate_policy_revisions
-            (id, teammate_id, provider_instance_id, model_selection_data, created_at)
-         VALUES ('policy:hook', '{TEAMMATE_ID}', 'codex-personal', '{{}}', '{NOW}');
-         UPDATE chat_teammates
+         INSERT INTO chat_agent_policy_revisions
+            (id, agent_id, provider_instance_id, model_selection_data, created_at)
+         VALUES ('policy:hook', '{AGENT_ID}', 'codex-personal', '{{}}', '{NOW}');
+         UPDATE chat_agents
          SET current_policy_revision_id = 'policy:hook', current_policy_safety_mode = 'full_access'
-         WHERE participant_id = '{TEAMMATE_ID}';"
+         WHERE participant_id = '{AGENT_ID}';"
     )))
     .execute(&pool)
     .await
@@ -465,8 +465,8 @@ async fn a_mismatched_pointer_applies_without_effective_access_or_blocking_later
     ChatApplyHook
         .after_materialize(
             &mut connection,
-            &chat::TEAMMATES,
-            &[TEAMMATE_ID.to_string()],
+            &chat::AGENTS,
+            &[AGENT_ID.to_string()],
             &mut sink,
         )
         .await
@@ -474,7 +474,7 @@ async fn a_mismatched_pointer_applies_without_effective_access_or_blocking_later
     ChatApplyHook
         .after_materialize(
             &mut connection,
-            &chat::TEAMMATES,
+            &chat::AGENTS,
             &["participant:later".to_string()],
             &mut sink,
         )
@@ -482,15 +482,14 @@ async fn a_mismatched_pointer_applies_without_effective_access_or_blocking_later
         .unwrap();
     drop(connection);
 
-    let effective: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM chat_teammate_effective_policies WHERE teammate_id = ?",
-    )
-    .bind(TEAMMATE_ID)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let effective: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM chat_agent_effective_policies WHERE agent_id = ?")
+            .bind(AGENT_ID)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(effective, 0);
-    let access_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_teammate_access_state")
+    let access_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_agent_access_state")
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -519,7 +518,7 @@ async fn seed_applied_attachment_revision(pool: &SqlitePool) {
          VALUES ('item:sync', 'conversation:sync', 'message', 'a1', '{NOW}');
          INSERT INTO chat_communication_messages
              (item_id, author_participant_id, author_label_snapshot, created_at)
-         VALUES ('item:sync', NULL, 'Teammate', '{NOW}');
+         VALUES ('item:sync', NULL, 'Agent', '{NOW}');
          INSERT INTO chat_communication_message_revisions
              (id, message_item_id, normalized_markdown, created_at)
          VALUES ('revision:sync', 'item:sync', 'See attached', '{NOW}');

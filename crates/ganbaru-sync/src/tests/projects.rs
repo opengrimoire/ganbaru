@@ -1235,7 +1235,7 @@ pub(super) async fn folders_and_grants(replica: &mut Replica) -> (Vec<String>, V
     .await;
     let grants = texts(
         replica,
-        "SELECT working_folder_id FROM chat_teammate_working_folder_grants
+        "SELECT working_folder_id FROM chat_agent_working_folder_grants
          WHERE project_id = 'project-shared'",
     )
     .await;

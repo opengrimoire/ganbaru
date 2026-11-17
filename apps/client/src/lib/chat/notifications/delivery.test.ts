@@ -4,7 +4,7 @@ import { chatNotificationText, parseChatNotificationTarget, type ChatNotificatio
 import type { ChatAttentionKind, ChatAttentionSignal } from "./gate";
 
 const labels: ChatNotificationLabels = {
-  title: (kind, teammate) => `${kind}:${teammate}`,
+  title: (kind, agent) => `${kind}:${agent}`,
   body: (channel) => `in ${channel}`,
   bodyWithReason: (channel, reason) => `in ${channel}: ${reason}`,
   summaryTitle: (count) => `${count} waiting`,
@@ -22,7 +22,7 @@ function signal(kind: ChatAttentionKind, overrides: Partial<ChatAttentionSignal>
     projectId: "project-1",
     channelId: "channel-1" as ChatChannelId,
     replyThreadId: `reply-${kind}` as ChatReplyThreadId,
-    teammateName: "Ada",
+    agentName: "Ada",
     channelName: "release",
     executedHere: true,
     stateReason: "Tests failed in parser.rs",
@@ -32,7 +32,7 @@ function signal(kind: ChatAttentionKind, overrides: Partial<ChatAttentionSignal>
 }
 
 describe("chat notification text", () => {
-  it("names the teammate and channel and opens the reply thread of a single change", () => {
+  it("names the agent and channel and opens the reply thread of a single change", () => {
     const text = chatNotificationText({ kind: "single", signal: signal("approval") }, true, labels);
     expect(text).toEqual({
       title: "approval:Ada",

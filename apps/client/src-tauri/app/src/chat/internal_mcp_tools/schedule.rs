@@ -1,7 +1,7 @@
-//! The schedule proposal host tool: a teammate proposes a message to send later, once or on a
+//! The schedule proposal host tool: an agent proposes a message to send later, once or on a
 //! repeat rule, and a person confirms or dismisses it from the card in the reply thread.
 //!
-//! The tool schedules nothing. A proposal is a teammate message with a `schedule_proposal`
+//! The tool schedules nothing. A proposal is an agent message with a `schedule_proposal`
 //! semantic update, written in one transaction and idempotent by its client request id.
 
 use super::delegation::MAX_CLIENT_REQUEST_ID_CHARS;

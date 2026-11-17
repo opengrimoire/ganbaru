@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChatTeammatePolicyInput {
+pub struct ChatAgentPolicyInput {
     pub provider_instance_id: ProviderInstanceId,
     pub safety_mode: ChatApprovalPolicy,
     #[serde(default)]
@@ -21,15 +21,15 @@ pub struct ChatTeammatePolicyInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CreateChatTeammateCommand {
-    pub teammate_id: ChatParticipantId,
+pub struct CreateChatAgentCommand {
+    pub agent_id: ChatParticipantId,
     pub display_name: String,
     pub avatar: VersionedJson,
     #[serde(default)]
     pub role: String,
     #[serde(default)]
     pub instructions: String,
-    pub policy: ChatTeammatePolicyInput,
+    pub policy: ChatAgentPolicyInput,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -92,7 +92,7 @@ pub struct ChatFolderGrantInput {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChatTeammateChannelAccessInput {
+pub struct ChatAgentChannelAccessInput {
     pub channel_id: ChatChannelId,
     pub access_profile_id: ChatAccessProfileId,
     /// Effective profile revision the draft was made against. Saving refuses a draft whose
@@ -109,34 +109,34 @@ pub struct ChatTeammateChannelAccessInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PreviewChatTeammateAccessCommand {
-    pub teammate_id: ChatParticipantId,
+pub struct PreviewChatAgentAccessCommand {
+    pub agent_id: ChatParticipantId,
     pub expected_access_revision: u64,
     #[serde(default)]
-    pub channels: Vec<ChatTeammateChannelAccessInput>,
+    pub channels: Vec<ChatAgentChannelAccessInput>,
     #[serde(default)]
-    pub teammate_profile: Option<UpdateChatTeammateProfileCommand>,
+    pub agent_profile: Option<UpdateChatAgentProfileCommand>,
     #[serde(default)]
-    pub policy: Option<ChatTeammatePolicyInput>,
+    pub policy: Option<ChatAgentPolicyInput>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ReplaceChatTeammateAccessCommand {
-    pub teammate_id: ChatParticipantId,
+pub struct ReplaceChatAgentAccessCommand {
+    pub agent_id: ChatParticipantId,
     pub expected_access_revision: u64,
     #[serde(default)]
-    pub channels: Vec<ChatTeammateChannelAccessInput>,
+    pub channels: Vec<ChatAgentChannelAccessInput>,
     #[serde(default)]
-    pub teammate_profile: Option<UpdateChatTeammateProfileCommand>,
+    pub agent_profile: Option<UpdateChatAgentProfileCommand>,
     #[serde(default)]
-    pub policy: Option<ChatTeammatePolicyInput>,
+    pub policy: Option<ChatAgentPolicyInput>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewChatChannelMembershipRemovalCommand {
-    pub teammate_id: ChatParticipantId,
+    pub agent_id: ChatParticipantId,
     pub channel_id: ChatChannelId,
     pub expected_access_revision: u64,
 }
@@ -144,7 +144,7 @@ pub struct PreviewChatChannelMembershipRemovalCommand {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListChatAssignmentTargetsCommand {
-    pub teammate_id: ChatParticipantId,
+    pub agent_id: ChatParticipantId,
     pub channel_id: ChatChannelId,
     pub reply_thread_id: Option<ChatReplyThreadId>,
 }
@@ -208,8 +208,8 @@ pub struct CleanupChatScratchCommand {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct UpdateChatTeammateProfileCommand {
-    pub teammate_id: ChatParticipantId,
+pub struct UpdateChatAgentProfileCommand {
+    pub agent_id: ChatParticipantId,
     pub display_name: String,
     pub avatar: VersionedJson,
     #[serde(default)]
@@ -323,8 +323,8 @@ pub struct ChatScheduledRecurrenceRead {
     pub deferred_until: Option<UtcTimestamp>,
 }
 
-/// A person's confirmation of a teammate's schedule proposal, with the time, rule, and text
-/// they chose. The confirmed message mentions the proposing teammate in the proposal's reply
+/// A person's confirmation of an agent's schedule proposal, with the time, rule, and text
+/// they chose. The confirmed message mentions the proposing agent in the proposal's reply
 /// thread.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -336,7 +336,7 @@ pub struct ConfirmScheduleProposalCommand {
     /// Repeat rule; `None` sends the message once.
     #[serde(default)]
     pub recurrence: Option<RecurrenceSpec>,
-    /// Edited message text without the teammate mention the confirmation adds; `None` keeps
+    /// Edited message text without the agent mention the confirmation adds; `None` keeps
     /// the proposed text.
     #[serde(default)]
     pub normalized_markdown: Option<String>,
@@ -362,17 +362,17 @@ pub struct ChatScheduleProposalStateRead {
     pub state: ChatScheduleProposalState,
 }
 
-/// A person's confirmation of a teammate's push request. After the push, the confirmation posts
-/// `normalized_markdown` after a mention of the asking teammate in the request's reply thread,
+/// A person's confirmation of an agent's push request. After the push, the confirmation posts
+/// `normalized_markdown` after a mention of the asking agent in the request's reply thread,
 /// which answers the request.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfirmPushRequestCommand {
     /// The conversation item that carries the push request.
     pub request_item_id: ChatConversationItemId,
-    /// The reply text without the teammate mention the confirmation adds.
+    /// The reply text without the agent mention the confirmation adds.
     pub normalized_markdown: String,
-    /// Whether the person also approves later pushes of the teammate from this folder to the
+    /// Whether the person also approves later pushes of the agent from this folder to the
     /// same push URL and destination branch, recorded only once this push succeeds.
     #[serde(default)]
     pub remember_approval: bool,
@@ -400,14 +400,14 @@ pub struct ChatPushRequestStateRead {
     pub state: ChatPushRequestState,
 }
 
-/// A person's standing approval of a teammate's pushes from one working folder to one push URL
+/// A person's standing approval of an agent's pushes from one working folder to one push URL
 /// and destination branch.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatPushApprovalRead {
     /// The replicated key that names the approval.
     pub approval_id: String,
-    pub teammate_id: ChatParticipantId,
+    pub agent_id: ChatParticipantId,
     pub working_folder_id: ProjectWorkingFolderId,
     /// The folder's current display name.
     pub working_folder_name: String,
@@ -439,14 +439,13 @@ pub struct PostChatMessageResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChatScratchPromotionDestinationInput, CreateChatTeammateCommand,
-        PreviewChatTeammateAccessCommand,
+        ChatScratchPromotionDestinationInput, CreateChatAgentCommand, PreviewChatAgentAccessCommand,
     };
     use serde_json::json;
 
-    fn teammate_payload() -> serde_json::Value {
+    fn agent_payload() -> serde_json::Value {
         json!({
-            "teammateId": "teammate:reviewer",
+            "agentId": "agent:reviewer",
             "displayName": "Reviewer",
             "avatar": { "schemaVersion": 1, "value": { "kind": "initials" } },
             "role": "Code reviewer",
@@ -465,15 +464,15 @@ mod tests {
     }
 
     #[test]
-    fn standalone_teammate_creation_has_no_access_input() {
-        let payload = teammate_payload();
-        assert!(serde_json::from_value::<CreateChatTeammateCommand>(payload).is_ok());
+    fn standalone_agent_creation_has_no_access_input() {
+        let payload = agent_payload();
+        assert!(serde_json::from_value::<CreateChatAgentCommand>(payload).is_ok());
 
-        let mut legacy_payload = teammate_payload();
+        let mut legacy_payload = agent_payload();
         legacy_payload["memberships"] = json!([{
             "channelId": "channel:general"
         }]);
-        assert!(serde_json::from_value::<CreateChatTeammateCommand>(legacy_payload).is_err());
+        assert!(serde_json::from_value::<CreateChatAgentCommand>(legacy_payload).is_err());
     }
 
     #[test]
@@ -502,13 +501,13 @@ mod tests {
     }
 
     #[test]
-    fn teammate_access_preview_accepts_the_complete_atomic_draft() {
+    fn agent_access_preview_accepts_the_complete_atomic_draft() {
         let payload = json!({
-            "teammateId": "teammate:reviewer",
+            "agentId": "agent:reviewer",
             "expectedAccessRevision": 4,
             "channels": [],
-            "teammateProfile": {
-                "teammateId": "teammate:reviewer",
+            "agentProfile": {
+                "agentId": "agent:reviewer",
                 "displayName": "Reviewer",
                 "avatar": { "schemaVersion": 1, "value": { "kind": "initials" } },
                 "role": "Code reviewer",
@@ -526,13 +525,13 @@ mod tests {
                 "providerOptions": { "schemaVersion": 1, "value": {} }
             }
         });
-        let command = serde_json::from_value::<PreviewChatTeammateAccessCommand>(payload.clone())
+        let command = serde_json::from_value::<PreviewChatAgentAccessCommand>(payload.clone())
             .expect("the complete draft should deserialize");
-        assert!(command.teammate_profile.is_some());
+        assert!(command.agent_profile.is_some());
         assert!(command.policy.is_some());
 
         let mut unknown = payload;
         unknown["legacyMemberships"] = json!([]);
-        assert!(serde_json::from_value::<PreviewChatTeammateAccessCommand>(unknown).is_err());
+        assert!(serde_json::from_value::<PreviewChatAgentAccessCommand>(unknown).is_err());
     }
 }

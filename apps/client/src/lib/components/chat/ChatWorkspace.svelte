@@ -283,7 +283,7 @@
       void restoreMessageCheckpoint(event.detail.threadId, event.detail.checkpointId);
     };
     const openWorkspaceTool = (event: Event) => { openInspectorWorkspaceForEvent(event); };
-    const openTeammates = (event: Event) => {
+    const openAgents = (event: Event) => {
       const participantId = event instanceof CustomEvent
         && typeof event.detail === "object"
         && event.detail !== null
@@ -299,8 +299,8 @@
         ? event.detail.channelId
         : undefined;
       settings.open("agents", {
-        agentsSubsection: "teammates",
-        agentsTeammateId: participantId,
+        agentsSubsection: "agents",
+        agentsAgentId: participantId,
         agentsChannelId: channelId,
       });
     };
@@ -318,7 +318,7 @@
       if (!channelId) return;
       paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-edit-channel", { detail: { channelId } }));
     };
-    paneEvents.addEventListener("ganbaru:chat-configure-teammate", openTeammates);
+    paneEvents.addEventListener("ganbaru:chat-configure-agent", openAgents);
     paneEvents.addEventListener("ganbaru:chat-manage-members", manageMembers);
     return () => {
       answerRestoreDialog(false);
@@ -336,7 +336,7 @@
       paneEvents.removeEventListener("ganbaru:chat-revert-message", revertMessage);
       paneEvents.removeEventListener("ganbaru:chat-open-review", openWorkspaceTool);
       paneEvents.removeEventListener("ganbaru:chat-open-file", openWorkspaceTool);
-      paneEvents.removeEventListener("ganbaru:chat-configure-teammate", openTeammates);
+      paneEvents.removeEventListener("ganbaru:chat-configure-agent", openAgents);
       paneEvents.removeEventListener("ganbaru:chat-manage-members", manageMembers);
       void unlisten.then((dispose) => dispose());
       void unlistenOrganization.then((dispose) => dispose());
@@ -520,12 +520,12 @@
   const focusPhaseKey = $derived(`${pomodoro.isActive}:${pomodoro.isRunning}:${pomodoro.phase}`);
 
   function backgroundAnnouncementText(signal: ChatAttentionSignal): string {
-    if (signal.kind === "answer") return t("chat.accessibility.backgroundAnswer", signal.teammateName, signal.channelName);
+    if (signal.kind === "answer") return t("chat.accessibility.backgroundAnswer", signal.agentName, signal.channelName);
     if (signal.kind === "approval") {
-      return t("chat.accessibility.backgroundApproval", signal.teammateName, signal.channelName);
+      return t("chat.accessibility.backgroundApproval", signal.agentName, signal.channelName);
     }
-    if (signal.kind === "review") return t("chat.accessibility.backgroundReview", signal.teammateName, signal.channelName);
-    return t("chat.accessibility.backgroundFailure", signal.teammateName, signal.channelName);
+    if (signal.kind === "review") return t("chat.accessibility.backgroundReview", signal.agentName, signal.channelName);
+    return t("chat.accessibility.backgroundFailure", signal.agentName, signal.channelName);
   }
 
   /** Speaks the background change the tracker picks after a completed quiet read. */
@@ -1201,7 +1201,7 @@
   {/if}
   <main class="main-shell relative flex min-w-0 flex-col">
         {#if latestWaitingAssignment && !replyThreadTab}
-          <Notice class="waiting-work-notice" role="status" message={t("chat.organization.waitingWork", waitingAssignmentCount, latestWaitingAssignment.teammateDisplayName, latestWaitingAssignment.channelName)} copy={false}>
+          <Notice class="waiting-work-notice" role="status" message={t("chat.organization.waitingWork", waitingAssignmentCount, latestWaitingAssignment.agentDisplayName, latestWaitingAssignment.channelName)} copy={false}>
             {#snippet actions()}
               <button type="button" class="notice-action-text" onclick={() => { void chat.openWaitingAssignment(latestWaitingAssignment); }}>{t("chat.organization.openWaitingWork")}</button>
             {/snippet}

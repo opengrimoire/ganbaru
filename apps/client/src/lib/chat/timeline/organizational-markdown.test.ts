@@ -19,7 +19,7 @@ function mention(text: string, label: string, id = "atlas"): ParticipantReferenc
       plainTextProjection: label,
     },
     participantId: `participant:${id}`,
-    participantKind: "ai_teammate",
+    participantKind: "ai_agent",
   };
 }
 

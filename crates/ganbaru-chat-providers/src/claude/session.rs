@@ -156,7 +156,7 @@ async fn route_gated(
                         "organizational/git_metadata_changed",
                         Some(NotificationEvent {
                             code: crate::confinement::GIT_METADATA_CHANGED_CODE.to_string(),
-                            title: "A teammate changed this folder's Git configuration".to_string(),
+                            title: "An agent changed this folder's Git configuration".to_string(),
                             detail: Some(error.message.clone()),
                         }),
                     )
@@ -574,7 +574,7 @@ pub fn route_scoped_control_request(
             pending: None,
             event: CanonicalEvent::Unknown(UnknownEvent {
                 source_type: "claude/organizational/denied".to_string(),
-                summary: "Ganbaru denied a teammate tool request outside its scope".to_string(),
+                summary: "Ganbaru denied an agent tool request outside its scope".to_string(),
                 safe_payload: Some(VersionedJson {
                     schema_version: 1,
                     value: json!({ "toolName": bounded_text(tool_name, MAX_TEXT_BYTES) }),
@@ -591,7 +591,7 @@ pub fn route_scoped_control_request(
             pending: None,
             event: CanonicalEvent::Unknown(UnknownEvent {
                 source_type: "claude/organizational/confined_command".to_string(),
-                summary: "Ganbaru ran a teammate command in the sandbox without asking".to_string(),
+                summary: "Ganbaru ran an agent command in the sandbox without asking".to_string(),
                 safe_payload: None,
             }),
             immediate_response: Some(control_success(

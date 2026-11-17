@@ -107,9 +107,9 @@
   }
 
   function rejection(reason: DraftRejection): string {
-    if (reason === "empty") return t("chat.sourceControl.teammateDraftEmpty");
-    if (reason === "title_too_long") return t("chat.sourceControl.teammateDraftTitleTooLong");
-    return t("chat.sourceControl.teammateDraftTooLong");
+    if (reason === "empty") return t("chat.sourceControl.agentDraftEmpty");
+    if (reason === "title_too_long") return t("chat.sourceControl.agentDraftTitleTooLong");
+    return t("chat.sourceControl.agentDraftTooLong");
   }
 
   function current(request: number): boolean {
@@ -127,16 +127,16 @@
       if (!current(request)) return;
       const prompt = buildDraftPrompt(context, {
         instruction: kind === "commit"
-          ? t("chat.sourceControl.teammateDraftCommitPrompt")
-          : t("chat.sourceControl.teammateDraftChangeRequestPrompt", base, head),
-        changedFiles: t("chat.sourceControl.teammateDraftChangedFiles"),
-        omittedFiles: (count) => t("chat.sourceControl.teammateDraftOmittedFiles", count),
+          ? t("chat.sourceControl.agentDraftCommitPrompt")
+          : t("chat.sourceControl.agentDraftChangeRequestPrompt", base, head),
+        changedFiles: t("chat.sourceControl.agentDraftChangedFiles"),
+        omittedFiles: (count) => t("chat.sourceControl.agentDraftOmittedFiles", count),
         subjects: kind === "commit"
-          ? t("chat.sourceControl.teammateDraftRecentSubjects")
-          : t("chat.sourceControl.teammateDraftRangeSubjects"),
-        patch: t("chat.sourceControl.teammateDraftPatch"),
-        patchTruncated: t("chat.sourceControl.teammateDraftPatchTruncated"),
-        patchOmitted: t("chat.sourceControl.teammateDraftPatchOmitted"),
+          ? t("chat.sourceControl.agentDraftRecentSubjects")
+          : t("chat.sourceControl.agentDraftRangeSubjects"),
+        patch: t("chat.sourceControl.agentDraftPatch"),
+        patchTruncated: t("chat.sourceControl.agentDraftPatchTruncated"),
+        patchOmitted: t("chat.sourceControl.agentDraftPatchOmitted"),
       });
       const sent = await chat.sendThreadTurn(prompt);
       if (!current(request)) return;
@@ -165,7 +165,7 @@
         if (outcome === null) continue;
         pending = null;
         if (outcome !== "completed") {
-          notice = t("chat.sourceControl.teammateDraftUnfinished");
+          notice = t("chat.sourceControl.agentDraftUnfinished");
           return;
         }
         const draft = extractDraft(draftReplyText(page, target.turnId) ?? "", kind);
@@ -176,7 +176,7 @@
         if (fieldValue === target.fieldValue) onDraft(draft);
         else {
           ready = draft;
-          notice = t("chat.sourceControl.teammateDraftReady");
+          notice = t("chat.sourceControl.agentDraftReady");
         }
         return;
       } while (recheck);
@@ -200,24 +200,24 @@
 </script>
 
 {#if chat.openReplyThreadId === null}
-  <div class="teammate-draft">
+  <div class="agent-draft">
     <button
       type="button"
       class="chat-secondary-button"
       disabled={!available || !allowed || busy}
-      title={available ? undefined : t("chat.sourceControl.teammateDraftUnavailable")}
+      title={available ? undefined : t("chat.sourceControl.agentDraftUnavailable")}
       aria-busy={busy ? "true" : undefined}
       onclick={() => void request()}
-    ><WandSparkles size={13} />{busy ? t("chat.sourceControl.teammateDraftPending") : t("chat.sourceControl.teammateDraft")}</button>
+    ><WandSparkles size={13} />{busy ? t("chat.sourceControl.agentDraftPending") : t("chat.sourceControl.agentDraft")}</button>
     {#if ready}
-      <button type="button" class="chat-secondary-button" onclick={useDraft}>{t("chat.sourceControl.useTeammateDraft")}</button>
+      <button type="button" class="chat-secondary-button" onclick={useDraft}>{t("chat.sourceControl.useAgentDraft")}</button>
     {/if}
     {#if notice}<small role="status">{notice}</small>{/if}
   </div>
 {/if}
 
 <style>
-  .teammate-draft { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; }
-  .teammate-draft button { display: inline-flex; align-items: center; gap: 0.3rem; min-height: 1.75rem; padding: 0.25rem 0.55rem; font-size: calc(0.7rem * var(--type-scale)); }
-  .teammate-draft small { flex-basis: 100%; color: var(--muted-foreground); font-size: calc(0.65rem * var(--type-scale)); }
+  .agent-draft { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; }
+  .agent-draft button { display: inline-flex; align-items: center; gap: 0.3rem; min-height: 1.75rem; padding: 0.25rem 0.55rem; font-size: calc(0.7rem * var(--type-scale)); }
+  .agent-draft small { flex-basis: 100%; color: var(--muted-foreground); font-size: calc(0.65rem * var(--type-scale)); }
 </style>

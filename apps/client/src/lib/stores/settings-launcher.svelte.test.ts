@@ -8,13 +8,13 @@ describe("settings launcher", () => {
       expect(launcher.isOpen).toBe(false);
     });
 
-    launcher.open("agents", { agentsSubsection: "teammates", agentsCreateTeammate: true, onClosed });
+    launcher.open("agents", { agentsSubsection: "agents", agentsCreateAgent: true, onClosed });
     expect(launcher.isOpen).toBe(true);
     expect(onClosed).not.toHaveBeenCalled();
 
     launcher.close();
     expect(onClosed).toHaveBeenCalledTimes(1);
-    expect(launcher.targetAgentsCreateTeammate).toBe(false);
+    expect(launcher.targetAgentsCreateAgent).toBe(false);
 
     launcher.open("appearance");
     launcher.close();

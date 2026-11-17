@@ -5,10 +5,10 @@ use crate::chat::internal_mcp::{
     InternalMcpChannelSource, InternalMcpFolderSource, InternalMcpRunScope,
 };
 use crate::chat::organization::{
-    effective_runtime_approval, parse_approval_policy, parse_runtime_approval_policy,
-    teammate_runtime_approval, wire_runtime_approval_policy,
+    agent_runtime_approval, effective_runtime_approval, parse_approval_policy,
+    parse_runtime_approval_policy, wire_runtime_approval_policy,
 };
-use ganbaru_chat::coordination::reductions::live_teammate_safety_mode_sql;
+use ganbaru_chat::coordination::reductions::live_agent_safety_mode_sql;
 use ganbaru_chat_contracts::models::{ChatResult, ChatRuntimeApprovalPolicy};
 use sqlx::{Row, SqlitePool};
 
@@ -23,13 +23,13 @@ pub(crate) async fn verify_scope(
             FROM chat_assignment_authorization_revisions authorization
             JOIN chat_work_assignments assignment
               ON assignment.id = authorization.assignment_id
-            JOIN chat_teammate_channel_memberships channel_access
+            JOIN chat_agent_channel_memberships channel_access
               ON channel_access.conversation_id = authorization.destination_conversation_id
-             AND channel_access.teammate_id = assignment.teammate_id
+             AND channel_access.agent_id = assignment.agent_id
              AND channel_access.removed_at IS NULL
             JOIN chat_conversation_memberships membership
               ON membership.conversation_id = channel_access.conversation_id
-             AND membership.participant_id = channel_access.teammate_id
+             AND membership.participant_id = channel_access.agent_id
              AND membership.removed_at IS NULL
             JOIN chat_access_profiles profile
               ON profile.id = channel_access.access_profile_id
@@ -111,18 +111,18 @@ pub(super) async fn verify_channel_source(
              AND authorization.revoked_at IS NULL
             JOIN chat_work_assignments assignment
               ON assignment.id = authorization.assignment_id
-            JOIN chat_teammate_channel_memberships channel_access
+            JOIN chat_agent_channel_memberships channel_access
               ON channel_access.conversation_id = source.conversation_id
-             AND channel_access.teammate_id = assignment.teammate_id
+             AND channel_access.agent_id = assignment.agent_id
              AND channel_access.removed_at IS NULL
             JOIN chat_conversation_memberships membership
               ON membership.conversation_id = channel_access.conversation_id
-             AND membership.participant_id = channel_access.teammate_id
+             AND membership.participant_id = channel_access.agent_id
              AND membership.removed_at IS NULL
-            JOIN chat_access_profiles teammate_profile
-              ON teammate_profile.id = channel_access.access_profile_id
-            JOIN chat_access_profile_effective_revisions teammate_profile_revision
-              ON teammate_profile_revision.access_profile_id = teammate_profile.id
+            JOIN chat_access_profiles agent_profile
+              ON agent_profile.id = channel_access.access_profile_id
+            JOIN chat_access_profile_effective_revisions agent_profile_revision
+              ON agent_profile_revision.access_profile_id = agent_profile.id
             JOIN chat_conversation_memberships requester_membership
               ON requester_membership.conversation_id = source.conversation_id
              AND requester_membership.participant_id = authorization.requester_participant_id
@@ -155,16 +155,16 @@ pub(super) async fn verify_channel_source(
               AND reference_item.conversation_id = authorization.destination_conversation_id
               AND CASE
                     WHEN channel_access.read_history_inherits_profile = 1
-                      THEN teammate_profile_revision.default_read_history
+                      THEN agent_profile_revision.default_read_history
                     ELSE channel_access.read_history
-                         AND teammate_profile_revision.default_read_history
+                         AND agent_profile_revision.default_read_history
                   END = 1
               AND (
                 CASE
                   WHEN channel_access.history_boundary_inherits_profile = 1
-                    THEN teammate_profile_revision.default_history_boundary
+                    THEN agent_profile_revision.default_history_boundary
                   WHEN channel_access.history_boundary = 'from_grant'
-                    OR teammate_profile_revision.default_history_boundary = 'from_grant'
+                    OR agent_profile_revision.default_history_boundary = 'from_grant'
                     THEN 'from_grant'
                   ELSE 'entire'
                 END = 'entire'
@@ -174,16 +174,16 @@ pub(super) async fn verify_channel_source(
                 )
               )
               AND (
-                requester_participant.participant_kind != 'ai_teammate'
+                requester_participant.participant_kind != 'ai_agent'
                 OR EXISTS (
                   SELECT 1
-                  FROM chat_teammate_channel_memberships requester_source_access
+                  FROM chat_agent_channel_memberships requester_source_access
                   JOIN chat_access_profiles requester_profile
                     ON requester_profile.id = requester_source_access.access_profile_id
                   JOIN chat_access_profile_effective_revisions requester_profile_revision
                     ON requester_profile_revision.access_profile_id = requester_profile.id
                   WHERE requester_source_access.conversation_id = source.conversation_id
-                    AND requester_source_access.teammate_id = authorization.requester_participant_id
+                    AND requester_source_access.agent_id = authorization.requester_participant_id
                     AND requester_source_access.removed_at IS NULL
                     AND CASE
                           WHEN requester_source_access.read_history_inherits_profile = 1
@@ -215,16 +215,16 @@ pub(super) async fn verify_channel_source(
                 WHERE destination_member.conversation_id = authorization.destination_conversation_id
                   AND destination_member.removed_at IS NULL
                   AND (
-                    destination_participant.participant_kind != 'ai_teammate'
+                    destination_participant.participant_kind != 'ai_agent'
                     OR EXISTS (
                       SELECT 1
-                      FROM chat_teammate_channel_memberships destination_ai_access
+                      FROM chat_agent_channel_memberships destination_ai_access
                       JOIN chat_access_profiles destination_profile
                         ON destination_profile.id = destination_ai_access.access_profile_id
                       JOIN chat_access_profile_effective_revisions destination_profile_revision
                         ON destination_profile_revision.access_profile_id = destination_profile.id
                       WHERE destination_ai_access.conversation_id = authorization.destination_conversation_id
-                        AND destination_ai_access.teammate_id = destination_member.participant_id
+                        AND destination_ai_access.agent_id = destination_member.participant_id
                         AND destination_ai_access.removed_at IS NULL
                         AND CASE
                               WHEN destination_ai_access.read_history_inherits_profile = 1
@@ -257,16 +257,16 @@ pub(super) async fn verify_channel_source(
                         AND source_member.removed_at IS NULL
                     )
                     OR (
-                      destination_participant.participant_kind = 'ai_teammate'
+                      destination_participant.participant_kind = 'ai_agent'
                       AND NOT EXISTS (
                         SELECT 1
-                        FROM chat_teammate_channel_memberships source_ai_access
+                        FROM chat_agent_channel_memberships source_ai_access
                         JOIN chat_access_profiles source_profile
                           ON source_profile.id = source_ai_access.access_profile_id
                         JOIN chat_access_profile_effective_revisions source_profile_revision
                           ON source_profile_revision.access_profile_id = source_profile.id
                         WHERE source_ai_access.conversation_id = source.conversation_id
-                          AND source_ai_access.teammate_id = destination_member.participant_id
+                          AND source_ai_access.agent_id = destination_member.participant_id
                           AND source_ai_access.removed_at IS NULL
                           AND CASE
                                 WHEN source_ai_access.read_history_inherits_profile = 1
@@ -316,9 +316,9 @@ pub(super) async fn verify_channel_source(
 
 /// Verifies that a folder source of the run's authorization is still granted and covered.
 ///
-/// The teammate's safety mode follows [`live_teammate_safety_mode_sql`], as the sync revocation
+/// The agent's safety mode follows [`live_agent_safety_mode_sql`], as the sync revocation
 /// hooks decide, so the pointer's copied mode decides while its revision is missing, even when no
-/// revision of the teammate has arrived.
+/// revision of the agent has arrived.
 pub(super) async fn verify_folder_source(
     pool: &SqlitePool,
     scope: &InternalMcpRunScope,
@@ -339,7 +339,7 @@ pub(crate) async fn verify_authorized_folder_source(
     let live = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT live_grant.runtime_approval_policy AS grant_runtime_approval_policy,
                 channel_access.runtime_approval_policy AS channel_runtime_approval_policy,
-                {} AS teammate_safety_mode
+                {} AS agent_safety_mode
             FROM chat_assignment_authorized_folder_sources source
             JOIN chat_assignment_authorization_revisions authorization
               ON authorization.id = source.authorization_revision_id
@@ -349,21 +349,21 @@ pub(crate) async fn verify_authorized_folder_source(
               ON assignment.id = authorization.assignment_id
             JOIN chat_conversation_memberships membership
               ON membership.conversation_id = authorization.destination_conversation_id
-             AND membership.participant_id = assignment.teammate_id
+             AND membership.participant_id = assignment.agent_id
              AND membership.removed_at IS NULL
-            JOIN chat_teammate_channel_memberships channel_access
+            JOIN chat_agent_channel_memberships channel_access
               ON channel_access.conversation_id = membership.conversation_id
-             AND channel_access.teammate_id = membership.participant_id
+             AND channel_access.agent_id = membership.participant_id
              AND channel_access.removed_at IS NULL
-            JOIN chat_teammate_access_state access_state
-              ON access_state.teammate_id = membership.participant_id
+            JOIN chat_agent_access_state access_state
+              ON access_state.agent_id = membership.participant_id
             JOIN chat_access_profiles profile
               ON profile.id = channel_access.access_profile_id
             JOIN chat_access_profile_effective_revisions profile_revision
               ON profile_revision.access_profile_id = profile.id
-            JOIN chat_teammate_working_folder_grants live_grant
+            JOIN chat_agent_working_folder_grants live_grant
               ON live_grant.conversation_id = authorization.destination_conversation_id
-             AND live_grant.teammate_id = assignment.teammate_id
+             AND live_grant.agent_id = assignment.agent_id
              AND live_grant.working_folder_id = source.working_folder_id
              AND live_grant.revoked_at IS NULL
             JOIN project_working_folders folder
@@ -394,7 +394,7 @@ pub(crate) async fn verify_authorized_folder_source(
                       END
                     )
                   END",
-        live_teammate_safety_mode_sql("assignment.teammate_id"),
+        live_agent_safety_mode_sql("assignment.agent_id"),
     )))
     .bind(authorization_revision_id)
     .bind(&source.root_handle)
@@ -405,12 +405,12 @@ pub(crate) async fn verify_authorized_folder_source(
     .await
     .map_err(persistence_error)?
     .ok_or_else(generic_denial_error)?;
-    let teammate_safety_mode: Option<String> = live
-        .try_get("teammate_safety_mode")
+    let agent_safety_mode: Option<String> = live
+        .try_get("agent_safety_mode")
         .map_err(persistence_error)?;
-    let teammate_safety_mode = teammate_safety_mode.ok_or_else(generic_denial_error)?;
+    let agent_safety_mode = agent_safety_mode.ok_or_else(generic_denial_error)?;
     let live_runtime_approval = live_runtime_approval(
-        teammate_safety_mode,
+        agent_safety_mode,
         live.try_get::<Option<String>, _>("grant_runtime_approval_policy")
             .map_err(persistence_error)?
             .or(live
@@ -425,19 +425,19 @@ pub(crate) async fn verify_authorized_folder_source(
     }
 }
 
-/// Resolves the current effective runtime approval of a folder source from the teammate's latest
+/// Resolves the current effective runtime approval of a folder source from the agent's latest
 /// approval behavior and the live folder or channel grant, the same way assignments freeze it.
 fn live_runtime_approval(
-    teammate_safety_mode: String,
+    agent_safety_mode: String,
     granted: Option<String>,
 ) -> ChatResult<ChatRuntimeApprovalPolicy> {
-    let teammate_default = teammate_runtime_approval(parse_approval_policy(&teammate_safety_mode)?);
+    let agent_default = agent_runtime_approval(parse_approval_policy(&agent_safety_mode)?);
     let granted = granted
         .as_deref()
         .map(parse_runtime_approval_policy)
         .transpose()?
-        .unwrap_or(teammate_default);
-    Ok(effective_runtime_approval(teammate_default, granted))
+        .unwrap_or(agent_default);
+    Ok(effective_runtime_approval(agent_default, granted))
 }
 
 /// Returns whether the live approval still covers the frozen one: an equal policy, or a ranked
@@ -464,7 +464,7 @@ mod tests {
     };
     use sqlx::SqlitePool;
 
-    const TEAMMATE: &str = "participant:folder-agent";
+    const AGENT: &str = "participant:folder-agent";
 
     /// Freezes `auto_approve` on a follow-up authorization of the working run's execution target,
     /// under an approve-for-me revision that covers it.
@@ -473,12 +473,12 @@ mod tests {
         sqlx::raw_sql(
             "INSERT INTO chat_assignment_authorization_revisions
                 (id, assignment_id, revision, requester_participant_id,
-                 teammate_policy_revision_id, teammate_access_revision,
+                 agent_policy_revision_id, agent_access_revision,
                  destination_conversation_id, access_profile_revision_id,
                  execution_environment_id, working_folder_id,
                  resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
              SELECT 'authorization:auto', assignment_id, 3, requester_participant_id,
-                    teammate_policy_revision_id, teammate_access_revision,
+                    agent_policy_revision_id, agent_access_revision,
                     destination_conversation_id, access_profile_revision_id,
                     execution_environment_id, working_folder_id, 'auto_approve',
                     scope_digest, 'allowed', created_at
@@ -502,13 +502,13 @@ mod tests {
 
     async fn insert_policy_revision(pool: &SqlitePool, id: &str, minute: u32, safety_mode: &str) {
         sqlx::query(
-            "INSERT INTO chat_teammate_policy_revisions
-                (id, teammate_id, provider_instance_id, model_selection_data, created_at,
+            "INSERT INTO chat_agent_policy_revisions
+                (id, agent_id, provider_instance_id, model_selection_data, created_at,
                  safety_mode)
              VALUES (?, ?, 'codex-personal', '{}', ?, ?)",
         )
         .bind(id)
-        .bind(TEAMMATE)
+        .bind(AGENT)
         .bind(format!("2026-10-20T12:{minute:02}:00.000Z"))
         .bind(safety_mode)
         .execute(pool)
@@ -518,13 +518,13 @@ mod tests {
 
     async fn point_policy_at(pool: &SqlitePool, revision_id: &str, safety_mode: &str) {
         sqlx::query(
-            "UPDATE chat_teammates
+            "UPDATE chat_agents
              SET current_policy_revision_id = ?, current_policy_safety_mode = ?
              WHERE participant_id = ?",
         )
         .bind(revision_id)
         .bind(safety_mode)
-        .bind(TEAMMATE)
+        .bind(AGENT)
         .execute(pool)
         .await
         .unwrap();
@@ -582,7 +582,7 @@ mod tests {
         assert!(verify_target(&pool).await.is_err());
     }
 
-    /// A teammate that holds no arrived revision still has the mode its pointer copied, so
+    /// An agent that holds no arrived revision still has the mode its pointer copied, so
     /// covered folder tool calls continue. Revisions are immutable and authorizations reference
     /// them, so the test lifts both guards to reach that state.
     #[tokio::test]
@@ -591,9 +591,9 @@ mod tests {
         point_policy_at(&pool, "policy:folders-pointed", "approve_for_me").await;
         sqlx::raw_sql(
             "PRAGMA foreign_keys=OFF;
-             DROP TRIGGER chat_teammate_policy_immutable_delete;
-             DELETE FROM chat_teammate_policy_revisions
-             WHERE teammate_id = 'participant:folder-agent';
+             DROP TRIGGER chat_agent_policy_immutable_delete;
+             DELETE FROM chat_agent_policy_revisions
+             WHERE agent_id = 'participant:folder-agent';
              PRAGMA foreign_keys=ON;",
         )
         .execute(&pool)
@@ -604,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn live_approval_follows_the_teammate_approval_behavior() {
+    fn live_approval_follows_the_agent_approval_behavior() {
         assert_eq!(
             live_runtime_approval("full_access".to_string(), None).unwrap(),
             ChatRuntimeApprovalPolicy::Unattended,

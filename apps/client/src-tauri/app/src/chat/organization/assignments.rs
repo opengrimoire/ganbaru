@@ -11,7 +11,7 @@ use super::workflow::{
     NewAssignment, PostingDevice, complete_reviewed_assignment, create_assignment,
     drop_input_requested_targets, end_assignment_dispatch_jobs, move_pending_inputs,
     pending_thread_inputs, read_assignment_executing_device, read_input_requested_target,
-    require_no_pending_replies, require_participating_teammate, require_reviewable_assignment,
+    require_no_pending_replies, require_participating_agent, require_reviewable_assignment,
     set_assignment_state, take_requested_target,
 };
 use super::{
@@ -398,7 +398,7 @@ pub(super) async fn reroute_assignment(
         NewAssignment {
             reply_thread_id: &assignment.reply_thread_id,
             message_item_id: &assignment.triggering_message_item_id,
-            teammate_id: &assignment.teammate.id,
+            agent_id: &assignment.agent.id,
             latest_assignment: Some(&previous),
             executing_device_id: device.id,
             execution_target: None,
@@ -546,13 +546,13 @@ async fn recover_follow_up(
     let first_message_id =
         ChatConversationItemId::new(first.message_item_id).map_err(identifier_error)?;
     let requested_target = read_input_requested_target(&mut transaction, &first.id).await?;
-    let teammate_id = previous.teammate.id.clone();
+    let agent_id = previous.agent.id.clone();
     let created = create_assignment(
         &mut transaction,
         NewAssignment {
             reply_thread_id: &reply_thread_id,
             message_item_id: &first_message_id,
-            teammate_id: &teammate_id,
+            agent_id: &agent_id,
             latest_assignment: Some(&previous),
             executing_device_id: device.id,
             execution_target: requested_target.as_ref(),
@@ -584,7 +584,7 @@ async fn recover_follow_up(
 /// Reviews the ready-for-review work `assignment_id` at `expected_revision`. Accept completes
 /// it; Request changes posts the note as a reply, which continues the work in a follow-up
 /// assignment and completes the reviewed one with changes requested. Accept is refused while
-/// replies wait on the work, and Request changes when no device can run the teammate, so a
+/// replies wait on the work, and Request changes when no device can run the agent, so a
 /// review never leaves a reply with no run to reach.
 pub(super) async fn review_assignment(
     app: tauri::AppHandle,
@@ -652,7 +652,7 @@ pub(super) async fn accept_reviewed_assignment(
 
 /// The reply that carries the review note `note` on `assignment_id`: plain text in the
 /// assignment's reply thread, with no mention, since the thread's latest work already names
-/// the teammate. Its command id derives from the reviewed revision, so a repeated request
+/// the agent. Its command id derives from the reviewed revision, so a repeated request
 /// posts the note once.
 pub(super) async fn review_note_request(
     pool: &SqlitePool,
@@ -939,7 +939,7 @@ async fn queue_dispatch_here(
 ) -> ChatResult<()> {
     let requested_target = take_requested_target(transaction, assignment_id).await?;
     let row = sqlx::query(
-        "SELECT assignment.reply_thread_id, assignment.teammate_id,
+        "SELECT assignment.reply_thread_id, assignment.agent_id,
                 assignment.triggering_message_item_id,
                 EXISTS(
                   SELECT 1 FROM chat_assignment_context_packages package
@@ -960,8 +960,8 @@ async fn queue_dispatch_here(
                 .map_err(persistence_error)?,
         )
         .map_err(identifier_error)?;
-        let teammate_id = ChatParticipantId::new(
-            row.try_get::<String, _>("teammate_id")
+        let agent_id = ChatParticipantId::new(
+            row.try_get::<String, _>("agent_id")
                 .map_err(persistence_error)?,
         )
         .map_err(identifier_error)?;
@@ -975,7 +975,7 @@ async fn queue_dispatch_here(
             assignment_id,
             &reply_thread_id,
             &message_item_id,
-            &teammate_id,
+            &agent_id,
             requested_target.as_ref(),
             now,
         )
@@ -1014,7 +1014,7 @@ pub(super) const ADOPTION_FAILED_REASON: &str = "The work could not start on its
 
 /// What `assignment_id` would run on this device, read from current rows.
 pub(super) struct AssignmentSubject {
-    teammate_id: ChatParticipantId,
+    agent_id: ChatParticipantId,
     pub(super) display_name: String,
     pub(super) role: String,
     pub(super) instructions: String,
@@ -1025,7 +1025,7 @@ pub(super) struct AssignmentSubject {
 impl AssignmentSubject {
     pub(super) fn digest(&self) -> String {
         acceptance_digest(&AcceptanceSubject {
-            teammate_id: self.teammate_id.as_str(),
+            agent_id: self.agent_id.as_str(),
             policy_revision_id: self.access.policy_revision_id.as_str(),
             instructions: &self.instructions,
             provider_instance_id: &self.provider_instance_id,
@@ -1040,13 +1040,13 @@ pub(super) async fn read_assignment_subject(
     assignment_id: &ChatWorkAssignmentId,
 ) -> ChatResult<AssignmentSubject> {
     let row = sqlx::query(
-        "SELECT assignment.teammate_id, assignment.triggering_message_item_id,
-                thread.conversation_id, teammate.instructions, teammate.role,
+        "SELECT assignment.agent_id, assignment.triggering_message_item_id,
+                thread.conversation_id, agent.instructions, agent.role,
                 participant.display_name
          FROM chat_work_assignments assignment
          JOIN chat_reply_threads thread ON thread.id = assignment.reply_thread_id
-         JOIN chat_teammates teammate ON teammate.participant_id = assignment.teammate_id
-         JOIN chat_participants participant ON participant.id = assignment.teammate_id
+         JOIN chat_agents agent ON agent.participant_id = assignment.agent_id
+         JOIN chat_participants participant ON participant.id = assignment.agent_id
          WHERE assignment.id = ?",
     )
     .bind(assignment_id.as_str())
@@ -1060,8 +1060,8 @@ pub(super) async fn read_assignment_subject(
             true,
         )
     })?;
-    let teammate_id = ChatParticipantId::new(
-        row.try_get::<String, _>("teammate_id")
+    let agent_id = ChatParticipantId::new(
+        row.try_get::<String, _>("agent_id")
             .map_err(persistence_error)?,
     )
     .map_err(identifier_error)?;
@@ -1075,22 +1075,17 @@ pub(super) async fn read_assignment_subject(
             .map_err(persistence_error)?,
     )
     .map_err(identifier_error)?;
-    let access = read_granted_access(
-        transaction,
-        &conversation_id,
-        &message_item_id,
-        &teammate_id,
-    )
-    .await?;
+    let access =
+        read_granted_access(transaction, &conversation_id, &message_item_id, &agent_id).await?;
     let provider_instance_id: String = sqlx::query_scalar(
-        "SELECT provider_instance_id FROM chat_teammate_policy_revisions WHERE id = ?",
+        "SELECT provider_instance_id FROM chat_agent_policy_revisions WHERE id = ?",
     )
     .bind(access.policy_revision_id.as_str())
     .fetch_one(&mut **transaction)
     .await
     .map_err(persistence_error)?;
     Ok(AssignmentSubject {
-        teammate_id,
+        agent_id,
         display_name: row.try_get("display_name").map_err(persistence_error)?,
         role: row.try_get("role").map_err(persistence_error)?,
         instructions: row.try_get("instructions").map_err(persistence_error)?,
@@ -1100,7 +1095,7 @@ pub(super) async fn read_assignment_subject(
 }
 
 /// Whether the synced references of `assignment_id` hold together: its trigger belongs to its
-/// reply thread and its teammate still participates in the conversation.
+/// reply thread and its agent still participates in the conversation.
 async fn assignment_references_hold(
     transaction: &mut Transaction<'_, Sqlite>,
     assignment_id: &ChatWorkAssignmentId,
@@ -1114,10 +1109,10 @@ async fn assignment_references_hold(
             AND trigger_item.conversation_id = thread.conversation_id
            JOIN chat_conversation_memberships membership
              ON membership.conversation_id = thread.conversation_id
-            AND membership.participant_id = assignment.teammate_id
+            AND membership.participant_id = assignment.agent_id
             AND membership.removed_at IS NULL
            JOIN chat_participants participant
-             ON participant.id = assignment.teammate_id AND participant.archived_at IS NULL
+             ON participant.id = assignment.agent_id AND participant.archived_at IS NULL
            WHERE assignment.id = ?
              AND (trigger_item.reply_thread_id = thread.id OR thread.root_item_id = trigger_item.id)
          )",
@@ -1132,7 +1127,7 @@ async fn assignment_references_hold(
 fn broken_references_error() -> ChatError {
     ChatError::new(
         ChatErrorCode::Conflict,
-        "This work names a message or teammate outside its reply thread",
+        "This work names a message or agent outside its reply thread",
         true,
     )
 }
@@ -1328,11 +1323,11 @@ async fn read_waiting_assignment(
     let Some(row) = sqlx::query(
         "SELECT assignment.reply_thread_id, assignment.created_at, channel.id AS channel_id,
                 channel.project_id, channel.name AS channel_name,
-                participant.display_name AS teammate_display_name
+                participant.display_name AS agent_display_name
          FROM chat_work_assignments assignment
          JOIN chat_reply_threads thread ON thread.id = assignment.reply_thread_id
          JOIN chat_channels channel ON channel.conversation_id = thread.conversation_id
-         JOIN chat_participants participant ON participant.id = assignment.teammate_id
+         JOIN chat_participants participant ON participant.id = assignment.agent_id
          WHERE assignment.id = ? AND channel.archived_at IS NULL",
     )
     .bind(assignment_id.as_str())
@@ -1356,8 +1351,8 @@ async fn read_waiting_assignment(
                 .map_err(persistence_error)?,
         )
         .map_err(identifier_error)?,
-        teammate_display_name: row
-            .try_get("teammate_display_name")
+        agent_display_name: row
+            .try_get("agent_display_name")
             .map_err(persistence_error)?,
         created_at: timestamp(row.try_get("created_at").map_err(persistence_error)?)?,
     }))
@@ -1641,7 +1636,7 @@ pub(super) async fn accept_assignment_here(
         take_over_routed_assignment(
             &pool,
             &assignment_id,
-            &waiting.teammate.id,
+            &waiting.agent.id,
             device,
             Some(&scope),
             &now,
@@ -1685,7 +1680,7 @@ async fn queue_accepted_dispatch(
 
 /// Queues the dispatch of the synced queued assignment `assignment_id` when the device
 /// `device_id` executes it, has not queued it yet, and `scope` accepted what it would run,
-/// reporting whether it did. Unaccepted work, and work of an archived teammate, stays queued
+/// reporting whether it did. Unaccepted work, and work of an archived agent, stays queued
 /// and visible, so a restore makes it actionable again. An assignment whose
 /// references do not hold or whose context cannot be frozen here fails with a reason instead of
 /// staying queued.
@@ -1708,7 +1703,7 @@ pub(super) async fn adopt_synced_assignment(
              )
              AND NOT EXISTS (
                SELECT 1 FROM chat_participants participant
-               WHERE participant.id = assignment.teammate_id
+               WHERE participant.id = assignment.agent_id
                  AND participant.archived_at IS NOT NULL
              )
          )",
@@ -2086,7 +2081,7 @@ pub(super) async fn continue_stranded_replies(
 }
 
 /// Starts the assignment an unattended post created on this device. It takes the path of synced
-/// work, so it dispatches only when its teammate already holds a local acceptance.
+/// work, so it dispatches only when its agent already holds a local acceptance.
 pub(super) fn start_unattended_assignment(
     app: &tauri::AppHandle,
     assignment_id: &ChatWorkAssignmentId,
@@ -2270,14 +2265,14 @@ pub(super) async fn report_synced_delegation_outcome(
         .map(|outcome| outcome.parent_assignment_id))
 }
 
-/// Starts the work of the mention `message_item_id` of `teammate_id` on this device: the Start
-/// action for a mention whose post recorded no assignment, since its teammate has no home
+/// Starts the work of the mention `message_item_id` of `agent_id` on this device: the Start
+/// action for a mention whose post recorded no assignment, since its agent has no home
 /// device and the posting device does not execute assignments.
 pub(super) async fn start_mentioned_assignment(
     app: tauri::AppHandle,
     db_url: String,
     message_item_id: ChatConversationItemId,
-    teammate_id: ChatParticipantId,
+    agent_id: ChatParticipantId,
 ) -> ChatResult<ChatWorkAssignmentRead> {
     let dispatch_app = app.clone();
     let dispatch_db_url = db_url.clone();
@@ -2288,7 +2283,7 @@ pub(super) async fn start_mentioned_assignment(
     let assignment_id = persist_started_assignment(
         &pool,
         &message_item_id,
-        &teammate_id,
+        &agent_id,
         PostingDevice::this_device(&device_id, &writers),
         &now,
     )
@@ -2302,13 +2297,13 @@ pub(super) async fn start_mentioned_assignment(
 }
 
 /// Writes the assignment the Start action creates for the mention `message_item_id` of
-/// `teammate_id`, executed by `device`. A mention that already routed to work starts again
+/// `agent_id`, executed by `device`. A mention that already routed to work starts again
 /// only when that work's executing device can no longer write Chat: its work then moves to a
 /// successor `device` runs.
 pub(super) async fn persist_started_assignment(
     pool: &SqlitePool,
     message_item_id: &ChatConversationItemId,
-    teammate_id: &ChatParticipantId,
+    agent_id: &ChatParticipantId,
     device: PostingDevice<'_>,
     now: &UtcTimestamp,
 ) -> ChatResult<ChatWorkAssignmentId> {
@@ -2326,14 +2321,14 @@ pub(super) async fn persist_started_assignment(
                   JOIN chat_participant_reference_targets target
                     ON target.reference_id = reference.id
                   WHERE message.item_id = item.id AND target.participant_id = ?
-                ) AS mentions_teammate,
+                ) AS mentions_agent,
                 (
                   SELECT input.assignment_id FROM chat_work_assignment_inputs input
                   WHERE input.message_item_id = item.id
                 ) AS routed_assignment_id
          FROM chat_conversation_items item WHERE item.id = ?",
     )
-    .bind(teammate_id.as_str())
+    .bind(agent_id.as_str())
     .bind(message_item_id.as_str())
     .fetch_optional(pool)
     .await
@@ -2343,12 +2338,12 @@ pub(super) async fn persist_started_assignment(
         row.try_get("reply_thread_id").map_err(persistence_error)?;
     let (Some(reply_thread_id), true) = (
         reply_thread_id,
-        row.try_get::<bool, _>("mentions_teammate")
+        row.try_get::<bool, _>("mentions_agent")
             .map_err(persistence_error)?,
     ) else {
         return Err(ChatError::validation(
             "messageItemId",
-            "This message does not mention the teammate in a reply thread",
+            "This message does not mention the agent in a reply thread",
         ));
     };
     let routed_assignment_id: Option<String> = row
@@ -2360,14 +2355,14 @@ pub(super) async fn persist_started_assignment(
             .map_err(persistence_error)?,
     )
     .map_err(identifier_error)?;
-    require_participating_teammate(pool, &conversation_id, teammate_id).await?;
+    require_participating_agent(pool, &conversation_id, agent_id).await?;
     if let Some(routed_assignment_id) = routed_assignment_id {
         let routed_assignment_id =
             ChatWorkAssignmentId::new(routed_assignment_id).map_err(identifier_error)?;
         return take_over_routed_assignment(
             pool,
             &routed_assignment_id,
-            teammate_id,
+            agent_id,
             device,
             None,
             now,
@@ -2391,7 +2386,7 @@ pub(super) async fn persist_started_assignment(
         NewAssignment {
             reply_thread_id: &reply_thread_id,
             message_item_id,
-            teammate_id,
+            agent_id,
             latest_assignment: latest.as_ref(),
             executing_device_id: device.id,
             execution_target: None,
@@ -2406,7 +2401,7 @@ pub(super) async fn persist_started_assignment(
     Ok(assignment_id)
 }
 
-/// Moves the work of `assignment_id`, which a mention of `teammate_id` already routed to, onto
+/// Moves the work of `assignment_id`, which a mention of `agent_id` already routed to, onto
 /// a successor `device` runs. Only work that is still active and whose executing device can no
 /// longer write Chat moves; finished work and work a Chat writer runs refuse the Start. With
 /// `accepted_by`, the move also requires that scope to accept what the work would run when the
@@ -2414,14 +2409,14 @@ pub(super) async fn persist_started_assignment(
 async fn take_over_routed_assignment(
     pool: &SqlitePool,
     assignment_id: &ChatWorkAssignmentId,
-    teammate_id: &ChatParticipantId,
+    agent_id: &ChatParticipantId,
     device: PostingDevice<'_>,
     accepted_by: Option<&ChatDeviceScope>,
     now: &UtcTimestamp,
 ) -> ChatResult<ChatWorkAssignmentId> {
     let routed = read_assignment(pool, assignment_id).await?;
     let executor = read_assignment_executing_device(pool, assignment_id.as_str()).await?;
-    if routed.teammate.id != *teammate_id
+    if routed.agent.id != *agent_id
         || !routed.state.accepts_continuation()
         || !device.runs_new_work()
         || !stranded_executor(executor.as_deref(), device)

@@ -1514,14 +1514,14 @@ fn grok_versions_admit_against_the_tested_range() {
 }
 
 #[test]
-fn cursor_teammates_need_the_confined_build_only_where_the_helper_confines_them() {
+fn cursor_agents_need_the_confined_build_only_where_the_helper_confines_them() {
     assert_eq!(
-        cursor_teammate_minimum_version("2026.11.10", true).as_deref(),
+        cursor_agent_minimum_version("2026.11.10", true).as_deref(),
         Some("2026.11.11")
     );
-    assert_eq!(cursor_teammate_minimum_version("2026.11.11", true), None);
-    assert_eq!(cursor_teammate_minimum_version("2026.11.10", false), None);
-    assert_eq!(cursor_teammate_minimum_version("unreadable", true), None);
+    assert_eq!(cursor_agent_minimum_version("2026.11.11", true), None);
+    assert_eq!(cursor_agent_minimum_version("2026.11.10", false), None);
+    assert_eq!(cursor_agent_minimum_version("unreadable", true), None);
 }
 
 #[test]

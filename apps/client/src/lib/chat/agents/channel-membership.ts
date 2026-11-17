@@ -1,30 +1,30 @@
 import type {
   ChatAccessProfileRead,
-  ChatAiTeammateRead,
-  ChatTeammateAccessRead,
-  ChatTeammateChannelAccess,
-  ChatTeammateChannelAccessInput,
+  ChatAiAgentRead,
+  ChatAgentAccessRead,
+  ChatAgentChannelAccess,
+  ChatAgentChannelAccessInput,
   ProviderAuthoritySupport,
   ProviderInstanceRead,
   SafetyMode,
 } from "$lib/chat/contracts";
 import { providerExecutesWithAsk } from "$lib/chat/composer/provider-authority";
-import { capabilitiesForPreset } from "$lib/chat/teammates/access";
+import { capabilitiesForPreset } from "$lib/chat/agents/access";
 
-/** Access facts a channel offers a teammate that joins it. */
+/** Access facts a channel offers an agent that joins it. */
 export interface ChannelAccessDefaults {
   profiles: readonly ChatAccessProfileRead[];
   /** The channel project's preferred working folder, or null when the project has none. */
   projectWorkingFolderId: string | null;
 }
 
-/** What a teammate's provider and policy let the send gate enforce for commands. */
-export interface TeammateCommandSupport {
+/** What an agent's provider and policy let the send gate enforce for commands. */
+export interface AgentCommandSupport {
   authority: ProviderAuthoritySupport | null;
   safetyMode: SafetyMode | null;
 }
 
-/** Returns the profile used when a teammate joins a channel without explicit access choices. */
+/** Returns the profile used when an agent joins a channel without explicit access choices. */
 export function conversationAccessProfile(
   profiles: readonly ChatAccessProfileRead[],
 ): ChatAccessProfileRead | null {
@@ -44,12 +44,12 @@ export function executeAccessProfile(
   )) ?? null;
 }
 
-/** Reads the command support of a teammate from its policy and its provider's last probe. */
-export function teammateCommandSupport(
-  teammate: Pick<ChatAiTeammateRead, "latestPolicy"> | null,
+/** Reads the command support of an agent from its policy and its provider's last probe. */
+export function agentCommandSupport(
+  agent: Pick<ChatAiAgentRead, "latestPolicy"> | null,
   providerInstances: readonly ProviderInstanceRead[],
-): TeammateCommandSupport {
-  const policy = teammate?.latestPolicy ?? null;
+): AgentCommandSupport {
+  const policy = agent?.latestPolicy ?? null;
   const provider = providerInstances.find((entry) => (
     entry.configuration.instanceId === policy?.providerInstanceId
   ));
@@ -60,23 +60,23 @@ export function teammateCommandSupport(
 }
 
 /**
- * Builds the access a teammate gets when it joins a channel.
+ * Builds the access an agent gets when it joins a channel.
  *
- * The teammate responds in the channel and works in the channel project's folder at Execute with
+ * The agent responds in the channel and works in the channel project's folder at Execute with
  * runtime approval Ask, so every command still reaches the person. When the project has no folder,
  * the Execute profile is missing, or the provider cannot keep commands person-approved, the
- * teammate joins in conversation only instead of with a grant the send gate would refuse.
+ * agent joins in conversation only instead of with a grant the send gate would refuse.
  */
 export function defaultChannelAccessInput(
   channelId: string,
   defaults: ChannelAccessDefaults,
-  teammate: TeammateCommandSupport,
-): ChatTeammateChannelAccessInput {
+  agent: AgentCommandSupport,
+): ChatAgentChannelAccessInput {
   const executeProfile = executeAccessProfile(defaults.profiles);
   const canExecute = defaults.projectWorkingFolderId !== null
     && executeProfile !== null
-    && teammate.authority !== null
-    && providerExecutesWithAsk(teammate.authority, teammate.safetyMode);
+    && agent.authority !== null
+    && providerExecutesWithAsk(agent.authority, agent.safetyMode);
   const profile = canExecute ? executeProfile : conversationAccessProfile(defaults.profiles);
   return {
     channelId,
@@ -99,8 +99,8 @@ export function defaultChannelAccessInput(
 
 /** Converts persisted channel access into the replace request shape, dropping revoked folder grants. */
 export function channelAccessInput(
-  access: ChatTeammateChannelAccess,
-): ChatTeammateChannelAccessInput {
+  access: ChatAgentChannelAccess,
+): ChatAgentChannelAccessInput {
   return {
     channelId: access.channelId,
     accessProfileId: access.accessProfileId,
@@ -122,47 +122,47 @@ export function channelAccessInput(
   };
 }
 
-/** Returns the teammate's active channel access as replace request inputs. */
+/** Returns the agent's active channel access as replace request inputs. */
 export function activeChannelAccessInputs(
-  access: ChatTeammateAccessRead,
-): ChatTeammateChannelAccessInput[] {
+  access: ChatAgentAccessRead,
+): ChatAgentChannelAccessInput[] {
   return access.channels
     .filter((entry) => entry.removedAt === null)
     .map(channelAccessInput);
 }
 
-/** Returns the teammate's access with one channel removed, leaving every other channel untouched. */
+/** Returns the agent's access with one channel removed, leaving every other channel untouched. */
 export function channelAccessWithoutChannel(
-  access: ChatTeammateAccessRead,
+  access: ChatAgentAccessRead,
   channelId: string,
-): ChatTeammateChannelAccessInput[] {
+): ChatAgentChannelAccessInput[] {
   return activeChannelAccessInputs(access).filter((entry) => entry.channelId !== channelId);
 }
 
-/** Returns the teammate's access with a channel added at the default access, or unchanged when already present. */
+/** Returns the agent's access with a channel added at the default access, or unchanged when already present. */
 export function channelAccessWithChannel(
-  access: ChatTeammateAccessRead,
+  access: ChatAgentAccessRead,
   channelId: string,
   defaults: ChannelAccessDefaults,
-  teammate: TeammateCommandSupport,
-): ChatTeammateChannelAccessInput[] {
+  agent: AgentCommandSupport,
+): ChatAgentChannelAccessInput[] {
   const current = activeChannelAccessInputs(access);
   if (current.some((entry) => entry.channelId === channelId)) return current;
-  return [...current, defaultChannelAccessInput(channelId, defaults, teammate)];
+  return [...current, defaultChannelAccessInput(channelId, defaults, agent)];
 }
 
 export interface ChannelMemberChanges {
-  addedTeammateIds: string[];
-  removedTeammateIds: string[];
+  addedAgentIds: string[];
+  removedAgentIds: string[];
 }
 
 /** Resolves pending member edits against the current roster so repeated add and remove clicks cancel out. */
 export function resolveChannelMemberChanges(
-  currentTeammateIds: ReadonlySet<string>,
-  selectedTeammateIds: ReadonlySet<string>,
+  currentAgentIds: ReadonlySet<string>,
+  selectedAgentIds: ReadonlySet<string>,
 ): ChannelMemberChanges {
   return {
-    addedTeammateIds: [...selectedTeammateIds].filter((id) => !currentTeammateIds.has(id)),
-    removedTeammateIds: [...currentTeammateIds].filter((id) => !selectedTeammateIds.has(id)),
+    addedAgentIds: [...selectedAgentIds].filter((id) => !currentAgentIds.has(id)),
+    removedAgentIds: [...currentAgentIds].filter((id) => !selectedAgentIds.has(id)),
   };
 }

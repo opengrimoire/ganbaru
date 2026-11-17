@@ -1,6 +1,6 @@
-//! Channel note proposals a teammate posts and a person settles.
+//! Channel note proposals an agent posts and a person settles.
 //!
-//! A teammate only proposes a note through its report tool; a person accepts it, with its text
+//! An agent only proposes a note through its report tool; a person accepts it, with its text
 //! or an edited one, or dismisses it. Both write the note row whose id derives from the proposal
 //! item and whose creation time is the proposal's, so devices that settle one proposal at the
 //! same time write one row. A dismissal is that row already deleted, so it wins over a
@@ -22,10 +22,10 @@ use ganbaru_sync_contracts::chat_channel_notes::{
 use serde::{Deserialize, Serialize};
 use sqlx::{SqliteConnection, SqlitePool};
 
-/// Semantic update kind of a teammate's note proposal.
+/// Semantic update kind of an agent's note proposal.
 const NOTE_PROPOSAL_KIND: &str = "note_proposal";
 
-/// A person saves a teammate's proposal as a channel note, with `body` replacing its text when
+/// A person saves an agent's proposal as a channel note, with `body` replacing its text when
 /// given.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -36,7 +36,7 @@ pub struct AcceptChatNoteProposalCommand {
     pub body: Option<String>,
 }
 
-/// A person declines a teammate's proposal, so no device saves it.
+/// A person declines an agent's proposal, so no device saves it.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DismissChatNoteProposalCommand {
@@ -183,7 +183,7 @@ pub(in crate::chat::organization) async fn dismiss_note_proposal(
 /// Most note proposals one state read may name.
 pub(in crate::chat::organization) const MAX_NOTE_PROPOSAL_STATE_READS: usize = 200;
 
-/// Where a teammate's note proposal stands on every linked device.
+/// Where an agent's note proposal stands on every linked device.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChatNoteProposalState {
@@ -245,7 +245,7 @@ pub(super) fn proposal_note_id(item_id: &ChatConversationItemId) -> ChatResult<C
     ChatChannelNoteId::new(id).map_err(identifier_error)
 }
 
-/// Reads the note proposal `item_id` with its channel and proposing teammate.
+/// Reads the note proposal `item_id` with its channel and proposing agent.
 async fn read_proposal(
     connection: &mut SqliteConnection,
     item_id: &ChatConversationItemId,

@@ -26,13 +26,13 @@
   let {
     replyThreadId,
     refreshKey,
-    teammateName,
+    agentName,
   }: {
     replyThreadId: ChatReplyThreadId;
     /** Changes whenever the reply thread was read again, so the open requests are read again too. */
     refreshKey: unknown;
-    /** The teammate the thread's work belongs to, or `null` when it is unknown. */
-    teammateName: string | null;
+    /** The agent the thread's work belongs to, or `null` when it is unknown. */
+    agentName: string | null;
   } = $props();
 
   const localization = getLocalization();
@@ -123,7 +123,7 @@
         <header>
           <KeyRound size={14} />
           <div>
-            <strong>{teammateName ? t("chat.secrets.title", teammateName) : t("chat.secrets.titleWithoutName")}</strong>
+            <strong>{agentName ? t("chat.secrets.title", agentName) : t("chat.secrets.titleWithoutName")}</strong>
             <p class="purpose">{request.purpose}</p>
           </div>
         </header>

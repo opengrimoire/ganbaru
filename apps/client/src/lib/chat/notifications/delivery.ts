@@ -26,7 +26,7 @@ export interface ChatNotificationText {
 
 /** Catalog text the notification builder needs, injected so the builder stays pure. */
 export interface ChatNotificationLabels {
-  title(kind: ChatAttentionKind, teammate: string): string;
+  title(kind: ChatAttentionKind, agent: string): string;
   body(channel: string): string;
   bodyWithReason(channel: string, reason: string): string;
   summaryTitle(count: number): string;
@@ -44,7 +44,7 @@ function singleBody(signal: ChatAttentionSignal, includeContent: boolean, labels
 }
 
 /**
- * Builds the text of a gate delivery. A single notification names the teammate, kind, and channel and opens its
+ * Builds the text of a gate delivery. A single notification names the agent, kind, and channel and opens its
  * reply thread; a summary counts each kind and opens the review queue. Content beyond names appears only when the
  * device allows it, and then only as the failure reason.
  *
@@ -60,7 +60,7 @@ export function chatNotificationText(
   if (delivery.kind === "single") {
     const { signal } = delivery;
     return {
-      title: labels.title(signal.kind, signal.teammateName),
+      title: labels.title(signal.kind, signal.agentName),
       body: singleBody(signal, includeContent, labels),
       openLabel: labels.openThread,
       target: {

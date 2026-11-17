@@ -7,7 +7,7 @@
   import Menu from "@lucide/svelte/icons/menu";
   import MessageSquare from "@lucide/svelte/icons/message-square";
   import type { ChatChannelRead } from "$lib/chat/contracts";
-  import { summarizeChannelMembers } from "$lib/chat/teammates/channel-members";
+  import { summarizeChannelMembers } from "$lib/chat/agents/channel-members";
   import {
     COMPACT_IDENTITY_EMOJI_SCALE,
     COMPACT_IDENTITY_ICON_SIZE,
@@ -127,8 +127,8 @@
   );
   const selectedFolder = $derived(chat.selectedWorkingFolder);
   const memberSummary = $derived(summarizeChannelMembers(selectedChannel?.memberships ?? []));
-  const memberStackTeammates = $derived(chat.teammates
-    .filter((teammate) => memberSummary.teammateIds.has(teammate.participant.id))
+  const memberStackAgents = $derived(chat.agents
+    .filter((agent) => memberSummary.agentIds.has(agent.participant.id))
     .slice(0, MEMBER_STACK_LIMIT - 1));
 
   function triggerForMode(mode: ChatNavigatorMode): HTMLButtonElement | null {
@@ -417,7 +417,7 @@
       <button bind:this={membersTrigger} type="button" class={toolbarMembersTriggerClass} class:open={membersOpen} aria-label={t("chat.organization.membersPanel", memberSummary.count)} data-app-tooltip={t("chat.organization.members")} aria-haspopup="dialog" aria-expanded={membersOpen} data-chat-members-trigger onpointerenter={() => { void loadMembersPanel(); }} onfocus={() => { void loadMembersPanel(); }} onclick={toggleChannelMembers}>
         <span class="chat-members-stack" aria-hidden="true">
           <LocalPersonAvatar size={MEMBER_STACK_AVATAR_SIZE} />
-          {#each memberStackTeammates as teammate (teammate.participant.id)}<ChatParticipantAvatar participant={teammate.participant} {teammate} size={MEMBER_STACK_AVATAR_SIZE} />{/each}
+          {#each memberStackAgents as agent (agent.participant.id)}<ChatParticipantAvatar participant={agent.participant} {agent} size={MEMBER_STACK_AVATAR_SIZE} />{/each}
         </span>
         <span class="chat-members-count tabular-nums">{formatNumber(locale, memberSummary.count)}</span>
       </button>

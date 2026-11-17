@@ -32,8 +32,8 @@ pub struct ChatChannelRead {
     pub updated_at: UtcTimestamp,
 }
 
-/// A live channel note: a short fact a person saved in a channel, with the teammate update and
-/// teammate it came from when a person accepted a proposal.
+/// A live channel note: a short fact a person saved in a channel, with the agent update and
+/// agent it came from when a person accepted a proposal.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatChannelNoteRead {

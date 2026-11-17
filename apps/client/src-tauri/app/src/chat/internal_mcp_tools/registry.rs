@@ -200,7 +200,7 @@ impl HostToolClass {
     }
 
     /// Calls one authorization revision may make in this class. Each class has its own limit,
-    /// so a teammate that spent its reads can still ask or report.
+    /// so an agent that spent its reads can still ask or report.
     pub(crate) const fn call_limit(self) -> u32 {
         match self {
             Self::Read | Self::Edit => 20,
@@ -231,7 +231,7 @@ impl HostToolClass {
 
     /// Whether the run's tool list carries tools of this class. Edit and destructive tools need
     /// a folder authorized at edit rank or higher. Delegation needs a run below the depth limit
-    /// in a channel with another participating teammate. Secret tools need a host that can keep a
+    /// in a channel with another participating agent. Secret tools need a host that can keep a
     /// file private to the current user. Schedule proposals are offered to every run, because only a
     /// person's confirmation schedules anything.
     fn offered(self, scope: &InternalMcpRunScope) -> bool {

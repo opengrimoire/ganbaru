@@ -36,7 +36,7 @@ static RESTORERS: LazyLock<RecoveryRestorers> = LazyLock::new(|| {
         )
         .with(&distractions::USAGE_LIMITS, restore_usage_limit)
         .with(&chat::PARTICIPANTS, refuse_chat_row)
-        .with(&chat::TEAMMATES, refuse_chat_row)
+        .with(&chat::AGENTS, refuse_chat_row)
         .with(&chat::CONVERSATIONS, refuse_chat_row)
         .with(&chat::CHANNELS, refuse_chat_row)
         .with(&chat::CHANNEL_NOTES, refuse_chat_row)
@@ -155,7 +155,7 @@ fn refuse_distraction_settings(_: &mut SqliteConnection, _: RecoveredRow) -> Res
     Box::pin(async { Err("distraction settings are never deleted".to_string()) })
 }
 
-/// Refuses to restore a deleted Chat row. Chat archives participants, teammates, channels, and
+/// Refuses to restore a deleted Chat row. Chat archives participants, agents, channels, and
 /// messages, with the timeline items that hold them, instead of deleting them, so a row is deleted only with its project.
 /// A deleted channel note stays deleted, because a deletion wins over a concurrent edit. Restoring the
 /// project restores none of its Chat rows: the restored project has a new id and starts with a

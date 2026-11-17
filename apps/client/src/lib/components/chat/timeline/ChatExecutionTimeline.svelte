@@ -6,7 +6,7 @@
     bottomInsetPx = 0,
     embedded = false,
     hideUserMessages = false,
-    teammate = null,
+    agent = null,
     turnId = null,
     timelinePage = null,
     executionThread = null,
@@ -14,11 +14,11 @@
     bottomInsetPx?: number;
     embedded?: boolean;
     hideUserMessages?: boolean;
-    teammate?: ChatParticipantRead | null;
+    agent?: ChatParticipantRead | null;
     turnId?: ChatTurnId | null;
     timelinePage?: ChatTimelinePageRead | null;
     executionThread?: ChatThreadShellRead | null;
   } = $props();
 </script>
 
-<ChatTimeline {bottomInsetPx} {embedded} {hideUserMessages} {teammate} {turnId} {timelinePage} {executionThread} />
+<ChatTimeline {bottomInsetPx} {embedded} {hideUserMessages} {agent} {turnId} {timelinePage} {executionThread} />

@@ -168,7 +168,7 @@ pub(super) async fn insert_revision_copied_attachments(
     Ok(())
 }
 
-/// Active folder grants of one AI channel membership, bound to the conversation and teammate.
+/// Active folder grants of one AI channel membership, bound to the conversation and agent.
 ///
 /// Concurrent edits on two devices can each leave a default grant after sync merges them, so
 /// only the default grant with the lowest working folder id reads as the default. Execution
@@ -180,20 +180,20 @@ pub(super) async fn insert_revision_copied_attachments(
 pub(super) const ACTIVE_FOLDER_GRANTS_SQL: &str = "SELECT grant_row.working_folder_id,
         folder.display_name, grant_row.capability, grant_row.capability_inherits_profile,
         (grant_row.is_default <> 0 AND NOT EXISTS (
-            SELECT 1 FROM chat_teammate_working_folder_grants other
+            SELECT 1 FROM chat_agent_working_folder_grants other
             JOIN project_working_folders other_folder ON other_folder.id = other.working_folder_id
             WHERE other.conversation_id = grant_row.conversation_id
-              AND other.teammate_id = grant_row.teammate_id
+              AND other.agent_id = grant_row.agent_id
               AND other.revoked_at IS NULL AND other.is_default <> 0
               AND other.working_folder_id < grant_row.working_folder_id
               AND other.project_id = conversation.project_id
               AND other_folder.project_id = conversation.project_id
         )) AS is_default,
         grant_row.runtime_approval_policy, grant_row.revision, grant_row.revoked_at
- FROM chat_teammate_working_folder_grants grant_row
+ FROM chat_agent_working_folder_grants grant_row
  JOIN chat_conversations conversation ON conversation.id = grant_row.conversation_id
  JOIN project_working_folders folder ON folder.id = grant_row.working_folder_id
- WHERE grant_row.conversation_id = ? AND grant_row.teammate_id = ?
+ WHERE grant_row.conversation_id = ? AND grant_row.agent_id = ?
    AND grant_row.revoked_at IS NULL
    AND grant_row.project_id = conversation.project_id
    AND folder.project_id = conversation.project_id
@@ -239,7 +239,7 @@ pub(super) fn has_thread_eligible_mention(request: &PostChatMessageCommand) -> b
         matches!(
             reference,
             ChatMessageReference::Participant {
-                participant_kind: ChatParticipantKind::AiTeammate,
+                participant_kind: ChatParticipantKind::AiAgent,
                 ..
             }
         )
@@ -249,7 +249,7 @@ pub(super) fn has_thread_eligible_mention(request: &PostChatMessageCommand) -> b
 #[cfg(desktop)]
 pub(super) fn validate_policy(
     app: &tauri::AppHandle,
-    policy: &ChatTeammatePolicyInput,
+    policy: &ChatAgentPolicyInput,
 ) -> ChatResult<()> {
     if policy.provider_managed_model == policy.model_id.is_some() {
         return Err(ChatError::validation(
@@ -258,16 +258,13 @@ pub(super) fn validate_policy(
         ));
     }
     if let Some(effort) = policy.effort.as_deref() {
-        if !is_valid_teammate_effort(effort) {
-            return Err(ChatError::validation(
-                "effort",
-                "Teammate effort is invalid",
-            ));
+        if !is_valid_agent_effort(effort) {
+            return Err(ChatError::validation("effort", "Agent effort is invalid"));
         }
     }
     if let Some(speed) = policy.speed.as_deref() {
         if !matches!(speed, "standard" | "fast") {
-            return Err(ChatError::validation("speed", "Teammate speed is invalid"));
+            return Err(ChatError::validation("speed", "Agent speed is invalid"));
         }
     }
     super::super::settings_commands::read_provider(app, &policy.provider_instance_id)?;
@@ -275,7 +272,7 @@ pub(super) fn validate_policy(
 }
 
 #[cfg(desktop)]
-pub(super) fn is_valid_teammate_effort(effort: &str) -> bool {
+pub(super) fn is_valid_agent_effort(effort: &str) -> bool {
     matches!(
         effort,
         "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
@@ -413,19 +410,19 @@ pub(super) fn validate_display_name(value: &str) -> ChatResult<String> {
     if value.is_empty() || value.chars().count() > 160 || value.chars().any(char::is_control) {
         return Err(ChatError::validation(
             "displayName",
-            "Teammate name must contain 1 to 160 characters",
+            "Agent name must contain 1 to 160 characters",
         ));
     }
     Ok(value.to_string())
 }
 
 #[cfg(desktop)]
-pub(super) fn validate_teammate_role(value: &str) -> ChatResult<String> {
+pub(super) fn validate_agent_role(value: &str) -> ChatResult<String> {
     let value = value.trim();
     if value.is_empty() || value.chars().count() > 1_000 || value.chars().any(char::is_control) {
         return Err(ChatError::validation(
             "role",
-            "Teammate role must contain 1 to 1000 characters",
+            "Agent role must contain 1 to 1000 characters",
         ));
     }
     Ok(value.to_string())
@@ -436,31 +433,31 @@ pub(super) fn validate_profile_text(value: &str, maximum: usize, field: &str) ->
     if value.len() > maximum {
         return Err(ChatError::validation(
             field,
-            "Teammate profile text is too long",
+            "Agent profile text is too long",
         ));
     }
     Ok(())
 }
 
-/// Refuses a teammate name that another teammate, archived ones included, already uses, ignoring
+/// Refuses an agent name that another agent, archived ones included, already uses, ignoring
 /// case and surrounding spaces.
 ///
-/// The check covers the teammates this device holds. Devices that create or rename teammates
+/// The check covers the agents this device holds. Devices that create or rename agents
 /// concurrently can still end up with equal names, which readers tell apart by id.
 #[cfg(desktop)]
-pub(super) async fn require_unused_teammate_name(
+pub(super) async fn require_unused_agent_name(
     connection: &mut sqlx::SqliteConnection,
     display_name: &str,
-    teammate_id: &str,
+    agent_id: &str,
 ) -> ChatResult<()> {
     let in_use: bool = sqlx::query_scalar(
         "SELECT EXISTS(
            SELECT 1 FROM chat_participants
-           WHERE participant_kind = 'ai_teammate' AND id != ?
+           WHERE participant_kind = 'ai_agent' AND id != ?
              AND lower(trim(display_name)) = lower(trim(?))
          )",
     )
-    .bind(teammate_id)
+    .bind(agent_id)
     .bind(display_name)
     .fetch_one(connection)
     .await
@@ -634,15 +631,15 @@ pub(super) fn assignment_input_id(message_item_id: &str) -> ChatResult<String> {
     )
 }
 
-/// Returns the work assignment id derived from its triggering message, its teammate, and the
+/// Returns the work assignment id derived from its triggering message, its agent, and the
 /// assignment it follows, so concurrent Starts of one mention on two devices write one
 /// assignment that sync merges instead of two that both run.
 pub(super) fn work_assignment_id(
     message_item_id: &ChatConversationItemId,
-    teammate_id: &ChatParticipantId,
+    agent_id: &ChatParticipantId,
     previous_assignment_id: Option<&ChatWorkAssignmentId>,
 ) -> ChatResult<ChatWorkAssignmentId> {
-    let mut parts = vec![message_item_id.as_str(), teammate_id.as_str()];
+    let mut parts = vec![message_item_id.as_str(), agent_id.as_str()];
     parts.extend(previous_assignment_id.map(ChatWorkAssignmentId::as_str));
     ChatWorkAssignmentId::new(derived_id(
         ganbaru_chat::ids::WORK_ASSIGNMENT_ID_PREFIX,
@@ -654,7 +651,7 @@ pub(super) fn work_assignment_id(
 pub(super) fn parse_participant_kind(value: &str) -> ChatResult<ChatParticipantKind> {
     match value {
         "local_user" => Ok(ChatParticipantKind::LocalUser),
-        "ai_teammate" => Ok(ChatParticipantKind::AiTeammate),
+        "ai_agent" => Ok(ChatParticipantKind::AiAgent),
         "human" => Ok(ChatParticipantKind::Human),
         _ => Err(stored_value_error("participant kind")),
     }
@@ -734,19 +731,19 @@ pub(super) fn parse_history_boundary(
     }
 }
 
-/// Channel history one teammate membership may read, resolved from the
+/// Channel history one agent membership may read, resolved from the
 /// membership and its access profile revision.
 ///
 /// Positions are root timeline order keys. A reply thread sits at its root's
 /// position, because reply order keys count within their thread.
 #[cfg(desktop)]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct TeammateHistoryAccess {
+pub(super) struct AgentHistoryAccess {
     visible_from: Option<String>,
 }
 
 #[cfg(desktop)]
-impl TeammateHistoryAccess {
+impl AgentHistoryAccess {
     /// Resolves effective history access. A `from_grant` boundary without a
     /// lower order key admits nothing; entire history starts at the empty key,
     /// which sorts before every order key.
@@ -833,7 +830,7 @@ pub(super) fn wire_review_outcome(value: ChatAssignmentReviewOutcome) -> &'stati
 pub(super) fn wire_participant_kind(value: ChatParticipantKind) -> &'static str {
     match value {
         ChatParticipantKind::LocalUser => "local_user",
-        ChatParticipantKind::AiTeammate => "ai_teammate",
+        ChatParticipantKind::AiAgent => "ai_agent",
         ChatParticipantKind::Human => "human",
     }
 }
@@ -848,10 +845,10 @@ pub(super) fn wire_approval_policy(value: ChatApprovalPolicy) -> &'static str {
     }
 }
 
-/// Returns the runtime approval a teammate's approval behavior stands for when no channel,
+/// Returns the runtime approval an agent's approval behavior stands for when no channel,
 /// scratch, or folder override applies.
 #[cfg(desktop)]
-pub(crate) fn teammate_runtime_approval(value: ChatApprovalPolicy) -> ChatRuntimeApprovalPolicy {
+pub(crate) fn agent_runtime_approval(value: ChatApprovalPolicy) -> ChatRuntimeApprovalPolicy {
     match value {
         ChatApprovalPolicy::AskForApproval => ChatRuntimeApprovalPolicy::Ask,
         ChatApprovalPolicy::ApproveForMe => ChatRuntimeApprovalPolicy::AutoApprove,
@@ -867,36 +864,34 @@ pub(crate) fn runtime_approval_rank(policy: ChatRuntimeApprovalPolicy) -> Option
     ganbaru_chat::coordination::reductions::approval_rank(wire_runtime_approval_policy(policy))
 }
 
-/// Returns the runtime approval that applies to a teammate's work: the narrower of the runtime
+/// Returns the runtime approval that applies to an agent's work: the narrower of the runtime
 /// approval its approval behavior stands for and the policy resolved from its grants. A Custom
-/// teammate cannot be ranked against a grant, so the grant policy alone governs host tools while
+/// agent cannot be ranked against a grant, so the grant policy alone governs host tools while
 /// the provider keeps its own configuration; an unranked grant is returned unchanged so native
 /// execution can refuse it.
 #[cfg(desktop)]
 pub(crate) fn effective_runtime_approval(
-    teammate_default: ChatRuntimeApprovalPolicy,
+    agent_default: ChatRuntimeApprovalPolicy,
     granted: ChatRuntimeApprovalPolicy,
 ) -> ChatRuntimeApprovalPolicy {
     match (
-        runtime_approval_rank(teammate_default),
+        runtime_approval_rank(agent_default),
         runtime_approval_rank(granted),
     ) {
-        (Some(teammate_rank), Some(granted_rank)) if teammate_rank < granted_rank => {
-            teammate_default
-        }
+        (Some(agent_rank), Some(granted_rank)) if agent_rank < granted_rank => agent_default,
         _ => granted,
     }
 }
 
-/// Returns the provider safety mode a native assignment runs with for a teammate and its frozen
-/// effective runtime approval. Only a Custom teammate runs with the provider's own
-/// configuration; an unranked grant on a ranked teammate falls back to asking.
+/// Returns the provider safety mode a native assignment runs with for an agent and its frozen
+/// effective runtime approval. Only a Custom agent runs with the provider's own
+/// configuration; an unranked grant on a ranked agent falls back to asking.
 #[cfg(desktop)]
 pub(crate) fn native_assignment_safety_mode(
-    teammate: ChatApprovalPolicy,
+    agent: ChatApprovalPolicy,
     effective: ChatRuntimeApprovalPolicy,
 ) -> SafetyMode {
-    if teammate == ChatApprovalPolicy::Custom {
+    if agent == ChatApprovalPolicy::Custom {
         return SafetyMode::Custom;
     }
     match effective {

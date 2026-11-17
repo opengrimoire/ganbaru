@@ -42,7 +42,7 @@ function probe(overrides: Partial<ProviderProbeResult> = {}): ProviderProbeResul
     checkedAt: "2026-11-16T12:00:00Z",
     detail: null,
     versionAdmission: "supported",
-    teammateMinimumVersion: null,
+    agentMinimumVersion: null,
     ...overrides,
   };
 }
@@ -54,9 +54,9 @@ describe("providerVersionNotice", () => {
     expect(providerVersionNotice(probe({ versionAdmission: "untested_newer" }), family)).toBeNull();
   });
 
-  it("asks for the teammate minimum while direct threads still run", () => {
-    expect(providerVersionNotice(probe({ teammateMinimumVersion: "2.1.325" }), family)).toEqual({
-      kind: "teammates",
+  it("asks for the agent minimum while direct threads still run", () => {
+    expect(providerVersionNotice(probe({ agentMinimumVersion: "2.1.325" }), family)).toEqual({
+      kind: "agents",
       minimumVersion: "2.1.325",
       updateCommand: "claude update",
     });
@@ -69,7 +69,7 @@ describe("providerVersionNotice", () => {
       minimumVersion: "2.1.170",
       updateCommand: "claude update",
     });
-    expect(providerVersionNotice({ ...tooOld, teammateMinimumVersion: "2.1.325" }, family)).toMatchObject({
+    expect(providerVersionNotice({ ...tooOld, agentMinimumVersion: "2.1.325" }, family)).toMatchObject({
       minimumVersion: "2.1.325",
     });
     expect(providerVersionNotice(tooOld, { ...family, minimumTestedCliVersion: null, updateCommand: null })).toEqual({

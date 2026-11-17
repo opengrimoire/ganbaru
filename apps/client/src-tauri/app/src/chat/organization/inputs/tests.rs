@@ -237,35 +237,35 @@ async fn edit_assignment_input_refuses_after_delivery() {
 #[tokio::test]
 async fn edit_assignment_input_refuses_other_authors() {
     let pool = pool().await;
-    let teammate: String = sqlx::query_scalar(
-        "SELECT teammate_id FROM chat_work_assignments WHERE id = 'assignment:folders'",
+    let agent: String = sqlx::query_scalar(
+        "SELECT agent_id FROM chat_work_assignments WHERE id = 'assignment:folders'",
     )
     .fetch_one(&pool)
     .await
     .unwrap();
     seed_reply(
         &pool,
-        "item:teammate",
+        "item:agent",
         2,
         "queued_continuation",
-        &teammate,
+        &agent,
         "I will look",
     )
     .await;
 
-    let error = edit_assignment_input(&pool, &input("item:teammate"), &edit("Changed"), &now())
+    let error = edit_assignment_input(&pool, &input("item:agent"), &edit("Changed"), &now())
         .await
         .unwrap_err();
 
     assert_eq!(error.code, ChatErrorCode::Permission);
     let current: String = sqlx::query_scalar(
         "SELECT current_revision_id FROM chat_communication_messages
-         WHERE item_id = 'item:teammate'",
+         WHERE item_id = 'item:agent'",
     )
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(current, "revision:item:teammate");
+    assert_eq!(current, "revision:item:agent");
 }
 
 #[tokio::test]

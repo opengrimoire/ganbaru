@@ -183,8 +183,8 @@ pub const MINIMUM_ORGANIZATIONAL_OPENCODE_VERSION: OpenCodeVersion = OpenCodeVer
     patch: 5,
 };
 
-/// The oldest OpenCode version teammate runs accept, when the version `text` names is older.
-pub fn teammate_minimum_version(text: &str) -> Option<String> {
+/// The oldest OpenCode version agent runs accept, when the version `text` names is older.
+pub fn agent_minimum_version(text: &str) -> Option<String> {
     parse_version(text)
         .ok()
         .filter(|version| *version < MINIMUM_ORGANIZATIONAL_OPENCODE_VERSION)
@@ -205,7 +205,7 @@ pub fn ensure_organizational_version(health: &Value) -> ChatResult<()> {
             ProviderVersionAdmission::BelowMinimum,
             &version.to_string(),
             format!(
-                "OpenCode {version} cannot run teammates; version {MINIMUM_ORGANIZATIONAL_OPENCODE_VERSION} or newer is required"
+                "OpenCode {version} cannot run agents; version {MINIMUM_ORGANIZATIONAL_OPENCODE_VERSION} or newer is required"
             ),
             true,
         ));

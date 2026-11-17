@@ -7,8 +7,8 @@
   import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
   import type { ChatChannelRead } from "$lib/chat/contracts";
-  import { applyChannelMemberChanges, channelMemberChangeContext } from "$lib/chat/teammates/channel-member-changes";
-  import { summarizeChannelMembers } from "$lib/chat/teammates/channel-members";
+  import { applyChannelMemberChanges, channelMemberChangeContext } from "$lib/chat/agents/channel-member-changes";
+  import { summarizeChannelMembers } from "$lib/chat/agents/channel-members";
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
   import { floatPanel } from "$lib/components/contacts/float-panel";
   import LocalPersonAvatar from "$lib/components/contacts/LocalPersonAvatar.svelte";
@@ -63,7 +63,7 @@
   let error = $state<string | null>(null);
 
   const summary = $derived(summarizeChannelMembers(channel.memberships));
-  const teammates = $derived(chat.teammates.filter((teammate) => summary.teammateIds.has(teammate.participant.id)));
+  const agents = $derived(chat.agents.filter((agent) => summary.agentIds.has(agent.participant.id)));
   const localName = $derived(preferences.profileDisplayName.trim() || t("contacts.you"));
   const localDetail = $derived(preferences.profileDisplayName.trim() ? t("contacts.you") : null);
 
@@ -75,9 +75,9 @@
     );
   }
 
-  function configureTeammate(participantId: string): void {
+  function configureAgent(participantId: string): void {
     onClose();
-    paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-configure-teammate", { detail: { participantId, channelId: channel.id } }));
+    paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-configure-agent", { detail: { participantId, channelId: channel.id } }));
   }
 
   function editChannel(): void {
@@ -93,25 +93,25 @@
   }
 
   /** Settings covers the panel, so it closes now and asks the header to reopen it with the picker once Settings is gone. */
-  function createTeammate(): void {
+  function createAgent(): void {
     const channelId = channel.id;
     onClose();
     settingsLauncher.open("agents", {
-      agentsSubsection: "teammates",
+      agentsSubsection: "agents",
       agentsChannelId: channelId,
-      agentsCreateTeammate: true,
+      agentsCreateAgent: true,
       onClosed: () => paneEvents.dispatchEvent(new CustomEvent(CHAT_OPEN_MEMBERS_EVENT, { detail: { channelId, addMembers: true } satisfies ChatOpenMembersDetail })),
     });
   }
 
-  async function addTeammates(teammateIds: string[]): Promise<void> {
+  async function addAgents(agentIds: string[]): Promise<void> {
     error = null;
     try {
-      const next = new Set([...summary.teammateIds, ...teammateIds]);
-      if (await applyChannelMemberChanges(summary.teammateIds, next, channelMemberChangeContext(chat, channel))) {
+      const next = new Set([...summary.agentIds, ...agentIds]);
+      if (await applyChannelMemberChanges(summary.agentIds, next, channelMemberChangeContext(chat, channel))) {
         const saved = await chatApi.readChatChannel(channel.id);
         chat.activeChannels = chat.activeChannels.map((entry) => entry.id === saved.id ? saved : entry);
-        await chat.refreshTeammates();
+        await chat.refreshAgents();
       }
     } catch (cause: unknown) {
       error = chatErrorMessage(cause, t("chatErrors.actions.membersAction"));
@@ -132,7 +132,7 @@
   </header>
 
   <div class="members-body min-h-0 flex-1 overflow-y-auto px-1.5 pb-1" class:capped={!mobile} use:scrollEdgeFadeAction>
-    {#if teammates.length > 0}<div class="menu-label">{t("chat.organization.people")}</div>{/if}
+    {#if agents.length > 0}<div class="menu-label">{t("chat.organization.people")}</div>{/if}
     <ul class="grid">
       <MemberRow name={localName} detail={localDetail}>
         {#snippet avatar()}<LocalPersonAvatar size={AVATAR_SIZE} />{/snippet}
@@ -145,14 +145,14 @@
         </MemberRow>
       {/each}
     </ul>
-    {#if teammates.length > 0}
-      <div class="menu-label">{t("chat.organization.teammates")}</div>
+    {#if agents.length > 0}
+      <div class="menu-label">{t("chat.organization.agents")}</div>
       <ul class="grid">
-        {#each teammates as teammate (teammate.participant.id)}
-          <MemberRow name={teammate.participant.displayName} detail={teammate.configurationState === "healthy" ? teammate.role || t("chat.organization.aiTeammate") : t("chat.organization.needsSetup")}>
-            {#snippet avatar()}<ChatParticipantAvatar participant={teammate.participant} {teammate} size={AVATAR_SIZE} />{/snippet}
+        {#each agents as agent (agent.participant.id)}
+          <MemberRow name={agent.participant.displayName} detail={agent.configurationState === "healthy" ? agent.role || t("chat.organization.aiAgent") : t("chat.organization.needsSetup")}>
+            {#snippet avatar()}<ChatParticipantAvatar participant={agent.participant} {agent} size={AVATAR_SIZE} />{/snippet}
             {#snippet trailing()}
-              <button type="button" class="members-icon-button" aria-label={t("chat.organization.accessSettings", teammate.participant.displayName)} onclick={() => configureTeammate(teammate.participant.id)}><Settings2 size={14} /></button>
+              <button type="button" class="members-icon-button" aria-label={t("chat.organization.accessSettings", agent.participant.displayName)} onclick={() => configureAgent(agent.participant.id)}><Settings2 size={14} /></button>
             {/snippet}
           </MemberRow>
         {/each}
@@ -198,13 +198,13 @@
   <ParticipantPicker
     anchor={addButton}
     title={t("contacts.picker.title")}
-    teammates={chat.teammates}
-    memberTeammateIds={summary.teammateIds}
-    includeTeammates
+    agents={chat.agents}
+    memberAgentIds={summary.agentIds}
+    includeAgents
     space={{ kind: "channel", id: channel.id, name: channel.name }}
-    onConfirm={addTeammates}
+    onConfirm={addAgents}
     onClose={() => { pickerOpen = false; }}
-    onNewTeammate={createTeammate}
+    onNewAgent={createAgent}
   />
 {/if}
 

@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { CHAT_MAX_ACTIVE_CHANNEL_NOTES, CHAT_MAX_CHANNEL_NOTE_CHARS } from "$lib/chat/contracts";
-import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/teammates/participant-display";
+import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/agents/participant-display";
 import { channelNoteDraftProblem, channelNoteParticipantName, type ChannelNoteNameSources } from "./presentation";
 
 const sources: ChannelNoteNameSources = {
   participants: [
     { id: LOCAL_CHAT_PARTICIPANT_ID, kind: "local_user", displayName: "Stored name" },
-    { id: "participant:atlas", kind: "ai_teammate", displayName: "Atlas" },
-    { id: "participant:atlas", kind: "ai_teammate", displayName: "Atlas copy" },
+    { id: "participant:atlas", kind: "ai_agent", displayName: "Atlas" },
+    { id: "participant:atlas", kind: "ai_agent", displayName: "Atlas copy" },
   ],
   localProfileDisplayName: "  ",
   localFallback: "You",

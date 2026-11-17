@@ -299,16 +299,16 @@ async fn require_edit_folder_grant(
          JOIN chat_conversation_memberships membership
            ON membership.conversation_id = channel.conversation_id
           AND membership.participant_id = ?
-         JOIN chat_teammate_channel_memberships access
+         JOIN chat_agent_channel_memberships access
            ON access.conversation_id = membership.conversation_id
-          AND access.teammate_id = membership.participant_id
+          AND access.agent_id = membership.participant_id
           AND access.removed_at IS NULL
          JOIN chat_access_profiles profile ON profile.id = access.access_profile_id
          JOIN chat_access_profile_effective_revisions revision
            ON revision.access_profile_id = profile.id
-         JOIN chat_teammate_working_folder_grants grant_row
+         JOIN chat_agent_working_folder_grants grant_row
            ON grant_row.conversation_id = membership.conversation_id
-          AND grant_row.teammate_id = membership.participant_id
+          AND grant_row.agent_id = membership.participant_id
           AND grant_row.working_folder_id = ?
          JOIN project_working_folders folder ON folder.id = grant_row.working_folder_id
          WHERE channel.id = ? AND channel.conversation_id = ?
@@ -317,7 +317,7 @@ async fn require_edit_folder_grant(
            AND grant_row.project_id = conversation.project_id
            AND folder.project_id = conversation.project_id",
     )
-    .bind(identity.teammate_id.as_str())
+    .bind(identity.agent_id.as_str())
     .bind(working_folder_id.as_str())
     .bind(channel_id.as_str())
     .bind(identity.conversation_id.as_str())
@@ -559,24 +559,24 @@ fn vault_error<T>(_error: T) -> ChatError {
 mod tests {
     use super::*;
     use crate::chat::scratch::tests::{
-        GENERATION, TEAMMATE, destination_conversation, pool_with_scratch_assignment,
+        AGENT, GENERATION, destination_conversation, pool_with_scratch_assignment,
     };
 
-    /// Gives the scratch teammate edit access through the build profile, grants it the project's
+    /// Gives the scratch agent edit access through the build profile, grants it the project's
     /// managed folder in the default channel, and stores what only a sync apply can: a channel of
     /// the same conversation whose replicated project was rewritten to another project, with a
     /// grant for that project's folder.
     async fn pool_with_foreign_channel_grant() -> SqlitePool {
-        let pool = pool_with_scratch_assignment(TEAMMATE).await;
+        let pool = pool_with_scratch_assignment(AGENT).await;
         let conversation = destination_conversation();
         sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "UPDATE chat_teammate_channel_memberships
+            "UPDATE chat_agent_channel_memberships
              SET access_profile_id = 'access-profile:build-and-test'
-             WHERE conversation_id = '{conversation}' AND teammate_id = '{TEAMMATE}';
-             INSERT INTO chat_teammate_working_folder_grants
-                 (conversation_id, teammate_id, project_id, working_folder_id, sync_key,
+             WHERE conversation_id = '{conversation}' AND agent_id = '{AGENT}';
+             INSERT INTO chat_agent_working_folder_grants
+                 (conversation_id, agent_id, project_id, working_folder_id, sync_key,
                   capability, capability_inherits_profile, is_default, created_at)
-             VALUES ('{conversation}', '{TEAMMATE}', 'project-chat', 'workspace-1',
+             VALUES ('{conversation}', '{AGENT}', 'project-chat', 'workspace-1',
                      'grant:honest', 'edit', 0, 1, '2026-09-18T12:00:00.000Z');
              UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
              INSERT INTO projects (id, group_id, name, order_key)
@@ -591,10 +591,10 @@ mod tests {
                      '2026-09-18T12:00:00.000Z', '2026-09-18T12:00:00.000Z');
              UPDATE chat_channels SET project_id = 'project:foreign'
              WHERE id = 'channel:foreign';
-             INSERT INTO chat_teammate_working_folder_grants
-                 (conversation_id, teammate_id, project_id, working_folder_id, sync_key,
+             INSERT INTO chat_agent_working_folder_grants
+                 (conversation_id, agent_id, project_id, working_folder_id, sync_key,
                   capability, capability_inherits_profile, is_default, created_at)
-             VALUES ('{conversation}', '{TEAMMATE}', 'project:foreign', 'folder:foreign',
+             VALUES ('{conversation}', '{AGENT}', 'project:foreign', 'folder:foreign',
                      'grant:foreign', 'edit', 0, 0, '2026-09-18T12:00:00.000Z');
              UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1;"
         )))

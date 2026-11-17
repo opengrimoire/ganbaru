@@ -58,9 +58,9 @@
     initialDistractionsTab,
     initialContactsTab,
     initialAgentsSubsection,
-    initialAgentsTeammateId,
+    initialAgentsAgentId,
     initialAgentsChannelId,
-    initialAgentsCreateTeammate,
+    initialAgentsCreateAgent,
     presentation,
   }: {
     onClose: () => void;
@@ -68,9 +68,9 @@
     initialDistractionsTab?: DistractionsSettingsTab;
     initialContactsTab?: ContactsSettingsTab;
     initialAgentsSubsection?: AgentsSettingsSubsection;
-    initialAgentsTeammateId?: string;
+    initialAgentsAgentId?: string;
     initialAgentsChannelId?: string;
-    initialAgentsCreateTeammate?: boolean;
+    initialAgentsCreateAgent?: boolean;
     presentation?: "dialog" | "mobile";
   } = $props();
 
@@ -97,7 +97,7 @@
   const availableInitialSection = untrack(() =>
     sections.find((section) => section.id === initialSection)?.id ?? null);
   const initialActiveSection = availableInitialSection ?? "appearance";
-  const initialActiveAgentsSubsection = untrack(() => initialAgentsSubsection ?? "teammates");
+  const initialActiveAgentsSubsection = untrack(() => initialAgentsSubsection ?? "agents");
   const initialMobileSectionOpen = availableInitialSection !== null;
   let activeSection = $state<SectionId>(initialActiveSection);
   let mobileSectionOpen = $state(initialMobileSectionOpen);
@@ -479,9 +479,9 @@
               {initialDistractionsTab}
               {initialContactsTab}
               {activeAgentsSubsection}
-              {initialAgentsTeammateId}
+              {initialAgentsAgentId}
               {initialAgentsChannelId}
-              {initialAgentsCreateTeammate}
+              {initialAgentsCreateAgent}
               onOpenDistractionsLimitEditor={openDistractionsLimitEditor}
               onOpenNotesTransferPanel={openNotesTransferPanel}
               onOpenChatProviderSetup={openChatProviderSetup}
@@ -736,9 +736,9 @@
             {initialDistractionsTab}
             {initialContactsTab}
             {activeAgentsSubsection}
-            {initialAgentsTeammateId}
+            {initialAgentsAgentId}
             {initialAgentsChannelId}
-            {initialAgentsCreateTeammate}
+            {initialAgentsCreateAgent}
             onOpenDistractionsLimitEditor={openDistractionsLimitEditor}
             onOpenNotesTransferPanel={openNotesTransferPanel}
             onOpenChatProviderSetup={openChatProviderSetup}
@@ -782,10 +782,10 @@
     />
   {:else}
     <ConfirmDialog
-      title={t("settings.agents.teammates.discardDraftTitle")}
-      message={t("settings.agents.teammates.discardDraftMessage")}
-      confirmLabel={t("settings.agents.teammates.discardDraft")}
-      cancelLabel={t("settings.agents.teammates.keepEditing")}
+      title={t("settings.agents.agents.discardDraftTitle")}
+      message={t("settings.agents.agents.discardDraftMessage")}
+      confirmLabel={t("settings.agents.agents.discardDraft")}
+      cancelLabel={t("settings.agents.agents.keepEditing")}
       onConfirm={discardDraftAndContinue}
       onCancel={cancelDraftNavigation}
     />

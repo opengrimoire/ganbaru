@@ -59,9 +59,9 @@ export interface ChatQuietStateRead {
   endsAt: UtcTimestamp | null;
 }
 
-/** A schedule a teammate proposed in its reply thread; nothing is scheduled until a person confirms it. */
+/** A schedule an agent proposed in its reply thread; nothing is scheduled until a person confirms it. */
 export interface ChatScheduleProposal {
-  /** Message text without the teammate mention a confirmation adds. */
+  /** Message text without the agent mention a confirmation adds. */
   message: string;
   firstAt: UtcTimestamp;
   recurrence: ChatRecurrenceSpec | null;
@@ -82,6 +82,6 @@ export interface ConfirmScheduleProposalRequest {
   proposalItemId: ChatConversationItemId;
   scheduledFor: UtcTimestamp;
   recurrence: ChatRecurrenceSpec | null;
-  /** Edited text without the teammate mention; `null` keeps the proposed text. */
+  /** Edited text without the agent mention; `null` keeps the proposed text. */
   normalizedMarkdown: string | null;
 }

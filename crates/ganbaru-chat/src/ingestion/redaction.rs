@@ -17,7 +17,7 @@ pub struct RegisteredSecret {
 }
 
 impl RegisteredSecret {
-    /// Registers `value` under the request `label` the teammate gave.
+    /// Registers `value` under the request `label` the agent gave.
     pub fn new(label: &str, value: SecretValue) -> Self {
         Self {
             marker: format!("[secret: {label}]"),

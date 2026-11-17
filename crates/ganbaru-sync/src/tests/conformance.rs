@@ -2401,7 +2401,7 @@ fn manifest_refuses_a_never_table_under_a_deletable_cascade_parent() {
     };
     const KEY_CHILD: TableSpec = TableSpec {
         deletion: Deletion::Never,
-        ..chat::TEAMMATES
+        ..chat::AGENTS
     };
     const PROFILE: TableSpec = TableSpec {
         deletion: Deletion::Ordinary,
@@ -2417,7 +2417,7 @@ fn manifest_refuses_a_never_table_under_a_deletable_cascade_parent() {
     };
     let problems = validation_error(&[&REFUSED]);
     for problem in [
-        "chat_teammates: the key parent of a never-deleted table is never deleted",
+        "chat_agents: the key parent of a never-deleted table is never deleted",
         "chat_access_profile_revisions: access_profile_id cascades from a table that is not never deleted",
     ] {
         assert!(problems.contains(problem), "{problems}");

@@ -18,9 +18,9 @@ import { getChat } from "$lib/stores/chat.svelte";
 import ChatMessageComposer from "./ChatMessageComposer.svelte";
 import { openSlashMenu } from "./composer-test-store";
 
-const teammate: ChatParticipantRead = {
+const agent: ChatParticipantRead = {
   id: "participant:atlas",
-  kind: "ai_teammate",
+  kind: "ai_agent",
   displayName: "Atlas",
   avatar: { schemaVersion: 1, value: {} },
   revision: 1,
@@ -34,7 +34,7 @@ function workingReplyThread(): ChatReplyThreadPageRead {
       id: "reply-thread:working",
       replyCount: 0,
       lastActivityAt: timestamp,
-      participants: [teammate],
+      participants: [agent],
       unread: false,
       unseenFailure: false,
       workState: "working",
@@ -45,7 +45,7 @@ function workingReplyThread(): ChatReplyThreadPageRead {
       replyThreadId: null,
       revisionId: "revision:root",
       revision: 1,
-      author: teammate,
+      author: agent,
       authorLabelSnapshot: "Atlas",
       normalizedMarkdown: "Work on this",
       richContent: { schemaVersion: 1, value: {} },
@@ -61,7 +61,7 @@ function workingReplyThread(): ChatReplyThreadPageRead {
     assignment: {
       id: "assignment:working",
       replyThreadId: "reply-thread:working",
-      teammate,
+      agent,
       triggeringMessageItemId: "item:root",
       previousAssignmentId: null,
       state: "working",
@@ -258,13 +258,13 @@ describe("ChatMessageComposer", () => {
     expect((await pressEnter(root, false)).defaultPrevented).toBe(true);
     await vi.waitFor(() => expect(post).toHaveBeenCalledOnce());
     expect(post.mock.calls[0]?.[1]).toMatchObject({ followupRouting: "queue" });
-    expect(root.textContent).not.toContain("Queued, because the teammate");
+    expect(root.textContent).not.toContain("Queued, because the agent");
 
     await typeReply(root, "Prefer the smaller fix");
     await pressEnter(root, true);
     await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(2));
     expect(post.mock.calls[1]?.[1]).toMatchObject({ followupRouting: "steer" });
-    await vi.waitFor(() => expect(root.textContent).toContain("Queued, because the teammate was not in the middle of a turn"));
+    await vi.waitFor(() => expect(root.textContent).toContain("Queued, because the agent was not in the middle of a turn"));
   });
 
   it("sends on Enter and Mod+Enter without routing when no work runs", async () => {
@@ -424,8 +424,8 @@ describe("ChatMessageComposer", () => {
     const page = workingReplyThread();
     const mention: ChatMessageReference = {
       kind: "participant",
-      participantId: teammate.id,
-      participantKind: "ai_teammate",
+      participantId: agent.id,
+      participantKind: "ai_agent",
       metadata: { referenceId: "reference:atlas", labelSnapshot: "Atlas", startOffset: 0, endOffset: 6, plainTextProjection: "@Atlas" },
     };
     const reply = { ...page.rootMessage, itemId: "item:reply", replyThreadId: page.thread.id, normalizedMarkdown: "@Atlas use staging", references: [mention] };
@@ -489,7 +489,7 @@ describe("ChatMessageComposer", () => {
     expect(root.querySelector("[data-chat-task-progress]")).toBeNull();
   });
 
-  it("explains a waiting reply that reached the teammate before the edit was saved", async () => {
+  it("explains a waiting reply that reached the agent before the edit was saved", async () => {
     const page = workingReplyThread();
     const reply = { ...page.rootMessage, itemId: "item:reply", replyThreadId: page.thread.id, normalizedMarkdown: "Use the staging bucket" };
     vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([waitingInput()]);
@@ -501,11 +501,11 @@ describe("ChatMessageComposer", () => {
     await tick();
     root.querySelector<HTMLButtonElement>('[data-pending-action="save"]')?.click();
 
-    await vi.waitFor(() => expect(root.textContent).toContain("This reply already reached the teammate"));
+    await vi.waitFor(() => expect(root.textContent).toContain("This reply already reached the agent"));
     expect(root.querySelector('.send-button[data-action="send"]')).not.toBeNull();
   });
 
-  it("offers the teammate commands on a line-start slash and runs the chosen one", async () => {
+  it("offers the agent commands on a line-start slash and runs the chosen one", async () => {
     vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([]);
     const root = mountActiveWork();
     const editor = root.querySelector<HTMLDivElement>("[data-chat-composer]");
@@ -865,7 +865,7 @@ describe("ChatMessageComposer", () => {
   it("keeps the note and explains a Request changes refused because no device can run the agent", async () => {
     vi.spyOn(chatApi, "reviewChatAssignment").mockRejectedValue({
       code: "conflict",
-      message: "No device can run this teammate, so the changes cannot be requested yet",
+      message: "No device can run this agent, so the changes cannot be requested yet",
       recoverable: true,
       details: { reason: "no_executing_device" },
     });

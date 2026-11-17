@@ -2,12 +2,12 @@ export const agentsSettings = {
   heading: "Agents",
   tabLabel: "Agent settings areas",
   loadFailed: "Agent settings could not be loaded",
-  teammates: {
+  agents: {
     heading: "Agents",
     loadFailed: "Agent access could not be loaded.",
     accessLoadFailed: "This agent's access could not be loaded.",
     add: "Add agent",
-    newTeammate: "New agent",
+    newAgent: "New agent",
     inertUntilAdded: "No channel access",
     searchDirectory: "Search agents",
     channelCount: (count: number) => `${count} ${count === 1 ? "channel" : "channels"}`,
@@ -348,9 +348,9 @@ export const agentsSettings = {
     unavailable: "Unavailable",
     authenticationRequired: "Authentication required",
     unsupported: "Unsupported",
-    teammatesNeedUpdate: "Update needed for agents",
-    teammateVersion: (version: string) => `Agents need version ${version} or newer, so update the CLI.`,
-    teammateVersionCommand: (version: string, command: string) =>
+    agentsNeedUpdate: "Update needed for agents",
+    agentVersion: (version: string) => `Agents need version ${version} or newer, so update the CLI.`,
+    agentVersionCommand: (version: string, command: string) =>
       `Agents need version ${version} or newer, so update the CLI with “${command}”.`,
     olderVersion: "Ganbaru needs a newer version of this CLI, so update it.",
     minimumVersion: (version: string) => `Ganbaru needs version ${version} or newer, so update the CLI.`,

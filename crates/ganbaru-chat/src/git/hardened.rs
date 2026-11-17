@@ -99,8 +99,8 @@ pub enum GitOrigin {
     Internal,
     /// An operation the user requested, such as commit, push, or discard.
     User,
-    /// An operation a teammate requested and a person confirmed, such as a
-    /// push request. Teammates can write the folder, so repository
+    /// An operation an agent requested and a person confirmed, such as a
+    /// push request. Agents can write the folder, so repository
     /// configuration never applies whatever the trust record says, no hook or
     /// fsmonitor runs (the person's global ones included, since they run in
     /// the folder), variables that redirect Git to another repository are
@@ -144,7 +144,7 @@ impl GitPolicy {
         }
     }
 
-    /// The policy of a teammate request a person confirmed. It is always
+    /// The policy of an agent request a person confirmed. It is always
     /// untrusted.
     pub const fn requested() -> Self {
         Self {

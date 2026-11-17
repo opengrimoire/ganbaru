@@ -19,18 +19,18 @@ export type ProviderTargetAuthorityBlocker =
  *
  * Commands are confined when the provider confines them itself, or when it sends every
  * command to the person and the target's effective approval is Ask under a non-custom
- * teammate policy. Publish also needs the provider to classify publication through the push
+ * agent policy. Publish also needs the provider to classify publication through the push
  * request host tool.
  *
- * @param authority - Authority support from the teammate provider's last probe.
+ * @param authority - Authority support from the agent provider's last probe.
  * @param target - The selected assignment target.
- * @param teammateSafetyMode - The teammate policy's safety mode, or null when unknown.
+ * @param agentSafetyMode - The agent policy's safety mode, or null when unknown.
  * @returns The blockers in display order; empty when the provider enforces the target.
  */
 export function providerTargetAuthorityBlockers(
   authority: ProviderAuthoritySupport,
   target: Pick<ChatAssignmentTargetRead, "kind" | "folderCapability" | "effectiveRuntimeApproval">,
-  teammateSafetyMode: SafetyMode | null,
+  agentSafetyMode: SafetyMode | null,
 ): ProviderTargetAuthorityBlocker[] {
   const blockers: ProviderTargetAuthorityBlocker[] = [];
   const capability = target.kind === "scratch" ? null : target.folderCapability;
@@ -48,8 +48,8 @@ export function providerTargetAuthorityBlockers(
   }
   if (runsCommands && !authority.confinedCommands) {
     const asksForEachCommand = target.effectiveRuntimeApproval === "ask"
-      && teammateSafetyMode !== null
-      && teammateSafetyMode !== "custom";
+      && agentSafetyMode !== null
+      && agentSafetyMode !== "custom";
     if (!authority.personApprovedCommands) {
       blockers.push("chat.organization.providerCannotConfineCommands");
     } else if (!asksForEachCommand) {
@@ -70,17 +70,17 @@ export function providerTargetAuthorityBlockers(
  * Whether the send gate lets a provider run commands in a folder granted at Execute with
  * runtime approval Ask.
  *
- * @param authority - Authority support from the teammate provider's last probe.
- * @param teammateSafetyMode - The teammate policy's safety mode, or null when unknown.
+ * @param authority - Authority support from the agent provider's last probe.
+ * @param agentSafetyMode - The agent policy's safety mode, or null when unknown.
  * @returns True when an Execute and Ask folder target raises no provider blocker.
  */
 export function providerExecutesWithAsk(
   authority: ProviderAuthoritySupport,
-  teammateSafetyMode: SafetyMode | null,
+  agentSafetyMode: SafetyMode | null,
 ): boolean {
   return providerTargetAuthorityBlockers(
     authority,
     { kind: "currentFolder", folderCapability: "execute", effectiveRuntimeApproval: "ask" },
-    teammateSafetyMode,
+    agentSafetyMode,
   ).length === 0;
 }

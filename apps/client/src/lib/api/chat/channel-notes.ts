@@ -40,14 +40,14 @@ export async function deleteChatChannelNote(request: DeleteChatChannelNoteReques
   await invoke("chat_delete_channel_note", { dbUrl: await ensureDbUrl(), request });
 }
 
-/** Saves a teammate's note proposal as a channel note, as suggested or with the person's text. */
+/** Saves an agent's note proposal as a channel note, as suggested or with the person's text. */
 export async function acceptChatNoteProposal(request: AcceptChatNoteProposalRequest): Promise<ChatChannelNoteRead> {
   return parseChatChannelNote(await invoke<unknown>("chat_accept_note_proposal", {
     dbUrl: await ensureDbUrl(), request,
   }));
 }
 
-/** Dismisses a teammate's note proposal so no device saves it. */
+/** Dismisses an agent's note proposal so no device saves it. */
 export async function dismissChatNoteProposal(request: DismissChatNoteProposalRequest): Promise<void> {
   await invoke("chat_dismiss_note_proposal", { dbUrl: await ensureDbUrl(), request });
 }

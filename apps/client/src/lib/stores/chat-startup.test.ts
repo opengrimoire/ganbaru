@@ -84,7 +84,7 @@ beforeEach(() => {
   vi.spyOn(chatApi, "recoverInterruptedChatTurns").mockResolvedValue();
   vi.spyOn(chatApi, "recoverChatAssignmentDispatchJobs").mockResolvedValue(0);
   vi.spyOn(chatApi, "listChatNavigationChannels").mockResolvedValue([channel(), channel("other")]);
-  vi.spyOn(chatApi, "listChatTeammates").mockResolvedValue([]);
+  vi.spyOn(chatApi, "listChatAgents").mockResolvedValue([]);
   vi.spyOn(chatApi, "listChatWaitingAssignments").mockResolvedValue({ items: [], total: 0 });
   vi.spyOn(chatApi, "listChatReviewQueue").mockResolvedValue({ items: [], total: 0, failureCount: 0, truncated: false });
   vi.spyOn(chatApi, "readChatProjectPrimaryWorkingFolder").mockRejectedValue(new Error("no working folder"));

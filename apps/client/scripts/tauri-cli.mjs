@@ -218,8 +218,8 @@ try {
 }
 // The firewall helper lets phone linking ask for the password once instead of once per rule.
 buildDevelopmentHelper(args, childEnv, FIREWALL_HELPER_PACKAGE, "phone linking asks for the password once per rule");
-// The sandbox helper confines the commands of Chat teammates whose provider cannot.
-buildDevelopmentHelper(args, childEnv, SANDBOX_HELPER_PACKAGE, "Chat teammates that need it are refused folder and command access");
+// The sandbox helper confines the commands of Chat agents whose provider cannot.
+buildDevelopmentHelper(args, childEnv, SANDBOX_HELPER_PACKAGE, "Chat agents that need it are refused folder and command access");
 
 const child = spawn(process.execPath, [TAURI_CLI_ENTRY, ...withDevConfig(args)], {
   cwd: CLIENT_ROOT,

@@ -16,11 +16,11 @@ use ganbaru_chat::repository::events::AppendCanonicalEventRequest;
 use ganbaru_chat::runtime::ThreadRuntimeOwner;
 use ganbaru_chat_contracts::events::{CanonicalEvent, CanonicalRuntimeEvent, ChangedFileSummary};
 use ganbaru_chat_contracts::models::{
-    ChatAgentRunId, ChatAuthorizationRevisionId, ChatError, ChatErrorCode, ChatResult,
-    ChatTeammatePolicyRevisionId, ChatThreadId, ChatTurnId, ChatWorkAssignmentId,
-    ContinuationGroupId, ProviderInstanceConfig, ProviderInternalMcpConfig,
-    ProviderOrganizationalScope, ProviderSessionSnapshot, ProviderSessionState,
-    ResumeSessionRequest, StartSessionRequest, VerifiedWorkspaceContext,
+    ChatAgentPolicyRevisionId, ChatAgentRunId, ChatAuthorizationRevisionId, ChatError,
+    ChatErrorCode, ChatResult, ChatThreadId, ChatTurnId, ChatWorkAssignmentId, ContinuationGroupId,
+    ProviderInstanceConfig, ProviderInternalMcpConfig, ProviderOrganizationalScope,
+    ProviderSessionSnapshot, ProviderSessionState, ResumeSessionRequest, StartSessionRequest,
+    VerifiedWorkspaceContext,
 };
 use ganbaru_chat_providers::{
     DriverFuture, ProviderDriver, ProviderDriverFactory, ProviderDriverRegistry, ProviderEventSink,
@@ -693,7 +693,7 @@ pub(super) async fn require_live_authorization(
     let active = sqlx::query(
         "SELECT run.id, run.assignment_id, run.project_id, run.working_folder_id,
                 run.execution_environment_id, run.scratch_generation_id,
-                run.teammate_policy_revision_id, run.authorization_revision_id,
+                run.agent_policy_revision_id, run.authorization_revision_id,
                 run.authorization_scope_digest, run.run_ordinal
          FROM chat_agent_runs run
          JOIN chat_assignment_authorization_revisions authorization
@@ -704,11 +704,11 @@ pub(super) async fn require_live_authorization(
          JOIN projects project ON project.id = run.project_id AND project.status != 'archived'
          JOIN chat_conversation_memberships membership
            ON membership.conversation_id = authorization.destination_conversation_id
-          AND membership.participant_id = assignment.teammate_id
+          AND membership.participant_id = assignment.agent_id
           AND membership.removed_at IS NULL
-         JOIN chat_teammate_channel_memberships channel_access
+         JOIN chat_agent_channel_memberships channel_access
            ON channel_access.conversation_id = membership.conversation_id
-          AND channel_access.teammate_id = membership.participant_id
+          AND channel_access.agent_id = membership.participant_id
           AND channel_access.removed_at IS NULL
          JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
          JOIN chat_access_profile_effective_revisions profile_revision
@@ -749,9 +749,9 @@ pub(super) async fn require_live_authorization(
         project_id: active
             .try_get("project_id")
             .map_err(|_| live_authorization_error())?,
-        teammate_policy_revision_id: ChatTeammatePolicyRevisionId::new(
+        agent_policy_revision_id: ChatAgentPolicyRevisionId::new(
             active
-                .try_get::<String, _>("teammate_policy_revision_id")
+                .try_get::<String, _>("agent_policy_revision_id")
                 .map_err(|_| live_authorization_error())?,
         )
         .map_err(|_| live_authorization_error())?,

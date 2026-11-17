@@ -1,7 +1,7 @@
-//! The push request host tool: a teammate with a publish grant asks the person who assigned the
+//! The push request host tool: an agent with a publish grant asks the person who assigned the
 //! work to push a commit.
 //!
-//! The teammate names only a folder it may publish from, an optional remote, a summary, and an
+//! The agent names only a folder it may publish from, an optional remote, a summary, and an
 //! optional commit message. Ganbaru reads the branch, commit, destination, and push URL from the
 //! folder itself, without a network call and without running repository programs, and with a
 //! commit message also the working tree it would commit, and records them as a question the
@@ -26,7 +26,7 @@ use serde_json::{Map, Value, json};
 
 use super::delegation::MAX_CLIENT_REQUEST_ID_CHARS;
 
-/// Longest remote name a teammate may name, in bytes.
+/// Longest remote name an agent may name, in bytes.
 const MAX_REMOTE_NAME_BYTES: usize = 255;
 
 /// The input properties of the push request tool.

@@ -125,7 +125,7 @@ export const chatSettings = {
     reclaimTotalLimited: (bytes: string) => `At least ${bytes} bytes can be reclaimed on this device.`,
     reclaimOmitted: (count: string) => `${count} smaller generations are not shown.`,
     reclaimReview: "Review",
-    reclaimReviewLabel: (teammate: string, generation: string) => `Review ${teammate} ${generation}`,
+    reclaimReviewLabel: (agent: string, generation: string) => `Review ${agent} ${generation}`,
     reclaimLastActivity: (time: string) => `Last activity ${time}`,
     reclaimReasonScopeArchived: "Archived",
     reclaimReasonScopeCleanupFailed: "Cleanup failed",

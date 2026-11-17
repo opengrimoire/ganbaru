@@ -27,7 +27,7 @@ function participantReference(
       plainTextProjection: `@${label}`,
     },
     participantId: "participant:agata",
-    participantKind: "ai_teammate",
+    participantKind: "ai_agent",
   };
 }
 

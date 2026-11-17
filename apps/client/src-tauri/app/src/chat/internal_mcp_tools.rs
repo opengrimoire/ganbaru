@@ -202,7 +202,7 @@ fn definition(tool: HostTool) -> Option<Tool> {
         ),
         HostTool::DelegateAssignment => mutating_tool(
             name,
-            "Hand bounded work to another teammate of this channel within this assignment's folders and ranks",
+            "Hand bounded work to another agent of this channel within this assignment's folders and ranks",
             delegation::properties(),
             false,
         ),
@@ -257,7 +257,7 @@ pub(crate) async fn call(
     arguments: &Map<String, Value>,
 ) -> ChatResult<Value> {
     // A provided secret never reaches the audit hash, a replicated row, or a workspace file
-    // through a host tool; a teammate that must write one uses its own shell.
+    // through a host tool; an agent that must write one uses its own shell.
     let redacted =
         tauri::Manager::try_state::<crate::chat::secrets::ChatSecretRegistry>(context.app)
             .and_then(|registry| registry.redact_arguments(context.thread_id, arguments));
@@ -333,7 +333,7 @@ pub(crate) async fn call(
         }
         Err(error) => {
             // A typed refusal changed nothing, so its code is both the audit category and the
-            // error the teammate sees, which lets it adjust its next call.
+            // error the agent sees, which lets it adjust its next call.
             if let Some((code, refusal)) = typed_refusal(tool, &error) {
                 complete_audit_denied(context.pool, context.scope, &invocation_id, code, false)
                     .await?;
@@ -356,7 +356,7 @@ pub(crate) async fn call(
     }
 }
 
-/// The stable code and tool error of a refusal the teammate may act on, when `error` is one
+/// The stable code and tool error of a refusal the agent may act on, when `error` is one
 /// for `tool`.
 fn typed_refusal(tool: Option<HostTool>, error: &ChatError) -> Option<(&'static str, ChatError)> {
     match tool? {
@@ -973,7 +973,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_teammate_removed_from_the_channel_cannot_expand_a_pointer() {
+    async fn a_agent_removed_from_the_channel_cannot_expand_a_pointer() {
         let pool = pool_with_folder_runs().await;
         let thread_id = ChatThreadId::new("thread-1").unwrap();
         let reading = working_scope(ChatFolderCapability::Read);
@@ -985,7 +985,7 @@ mod tests {
         )
         .await
         .expect("offered while the scope is live");
-        sqlx::query("UPDATE chat_teammate_channel_memberships SET removed_at = ?")
+        sqlx::query("UPDATE chat_agent_channel_memberships SET removed_at = ?")
             .bind("2026-11-12T09:00:00.000Z")
             .execute(&pool)
             .await
@@ -1160,7 +1160,7 @@ mod tests {
     }
 
     #[test]
-    fn push_request_refusals_reach_the_teammate_and_other_errors_stay_generic() {
+    fn push_request_refusals_reach_the_agent_and_other_errors_stay_generic() {
         let detached = PushRequestRefusal::Detached.into_error();
         let (code, refusal) = typed_refusal(Some(HostTool::RequestPush), &detached).unwrap();
         assert_eq!(code, "push_branch_detached");

@@ -1,7 +1,7 @@
 //! Chat: table ids 352 to 447.
 //!
-//! The identity and policy tables replicate: participants, AI teammates, teammate policy
-//! revisions, access profiles, and access profile revisions (tables 352 to 356). Teammates and
+//! The identity and policy tables replicate: participants, AI agents, agent policy
+//! revisions, access profiles, and access profile revisions (tables 352 to 356). Agents and
 //! profiles point at their effective revision through a silent coupled register that carries a
 //! copy of the revision's restrictiveness, so concurrent policy edits settle on the stricter one.
 //! Revisions are immutable rows; display numbers come from `(created_at, id)` order.
@@ -32,14 +32,14 @@
 //! executes it. Input ids derive from their message, so concurrent routing of one message
 //! converges, and a settled assignment state wins over a concurrent active one.
 //!
-//! Standing push approvals replicate (table 365) with a key derived from the teammate, folder,
+//! Standing push approvals replicate (table 365) with a key derived from the agent, folder,
 //! push URL, and destination branch. Only people approve, and a revocation wins over a
 //! concurrent approval.
 //!
-//! Channel notes replicate (table 400). People write them, a teammate only proposes one, and a
+//! Channel notes replicate (table 400). People write them, an agent only proposes one, and a
 //! deletion wins over a concurrent edit, so a dismissed proposal stays dismissed.
 //!
-//! Daily teammate usage summaries replicate (table 399): one row per device, teammate, and local
+//! Daily agent usage summaries replicate (table 399): one row per device, agent, and local
 //! day that only the device it names writes and whose counts only grow.
 //!
 //! Execution, drafts, review history, provider state, receipts, dispatch claims, cleanup jobs,
@@ -53,8 +53,8 @@ use ganbaru_sync_contracts::chat_push_approvals::{
 };
 use ganbaru_sync_contracts::chat_recurrence;
 use ganbaru_sync_contracts::chat_usage::{
-    LOCAL_DATE_CHARS, MAX_DAILY_COUNTED_TOKENS, MAX_DAILY_RUNS, MAX_DAILY_WORKING_SECONDS,
-    TEAMMATE_USAGE_OWNER_PREFIX,
+    AGENT_USAGE_OWNER_PREFIX, LOCAL_DATE_CHARS, MAX_DAILY_COUNTED_TOKENS, MAX_DAILY_RUNS,
+    MAX_DAILY_WORKING_SECONDS,
 };
 use ganbaru_sync_contracts::{GroupId, TableId};
 
@@ -88,9 +88,9 @@ pub const ADAPTER: &str = "chat";
 
 /// `chat_participants`.
 pub const PARTICIPANTS_TABLE: TableId = TableId(352);
-/// `chat_teammates`.
-pub const TEAMMATES_TABLE: TableId = TableId(353);
-/// `chat_teammate_policy_revisions`.
+/// `chat_agents`.
+pub const AGENTS_TABLE: TableId = TableId(353);
+/// `chat_agent_policy_revisions`.
 pub const POLICY_REVISIONS_TABLE: TableId = TableId(354);
 /// `chat_access_profiles`.
 pub const PROFILES_TABLE: TableId = TableId(355);
@@ -100,9 +100,9 @@ pub const PROFILE_REVISIONS_TABLE: TableId = TableId(356);
 pub const CONVERSATIONS_TABLE: TableId = TableId(360);
 /// `chat_conversation_memberships`.
 pub const MEMBERSHIPS_TABLE: TableId = TableId(361);
-/// `chat_teammate_channel_memberships`.
+/// `chat_agent_channel_memberships`.
 pub const CHANNEL_MEMBERSHIPS_TABLE: TableId = TableId(362);
-/// `chat_teammate_working_folder_grants`.
+/// `chat_agent_working_folder_grants`.
 pub const FOLDER_GRANTS_TABLE: TableId = TableId(363);
 /// `chat_channels`.
 pub const CHANNELS_TABLE: TableId = TableId(364);
@@ -144,14 +144,14 @@ pub const ASSIGNMENTS_TABLE: TableId = TableId(395);
 pub const INPUTS_TABLE: TableId = TableId(396);
 /// `chat_work_semantic_updates`.
 pub const SEMANTIC_UPDATES_TABLE: TableId = TableId(397);
-/// `chat_teammate_usage_daily`.
-pub const TEAMMATE_USAGE_DAILY_TABLE: TableId = TableId(399);
+/// `chat_agent_usage_daily`.
+pub const AGENT_USAGE_DAILY_TABLE: TableId = TableId(399);
 
 /// Prefix of conversation membership keys, over the conversation and participant.
 pub const MEMBERSHIP_KEY_PREFIX: &str = "conversation-membership";
-/// Prefix of AI channel membership keys, over the conversation and teammate.
+/// Prefix of AI channel membership keys, over the conversation and agent.
 pub const CHANNEL_MEMBERSHIP_KEY_PREFIX: &str = "ai-channel-membership";
-/// Prefix of working folder grant keys, over the conversation, teammate, and working folder.
+/// Prefix of working folder grant keys, over the conversation, agent, and working folder.
 pub const FOLDER_GRANT_KEY_PREFIX: &str = "folder-grant";
 /// Prefix of reply thread ids, over the root item.
 pub const REPLY_THREAD_KEY_PREFIX: &str = "reply-thread";
@@ -178,8 +178,8 @@ pub mod participant_group {
     pub const UPDATED: GroupId = group_id(3);
 }
 
-/// Teammate field groups.
-pub mod teammate_group {
+/// Agent field groups.
+pub mod agent_group {
     use super::{GroupId, group_id};
 
     /// `created_at`.
@@ -194,7 +194,7 @@ pub mod teammate_group {
     pub const UPDATED: GroupId = group_id(4);
 }
 
-/// Teammate policy revision field groups.
+/// Agent policy revision field groups.
 pub mod policy_revision_group {
     use super::{GroupId, group_id};
 
@@ -260,7 +260,7 @@ pub mod membership_group {
 pub mod channel_membership_group {
     use super::{GroupId, group_id};
 
-    /// `conversation_id` and `teammate_id`.
+    /// `conversation_id` and `agent_id`.
     pub const IDENTITY: GroupId = group_id(0);
     /// The access profile, channel capabilities, history boundary, approval overrides, and
     /// `removed_at`.
@@ -277,7 +277,7 @@ pub mod channel_membership_group {
 pub mod push_approval_group {
     use super::{GroupId, group_id};
 
-    /// `teammate_id`, `working_folder_id`, `push_url`, and `destination_branch`.
+    /// `agent_id`, `working_folder_id`, `push_url`, and `destination_branch`.
     pub const IDENTITY: GroupId = group_id(0);
     /// `runtime_approval_policy`, `safety_mode`, `approved_by_participant_id`, `approved_at`,
     /// and `revoked_at`.
@@ -290,7 +290,7 @@ pub mod push_approval_group {
 pub mod folder_grant_group {
     use super::{GroupId, group_id};
 
-    /// `conversation_id`, `teammate_id`, and `working_folder_id`.
+    /// `conversation_id`, `agent_id`, and `working_folder_id`.
     pub const IDENTITY: GroupId = group_id(0);
     /// `capability`, `capability_inherits_profile`, `is_default`, `runtime_approval_policy`,
     /// and `revoked_at`.
@@ -321,7 +321,7 @@ pub mod channel_note_group {
 
     /// `channel_id` and `created_at`.
     pub const CREATED: GroupId = group_id(0);
-    /// `source_item_id` and `proposed_by_participant_id`, set when a note comes from a teammate
+    /// `source_item_id` and `proposed_by_participant_id`, set when a note comes from an agent
     /// proposal.
     pub const PROVENANCE: GroupId = group_id(1);
     /// `body` and `edited_by_participant_id`, the person who wrote the current wording.
@@ -438,7 +438,7 @@ pub mod recurrence_group {
 pub mod assignment_group {
     use super::{GroupId, group_id};
 
-    /// `reply_thread_id`, `teammate_id`, `triggering_message_item_id`, `executing_device_id`,
+    /// `reply_thread_id`, `agent_id`, `triggering_message_item_id`, `executing_device_id`,
     /// `created_at`, `override_model_selection_schema_version`, and
     /// `override_model_selection_data`, so the model asked for is fixed with the request.
     pub const CREATED: GroupId = group_id(0);
@@ -450,7 +450,7 @@ pub mod assignment_group {
     /// `updated_at`.
     pub const UPDATED: GroupId = group_id(3);
     /// `parent_assignment_id`, `delegation_depth`, `delegation_objective`,
-    /// `delegation_expected_result`, and `delegation_folder_ceiling`, fixed when a teammate
+    /// `delegation_expected_result`, and `delegation_folder_ceiling`, fixed when an agent
     /// delegates the assignment and null with depth 0 otherwise.
     pub const DELEGATION: GroupId = group_id(4);
 }
@@ -484,11 +484,11 @@ pub mod semantic_update_group {
     pub const CREATED: GroupId = group_id(0);
 }
 
-/// Daily teammate usage field groups.
-pub mod teammate_usage_group {
+/// Daily agent usage field groups.
+pub mod agent_usage_group {
     use super::{GroupId, group_id};
 
-    /// `device_id`, `teammate_id`, and `local_date`, the key inputs.
+    /// `device_id`, `agent_id`, and `local_date`, the key inputs.
     pub const BUCKET: GroupId = group_id(0);
     /// `counted_tokens`.
     pub const TOKENS: GroupId = group_id(1);
@@ -806,17 +806,17 @@ pub const PARTICIPANTS: TableSpec = TableSpec {
     ..BASE
 };
 
-/// `chat_teammates`, keyed by the participant id. Concurrent policy edits keep the stricter
+/// `chat_agents`, keyed by the participant id. Concurrent policy edits keep the stricter
 /// safety mode, and the home device names where its assignments run.
-pub const TEAMMATES: TableSpec = TableSpec {
-    id: TEAMMATES_TABLE,
-    name: "chat_teammates",
+pub const AGENTS: TableSpec = TableSpec {
+    id: AGENTS_TABLE,
+    name: "chat_agents",
     key_column: "participant_id",
     key_parent: Some(PARTICIPANTS_TABLE),
     groups: &[
-        immutable(teammate_group::CREATED, &[timestamp("created_at")], &[]),
+        immutable(agent_group::CREATED, &[timestamp("created_at")], &[]),
         surfaced(register(
-            teammate_group::PROFILE,
+            agent_group::PROFILE,
             "profile",
             &[
                 trimmed("role", MAX_ROLE_CHARS),
@@ -824,7 +824,7 @@ pub const TEAMMATES: TableSpec = TableSpec {
             ],
         )),
         coupled(
-            teammate_group::POLICY,
+            agent_group::POLICY,
             "policy",
             &[
                 optional_row_key("current_policy_revision_id"),
@@ -832,32 +832,32 @@ pub const TEAMMATES: TableSpec = TableSpec {
             ],
         ),
         register(
-            teammate_group::HOME,
+            agent_group::HOME,
             "home",
             &[optional_text("home_device_id", MAX_DEVICE_ID_BYTES)],
         ),
-        updated(teammate_group::UPDATED),
+        updated(agent_group::UPDATED),
     ],
     resolutions: &[within(
         &["current_policy_revision_id", "current_policy_safety_mode"],
-        teammate_group::POLICY,
+        agent_group::POLICY,
     )],
     triggers: &[
-        gated("chat_teammate_create_access_state"),
-        gated("chat_teammate_push_approvals_safety_mode"),
+        gated("chat_agent_create_access_state"),
+        gated("chat_agent_push_approvals_safety_mode"),
     ],
     deletion: Deletion::Never,
     ..BASE
 };
 
-/// `chat_teammate_policy_revisions`, immutable and never deleted.
+/// `chat_agent_policy_revisions`, immutable and never deleted.
 pub const POLICY_REVISIONS: TableSpec = TableSpec {
     id: POLICY_REVISIONS_TABLE,
-    name: "chat_teammate_policy_revisions",
+    name: "chat_agent_policy_revisions",
     groups: &[immutable(
         policy_revision_group::CREATED,
         &[
-            row_key("teammate_id"),
+            row_key("agent_id"),
             text("provider_instance_id", MAX_PROVIDER_INSTANCE_CHARS),
             version("model_selection_schema_version"),
             text("model_selection_data", MAX_JSON_CHARS),
@@ -869,12 +869,12 @@ pub const POLICY_REVISIONS: TableSpec = TableSpec {
             timestamp("created_at"),
             text("safety_mode", MAX_ENUM_CHARS),
         ],
-        &[cascade("teammate_id", TEAMMATES_TABLE)],
+        &[cascade("agent_id", AGENTS_TABLE)],
     )],
     triggers: &[
-        applier_visible("chat_teammate_policy_identity_insert"),
-        applier_visible("chat_teammate_policy_immutable_delete"),
-        applier_visible("chat_teammate_policy_immutable_update"),
+        applier_visible("chat_agent_policy_identity_insert"),
+        applier_visible("chat_agent_policy_immutable_delete"),
+        applier_visible("chat_agent_policy_immutable_update"),
     ],
     deletion: Deletion::Never,
     ..BASE
@@ -1044,7 +1044,7 @@ pub const MEMBERSHIPS: TableSpec = TableSpec {
     ..BASE
 };
 
-/// `chat_teammate_channel_memberships`, removed by `removed_at`. The access profile, channel
+/// `chat_agent_channel_memberships`, removed by `removed_at`. The access profile, channel
 /// capabilities, history boundary, and approval overrides form one coupled value, so concurrent
 /// edits keep one whole setting: a removal first, then the one that clears more capabilities
 /// explicitly, then the stricter approval overrides, with no override counting as the least
@@ -1052,15 +1052,15 @@ pub const MEMBERSHIPS: TableSpec = TableSpec {
 /// resolved parts the priority cannot rank.
 pub const CHANNEL_MEMBERSHIPS: TableSpec = TableSpec {
     id: CHANNEL_MEMBERSHIPS_TABLE,
-    name: "chat_teammate_channel_memberships",
+    name: "chat_agent_channel_memberships",
     key_column: SYNC_KEY_COLUMN,
     groups: &[
         identity(
             channel_membership_group::IDENTITY,
-            &[row_key("conversation_id"), row_key("teammate_id")],
+            &[row_key("conversation_id"), row_key("agent_id")],
             &[
                 cascade("conversation_id", CONVERSATIONS_TABLE),
-                cascade("teammate_id", TEAMMATES_TABLE),
+                cascade("agent_id", AGENTS_TABLE),
             ],
         ),
         referencing(
@@ -1096,23 +1096,23 @@ pub const CHANNEL_MEMBERSHIPS: TableSpec = TableSpec {
         channel_membership_group::ACCESS,
     )],
     triggers: &[
-        gated("chat_teammate_channel_membership_audience_delete"),
-        gated("chat_teammate_channel_membership_push_approvals_delete"),
-        gated("chat_teammate_channel_membership_push_approvals_update"),
-        gated("chat_teammate_channel_membership_audience_insert"),
-        gated("chat_teammate_channel_membership_audience_update"),
-        applier_visible("chat_teammate_channel_membership_identity_insert"),
-        gated("chat_teammate_channel_membership_requires_membership_insert"),
+        gated("chat_agent_channel_membership_audience_delete"),
+        gated("chat_agent_channel_membership_push_approvals_delete"),
+        gated("chat_agent_channel_membership_push_approvals_update"),
+        gated("chat_agent_channel_membership_audience_insert"),
+        gated("chat_agent_channel_membership_audience_update"),
+        applier_visible("chat_agent_channel_membership_identity_insert"),
+        gated("chat_agent_channel_membership_requires_membership_insert"),
     ],
     derived_key: Some(DerivedKey {
         exists_group: channel_membership_group::EXISTS,
         prefix: Some(CHANNEL_MEMBERSHIP_KEY_PREFIX),
-        key_inputs: &["conversation_id", "teammate_id"],
+        key_inputs: &["conversation_id", "agent_id"],
     }),
     ..BASE
 };
 
-/// `chat_teammate_working_folder_grants`, revoked by `revoked_at`. Concurrent edits keep a
+/// `chat_agent_working_folder_grants`, revoked by `revoked_at`. Concurrent edits keep a
 /// revocation first, then the lower capability (an inherited one counting as the highest), then
 /// the stricter approval override, with no override counting as the least strict. Commands
 /// never rewrite the creation time, and rewrite the project only to the conversation's when a
@@ -1120,19 +1120,19 @@ pub const CHANNEL_MEMBERSHIPS: TableSpec = TableSpec {
 /// key columns in immutable groups, so concurrent creations converge.
 pub const FOLDER_GRANTS: TableSpec = TableSpec {
     id: FOLDER_GRANTS_TABLE,
-    name: "chat_teammate_working_folder_grants",
+    name: "chat_agent_working_folder_grants",
     key_column: SYNC_KEY_COLUMN,
     groups: &[
         identity(
             folder_grant_group::IDENTITY,
             &[
                 row_key("conversation_id"),
-                row_key("teammate_id"),
+                row_key("agent_id"),
                 row_key("working_folder_id"),
             ],
             &[
                 cascade("conversation_id", CONVERSATIONS_TABLE),
-                cascade("teammate_id", TEAMMATES_TABLE),
+                cascade("agent_id", AGENTS_TABLE),
                 cascade("working_folder_id", FOLDERS_TABLE),
             ],
         ),
@@ -1157,25 +1157,25 @@ pub const FOLDER_GRANTS: TableSpec = TableSpec {
     local_columns: &[REVISION],
     revision_column: Some("revision"),
     triggers: &[
-        gated("chat_teammate_folder_grant_identity_insert"),
-        gated("chat_teammate_folder_grant_project_insert"),
-        gated("chat_teammate_folder_grant_project_update"),
-        gated("chat_teammate_folder_grant_push_approvals_delete"),
-        gated("chat_teammate_folder_grant_push_approvals_update"),
-        gated("chat_teammate_folder_grant_single_default_insert"),
-        gated("chat_teammate_folder_grant_single_default_update"),
+        gated("chat_agent_folder_grant_identity_insert"),
+        gated("chat_agent_folder_grant_project_insert"),
+        gated("chat_agent_folder_grant_project_update"),
+        gated("chat_agent_folder_grant_push_approvals_delete"),
+        gated("chat_agent_folder_grant_push_approvals_update"),
+        gated("chat_agent_folder_grant_single_default_insert"),
+        gated("chat_agent_folder_grant_single_default_update"),
     ],
     derived_key: Some(DerivedKey {
         exists_group: folder_grant_group::EXISTS,
         prefix: Some(FOLDER_GRANT_KEY_PREFIX),
-        key_inputs: &["conversation_id", "teammate_id", "working_folder_id"],
+        key_inputs: &["conversation_id", "agent_id", "working_folder_id"],
     }),
     ..BASE
 };
 
 /// `chat_push_approvals`, revoked by `revoked_at`. Only a person approves, which local triggers
 /// check, and the triggers of the grants, channel memberships, access profiles, participants,
-/// and teammates that let a teammate publish revoke its approvals when that access narrows. A
+/// and agents that let an agent publish revoke its approvals when that access narrows. A
 /// revocation wins over a concurrent approval.
 pub const PUSH_APPROVALS: TableSpec = TableSpec {
     id: PUSH_APPROVALS_TABLE,
@@ -1185,13 +1185,13 @@ pub const PUSH_APPROVALS: TableSpec = TableSpec {
         identity(
             push_approval_group::IDENTITY,
             &[
-                row_key("teammate_id"),
+                row_key("agent_id"),
                 row_key("working_folder_id"),
                 text("push_url", MAX_PUSH_APPROVAL_URL_BYTES),
                 text("destination_branch", MAX_PUSH_APPROVAL_BRANCH_BYTES),
             ],
             &[
-                cascade("teammate_id", TEAMMATES_TABLE),
+                cascade("agent_id", AGENTS_TABLE),
                 cascade("working_folder_id", FOLDERS_TABLE),
             ],
         ),
@@ -1221,7 +1221,7 @@ pub const PUSH_APPROVALS: TableSpec = TableSpec {
         exists_group: push_approval_group::EXISTS,
         prefix: Some(PUSH_APPROVAL_KEY_PREFIX),
         key_inputs: &[
-            "teammate_id",
+            "agent_id",
             "working_folder_id",
             "push_url",
             "destination_branch",
@@ -1279,7 +1279,7 @@ pub const CHANNELS: TableSpec = TableSpec {
 };
 
 /// `chat_channel_notes`. Only a person writes a note, which local triggers check; a note from a
-/// teammate proposal takes an id derived from the proposal item, so devices that accept or
+/// agent proposal takes an id derived from the proposal item, so devices that accept or
 /// dismiss one proposal concurrently write one row. Concurrent wording edits surface a
 /// conflict, and a deletion wins over a concurrent edit.
 pub const CHANNEL_NOTES: TableSpec = TableSpec {
@@ -1598,7 +1598,7 @@ pub const ENVIRONMENT_TARGETS: TableSpec = TableSpec {
     ..TARGET
 };
 
-/// `chat_participant_reference_targets`. A mention of the teammate a post invokes carries the
+/// `chat_participant_reference_targets`. A mention of the agent a post invokes carries the
 /// model override the post asked for, so a later Start of a mention that recorded no work
 /// runs with it.
 pub const PARTICIPANT_TARGETS: TableSpec = TableSpec {
@@ -1908,7 +1908,7 @@ pub const ASSIGNMENTS: TableSpec = TableSpec {
             assignment_group::CREATED,
             &[
                 row_key("reply_thread_id"),
-                row_key("teammate_id"),
+                row_key("agent_id"),
                 row_key("triggering_message_item_id"),
                 optional_text("executing_device_id", MAX_DEVICE_ID_BYTES),
                 timestamp("created_at"),
@@ -1917,7 +1917,7 @@ pub const ASSIGNMENTS: TableSpec = TableSpec {
             ],
             &[
                 cascade("reply_thread_id", REPLY_THREADS_TABLE),
-                cascade("teammate_id", TEAMMATES_TABLE),
+                cascade("agent_id", AGENTS_TABLE),
                 cascade("triggering_message_item_id", MESSAGES_TABLE),
             ],
         ),
@@ -2066,47 +2066,47 @@ const fn daily_count(name: &'static str, max: i64) -> ColumnSpec {
     }
 }
 
-/// `chat_teammate_usage_daily`, the usage one device's runs of one teammate recorded during one
+/// `chat_agent_usage_daily`, the usage one device's runs of one agent recorded during one
 /// local day, keyed by the owner tag of the device followed by a digest of those three values,
-/// under [`TEAMMATE_USAGE_OWNER_PREFIX`]. Only the device the row names may write it, which every
+/// under [`AGENT_USAGE_OWNER_PREFIX`]. Only the device the row names may write it, which every
 /// replica enforces from the key, and its counts only grow, so `Max` converges. Rows are never
-/// deleted while their teammate exists, so the table declares no existence group and the
+/// deleted while their agent exists, so the table declares no existence group and the
 /// retention window is a read filter.
-pub const TEAMMATE_USAGE_DAILY: TableSpec = TableSpec {
-    id: TEAMMATE_USAGE_DAILY_TABLE,
-    name: "chat_teammate_usage_daily",
+pub const AGENT_USAGE_DAILY: TableSpec = TableSpec {
+    id: AGENT_USAGE_DAILY_TABLE,
+    name: "chat_agent_usage_daily",
     owner: Some(RowOwner::KeyTag {
-        prefix: TEAMMATE_USAGE_OWNER_PREFIX,
+        prefix: AGENT_USAGE_OWNER_PREFIX,
         device_column: "device_id",
     }),
     groups: &[
         GroupSpec {
-            references: &[cascade("teammate_id", TEAMMATES_TABLE)],
+            references: &[cascade("agent_id", AGENTS_TABLE)],
             ..group(
-                teammate_usage_group::BUCKET,
+                agent_usage_group::BUCKET,
                 "bucket",
                 MergeKind::Immutable,
                 &[
                     trimmed("device_id", MAX_DEVICE_ID_BYTES),
-                    row_key("teammate_id"),
+                    row_key("agent_id"),
                     text("local_date", LOCAL_DATE_CHARS),
                 ],
             )
         },
         group(
-            teammate_usage_group::TOKENS,
+            agent_usage_group::TOKENS,
             "tokens",
             MergeKind::Max,
             &[daily_count("counted_tokens", MAX_DAILY_COUNTED_TOKENS)],
         ),
         group(
-            teammate_usage_group::WORKING,
+            agent_usage_group::WORKING,
             "working",
             MergeKind::Max,
             &[daily_count("working_seconds", MAX_DAILY_WORKING_SECONDS)],
         ),
         group(
-            teammate_usage_group::RUNS,
+            agent_usage_group::RUNS,
             "runs",
             MergeKind::Max,
             &[daily_count("run_count", MAX_DAILY_RUNS)],
@@ -2134,7 +2134,7 @@ pub const DOMAIN: DomainManifest = DomainManifest {
     },
     tables: &[
         PARTICIPANTS,
-        TEAMMATES,
+        AGENTS,
         POLICY_REVISIONS,
         PROFILES,
         PROFILE_REVISIONS,
@@ -2162,7 +2162,7 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         ASSIGNMENTS,
         INPUTS,
         SEMANTIC_UPDATES,
-        TEAMMATE_USAGE_DAILY,
+        AGENT_USAGE_DAILY,
     ],
     derived: &["chat_communication_search_fts"],
     local: &[
@@ -2321,8 +2321,8 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         ),
         device("chat_secret_requests", &[]),
         device(
-            "chat_teammate_access_state",
-            &[applier_visible("chat_teammate_access_revision_monotonic")],
+            "chat_agent_access_state",
+            &[applier_visible("chat_agent_access_revision_monotonic")],
         ),
         device("chat_terminal_attachment_contexts", &[]),
         device("chat_terminal_layouts", &[]),

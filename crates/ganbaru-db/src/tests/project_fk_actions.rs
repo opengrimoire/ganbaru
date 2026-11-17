@@ -15,7 +15,7 @@ const PROJECT_REFERENCING_TABLES: [&str; 14] = [
     "chat_scheduled_message_references",
     "chat_scratch_promotions",
     "chat_scratch_cleanup_jobs",
-    "chat_teammate_working_folder_grants",
+    "chat_agent_working_folder_grants",
     "chat_working_folder_reference_targets",
     "chat_workspace_path_reference_targets",
 ];
@@ -164,7 +164,7 @@ fn deleting_a_working_folder_removes_only_its_chat_rows() {
                 "working_folder_id",
             ),
             ("chat_scheduled_message_references", "working_folder_id"),
-            ("chat_teammate_working_folder_grants", "working_folder_id"),
+            ("chat_agent_working_folder_grants", "working_folder_id"),
         ] {
             assert_eq!(
                 count_where(&pool, table, &format!("{column} = 'folder-archived'")).await,

@@ -880,7 +880,7 @@ async fn reject_outside_scope(
                 "permission/reject",
                 CanonicalEvent::RuntimeWarning(NotificationEvent {
                     code: "opencode_scope_reject_failed".to_string(),
-                    title: "OpenCode kept a request outside the teammate scope".to_string(),
+                    title: "OpenCode kept a request outside the agent scope".to_string(),
                     detail: Some(error.message),
                 }),
             )?);
@@ -1065,7 +1065,7 @@ async fn end_after_git_metadata_change(resources: &EventPumpResources) -> bool {
                 "session/git_metadata_changed",
                 CanonicalEvent::RuntimeWarning(NotificationEvent {
                     code: crate::confinement::GIT_METADATA_CHANGED_CODE.to_string(),
-                    title: "A teammate changed this folder's Git configuration".to_string(),
+                    title: "An agent changed this folder's Git configuration".to_string(),
                     detail: Some(error.message.clone()),
                 }),
             )?;

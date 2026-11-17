@@ -1,7 +1,7 @@
-//! Provider preferences that teammate launches keep although they skip the user's own
+//! Provider preferences that agent launches keep although they skip the user's own
 //! provider configuration.
 //!
-//! Claude teammates load no settings files and confined Cursor teammates read a configuration
+//! Claude agents load no settings files and confined Cursor agents read a configuration
 //! Ganbaru writes, so each of those providers has an allowlist of preferences copied from the
 //! user's file. An entry only shapes answers, thinking, limits, transport, or what the CLI
 //! reports, and never widens tools, folders, servers, hooks, credentials, or where requests go.
@@ -45,14 +45,14 @@ pub enum PreferenceLocation {
 
 /// One allowlisted preference.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TeammatePreference {
+pub struct AgentPreference {
     /// Where the preference lives.
     pub location: PreferenceLocation,
     /// How its value is checked.
     pub value_type: PreferenceType,
 }
 
-impl TeammatePreference {
+impl AgentPreference {
     /// The stable identifier of the preference: the dotted key path or the variable name.
     pub fn id(&self) -> String {
         match self.location {
@@ -72,18 +72,15 @@ const MAX_LANGUAGE_BYTES: usize = 64;
 const MAX_ATTRIBUTION_BYTES: usize = 4096;
 
 /// A preference at the key path `path` of the configuration document.
-pub const fn setting(
-    path: &'static [&'static str],
-    value_type: PreferenceType,
-) -> TeammatePreference {
-    TeammatePreference {
+pub const fn setting(path: &'static [&'static str], value_type: PreferenceType) -> AgentPreference {
+    AgentPreference {
         location: PreferenceLocation::Setting(path),
         value_type,
     }
 }
 
-const fn variable(name: &'static str, value_type: PreferenceType) -> TeammatePreference {
-    TeammatePreference {
+const fn variable(name: &'static str, value_type: PreferenceType) -> AgentPreference {
+    AgentPreference {
         location: PreferenceLocation::Variable(name),
         value_type,
     }
@@ -99,7 +96,7 @@ const ATTRIBUTION_TEXT: PreferenceType = PreferenceType::Text {
 /// environment. Model and effort variables are left out because Ganbaru's model picker owns
 /// them, and so is anything that changes credentials, endpoints, telemetry exporters, or the
 /// shell.
-pub const CLAUDE_PREFERENCES: &[TeammatePreference] = &[
+pub const CLAUDE_PREFERENCES: &[AgentPreference] = &[
     setting(
         &["language"],
         PreferenceType::Text {
@@ -142,7 +139,7 @@ pub const CLAUDE_PREFERENCES: &[TeammatePreference] = &[
 
 /// Cursor CLI configuration keys a confined launch copies. They change model tier, transport,
 /// or commit trailers only, never permissions, approval, the sandbox, or what runs.
-pub const CURSOR_PREFERENCES: &[TeammatePreference] = &[
+pub const CURSOR_PREFERENCES: &[AgentPreference] = &[
     setting(&["maxMode"], PreferenceType::Boolean),
     setting(&["network", "useHttp1ForAgent"], PreferenceType::Boolean),
     setting(
@@ -155,9 +152,9 @@ pub const CURSOR_PREFERENCES: &[TeammatePreference] = &[
     ),
 ];
 
-/// The allowlist of a provider family; empty for families whose teammates read the user's
+/// The allowlist of a provider family; empty for families whose agents read the user's
 /// configuration natively.
-pub fn teammate_preferences(family_id: &str) -> &'static [TeammatePreference] {
+pub fn agent_preferences(family_id: &str) -> &'static [AgentPreference] {
     match family_id {
         "claude" => CLAUDE_PREFERENCES,
         "cursor" => CURSOR_PREFERENCES,
@@ -294,7 +291,7 @@ pub fn remove_at(document: &mut Map<String, Value>, path: &[&str]) {
 /// pass their check.
 pub fn allowlisted_settings(
     document: &Value,
-    preferences: &[TeammatePreference],
+    preferences: &[AgentPreference],
 ) -> Map<String, Value> {
     let mut kept = Map::new();
     for preference in preferences {
@@ -318,17 +315,14 @@ mod tests {
     #[test]
     fn identifiers_are_dotted_paths_or_variable_names_and_unique() {
         for catalog in [CLAUDE_PREFERENCES, CURSOR_PREFERENCES] {
-            let mut ids = catalog
-                .iter()
-                .map(TeammatePreference::id)
-                .collect::<Vec<_>>();
+            let mut ids = catalog.iter().map(AgentPreference::id).collect::<Vec<_>>();
             let count = ids.len();
             ids.sort();
             ids.dedup();
             assert_eq!(ids.len(), count);
         }
         assert_eq!(CLAUDE_PREFERENCES[3].id(), "attribution.commit");
-        assert!(teammate_preferences("codex").is_empty());
+        assert!(agent_preferences("codex").is_empty());
     }
 
     #[test]

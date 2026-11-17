@@ -15,7 +15,7 @@ const atlasReference: ChatMessageReference = {
     plainTextProjection: "@Atlas",
   },
   participantId: "participant:atlas",
-  participantKind: "ai_teammate",
+  participantKind: "ai_agent",
 };
 
 describe("ChatComposerEditor", () => {

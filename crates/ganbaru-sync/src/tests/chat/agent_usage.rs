@@ -1,13 +1,13 @@
-//! Chat daily teammate usage across replicas: each device's summary of a teammate's day arrives
+//! Chat daily agent usage across replicas: each device's summary of an agent's day arrives
 //! with every count, the counts converge to each device's largest flush whatever order replicas
 //! exchange in, and a summary one device signs for another is held.
 
 use super::*;
 use std::collections::BTreeMap;
 
-use crate::manifest::vault::chat::TEAMMATE_USAGE_DAILY_TABLE;
+use crate::manifest::vault::chat::AGENT_USAGE_DAILY_TABLE;
 use crate::tests::replica::{pair, sealed_change};
-use ganbaru_sync_contracts::chat_usage::teammate_usage_key;
+use ganbaru_sync_contracts::chat_usage::agent_usage_key;
 
 /// The local date every summary in these scenarios counts.
 const USAGE_DATE: &str = "2026-11-12";
@@ -25,9 +25,9 @@ const HELD_INVALID: StoreOutcome = StoreOutcome::Stored {
     held: Some(HoldReason::Invalid),
 };
 
-/// The key of `device_id`'s summary of [`TEAMMATE`] on [`USAGE_DATE`].
+/// The key of `device_id`'s summary of [`AGENT`] on [`USAGE_DATE`].
 fn usage_key(device_id: &str) -> String {
-    teammate_usage_key(device_id, TEAMMATE, USAGE_DATE)
+    agent_usage_key(device_id, AGENT, USAGE_DATE)
         .expect("usage parts are valid")
         .to_string()
 }
@@ -35,9 +35,9 @@ fn usage_key(device_id: &str) -> String {
 /// SQL flushing `device_id`'s summary the way the Chat flush does: every count only grows.
 fn flush_sql(device_id: &str, (tokens, seconds, runs): Counts) -> String {
     format!(
-        "INSERT INTO chat_teammate_usage_daily
-            (id, device_id, teammate_id, local_date, counted_tokens, working_seconds, run_count)
-         VALUES ({key}, {device}, {teammate}, '{USAGE_DATE}', {tokens}, {seconds}, {runs})
+        "INSERT INTO chat_agent_usage_daily
+            (id, device_id, agent_id, local_date, counted_tokens, working_seconds, run_count)
+         VALUES ({key}, {device}, {agent}, '{USAGE_DATE}', {tokens}, {seconds}, {runs})
          ON CONFLICT (id) DO UPDATE SET
             counted_tokens = max(counted_tokens, excluded.counted_tokens),
             working_seconds = max(working_seconds, excluded.working_seconds),
@@ -47,14 +47,14 @@ fn flush_sql(device_id: &str, (tokens, seconds, runs): Counts) -> String {
             OR excluded.run_count > run_count;",
         key = quoted(&usage_key(device_id)),
         device = quoted(device_id),
-        teammate = quoted(TEAMMATE),
+        agent = quoted(AGENT),
     )
 }
 
 /// Every stored summary by key.
 async fn summaries(replica: &mut Replica) -> BTreeMap<String, Counts> {
     sqlx::query_as::<_, (String, i64, i64, i64)>(
-        "SELECT id, counted_tokens, working_seconds, run_count FROM chat_teammate_usage_daily",
+        "SELECT id, counted_tokens, working_seconds, run_count FROM chat_agent_usage_daily",
     )
     .fetch_all(&mut replica.conn)
     .await
@@ -64,18 +64,18 @@ async fn summaries(replica: &mut Replica) -> BTreeMap<String, Counts> {
     .collect()
 }
 
-/// Replicas that share [`TEAMMATE`].
-async fn replicas_with_teammate(count: usize) -> Vec<Replica> {
+/// Replicas that share [`AGENT`].
+async fn replicas_with_agent(count: usize) -> Vec<Replica> {
     let mut replicas = replicas(count).await;
-    replicas[0].exec(&teammate_sql()).await;
+    replicas[0].exec(&agent_sql()).await;
     converge(&mut replicas).await;
     replicas
 }
 
 #[test]
-fn chat_teammate_usage_round_trips_with_every_count() {
+fn chat_agent_usage_round_trips_with_every_count() {
     block_on(async {
-        let mut replicas = replicas_with_teammate(2).await;
+        let mut replicas = replicas_with_agent(2).await;
         let owner = device_id(0);
         replicas[0].exec(&flush_sql(&owner, (1_200, 95, 2))).await;
         converge(&mut replicas).await;
@@ -87,8 +87,8 @@ fn chat_teammate_usage_round_trips_with_every_count() {
         assert_eq!(
             replicas[1]
                 .scalar_text(
-                    "SELECT device_id || ' ' || teammate_id || ' ' || local_date
-                     FROM chat_teammate_usage_daily"
+                    "SELECT device_id || ' ' || agent_id || ' ' || local_date
+                     FROM chat_agent_usage_daily"
                 )
                 .await
                 .as_deref(),
@@ -98,11 +98,11 @@ fn chat_teammate_usage_round_trips_with_every_count() {
 }
 
 #[test]
-fn chat_teammate_usage_converges_to_each_devices_largest_flush() {
+fn chat_agent_usage_converges_to_each_devices_largest_flush() {
     block_on(async {
         for seed in 0..FLUSH_SEEDS {
             let mut rng = Rng(seed);
-            let mut replicas = replicas_with_teammate(3).await;
+            let mut replicas = replicas_with_agent(3).await;
             let mut expected: BTreeMap<String, Counts> = BTreeMap::new();
             for _ in 0..FLUSH_STEPS {
                 let device = rng.below(replicas.len());
@@ -139,16 +139,16 @@ fn chat_teammate_usage_converges_to_each_devices_largest_flush() {
 /// A device signs a summary for another device. Another replica holds it and still takes the
 /// owner's own flush.
 #[test]
-fn chat_teammate_usage_from_another_device_is_held_invalid() {
+fn chat_agent_usage_from_another_device_is_held_invalid() {
     block_on(async {
-        let mut replicas = replicas_with_teammate(3).await;
+        let mut replicas = replicas_with_agent(3).await;
         let owner = device_id(0);
         let key = usage_key(&owner);
         replicas[0].exec(&flush_sql(&owner, (10, 5, 1))).await;
         replicas[0].seal().await.unwrap();
         let create = sealed_change(
             &mut replicas[0],
-            TEAMMATE_USAGE_DAILY_TABLE,
+            AGENT_USAGE_DAILY_TABLE,
             &key,
             ChangeAction::Create,
         )

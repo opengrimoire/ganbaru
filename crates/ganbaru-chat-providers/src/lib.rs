@@ -9,6 +9,7 @@ pub mod executable_search;
 mod probe_directory;
 pub mod process;
 
+pub mod agent_preferences;
 mod claude;
 mod cli_install;
 pub mod cli_updates;
@@ -23,7 +24,6 @@ mod registry;
 #[cfg(test)]
 mod replay;
 pub mod runtime_review;
-pub mod teammate_preferences;
 mod unsupported;
 
 pub use cli_install::{InstallRoots, installer_executable_directories};
@@ -34,11 +34,11 @@ pub use host_path::{host_variable, search_path};
 pub use registry::ProviderDriverRegistry;
 pub use unsupported::*;
 
-/// Whether teammate processes on this device run under an enforcing sandbox helper, which
+/// Whether agent processes on this device run under an enforcing sandbox helper, which
 /// keeps them from reading the user's home folders outside their provider home.
 ///
-/// Without one, the teammates that run at all run unconfined and read those folders natively.
-pub fn teammates_run_confined() -> bool {
+/// Without one, the agents that run at all run unconfined and read those folders natively.
+pub fn agents_run_confined() -> bool {
     confinement::sandbox_helper().is_some()
 }
 

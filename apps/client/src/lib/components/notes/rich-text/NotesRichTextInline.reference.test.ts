@@ -60,9 +60,9 @@ describe("rich-text local reference rendering", () => {
   });
 
   it("keeps other mention kinds in their existing rendering branch", () => {
-    const html = renderReference([createUserMentionRichText(PAGE_ID, "Teammate")]);
+    const html = renderReference([createUserMentionRichText(PAGE_ID, "Agent")]);
     expect(html).not.toContain("data-notes-reference-id");
     expect(html).not.toContain("<a ");
-    expect(html.replace(/<[^>]*>/gu, "")).toBe("Teammate");
+    expect(html.replace(/<[^>]*>/gu, "")).toBe("Agent");
   });
 });

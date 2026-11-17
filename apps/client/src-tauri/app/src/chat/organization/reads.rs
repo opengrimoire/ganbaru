@@ -69,7 +69,7 @@ pub(super) async fn read_membership(
         )
     })?;
     let participant = read_participant(pool, participant_id).await?;
-    let ai_access = if participant.kind == ChatParticipantKind::AiTeammate {
+    let ai_access = if participant.kind == ChatParticipantKind::AiAgent {
         read_roster_ai_access(pool, conversation_id, participant_id).await?
     } else {
         None
@@ -86,7 +86,7 @@ pub(super) async fn read_membership(
 async fn read_roster_ai_access(
     pool: &SqlitePool,
     conversation_id: &ChatConversationId,
-    teammate_id: &ChatParticipantId,
+    agent_id: &ChatParticipantId,
 ) -> ChatResult<Option<ChatChannelRosterAiSummary>> {
     let row = sqlx::query(
         "SELECT membership.access_profile_id, profile_revision.revision AS latest_revision,
@@ -102,15 +102,15 @@ async fn read_roster_ai_access(
                 membership.history_from_order_key,
                 membership.runtime_approval_policy,
                 membership.scratch_runtime_approval_policy
-         FROM chat_teammate_channel_memberships membership
+         FROM chat_agent_channel_memberships membership
          JOIN chat_access_profiles profile ON profile.id = membership.access_profile_id
          JOIN chat_access_profile_effective_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id
-         WHERE membership.conversation_id = ? AND membership.teammate_id = ?
+         WHERE membership.conversation_id = ? AND membership.agent_id = ?
            AND membership.removed_at IS NULL",
     )
     .bind(conversation_id.as_str())
-    .bind(teammate_id.as_str())
+    .bind(agent_id.as_str())
     .fetch_optional(pool)
     .await
     .map_err(persistence_error)?;
@@ -119,7 +119,7 @@ async fn read_roster_ai_access(
     };
     let grant_rows = sqlx::query(ACTIVE_FOLDER_GRANTS_SQL)
         .bind(conversation_id.as_str())
-        .bind(teammate_id.as_str())
+        .bind(agent_id.as_str())
         .fetch_all(pool)
         .await
         .map_err(persistence_error)?;
@@ -312,43 +312,41 @@ pub(super) async fn read_participant(
     })
 }
 
-pub(super) async fn read_teammate(
+pub(super) async fn read_agent(
     pool: &SqlitePool,
-    teammate_id: &ChatParticipantId,
-) -> ChatResult<ChatAiTeammateRead> {
-    let lifecycle = super::teammate_lifecycle::read_teammate_lifecycle(pool, teammate_id).await?;
+    agent_id: &ChatParticipantId,
+) -> ChatResult<ChatAiAgentRead> {
+    let lifecycle = super::agent_lifecycle::read_agent_lifecycle(pool, agent_id).await?;
     let row = sqlx::query(
-        "SELECT teammate.role, teammate.instructions, policy.id AS policy_revision_id,
+        "SELECT agent.role, agent.instructions, policy.id AS policy_revision_id,
                 (SELECT count(*) FROM chat_conversation_memberships membership
-                 WHERE membership.participant_id = teammate.participant_id
+                 WHERE membership.participant_id = agent.participant_id
                    AND membership.removed_at IS NULL) AS channel_count
-         FROM chat_teammates teammate
-         LEFT JOIN chat_teammate_effective_policies policy
-           ON policy.teammate_id = teammate.participant_id
-         WHERE teammate.participant_id = ?",
+         FROM chat_agents agent
+         LEFT JOIN chat_agent_effective_policies policy
+           ON policy.agent_id = agent.participant_id
+         WHERE agent.participant_id = ?",
     )
-    .bind(teammate_id.as_str())
+    .bind(agent_id.as_str())
     .fetch_optional(pool)
     .await
     .map_err(persistence_error)?
-    .ok_or_else(|| ChatError::new(ChatErrorCode::NotFound, "AI teammate was not found", true))?;
+    .ok_or_else(|| ChatError::new(ChatErrorCode::NotFound, "AI agent was not found", true))?;
     let policy_revision_id: Option<String> = row
         .try_get("policy_revision_id")
         .map_err(persistence_error)?;
     let latest_policy = match policy_revision_id {
-        Some(policy_revision_id) => {
-            Some(read_policy(pool, teammate_id, &policy_revision_id).await?)
-        }
+        Some(policy_revision_id) => Some(read_policy(pool, agent_id, &policy_revision_id).await?),
         None => None,
     };
-    Ok(ChatAiTeammateRead {
-        participant: read_participant(pool, teammate_id).await?,
+    Ok(ChatAiAgentRead {
+        participant: read_participant(pool, agent_id).await?,
         role: row.try_get("role").map_err(persistence_error)?,
         instructions: row.try_get("instructions").map_err(persistence_error)?,
         configuration_state: if latest_policy.is_some() {
-            ChatTeammateConfigurationState::Healthy
+            ChatAgentConfigurationState::Healthy
         } else {
-            ChatTeammateConfigurationState::NeedsSetup
+            ChatAgentConfigurationState::NeedsSetup
         },
         latest_policy,
         channel_count: u64_value(row.try_get("channel_count").map_err(persistence_error)?)?,
@@ -356,42 +354,36 @@ pub(super) async fn read_teammate(
     })
 }
 
-/// Reads one teammate policy revision together with its display number.
+/// Reads one agent policy revision together with its display number.
 pub(super) async fn read_policy(
     pool: &SqlitePool,
-    teammate_id: &ChatParticipantId,
+    agent_id: &ChatParticipantId,
     policy_revision_id: &str,
-) -> ChatResult<ChatTeammatePolicyRead> {
+) -> ChatResult<ChatAgentPolicyRead> {
     let row = sqlx::query(
         "SELECT numbered.id, numbered.revision, numbered.provider_instance_id,
                 numbered.safety_mode, numbered.model_selection_data, numbered.effort,
                 numbered.speed, numbered.provider_options_schema_version,
                 numbered.provider_options_data, numbered.created_at
-         FROM chat_teammate_policy_revisions_numbered numbered
-         WHERE numbered.teammate_id = ? AND numbered.id = ?",
+         FROM chat_agent_policy_revisions_numbered numbered
+         WHERE numbered.agent_id = ? AND numbered.id = ?",
     )
-    .bind(teammate_id.as_str())
+    .bind(agent_id.as_str())
     .bind(policy_revision_id)
     .fetch_optional(pool)
     .await
     .map_err(persistence_error)?
-    .ok_or_else(|| {
-        ChatError::new(
-            ChatErrorCode::NotFound,
-            "Teammate policy was not found",
-            true,
-        )
-    })?;
+    .ok_or_else(|| ChatError::new(ChatErrorCode::NotFound, "Agent policy was not found", true))?;
     let selection = parse_model_selection(
         row.try_get("model_selection_data")
             .map_err(persistence_error)?,
     )?;
-    Ok(ChatTeammatePolicyRead {
-        id: ChatTeammatePolicyRevisionId::new(
+    Ok(ChatAgentPolicyRead {
+        id: ChatAgentPolicyRevisionId::new(
             row.try_get::<String, _>("id").map_err(persistence_error)?,
         )
         .map_err(identifier_error)?,
-        teammate_id: teammate_id.clone(),
+        agent_id: agent_id.clone(),
         revision: u64_value(row.try_get("revision").map_err(persistence_error)?)?,
         provider_instance_id: ProviderInstanceId::new(
             row.try_get::<String, _>("provider_instance_id")
@@ -754,7 +746,7 @@ pub(super) async fn read_assignment(
     assignment_id: &ChatWorkAssignmentId,
 ) -> ChatResult<ChatWorkAssignmentRead> {
     let row = sqlx::query(
-        "SELECT reply_thread_id, teammate_id, triggering_message_item_id,
+        "SELECT reply_thread_id, agent_id, triggering_message_item_id,
                 previous_assignment_id, state, state_reason, revision, settled_at,
                 review_outcome, reviewed_at, reviewed_by_participant_id, created_at, updated_at
          FROM chat_work_assignments WHERE id = ?",
@@ -770,8 +762,8 @@ pub(super) async fn read_assignment(
             true,
         )
     })?;
-    let teammate_id = ChatParticipantId::new(
-        row.try_get::<String, _>("teammate_id")
+    let agent_id = ChatParticipantId::new(
+        row.try_get::<String, _>("agent_id")
             .map_err(persistence_error)?,
     )
     .map_err(identifier_error)?;
@@ -785,7 +777,7 @@ pub(super) async fn read_assignment(
         latest_run_provider_thread_id: latest_run_provider_thread_id(pool, &reply_thread_id)
             .await?,
         reply_thread_id,
-        teammate: read_participant(pool, &teammate_id).await?,
+        agent: read_participant(pool, &agent_id).await?,
         triggering_message_item_id: ChatConversationItemId::new(
             row.try_get::<String, _>("triggering_message_item_id")
                 .map_err(persistence_error)?,
@@ -858,7 +850,7 @@ fn read_assignment_review(
     }
 }
 
-/// Where an assignment came from when a teammate delegated it, or none for work a person started.
+/// Where an assignment came from when an agent delegated it, or none for work a person started.
 async fn read_assignment_delegation(
     pool: &SqlitePool,
     assignment_id: &ChatWorkAssignmentId,
@@ -911,7 +903,7 @@ pub(super) async fn read_delegated_children(
     reply_thread_id: &ChatReplyThreadId,
 ) -> ChatResult<Vec<ChatDelegatedChildRead>> {
     let rows = sqlx::query(
-        "SELECT child.id, child.parent_assignment_id, child.reply_thread_id, child.teammate_id,
+        "SELECT child.id, child.parent_assignment_id, child.reply_thread_id, child.agent_id,
                 child.delegation_objective, child.state, child.state_reason, child.created_at
          FROM chat_work_assignments child
          JOIN chat_work_assignments parent ON parent.id = child.parent_assignment_id
@@ -924,8 +916,8 @@ pub(super) async fn read_delegated_children(
     .map_err(persistence_error)?;
     let mut children = Vec::with_capacity(rows.len());
     for row in rows {
-        let teammate_id = ChatParticipantId::new(
-            row.try_get::<String, _>("teammate_id")
+        let agent_id = ChatParticipantId::new(
+            row.try_get::<String, _>("agent_id")
                 .map_err(persistence_error)?,
         )
         .map_err(identifier_error)?;
@@ -944,7 +936,7 @@ pub(super) async fn read_delegated_children(
                     .map_err(persistence_error)?,
             )
             .map_err(identifier_error)?,
-            teammate: read_participant(pool, &teammate_id).await?,
+            agent: read_participant(pool, &agent_id).await?,
             objective: row
                 .try_get::<Option<String>, _>("delegation_objective")
                 .map_err(persistence_error)?
@@ -997,13 +989,13 @@ pub(super) async fn read_agent_runs(
     let rows = sqlx::query(
         "SELECT run.id, run.assignment_id, run.project_id, run.working_folder_id,
                 run.execution_environment_id, run.scratch_generation_id,
-                run.teammate_policy_revision_id, policy.effort, run.provider_turn_id,
+                run.agent_policy_revision_id, policy.effort, run.provider_turn_id,
                 run.provider_thread_id, run.state,
                 run.run_ordinal, run.attempt_reason, run.handoff_reason, run.created_at,
                 run.updated_at
          FROM chat_agent_runs run
          JOIN chat_work_assignments assignment ON assignment.id = run.assignment_id
-         JOIN chat_teammate_policy_revisions policy ON policy.id = run.teammate_policy_revision_id
+         JOIN chat_agent_policy_revisions policy ON policy.id = run.agent_policy_revision_id
          WHERE assignment.reply_thread_id = ?
          ORDER BY assignment.created_at, run.run_ordinal",
     )
@@ -1039,8 +1031,8 @@ pub(super) async fn read_agent_runs(
                     .map(ChatScratchGenerationId::new)
                     .transpose()
                     .map_err(identifier_error)?,
-                teammate_policy_revision_id: ChatTeammatePolicyRevisionId::new(
-                    row.try_get::<String, _>("teammate_policy_revision_id")
+                agent_policy_revision_id: ChatAgentPolicyRevisionId::new(
+                    row.try_get::<String, _>("agent_policy_revision_id")
                         .map_err(persistence_error)?,
                 )
                 .map_err(identifier_error)?,

@@ -173,7 +173,7 @@ async fn a_push_request_is_a_question_that_waits_for_the_person() {
         stored.authorization_revision_id.as_deref(),
         Some("authorization:reports")
     );
-    assert_eq!(stored.teammate_name.as_deref(), Some("Helper"));
+    assert_eq!(stored.agent_name.as_deref(), Some("Helper"));
 
     let mut connection = pool.acquire().await.unwrap();
     assert!(

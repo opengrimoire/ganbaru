@@ -9,7 +9,7 @@ use super::{
     CreateChatAccessProfileCommand, DuplicateChatAccessProfileCommand,
     PreviewChatAccessProfileRevisionCommand, PublishChatAccessProfileRevisionCommand, UtcTimestamp,
 };
-use super::{history_boundary_is_expansion, issue, revoke_teammate_authorizations};
+use super::{history_boundary_is_expansion, issue, revoke_agent_authorizations};
 use crate::chat::channels::{
     chat_pool, i64_value, identifier_error, now_timestamp, optional_timestamp, persistence_error,
     timestamp, u64_value,
@@ -136,21 +136,21 @@ pub async fn chat_preview_access_profile_revision(
     );
     let is_reduction = profile_revision_is_reduction(&current.latest_revision, &request.revision);
     let membership_rows = sqlx::query(
-        "SELECT DISTINCT membership.teammate_id, channel.id AS channel_id
-         FROM chat_teammate_channel_memberships membership
+        "SELECT DISTINCT membership.agent_id, channel.id AS channel_id
+         FROM chat_agent_channel_memberships membership
          JOIN chat_channels channel ON channel.conversation_id = membership.conversation_id
          WHERE membership.access_profile_id = ? AND membership.removed_at IS NULL
-         ORDER BY membership.teammate_id, channel.id",
+         ORDER BY membership.agent_id, channel.id",
     )
     .bind(request.access_profile_id.as_str())
     .fetch_all(&pool)
     .await
     .map_err(persistence_error)?;
-    let affected_teammate_ids = membership_rows
+    let affected_agent_ids = membership_rows
         .iter()
         .map(|row| {
             ChatParticipantId::new(
-                row.try_get::<String, _>("teammate_id")
+                row.try_get::<String, _>("agent_id")
                     .map_err(persistence_error)?,
             )
             .map_err(identifier_error)
@@ -225,7 +225,7 @@ pub async fn chat_preview_access_profile_revision(
         current_revision: current.latest_revision,
         is_expansion,
         is_reduction,
-        affected_teammate_ids,
+        affected_agent_ids,
         affected_channel_ids,
         active_authorization_count: u64_value(active_authorization_count)?,
         issues,
@@ -330,10 +330,10 @@ async fn apply_profile_reduction(
         stamp_inherited_from_grant_boundaries(transaction, access_profile_id, now).await?;
     }
     sqlx::query(
-        "UPDATE chat_teammate_access_state
+        "UPDATE chat_agent_access_state
          SET access_revision = access_revision + 1, updated_at = ?
-         WHERE teammate_id IN (
-           SELECT teammate_id FROM chat_teammate_channel_memberships
+         WHERE agent_id IN (
+           SELECT agent_id FROM chat_agent_channel_memberships
            WHERE access_profile_id = ? AND removed_at IS NULL
          )",
     )
@@ -362,7 +362,7 @@ pub async fn chat_archive_access_profile(
     }
     if request.archived {
         let membership_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM chat_teammate_channel_memberships
+            "SELECT count(*) FROM chat_agent_channel_memberships
              WHERE access_profile_id = ? AND removed_at IS NULL",
         )
         .bind(request.access_profile_id.as_str())
@@ -542,17 +542,17 @@ async fn revoke_profile_authorizations(
     now: &UtcTimestamp,
     reason: &str,
 ) -> ChatResult<()> {
-    let teammate_ids = sqlx::query_scalar::<_, String>(
-        "SELECT DISTINCT teammate_id FROM chat_teammate_channel_memberships
+    let agent_ids = sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT agent_id FROM chat_agent_channel_memberships
          WHERE access_profile_id = ? AND removed_at IS NULL",
     )
     .bind(access_profile_id.as_str())
     .fetch_all(&mut **transaction)
     .await
     .map_err(persistence_error)?;
-    for teammate_id in teammate_ids {
-        let teammate_id = ChatParticipantId::new(teammate_id).map_err(identifier_error)?;
-        revoke_teammate_authorizations(transaction, &teammate_id, now, reason).await?;
+    for agent_id in agent_ids {
+        let agent_id = ChatParticipantId::new(agent_id).map_err(identifier_error)?;
+        revoke_agent_authorizations(transaction, &agent_id, now, reason).await?;
     }
     Ok(())
 }
@@ -565,7 +565,7 @@ async fn stamp_inherited_from_grant_boundaries(
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
     let memberships = sqlx::query_as::<_, (String, String)>(
-        "SELECT conversation_id, teammate_id FROM chat_teammate_channel_memberships
+        "SELECT conversation_id, agent_id FROM chat_agent_channel_memberships
          WHERE access_profile_id = ? AND removed_at IS NULL
            AND history_boundary_inherits_profile = 1
            AND (history_boundary != 'from_grant' OR history_from_order_key IS NULL)",
@@ -574,17 +574,17 @@ async fn stamp_inherited_from_grant_boundaries(
     .fetch_all(&mut **transaction)
     .await
     .map_err(persistence_error)?;
-    for (conversation_id, teammate_id) in memberships {
+    for (conversation_id, agent_id) in memberships {
         let lower_order_key = from_grant_lower_order_key(transaction, &conversation_id).await?;
         sqlx::query(
-            "UPDATE chat_teammate_channel_memberships
+            "UPDATE chat_agent_channel_memberships
              SET history_from_order_key = ?, history_boundary = 'from_grant', updated_at = ?
-             WHERE conversation_id = ? AND teammate_id = ?",
+             WHERE conversation_id = ? AND agent_id = ?",
         )
         .bind(lower_order_key)
         .bind(now.as_str())
         .bind(&conversation_id)
-        .bind(&teammate_id)
+        .bind(&agent_id)
         .execute(&mut **transaction)
         .await
         .map_err(persistence_error)?;

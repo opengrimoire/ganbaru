@@ -1,6 +1,6 @@
 //! OpenCode implementation of the provider-neutral driver operations.
 
-use super::cli::{OPENCODE_COMPATIBILITY, OpenCodeVersion, teammate_minimum_version};
+use super::cli::{OPENCODE_COMPATIBILITY, OpenCodeVersion, agent_minimum_version};
 use super::driver::*;
 use super::permissions::{
     MAX_OPENCODE_SESSION_RULES, organizational_permission_error, permission_reply,
@@ -114,10 +114,7 @@ impl ProviderDriver for OpenCodeProviderDriver {
             match self.catalog_snapshot(&workspace).await {
                 Ok(snapshot) => {
                     let negotiated_protocol_version = snapshot.version.clone();
-                    let teammate_minimum = snapshot
-                        .version
-                        .as_deref()
-                        .and_then(teammate_minimum_version);
+                    let agent_minimum = snapshot.version.as_deref().and_then(agent_minimum_version);
                     let version_admission = snapshot
                         .version
                         .as_deref()
@@ -145,16 +142,16 @@ impl ProviderDriver for OpenCodeProviderDriver {
                         checked_at,
                         detail: Some(snapshot.toolchain_detail),
                         version_admission,
-                        teammate_minimum_version: teammate_minimum,
+                        agent_minimum_version: agent_minimum,
                         usage_limits: None,
                     })
                 }
                 Err(error) if context.is_cancelled() => Err(error),
                 Err(error) => {
                     let refusal = refused_version(&error);
-                    let teammate_minimum = refusal
+                    let agent_minimum = refusal
                         .as_ref()
-                        .and_then(|(_, version)| teammate_minimum_version(version));
+                        .and_then(|(_, version)| agent_minimum_version(version));
                     Ok(ProviderProbeResult {
                         instance_id: self.configuration.instance_id.clone(),
                         state: probe_state(error.code),
@@ -167,7 +164,7 @@ impl ProviderDriver for OpenCodeProviderDriver {
                         checked_at,
                         detail: Some(probe_detail(error.code).to_string()),
                         version_admission: refusal.map(|(admission, _)| admission),
-                        teammate_minimum_version: teammate_minimum,
+                        agent_minimum_version: agent_minimum,
                         usage_limits: None,
                     })
                 }
@@ -513,7 +510,7 @@ impl ProviderDriver for OpenCodeProviderDriver {
                 if allow_session && state.is_organizational() {
                     return Err(ChatError::validation(
                         "decision",
-                        "A teammate run approves each request once",
+                        "An agent run approves each request once",
                     ));
                 }
                 state.set_session_approval(&request.provider_request_id, allow_session);

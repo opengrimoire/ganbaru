@@ -5,12 +5,12 @@ export const agentsSettings = {
   heading: "Agentes",
   tabLabel: "Áreas de configuración de agentes",
   loadFailed: "No se pudo cargar la configuración de agentes",
-  teammates: {
+  agents: {
     heading: "Agentes",
     loadFailed: "No se pudo cargar el acceso de los agentes.",
     accessLoadFailed: "No se pudo cargar el acceso de este agente.",
     add: "Agregar agente",
-    newTeammate: "Nuevo agente",
+    newAgent: "Nuevo agente",
     inertUntilAdded: "Sin acceso a canales",
     searchDirectory: "Buscar agentes",
     channelCount: (count: number) => `${count} ${count === 1 ? "canal" : "canales"}`,
@@ -174,7 +174,7 @@ export const agentsSettings = {
       maximumFolderCapability: "Capacidad máxima de carpetas",
       ceilingNote: "Un perfil solo es un límite y un valor predeterminado. Nunca crea membresías ni autoridad sobre carpetas.",
       impactTitle: "Revisar la revisión del perfil",
-      impact: (teammates: number, channels: number, authorizations: number) => `${teammates} agentes y ${channels} canales están vinculados. ${authorizations} alcances de autorización activos conservan su estado actual, salvo que este cambio reduzca la autoridad.`,
+      impact: (agents: number, channels: number, authorizations: number) => `${agents} agentes y ${channels} canales están vinculados. ${authorizations} alcances de autorización activos conservan su estado actual, salvo que este cambio reduzca la autoridad.`,
       reviewRevision: "Revisar revisión",
       applyRevision: "Publicar revisión",
       create: "Crear perfil",
@@ -351,9 +351,9 @@ export const agentsSettings = {
     unavailable: "No disponible",
     authenticationRequired: "Se requiere autenticación",
     unsupported: "No compatible",
-    teammatesNeedUpdate: "Actualización necesaria para agentes",
-    teammateVersion: (version: string) => `Los agentes necesitan la versión ${version} o posterior, así que actualiza el CLI.`,
-    teammateVersionCommand: (version: string, command: string) =>
+    agentsNeedUpdate: "Actualización necesaria para agentes",
+    agentVersion: (version: string) => `Los agentes necesitan la versión ${version} o posterior, así que actualiza el CLI.`,
+    agentVersionCommand: (version: string, command: string) =>
       `Los agentes necesitan la versión ${version} o posterior, así que actualiza el CLI con “${command}”.`,
     olderVersion: "Ganbaru necesita una versión más reciente de este CLI, así que actualízalo.",
     minimumVersion: (version: string) => `Ganbaru necesita la versión ${version} o posterior, así que actualiza el CLI.`,

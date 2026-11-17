@@ -22,7 +22,7 @@ use super::common::{
 use super::{
     PostOutcome, ScheduledConsent, ScheduledSend, chat_pool, i64_value, identifier_error,
     now_timestamp, persistence_error, post_message, require_continuation_scope_is_unchanged,
-    require_reply_thread, resolve_invoked_teammate,
+    require_reply_thread, resolve_invoked_agent,
 };
 #[cfg(desktop)]
 use crate::chat::device_state::{
@@ -231,7 +231,7 @@ async fn require_scheduled_destination(
     if let Some(reply_thread_id) = message.reply_thread_id.as_ref() {
         require_reply_thread(pool, reply_thread_id, &channel.conversation_id).await?;
     }
-    let resolved_invocation = resolve_invoked_teammate(
+    let resolved_invocation = resolve_invoked_agent(
         pool,
         &channel.conversation_id,
         message.reply_thread_id.as_ref(),

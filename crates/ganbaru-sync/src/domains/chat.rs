@@ -1,7 +1,7 @@
 //! Chat adapter: the value checks that mirror the Chat identity and policy table checks, and the
 //! priorities of their coupled groups.
 //!
-//! A teammate's current policy and an access profile's current revision are coupled with a copy
+//! An agent's current policy and an access profile's current revision are coupled with a copy
 //! of the revision's restrictiveness. Concurrent edits keep the more restrictive one: asking
 //! for approval outranks approving for the user, which outranks full access, which outranks a
 //! custom mode that defers to the provider, and a lower maximum folder capability outranks a
@@ -28,7 +28,7 @@ use ganbaru_sync_contracts::chat_push_approvals::{
     MAX_PUSH_APPROVAL_BRANCH_BYTES, MAX_PUSH_APPROVAL_URL_BYTES,
 };
 use ganbaru_sync_contracts::chat_recurrence;
-use ganbaru_sync_contracts::chat_usage::teammate_usage_key;
+use ganbaru_sync_contracts::chat_usage::agent_usage_key;
 use ganbaru_sync_contracts::{Field, GroupId, GroupValue, OrderKey, RowKey, TableId, Value};
 use ganbaru_working_folders::UtcTimestamp;
 
@@ -38,27 +38,26 @@ use crate::codec;
 use crate::domains::distractions::is_usage_date;
 use crate::manifest::OwnedTable;
 use crate::manifest::vault::chat::{
-    ADAPTER, ASSIGNMENTS_TABLE, ATTACHMENT_REFERENCES, ATTACHMENTS_CLASS,
-    CHANNEL_MEMBERSHIPS_TABLE, CHANNEL_NOTES_TABLE, CHANNEL_TARGETS_TABLE, CHANNELS_TABLE,
-    CONVERSATION_CURSORS_TABLE, CONVERSATIONS_TABLE, ENVIRONMENT_TARGETS_TABLE,
+    ADAPTER, AGENT_USAGE_DAILY_TABLE, AGENTS_TABLE, ASSIGNMENTS_TABLE, ATTACHMENT_REFERENCES,
+    ATTACHMENTS_CLASS, CHANNEL_MEMBERSHIPS_TABLE, CHANNEL_NOTES_TABLE, CHANNEL_TARGETS_TABLE,
+    CHANNELS_TABLE, CONVERSATION_CURSORS_TABLE, CONVERSATIONS_TABLE, ENVIRONMENT_TARGETS_TABLE,
     FOLDER_GRANTS_TABLE, FOLDER_TARGETS_TABLE, INPUTS_TABLE, ITEMS_TABLE, MEMBERSHIPS_TABLE,
     MESSAGES_TABLE, PARTICIPANT_TARGETS_TABLE, PARTICIPANTS_TABLE, PATH_TARGETS_TABLE,
     POLICY_REVISIONS_TABLE, PROFILE_REVISIONS_TABLE, PROFILES_TABLE, PUSH_APPROVALS_TABLE,
     RECURRENCES_TABLE, REFERENCES_TABLE, REPLY_CURSORS_TABLE, REPLY_THREADS_TABLE, REVISIONS_TABLE,
     SCHEDULED_ATTACHMENT_REFERENCES, SCHEDULED_REFERENCES, SCHEDULED_TABLE, SEMANTIC_UPDATES_TABLE,
-    TEAMMATE_USAGE_DAILY_TABLE, TEAMMATES_TABLE, assignment_group, channel_group,
-    channel_membership_group, channel_note_group, conversation_group, folder_grant_group,
-    input_group, item_group, membership_group, message_group, participant_group,
-    policy_revision_group, profile_group, profile_revision_group, push_approval_group,
-    read_cursor_group, recurrence_group, reply_thread_group, scheduled_group,
-    semantic_update_group, teammate_group, teammate_usage_group, timeline_group,
+    agent_group, agent_usage_group, assignment_group, channel_group, channel_membership_group,
+    channel_note_group, conversation_group, folder_grant_group, input_group, item_group,
+    membership_group, message_group, participant_group, policy_revision_group, profile_group,
+    profile_revision_group, push_approval_group, read_cursor_group, recurrence_group,
+    reply_thread_group, scheduled_group, semantic_update_group, timeline_group,
 };
 
 /// Characters of a display name after trimming.
 pub const MAX_DISPLAY_NAME_CHARS: usize = 160;
-/// Characters of a teammate role after trimming.
+/// Characters of an agent role after trimming.
 pub const MAX_ROLE_CHARS: usize = 1000;
-/// Characters of teammate instructions.
+/// Characters of agent instructions.
 pub const MAX_INSTRUCTIONS_CHARS: usize = 65_536;
 /// Characters of a provider instance id.
 pub const MAX_PROVIDER_INSTANCE_CHARS: usize = 1024;
@@ -68,12 +67,12 @@ pub const MAX_JSON_CHARS: usize = 16_384;
 pub const MAX_ENUM_CHARS: usize = 32;
 
 /// Participant kinds.
-pub const PARTICIPANT_KINDS: [&str; 3] = ["local_user", "ai_teammate", "human"];
+pub const PARTICIPANT_KINDS: [&str; 3] = ["local_user", "ai_agent", "human"];
 /// Participant kind of the local user.
 const LOCAL_USER_KIND: &str = "local_user";
 /// The key the baseline seeds for the local user, the only one the kind may hold.
 pub const LOCAL_OWNER_PARTICIPANT_KEY: &str = "participant:local-owner";
-/// Teammate safety modes, least restrictive first. Custom defers to the
+/// Agent safety modes, least restrictive first. Custom defers to the
 /// provider's own configuration, which can grant anything, so it ranks lowest.
 pub const SAFETY_MODES: [&str; 4] = [
     "custom",
@@ -214,7 +213,7 @@ pub const SEMANTIC_UPDATE_KINDS: [&str; 10] = [
     "schedule_proposal",
     "note_proposal",
 ];
-/// Deepest delegation: a teammate's own assignment is depth 0, and its children and
+/// Deepest delegation: an agent's own assignment is depth 0, and its children and
 /// grandchildren are depths 1 and 2.
 pub const MAX_DELEGATION_DEPTH: i64 = 2;
 /// Characters of a delegated assignment's objective.
@@ -383,26 +382,26 @@ fn validate_participant(group: GroupId, fields: &[Field]) -> Result<(), AdapterE
     }
 }
 
-fn validate_teammate(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+fn validate_agent(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
     match (group, fields) {
-        (teammate_group::CREATED | teammate_group::UPDATED, [at]) => timestamp(at),
-        (teammate_group::PROFILE, [role, instructions]) => {
-            trimmed(role, MAX_ROLE_CHARS, "chat teammate role")?;
+        (agent_group::CREATED | agent_group::UPDATED, [at]) => timestamp(at),
+        (agent_group::PROFILE, [role, instructions]) => {
+            trimmed(role, MAX_ROLE_CHARS, "chat agent role")?;
             bounded(
                 instructions,
                 0,
                 MAX_INSTRUCTIONS_CHARS,
-                "chat teammate instructions",
+                "chat agent instructions",
             )
         }
-        (teammate_group::POLICY, [id, safety]) => {
-            current_pair(id, safety, &SAFETY_MODES, "chat teammate current policy")
+        (agent_group::POLICY, [id, safety]) => {
+            current_pair(id, safety, &SAFETY_MODES, "chat agent current policy")
         }
-        (teammate_group::HOME, [device]) => match optional_text(device)? {
-            Some("") => Err(AdapterError("chat teammate home device")),
+        (agent_group::HOME, [device]) => match optional_text(device)? {
+            Some("") => Err(AdapterError("chat agent home device")),
             _ => Ok(()),
         },
-        _ => Err(AdapterError("chat teammate value")),
+        _ => Err(AdapterError("chat agent value")),
     }
 }
 
@@ -411,7 +410,7 @@ fn validate_policy_revision(group: GroupId, fields: &[Field]) -> Result<(), Adap
         (
             policy_revision_group::CREATED,
             [
-                _teammate,
+                _agent,
                 provider,
                 model_version,
                 model,
@@ -616,7 +615,7 @@ fn validate_folder_grant(group: GroupId, fields: &[Field]) -> Result<(), Adapter
 
 fn validate_push_approval(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
     match (group, fields) {
-        (push_approval_group::IDENTITY, [_teammate, _folder, push_url, destination_branch]) => {
+        (push_approval_group::IDENTITY, [_agent, _folder, push_url, destination_branch]) => {
             git_word(
                 push_url,
                 MAX_PUSH_APPROVAL_URL_BYTES,
@@ -686,47 +685,40 @@ fn validate_channel_note(group: GroupId, fields: &[Field]) -> Result<(), Adapter
     }
 }
 
-/// The bucket of a daily teammate usage row names a calendar date; the counts are bounded by the
+/// The bucket of a daily agent usage row names a calendar date; the counts are bounded by the
 /// manifest.
-fn validate_teammate_usage(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+fn validate_agent_usage(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
     match (group, fields) {
-        (teammate_usage_group::BUCKET, [_device, _teammate, Field::Text(date)]) => {
+        (agent_usage_group::BUCKET, [_device, _agent, Field::Text(date)]) => {
             if is_usage_date(date) {
                 Ok(())
             } else {
-                Err(AdapterError("chat teammate usage date"))
+                Err(AdapterError("chat agent usage date"))
             }
         }
         (
-            teammate_usage_group::TOKENS
-            | teammate_usage_group::WORKING
-            | teammate_usage_group::RUNS,
+            agent_usage_group::TOKENS | agent_usage_group::WORKING | agent_usage_group::RUNS,
             [_count],
         ) => Ok(()),
-        _ => Err(AdapterError("chat teammate usage value")),
+        _ => Err(AdapterError("chat agent usage value")),
     }
 }
 
-/// A daily teammate usage row that carries its bucket is keyed by that bucket, so one device
-/// writes one row per teammate and day.
-fn validate_teammate_usage_row(row: &RowKey, groups: &[GroupValue]) -> Result<(), AdapterError> {
+/// A daily agent usage row that carries its bucket is keyed by that bucket, so one device
+/// writes one row per agent and day.
+fn validate_agent_usage_row(row: &RowKey, groups: &[GroupValue]) -> Result<(), AdapterError> {
     let Some(bucket) = groups
         .iter()
-        .find(|value| value.group == teammate_usage_group::BUCKET)
+        .find(|value| value.group == agent_usage_group::BUCKET)
     else {
         return Ok(());
     };
-    let [
-        Field::Text(device),
-        Field::Text(teammate),
-        Field::Text(date),
-    ] = bucket.value.fields()
-    else {
-        return Err(AdapterError("chat teammate usage bucket"));
+    let [Field::Text(device), Field::Text(agent), Field::Text(date)] = bucket.value.fields() else {
+        return Err(AdapterError("chat agent usage bucket"));
     };
-    match teammate_usage_key(device, teammate, date) {
+    match agent_usage_key(device, agent, date) {
         Ok(expected) if expected == *row => Ok(()),
-        _ => Err(AdapterError("chat teammate usage key")),
+        _ => Err(AdapterError("chat agent usage key")),
     }
 }
 
@@ -1287,7 +1279,7 @@ fn validate_assignment(group: GroupId, fields: &[Field]) -> Result<(), AdapterEr
             assignment_group::CREATED,
             [
                 _thread,
-                _teammate,
+                _agent,
                 _trigger,
                 device,
                 created_at,
@@ -1315,7 +1307,7 @@ fn validate_assignment(group: GroupId, fields: &[Field]) -> Result<(), AdapterEr
     }
 }
 
-/// A teammate's own assignment has depth 0 and no delegation fields. A delegated child has a
+/// An agent's own assignment has depth 0 and no delegation fields. A delegated child has a
 /// depth of 1 to [`MAX_DELEGATION_DEPTH`], its parent, a non-blank objective and expected
 /// result, and the folder ceiling resolved when it was delegated, so no later widening of the
 /// parent can widen the child. Depth against the parent's depth is checked by the table, which
@@ -1356,7 +1348,7 @@ fn assignment_delegation(
 }
 
 /// A model override, of an assignment or of the mention that asked for it, is its schema
-/// version and selection together, or neither when the work runs with its teammate's model.
+/// version and selection together, or neither when the work runs with its agent's model.
 fn model_override(version: &Field, data: &Field) -> Result<(), AdapterError> {
     match (version, data) {
         (Field::Null, Field::Null) => Ok(()),
@@ -1526,7 +1518,7 @@ const ENDED: u8 = u8::MAX;
 /// Rank of an approval override, 1 for the least restrictive.
 ///
 /// No override inherits: a folder grant's or scratch override falls back to the channel
-/// override and a channel override to the teammate's default, which an explicit override can
+/// override and a channel override to the agent's default, which an explicit override can
 /// only narrow (the runtime keeps the narrower of the default and the override). The default
 /// can be unattended or defer to the provider, so inheriting ranks lowest, below the explicit
 /// policies in [`APPROVAL_POLICIES`] order. A folder or scratch override replaces the channel
@@ -1697,7 +1689,7 @@ impl DomainAdapter for ChatAdapter {
     /// The more restrictive current policy or profile revision wins among concurrent edits.
     fn priority(&self, table: TableId, group: GroupId, value: &Value) -> u8 {
         let copied = value.fields().get(1);
-        if table == TEAMMATES_TABLE && group == teammate_group::POLICY {
+        if table == AGENTS_TABLE && group == agent_group::POLICY {
             restrictiveness(copied, &SAFETY_MODES)
         } else if table == PROFILES_TABLE && group == profile_group::CURRENT {
             restrictiveness(copied, &FOLDER_CAPABILITIES)
@@ -1734,8 +1726,8 @@ impl DomainAdapter for ChatAdapter {
             validate_participant_row(row, groups)
         } else if table == PROFILES_TABLE {
             validate_profile_row(row, groups)
-        } else if table == TEAMMATE_USAGE_DAILY_TABLE {
-            validate_teammate_usage_row(row, groups)
+        } else if table == AGENT_USAGE_DAILY_TABLE {
+            validate_agent_usage_row(row, groups)
         } else {
             Ok(())
         }
@@ -1745,8 +1737,8 @@ impl DomainAdapter for ChatAdapter {
         let fields = value.fields();
         if table == PARTICIPANTS_TABLE {
             validate_participant(group, fields)
-        } else if table == TEAMMATES_TABLE {
-            validate_teammate(group, fields)
+        } else if table == AGENTS_TABLE {
+            validate_agent(group, fields)
         } else if table == POLICY_REVISIONS_TABLE {
             validate_policy_revision(group, fields)
         } else if table == PROFILES_TABLE {
@@ -1797,8 +1789,8 @@ impl DomainAdapter for ChatAdapter {
             validate_input(group, fields)
         } else if table == SEMANTIC_UPDATES_TABLE {
             validate_semantic_update(group, fields)
-        } else if table == TEAMMATE_USAGE_DAILY_TABLE {
-            validate_teammate_usage(group, fields)
+        } else if table == AGENT_USAGE_DAILY_TABLE {
+            validate_agent_usage(group, fields)
         } else {
             Ok(())
         }
@@ -1844,7 +1836,7 @@ impl DomainAdapter for ChatAdapter {
             .collect()
     }
 
-    /// A participant presents its display name, a teammate its role, and a channel its name with
+    /// A participant presents its display name, an agent its role, and a channel its name with
     /// its topic as the preview. A message revision, a scheduled message, and a channel note
     /// present their text as the preview, unchanged so it can be copied back. Other rows present
     /// nothing: a message's text lives in its revisions, outside the row's values.
@@ -1857,7 +1849,7 @@ impl DomainAdapter for ChatAdapter {
         }
         let profile_group = match table {
             PARTICIPANTS_TABLE => participant_group::PROFILE,
-            TEAMMATES_TABLE => teammate_group::PROFILE,
+            AGENTS_TABLE => agent_group::PROFILE,
             CHANNELS_TABLE => channel_group::DETAILS,
             _ => return Presentation::default(),
         };
@@ -1954,7 +1946,7 @@ mod tests {
 
     fn policy_revision(model: &str, safety: &str) -> Value {
         value(vec![
-            t("teammate-1"),
+            t("agent-1"),
             t("codex"),
             Field::Integer(1),
             t(model),
@@ -1971,8 +1963,7 @@ mod tests {
     #[test]
     fn chat_priorities_prefer_the_more_restrictive_revision() {
         let adapter = ChatAdapter;
-        let safety =
-            |mode| adapter.priority(TEAMMATES_TABLE, teammate_group::POLICY, &policy(mode));
+        let safety = |mode| adapter.priority(AGENTS_TABLE, agent_group::POLICY, &policy(mode));
         assert!(safety(Some("ask_for_approval")) > safety(Some("approve_for_me")));
         assert!(safety(Some("approve_for_me")) > safety(Some("full_access")));
         assert!(safety(Some("full_access")) > safety(Some("custom")));
@@ -2002,7 +1993,7 @@ mod tests {
             check(
                 PARTICIPANTS_TABLE,
                 participant_group::CREATED,
-                vec![t("ai_teammate"), t(AT)]
+                vec![t("ai_agent"), t(AT)]
             )
             .is_ok()
         );
@@ -2037,40 +2028,40 @@ mod tests {
 
         assert!(
             adapter
-                .validate(TEAMMATES_TABLE, teammate_group::POLICY, &policy(None))
+                .validate(AGENTS_TABLE, agent_group::POLICY, &policy(None))
                 .is_ok()
         );
         assert!(
             check(
-                TEAMMATES_TABLE,
-                teammate_group::POLICY,
+                AGENTS_TABLE,
+                agent_group::POLICY,
                 vec![Field::Null, t("custom")]
             )
             .is_err()
         );
         assert!(
             check(
-                TEAMMATES_TABLE,
-                teammate_group::POLICY,
+                AGENTS_TABLE,
+                agent_group::POLICY,
                 vec![t("policy-1"), Field::Null]
             )
             .is_err()
         );
         assert!(
             check(
-                TEAMMATES_TABLE,
-                teammate_group::POLICY,
+                AGENTS_TABLE,
+                agent_group::POLICY,
                 vec![t("policy-1"), t("reckless")]
             )
             .is_err()
         );
-        assert!(check(TEAMMATES_TABLE, teammate_group::HOME, vec![Field::Null]).is_ok());
-        assert!(check(TEAMMATES_TABLE, teammate_group::HOME, vec![t("")]).is_err());
+        assert!(check(AGENTS_TABLE, agent_group::HOME, vec![Field::Null]).is_ok());
+        assert!(check(AGENTS_TABLE, agent_group::HOME, vec![t("")]).is_err());
         let instructions = "a".repeat(MAX_INSTRUCTIONS_CHARS + 1);
         assert!(
             check(
-                TEAMMATES_TABLE,
-                teammate_group::PROFILE,
+                AGENTS_TABLE,
+                agent_group::PROFILE,
                 vec![t("Reviewer"), t(&instructions)]
             )
             .is_err()
@@ -2252,7 +2243,7 @@ mod tests {
         );
 
         // With equal capabilities, the stricter approval override wins, and no override, which
-        // inherits the teammate default, is the least strict.
+        // inherits the agent default, is the least strict.
         let approvals = [
             None,
             Some("provider_custom"),
@@ -2484,7 +2475,7 @@ mod tests {
     fn assignment_created(version: Field, data: Field) -> Vec<Field> {
         vec![
             t("thread-1"),
-            t("teammate-1"),
+            t("agent-1"),
             t("item-1"),
             Field::Null,
             t(AT),
@@ -2653,13 +2644,13 @@ mod tests {
         };
         let selection = r#"{"providerManagedModel":true,"modelOptions":[]}"#;
 
-        assert!(check(vec![t("teammate-1"), Field::Null, Field::Null]).is_ok());
-        assert!(check(vec![t("teammate-1"), Field::Integer(1), t(selection)]).is_ok());
-        assert!(check(vec![t("teammate-1"), Field::Integer(1), Field::Null]).is_err());
-        assert!(check(vec![t("teammate-1"), Field::Null, t(selection)]).is_err());
-        assert!(check(vec![t("teammate-1"), Field::Integer(1), t("[]")]).is_err());
+        assert!(check(vec![t("agent-1"), Field::Null, Field::Null]).is_ok());
+        assert!(check(vec![t("agent-1"), Field::Integer(1), t(selection)]).is_ok());
+        assert!(check(vec![t("agent-1"), Field::Integer(1), Field::Null]).is_err());
+        assert!(check(vec![t("agent-1"), Field::Null, t(selection)]).is_err());
+        assert!(check(vec![t("agent-1"), Field::Integer(1), t("[]")]).is_err());
         assert!(
-            check(vec![t("teammate-1")]).is_err(),
+            check(vec![t("agent-1")]).is_err(),
             "the created group carries the override"
         );
         assert!(
@@ -3165,15 +3156,15 @@ mod tests {
         );
         assert_eq!(channel.title, "design");
         assert_eq!(channel.preview, "Mockups and reviews");
-        let teammate = adapter.presentation(
-            TEAMMATES_TABLE,
+        let agent = adapter.presentation(
+            AGENTS_TABLE,
             &[(
-                teammate_group::PROFILE,
+                agent_group::PROFILE,
                 value(vec![t("Reviewer"), t("Check every diff")]),
             )],
         );
         assert_eq!(
-            teammate,
+            agent,
             Presentation {
                 title: "Reviewer".to_string(),
                 preview: String::new(),

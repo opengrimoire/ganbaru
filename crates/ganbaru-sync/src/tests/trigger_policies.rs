@@ -471,12 +471,12 @@ const CLASSIFIED_TRIGGERS: &[(&str, TriggerClass)] = &[
         TriggerClass::Stateless("the participant row rule binds the local user to its key"),
     ),
     (
-        "chat_teammate_channel_membership_identity_insert",
-        TriggerClass::MergeState("the membership cascades from its teammate"),
+        "chat_agent_channel_membership_identity_insert",
+        TriggerClass::MergeState("the membership cascades from its agent"),
     ),
-    ("chat_teammate_policy_identity_insert", CROSS_ROW),
-    ("chat_teammate_policy_immutable_delete", IMMUTABLE_ROW),
-    ("chat_teammate_policy_immutable_update", IMMUTABLE_ROW),
+    ("chat_agent_policy_identity_insert", CROSS_ROW),
+    ("chat_agent_policy_immutable_delete", IMMUTABLE_ROW),
+    ("chat_agent_policy_immutable_update", IMMUTABLE_ROW),
     (
         "chat_work_assignment_delegation_insert",
         TriggerClass::Net("a forged child can omit a delegation field or name itself as parent"),

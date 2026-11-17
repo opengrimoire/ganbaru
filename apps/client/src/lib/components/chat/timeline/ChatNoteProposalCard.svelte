@@ -18,7 +18,7 @@
   import { useChat } from "$lib/stores/chat.svelte";
 
   /**
-   * A teammate's suggested channel note. Only a person saves it, as suggested or reworded, or dismisses it;
+   * An agent's suggested channel note. Only a person saves it, as suggested or reworded, or dismisses it;
    * either outcome holds on every linked device.
    */
   let {

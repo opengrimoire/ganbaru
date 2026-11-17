@@ -1,7 +1,7 @@
 import type { ChatTimelinePageRead, ChatTurnId, ChatTurnState } from "$lib/chat/contracts";
 import { commitMessageTooLong, normalizeCommitMessage } from "$lib/chat/workspace/commit-message";
 
-/** What a teammate drafts: a commit message, or a change request title and body. */
+/** What an agent drafts: a commit message, or a change request title and body. */
 export type DraftKind = "commit" | "change_request";
 
 /** Longest drafted commit message, in characters, that fills the commit field. */
@@ -24,7 +24,7 @@ const TERMINAL_TURN_STATES: readonly ChatTurnState[] = ["completed", "interrupte
 const FENCE_OPENING = /^ {0,3}(`{3,}|~{3,})/u;
 
 /**
- * Extracts a draft from a teammate reply: the first fenced block, or the whole reply when it has
+ * Extracts a draft from an agent reply: the first fenced block, or the whole reply when it has
  * no closed fence. Line endings become LF and surrounding whitespace is trimmed.
  *
  * @param text Reply markdown.

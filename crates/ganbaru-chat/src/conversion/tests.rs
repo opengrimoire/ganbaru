@@ -4,7 +4,7 @@ use crate::project_defaults::{default_channel_ids, ensure_project_chat_defaults}
 
 const NOW: &str = "2026-10-25T06:00:00.000Z";
 const PROJECT_ID: &str = "project-chat-conversion";
-const TEAMMATE_ID: &str = "participant:conversion-agent";
+const AGENT_ID: &str = "participant:conversion-agent";
 const FOLDER_ID: &str = "folder:conversion";
 const PROFILE_ID: &str = "access-profile:conversion";
 const ROOT_ITEM_ID: &str = "item:conversion-root";
@@ -26,7 +26,7 @@ async fn migrated_pool() -> SqlitePool {
     pool
 }
 
-/// Seeds a project channel with one AI teammate holding a channel membership and a folder
+/// Seeds a project channel with one AI agent holding a channel membership and a folder
 /// grant, every key a placeholder as the migration leaves it.
 async fn seed_placeholders(pool: &SqlitePool) -> String {
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
@@ -56,23 +56,23 @@ async fn seed_placeholders(pool: &SqlitePool) -> String {
          VALUES ('{conversation}', 'participant:local-owner', 'pending:2', 'owner', '{NOW}',
                  '{NOW}');
          INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
-         VALUES ('{TEAMMATE_ID}', 'ai_teammate', 'Agent', '{NOW}', '{NOW}');
-         INSERT INTO chat_teammates (participant_id, role, created_at, updated_at)
-         VALUES ('{TEAMMATE_ID}', 'Test', '{NOW}', '{NOW}');
+         VALUES ('{AGENT_ID}', 'ai_agent', 'Agent', '{NOW}', '{NOW}');
+         INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
+         VALUES ('{AGENT_ID}', 'Test', '{NOW}', '{NOW}');
          INSERT INTO chat_access_profiles (id, display_name, created_at, updated_at)
          VALUES ('{PROFILE_ID}', 'Profile', '{NOW}', '{NOW}');
          INSERT INTO chat_conversation_memberships
             (conversation_id, participant_id, sync_key, membership_role, created_at, updated_at)
-         VALUES ('{conversation}', '{TEAMMATE_ID}', 'pending:1', 'member', '{NOW}', '{NOW}');
-         INSERT INTO chat_teammate_channel_memberships
-            (conversation_id, teammate_id, sync_key, access_profile_id, read_history,
+         VALUES ('{conversation}', '{AGENT_ID}', 'pending:1', 'member', '{NOW}', '{NOW}');
+         INSERT INTO chat_agent_channel_memberships
+            (conversation_id, agent_id, sync_key, access_profile_id, read_history,
              participate, history_boundary, created_at, updated_at)
-         VALUES ('{conversation}', '{TEAMMATE_ID}', 'pending:1', '{PROFILE_ID}', 1, 1,
+         VALUES ('{conversation}', '{AGENT_ID}', 'pending:1', '{PROFILE_ID}', 1, 1,
                  'entire', '{NOW}', '{NOW}');
-         INSERT INTO chat_teammate_working_folder_grants
-            (conversation_id, teammate_id, working_folder_id, sync_key, project_id, capability,
+         INSERT INTO chat_agent_working_folder_grants
+            (conversation_id, agent_id, working_folder_id, sync_key, project_id, capability,
              is_default, created_at)
-         VALUES ('{conversation}', '{TEAMMATE_ID}', '{FOLDER_ID}', 'pending:1', '{PROJECT_ID}',
+         VALUES ('{conversation}', '{AGENT_ID}', '{FOLDER_ID}', 'pending:1', '{PROJECT_ID}',
                  'read', 1, '{NOW}');
          INSERT INTO chat_conversation_items
             (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
@@ -84,11 +84,11 @@ async fn seed_placeholders(pool: &SqlitePool) -> String {
          INSERT INTO chat_conversation_read_cursors
             (conversation_id, participant_id, sync_key, last_read_order_key, last_read_item_id,
              updated_at)
-         VALUES ('{conversation}', '{TEAMMATE_ID}', 'pending:1', 'c000', '{ROOT_ITEM_ID}',
+         VALUES ('{conversation}', '{AGENT_ID}', 'pending:1', 'c000', '{ROOT_ITEM_ID}',
                  '{NOW}');
          INSERT INTO chat_reply_thread_read_cursors
             (reply_thread_id, participant_id, sync_key, updated_at)
-         VALUES ('{REPLY_THREAD_ID}', '{TEAMMATE_ID}', 'pending:1', '{NOW}');"
+         VALUES ('{REPLY_THREAD_ID}', '{AGENT_ID}', 'pending:1', '{NOW}');"
     )))
     .execute(pool)
     .await
@@ -118,38 +118,38 @@ async fn conversion_rewrites_every_placeholder_to_the_derived_key_once() {
         key_of(
             &pool,
             "chat_conversation_read_cursors",
-            &format!("conversation_id = '{conversation}' AND participant_id = '{TEAMMATE_ID}'"),
+            &format!("conversation_id = '{conversation}' AND participant_id = '{AGENT_ID}'"),
         )
         .await,
-        conversation_cursor_key(&conversation, TEAMMATE_ID).unwrap()
+        conversation_cursor_key(&conversation, AGENT_ID).unwrap()
     );
     assert_eq!(
         key_of(
             &pool,
             "chat_reply_thread_read_cursors",
-            &format!("reply_thread_id = '{REPLY_THREAD_ID}' AND participant_id = '{TEAMMATE_ID}'"),
+            &format!("reply_thread_id = '{REPLY_THREAD_ID}' AND participant_id = '{AGENT_ID}'"),
         )
         .await,
-        reply_cursor_key(REPLY_THREAD_ID, TEAMMATE_ID).unwrap()
+        reply_cursor_key(REPLY_THREAD_ID, AGENT_ID).unwrap()
     );
 
-    let teammate = format!("conversation_id = '{conversation}' AND teammate_id = '{TEAMMATE_ID}'");
+    let agent = format!("conversation_id = '{conversation}' AND agent_id = '{AGENT_ID}'");
     assert_eq!(
         key_of(
             &pool,
             "chat_conversation_memberships",
-            &format!("conversation_id = '{conversation}' AND participant_id = '{TEAMMATE_ID}'"),
+            &format!("conversation_id = '{conversation}' AND participant_id = '{AGENT_ID}'"),
         )
         .await,
-        membership_key(&conversation, TEAMMATE_ID).unwrap()
+        membership_key(&conversation, AGENT_ID).unwrap()
     );
     assert_eq!(
-        key_of(&pool, "chat_teammate_channel_memberships", &teammate).await,
-        channel_membership_key(&conversation, TEAMMATE_ID).unwrap()
+        key_of(&pool, "chat_agent_channel_memberships", &agent).await,
+        channel_membership_key(&conversation, AGENT_ID).unwrap()
     );
     assert_eq!(
-        key_of(&pool, "chat_teammate_working_folder_grants", &teammate).await,
-        folder_grant_key(&conversation, TEAMMATE_ID, FOLDER_ID).unwrap()
+        key_of(&pool, "chat_agent_working_folder_grants", &agent).await,
+        folder_grant_key(&conversation, AGENT_ID, FOLDER_ID).unwrap()
     );
 
     assert_eq!(convert(&pool).await.unwrap(), 0);
@@ -161,7 +161,7 @@ async fn converted_keys_cannot_change_again() {
     let conversation = seed_placeholders(&pool).await;
     convert(&pool).await.unwrap();
     let result = sqlx::query(
-        "UPDATE chat_teammate_channel_memberships SET sync_key = 'other'
+        "UPDATE chat_agent_channel_memberships SET sync_key = 'other'
          WHERE conversation_id = ?",
     )
     .bind(&conversation)
@@ -172,11 +172,11 @@ async fn converted_keys_cannot_change_again() {
 
 #[test]
 fn derived_keys_depend_on_every_key_column_and_its_order() {
-    let key = folder_grant_key("conversation", "teammate", "folder").unwrap();
+    let key = folder_grant_key("conversation", "agent", "folder").unwrap();
     assert!(key.starts_with(FOLDER_GRANT_KEY_PREFIX));
     assert_ne!(
         key,
-        folder_grant_key("conversation", "folder", "teammate").unwrap()
+        folder_grant_key("conversation", "folder", "agent").unwrap()
     );
     assert_ne!(
         membership_key("a", "b").unwrap(),

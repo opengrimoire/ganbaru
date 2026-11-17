@@ -64,7 +64,7 @@ impl ProviderDriver for ClaudeProviderDriver {
         claude_capabilities()
     }
 
-    /// Teammate launches load only the tools their scope allows, confine the file tools to
+    /// Agent launches load only the tools their scope allows, confine the file tools to
     /// the working directory, deny the network tools, and send every shell command to Ganbaru
     /// as a permission request. Where the Ganbaru sandbox is present, the commands run under
     /// it as the CLI's shell prefix, and a launch on a CLI too old for that is refused unless
@@ -138,7 +138,7 @@ impl ProviderDriver for ClaudeProviderDriver {
                         checked_at,
                         detail: (!authenticated).then(|| snapshot.home.authentication_hint()),
                         version_admission,
-                        teammate_minimum_version: teammate_minimum_version(
+                        agent_minimum_version: agent_minimum_version(
                             snapshot.version,
                             crate::confinement::sandbox_helper().is_some(),
                         )
@@ -149,11 +149,11 @@ impl ProviderDriver for ClaudeProviderDriver {
                 Err(error) if context.is_cancelled() => Err(error),
                 Err(error) => {
                     let refusal = refused_version(&error);
-                    let teammate_minimum = refusal
+                    let agent_minimum = refusal
                         .as_ref()
                         .and_then(|(_, version)| parse_version(version).ok())
                         .and_then(|version| {
-                            teammate_minimum_version(
+                            agent_minimum_version(
                                 version,
                                 crate::confinement::sandbox_helper().is_some(),
                             )
@@ -171,7 +171,7 @@ impl ProviderDriver for ClaudeProviderDriver {
                         checked_at,
                         detail: Some(probe_detail(error.code).to_string()),
                         version_admission: refusal.map(|(admission, _)| admission),
-                        teammate_minimum_version: teammate_minimum,
+                        agent_minimum_version: agent_minimum,
                         usage_limits: None,
                     })
                 }

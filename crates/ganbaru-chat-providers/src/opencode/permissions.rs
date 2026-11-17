@@ -120,7 +120,7 @@ pub fn organizational_rules(
 ///
 /// Every command asks the person in AskForApproval and ApproveForMe. When the sandbox helper
 /// confines every command, FullAccess runs them without asking, since that mode already lets
-/// a teammate run unattended. Unconfined commands need AskForApproval, where each approval is
+/// an agent run unattended. Unconfined commands need AskForApproval, where each approval is
 /// the boundary, and a Custom mode is never proven.
 pub fn organizational_shell_action(
     safety_mode: SafetyMode,

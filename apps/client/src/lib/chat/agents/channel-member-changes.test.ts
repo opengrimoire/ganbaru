@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ChatAccessProfileRead,
-  ChatAiTeammateRead,
+  ChatAiAgentRead,
   ChatChannelRead,
   ChatFolderCapability,
   ChatSettingsRead,
@@ -14,8 +14,8 @@ import { applyChannelMemberChanges, channelMemberChangeContext } from "./channel
 
 const api = vi.hoisted(() => ({
   listChatAccessProfiles: vi.fn<typeof import("$lib/api/chat").listChatAccessProfiles>(),
-  readChatTeammateAccess: vi.fn<typeof import("$lib/api/chat").readChatTeammateAccess>(),
-  replaceChatTeammateAccess: vi.fn<typeof import("$lib/api/chat").replaceChatTeammateAccess>(),
+  readChatAgentAccess: vi.fn<typeof import("$lib/api/chat").readChatAgentAccess>(),
+  replaceChatAgentAccess: vi.fn<typeof import("$lib/api/chat").replaceChatAgentAccess>(),
 }));
 
 vi.mock("$lib/api/chat", () => api);
@@ -60,11 +60,11 @@ function provider(instanceId: string, authoritySupport: ProviderAuthoritySupport
   } as unknown as ProviderInstanceRead;
 }
 
-function teammate(id: string, providerInstanceId: string, safetyMode: SafetyMode = "ask_for_approval"): ChatAiTeammateRead {
+function agent(id: string, providerInstanceId: string, safetyMode: SafetyMode = "ask_for_approval"): ChatAiAgentRead {
   return {
     participant: { id },
     latestPolicy: { providerInstanceId, safetyMode },
-  } as unknown as ChatAiTeammateRead;
+  } as unknown as ChatAiAgentRead;
 }
 
 function folder(id: string, projectId: string): ProjectWorkingFolderRead {
@@ -76,9 +76,9 @@ function folder(id: string, projectId: string): ProjectWorkingFolderRead {
 
 const channel = { id: "channel:general", projectId: "project:app" } as ChatChannelRead;
 
-function store(teammates: ChatAiTeammateRead[]) {
+function store(agents: ChatAiAgentRead[]) {
   return {
-    teammates,
+    agents,
     workingFolders: [folder("folder:other", "project:other"), folder("folder:app", "project:app")],
     settings: {
       providerInstances: [
@@ -96,24 +96,24 @@ describe("applyChannelMemberChanges", () => {
       profile("profile:conversation", "conversationOnly", "none"),
       profile("profile:build", "buildAndTest", "execute"),
     ]);
-    api.readChatTeammateAccess.mockImplementation(async (teammateId) => ({
-      teammateId,
+    api.readChatAgentAccess.mockImplementation(async (agentId) => ({
+      agentId,
       accessRevision: 4,
-      teammateDefaultRuntimeApproval: "ask",
+      agentDefaultRuntimeApproval: "ask",
       channels: [],
     }));
   });
 
-  it("grants a joining teammate the channel project folder at Execute with Ask", async () => {
-    const chat = store([teammate("participant:claude", "provider:claude")]);
+  it("grants a joining agent the channel project folder at Execute with Ask", async () => {
+    const chat = store([agent("participant:claude", "provider:claude")]);
     const changed = await applyChannelMemberChanges(
       new Set(),
       new Set(["participant:claude"]),
       channelMemberChangeContext(chat, channel),
     );
     expect(changed).toBe(true);
-    expect(api.replaceChatTeammateAccess).toHaveBeenCalledWith({
-      teammateId: "participant:claude",
+    expect(api.replaceChatAgentAccess).toHaveBeenCalledWith({
+      agentId: "participant:claude",
       expectedAccessRevision: 4,
       channels: [expect.objectContaining({
         channelId: "channel:general",
@@ -128,19 +128,19 @@ describe("applyChannelMemberChanges", () => {
     });
   });
 
-  it("adds a teammate whose provider cannot enforce commands in conversation only", async () => {
-    const chat = store([teammate("participant:cursor", "provider:cursor")]);
+  it("adds an agent whose provider cannot enforce commands in conversation only", async () => {
+    const chat = store([agent("participant:cursor", "provider:cursor")]);
     await applyChannelMemberChanges(new Set(), new Set(["participant:cursor"]), channelMemberChangeContext(chat, channel));
-    expect(api.replaceChatTeammateAccess).toHaveBeenCalledWith(expect.objectContaining({
+    expect(api.replaceChatAgentAccess).toHaveBeenCalledWith(expect.objectContaining({
       channels: [expect.objectContaining({ accessProfileId: "profile:conversation", folderGrants: [] })],
     }));
   });
 
   it("writes nothing when the member set is unchanged", async () => {
-    const chat = store([teammate("participant:claude", "provider:claude")]);
+    const chat = store([agent("participant:claude", "provider:claude")]);
     const members = new Set(["participant:claude"]);
     expect(await applyChannelMemberChanges(members, members, channelMemberChangeContext(chat, channel))).toBe(false);
     expect(api.listChatAccessProfiles).not.toHaveBeenCalled();
-    expect(api.replaceChatTeammateAccess).not.toHaveBeenCalled();
+    expect(api.replaceChatAgentAccess).not.toHaveBeenCalled();
   });
 });

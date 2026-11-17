@@ -1,14 +1,14 @@
-//! Dispatch of work for a teammate created and added to a channel the way the app does it.
+//! Dispatch of work for an agent created and added to a channel the way the app does it.
 
 use super::*;
 use ganbaru_chat::coordination::contracts::{
-    ChatFolderGrantInput, ChatTeammateChannelAccessInput, ChatTeammatePolicyInput,
-    CreateChatTeammateCommand, ReplaceChatTeammateAccessCommand,
+    ChatAgentChannelAccessInput, ChatAgentPolicyInput, ChatFolderGrantInput,
+    CreateChatAgentCommand, ReplaceChatAgentAccessCommand,
 };
 use ganbaru_chat::project_defaults::{default_channel_ids, ensure_project_chat_defaults};
 
 const PROJECT_ID: &str = "project-targetless";
-const TEAMMATE_ID: &str = "participant:basic-agent";
+const AGENT_ID: &str = "participant:basic-agent";
 const HOME_DEVICE: &str = "device:desk";
 
 /// A vault root of its own for the managed working folder the project creates, distinct for every
@@ -58,24 +58,24 @@ async fn create_project_channel(pool: &SqlitePool, vault_root: &std::path::Path)
     default_channel_ids(PROJECT_ID).unwrap().1
 }
 
-/// Creates the teammate as the teammate editor does, then gives it the conversation-only channel
+/// Creates the agent as the agent editor does, then gives it the conversation-only channel
 /// access, responding without history or folders.
-async fn create_channel_teammate(pool: &SqlitePool, channel_id: &str) {
-    create_channel_teammate_with(pool, channel_id, "conversation_only", Vec::new()).await;
+async fn create_channel_agent(pool: &SqlitePool, channel_id: &str) {
+    create_channel_agent_with(pool, channel_id, "conversation_only", Vec::new()).await;
 }
 
-/// Creates the teammate as the teammate editor does, then gives it channel access under the
+/// Creates the agent as the agent editor does, then gives it channel access under the
 /// built-in profile `profile_key` with `folder_grants`, responding without history.
-async fn create_channel_teammate_with(
+async fn create_channel_agent_with(
     pool: &SqlitePool,
     channel_id: &str,
     profile_key: &str,
     folder_grants: Vec<ChatFolderGrantInput>,
 ) {
-    super::super::create_teammate(
+    super::super::create_agent(
         pool,
-        &CreateChatTeammateCommand {
-            teammate_id: ChatParticipantId::new(TEAMMATE_ID).unwrap(),
+        &CreateChatAgentCommand {
+            agent_id: ChatParticipantId::new(AGENT_ID).unwrap(),
             display_name: "Basic agent".to_string(),
             avatar: VersionedJson {
                 schema_version: 1,
@@ -83,7 +83,7 @@ async fn create_channel_teammate_with(
             },
             role: "General support".to_string(),
             instructions: String::new(),
-            policy: ChatTeammatePolicyInput {
+            policy: ChatAgentPolicyInput {
                 provider_instance_id: ProviderInstanceId::new("provider:claude").unwrap(),
                 safety_mode: ChatApprovalPolicy::AskForApproval,
                 provider_managed_model: true,
@@ -112,16 +112,16 @@ async fn create_channel_teammate_with(
     .fetch_one(pool)
     .await
     .unwrap();
-    let teammate_id = ChatParticipantId::new(TEAMMATE_ID).unwrap();
-    let access = super::super::access::read_teammate_access(pool, &teammate_id)
+    let agent_id = ChatParticipantId::new(AGENT_ID).unwrap();
+    let access = super::super::access::read_agent_access(pool, &agent_id)
         .await
         .unwrap();
-    super::super::access::write_teammate_access(
+    super::super::access::write_agent_access(
         pool,
-        &ReplaceChatTeammateAccessCommand {
-            teammate_id,
+        &ReplaceChatAgentAccessCommand {
+            agent_id,
             expected_access_revision: access.access_revision,
-            channels: vec![ChatTeammateChannelAccessInput {
+            channels: vec![ChatAgentChannelAccessInput {
                 channel_id: ChatChannelId::new(channel_id).unwrap(),
                 access_profile_id: ChatAccessProfileId::new(profile_id).unwrap(),
                 access_profile_revision_id: ChatAccessProfileRevisionId::new(profile_revision_id)
@@ -135,7 +135,7 @@ async fn create_channel_teammate_with(
                 scratch_runtime_approval_override: None,
                 folder_grants,
             }],
-            teammate_profile: None,
+            agent_profile: None,
             policy: None,
         },
         None,
@@ -144,14 +144,14 @@ async fn create_channel_teammate_with(
     .unwrap();
 }
 
-/// Posts a top-level mention of the teammate in `channel_id` from its home device.
-async fn mention_teammate(pool: &SqlitePool, channel_id: &str) -> ChatWorkAssignmentId {
+/// Posts a top-level mention of the agent in `channel_id` from its home device.
+async fn mention_agent(pool: &SqlitePool, channel_id: &str) -> ChatWorkAssignmentId {
     let mut request = message("@Basic agent Say \"hi\", don't do anything else.");
     request.channel_id = ChatChannelId::new(channel_id).unwrap();
     request.references = vec![participant_reference(
         "reference:basic-agent",
-        ChatParticipantId::new(TEAMMATE_ID).unwrap(),
-        ChatParticipantKind::AiTeammate,
+        ChatParticipantId::new(AGENT_ID).unwrap(),
+        ChatParticipantKind::AiAgent,
         "Basic agent",
         "@Basic agent",
         0,
@@ -170,13 +170,13 @@ async fn mention_teammate(pool: &SqlitePool, channel_id: &str) -> ChatWorkAssign
 }
 
 #[test]
-fn conversation_only_work_of_a_new_channel_teammate_reaches_its_launch() {
+fn conversation_only_work_of_a_new_channel_agent_reaches_its_launch() {
     tauri::async_runtime::block_on(async {
         let pool = migrated_pool().await;
         let vault_root = empty_vault_root();
         let channel_id = create_project_channel(&pool, &vault_root).await;
-        create_channel_teammate(&pool, &channel_id).await;
-        let assignment_id = mention_teammate(&pool, &channel_id).await;
+        create_channel_agent(&pool, &channel_id).await;
+        let assignment_id = mention_agent(&pool, &channel_id).await;
 
         let target: (Option<String>, Option<String>) = sqlx::query_as(
             "SELECT working_folder_id, execution_environment_id
@@ -250,7 +250,7 @@ fn execute_grant(
     }
 }
 
-/// Mentions a teammate holding `grants` in the project channel and returns the folder its work
+/// Mentions an agent holding `grants` in the project channel and returns the folder its work
 /// was authorized in.
 async fn authorized_folder_for(
     grants: impl FnOnce(
@@ -265,14 +265,14 @@ async fn authorized_folder_for(
     let project = project_folder(&pool).await;
     let docs = create_external_folder(&pool, "folder:docs").await;
     let site = create_external_folder(&pool, "folder:site").await;
-    create_channel_teammate_with(
+    create_channel_agent_with(
         &pool,
         &channel_id,
         "build_and_test",
         grants(project, docs, site),
     )
     .await;
-    let assignment_id = mention_teammate(&pool, &channel_id).await;
+    let assignment_id = mention_agent(&pool, &channel_id).await;
     let folder: Option<String> = sqlx::query_scalar(
         "SELECT working_folder_id FROM chat_assignment_authorization_revisions
          WHERE assignment_id = ?",

@@ -8,11 +8,11 @@ use ganbaru_chat::project_defaults::default_channel_ids;
 use ganbaru_chat_contracts::models::ChatParticipantId;
 
 const PROJECT: &str = "project-chat";
-const TEAMMATE: &str = "participant:folder-agent";
+const AGENT: &str = "participant:folder-agent";
 const RUN: &str = "run:working";
 const ASSIGNMENT: &str = "assignment:folders";
 
-/// A pool whose working teammate run proposed `bodies` as channel notes, in order, with the
+/// A pool whose working agent run proposed `bodies` as channel notes, in order, with the
 /// proposal item ids.
 async fn pool_with_proposals(bodies: &[&str]) -> (SqlitePool, Vec<ChatConversationItemId>) {
     let pool = crate::chat::revocation::tests::pool_with_folder_runs().await;
@@ -87,7 +87,7 @@ async fn note_rows(pool: &SqlitePool) -> i64 {
 }
 
 #[test]
-fn an_accepted_proposal_becomes_one_note_crediting_its_teammate() {
+fn an_accepted_proposal_becomes_one_note_crediting_its_agent() {
     tauri::async_runtime::block_on(async {
         let (pool, items) = pool_with_proposals(&["Reply in English"]).await;
         let note = accept_note_proposal(&pool, &accept("accept-1", &items[0], None))
@@ -99,7 +99,7 @@ fn an_accepted_proposal_becomes_one_note_crediting_its_teammate() {
         assert_eq!(note.source_item_id.as_ref(), Some(&items[0]));
         assert_eq!(
             note.proposed_by.as_ref().map(ChatParticipantId::as_str),
-            Some(TEAMMATE)
+            Some(AGENT)
         );
         assert_eq!(
             note.edited_by.as_ref().map(ChatParticipantId::as_str),
@@ -134,7 +134,7 @@ fn a_proposal_is_accepted_with_the_persons_edited_text() {
         assert_eq!(note.body, "Reply in Spanish");
         assert_eq!(
             note.proposed_by.as_ref().map(ChatParticipantId::as_str),
-            Some(TEAMMATE)
+            Some(AGENT)
         );
         let blank = accept_note_proposal(&pool, &accept("accept-2", &items[0], Some(" ")))
             .await

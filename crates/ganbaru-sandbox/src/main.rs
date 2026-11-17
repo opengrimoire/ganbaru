@@ -1,6 +1,6 @@
 //! Helper that confines itself under a sandbox policy and then executes the confined program.
 //!
-//! Ganbaru starts commands and provider processes of Chat teammates through this binary so that
+//! Ganbaru starts commands and provider processes of Chat agents through this binary so that
 //! no restriction is ever applied to the app itself. The binary refuses to run the program when
 //! any part of the policy cannot be enforced or a descriptor beyond the standard streams is open.
 //! See [`ganbaru_sandbox::decode_invocation`] for the argument form. When

@@ -85,7 +85,7 @@ describe("ChatModelControls controlled mode", () => {
     expect(getChat().composer.modelSelection).toBe(composerBefore);
   });
 
-  it("prevents editing when the teammate is archived", async () => {
+  it("prevents editing when the agent is archived", async () => {
     const target = document.createElement("div");
     document.body.append(target);
     const component = mount(ChatModelControls, {

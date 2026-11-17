@@ -1,6 +1,6 @@
 //! Commands a provider runs through its own shell, confined by naming the helper as that shell.
 //!
-//! Claude and OpenCode run each command of a teammate as `SHELL -c COMMAND` or `PREFIX COMMAND`
+//! Claude and OpenCode run each command of an agent as `SHELL -c COMMAND` or `PREFIX COMMAND`
 //! in their own process. Naming the `ganbaru-sandbox` helper as the shell puts every such
 //! command under the terminal policy: the helper reads its policy from a file Ganbaru writes in
 //! a private session directory, outside every path the commands may write, and runs `bash -c

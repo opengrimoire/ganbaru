@@ -1,7 +1,7 @@
-//! Channel notes: short facts a person saves in a channel for the people and teammates in it.
+//! Channel notes: short facts a person saves in a channel for the people and agents in it.
 //!
 //! Only a person writes a note, and only a current member of the channel's conversation; a
-//! teammate can only propose one for a person to settle. Every
+//! agent can only propose one for a person to settle. Every
 //! write records an organizational command receipt keyed by its client command id in the same
 //! transaction, so repeating a command returns its first result instead of writing again.
 

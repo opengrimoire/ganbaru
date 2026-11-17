@@ -1,9 +1,9 @@
 <script lang="ts">
-  import type { ChatTeammateChannelAccessInput } from "$lib/chat/contracts";
+  import type { ChatAgentChannelAccessInput } from "$lib/chat/contracts";
   import {
     channelCapabilityPreset,
     type ChatChannelCapabilityPreset,
-  } from "$lib/chat/teammates/access";
+  } from "$lib/chat/agents/access";
   import ChatControlMenu, { type ChatControlOption } from "$lib/components/chat/composer/ChatControlMenu.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
 
@@ -14,7 +14,7 @@
     disabled = false,
     onPresetChange,
   }: {
-    channels: readonly ChatTeammateChannelAccessInput[];
+    channels: readonly ChatAgentChannelAccessInput[];
     disabled?: boolean;
     onPresetChange: (preset: SelectablePreset) => void;
   } = $props();
@@ -32,27 +32,27 @@
   const presetPlaceholder = $derived<ChatControlOption>({
     value: presetValue,
     label: uniformPreset === "custom"
-      ? t("settings.agents.teammates.presets.custom")
-      : t("settings.agents.teammates.mixedChannelBehavior"),
+      ? t("settings.agents.agents.presets.custom")
+      : t("settings.agents.agents.mixedChannelBehavior"),
     icon: "sliders",
   });
   const presetOptions = $derived<ChatControlOption[]>([
     {
       value: "isolatedResponder",
-      label: t("settings.agents.teammates.presetControls.isolatedResponder.label"),
-      description: t("settings.agents.teammates.presetControls.isolatedResponder.description"),
+      label: t("settings.agents.agents.presetControls.isolatedResponder.label"),
+      description: t("settings.agents.agents.presetControls.isolatedResponder.description"),
       icon: "bot",
     },
     {
       value: "collaborator",
-      label: t("settings.agents.teammates.presetControls.collaborator.label"),
-      description: t("settings.agents.teammates.presetControls.collaborator.description"),
+      label: t("settings.agents.agents.presetControls.collaborator.label"),
+      description: t("settings.agents.agents.presetControls.collaborator.description"),
       icon: "messages-square",
     },
     {
       value: "contextSource",
-      label: t("settings.agents.teammates.presetControls.contextSource.label"),
-      description: t("settings.agents.teammates.presetControls.contextSource.description"),
+      label: t("settings.agents.agents.presetControls.contextSource.label"),
+      description: t("settings.agents.agents.presetControls.contextSource.description"),
       icon: "book-open",
     },
   ]);
@@ -64,7 +64,7 @@
       value={presetValue}
       options={presetOptions}
       placeholder={presetPlaceholder}
-      ariaLabel={t("settings.agents.teammates.channelBehavior")}
+      ariaLabel={t("settings.agents.agents.channelBehavior")}
       onChange={(value) => onPresetChange(value as SelectablePreset)}
       {disabled}
       showTooltip={false}

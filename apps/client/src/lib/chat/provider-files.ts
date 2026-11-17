@@ -1,6 +1,6 @@
 import type { ProviderFamilyId, ProviderFileNoteKind, ProviderFileRead, ProviderPreferenceRead } from "./contracts";
 
-/** Catalog names of the teammate preferences Settings describes, keyed by preference ID. */
+/** Catalog names of the agent preferences Settings describes, keyed by preference ID. */
 export const PROVIDER_PREFERENCE_NAMES = {
   language: "language",
   alwaysThinkingEnabled: "alwaysThinking",
@@ -84,7 +84,7 @@ export const PROVIDER_DOC_LINKS: Readonly<Record<string, readonly ProviderDocLin
 };
 
 /**
- * Whether teammate runs keep only the catalog preferences of a family's configuration file, so a
+ * Whether agent runs keep only the catalog preferences of a family's configuration file, so a
  * value that fails its check is skipped rather than passed to the provider.
  *
  * @param familyId Provider family of the selected instance.

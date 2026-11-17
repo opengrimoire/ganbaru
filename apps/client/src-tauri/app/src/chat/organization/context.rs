@@ -2,10 +2,10 @@
 
 use super::super::internal_mcp::generate_opaque_handle;
 use super::common::{
-    ImpliedFolderCandidate, MAX_MESSAGE_BYTES, TeammateHistoryAccess,
+    AgentHistoryAccess, ImpliedFolderCandidate, MAX_MESSAGE_BYTES, agent_runtime_approval,
     effective_runtime_approval as narrower_runtime_approval, implied_working_folder, new_id,
-    parse_approval_policy, parse_runtime_approval_policy, sha256_hex, teammate_runtime_approval,
-    truncate_utf8, wire_runtime_approval_policy,
+    parse_approval_policy, parse_runtime_approval_policy, sha256_hex, truncate_utf8,
+    wire_runtime_approval_policy,
 };
 use super::delegation::{
     DelegationBound, DelegationCeiling, cancel_for_revoked_parent, clamp_approval,
@@ -28,7 +28,7 @@ pub(super) async fn freeze_context_package(
     assignment_id: &ChatWorkAssignmentId,
     reply_thread_id: &ChatReplyThreadId,
     triggering_message_item_id: &ChatConversationItemId,
-    teammate_id: &ChatParticipantId,
+    agent_id: &ChatParticipantId,
     explicit_execution_target: Option<&ChatExecutionTarget>,
     now: &UtcTimestamp,
 ) -> ChatResult<FreezeOutcome> {
@@ -77,10 +77,10 @@ pub(super) async fn freeze_context_package(
         transaction,
         &conversation_id,
         triggering_message_item_id,
-        teammate_id,
+        agent_id,
     )
     .await?;
-    // The trigger is addressed to the teammate; the rest of the thread is
+    // The trigger is addressed to the agent; the rest of the thread is
     // channel history at the root's position.
     let thread_visible = access.history.admits_position(&root_order_key);
     let source_rows = sqlx::query(
@@ -90,7 +90,7 @@ pub(super) async fn freeze_context_package(
                   WHEN item.id = ? THEN 'thread_root'
                   ELSE 'thread_reply'
                 END AS source_kind,
-                coalesce(author.participant_kind = 'ai_teammate', 0) AS teammate_authored
+                coalesce(author.participant_kind = 'ai_agent', 0) AS agent_authored
          FROM chat_conversation_items item
          JOIN chat_communication_messages message ON message.item_id = item.id
          JOIN chat_communication_message_revisions_numbered revision
@@ -181,9 +181,7 @@ pub(super) async fn freeze_context_package(
             text: row
                 .try_get("normalized_markdown")
                 .map_err(persistence_error)?,
-            teammate_authored: row
-                .try_get("teammate_authored")
-                .map_err(persistence_error)?,
+            agent_authored: row.try_get("agent_authored").map_err(persistence_error)?,
             note: None,
         };
         match source.kind.as_str() {
@@ -203,7 +201,7 @@ pub(super) async fn freeze_context_package(
             text: row
                 .try_get("normalized_markdown")
                 .map_err(persistence_error)?,
-            teammate_authored: false,
+            agent_authored: false,
             note: None,
         });
     }
@@ -268,7 +266,7 @@ pub(super) async fn freeze_context_package(
     let grants = read_folder_grants(
         transaction,
         &conversation_id,
-        teammate_id,
+        agent_id,
         &access.maximum_folder_capability,
     )
     .await?;
@@ -306,7 +304,7 @@ pub(super) async fn freeze_context_package(
         ResolveExecutionTargetInput {
             reply_thread_id,
             destination_conversation_id: &conversation_id,
-            teammate_id,
+            agent_id,
             requester_participant_id: &requester_participant_id,
             explicit: explicit_execution_target,
             grants: &grants,
@@ -322,7 +320,7 @@ pub(super) async fn freeze_context_package(
         triggering_message_item_id,
         &conversation_id,
         &requester_participant_id,
-        teammate_id,
+        agent_id,
     )
     .await?;
     let mut authorized_folders = grants
@@ -387,9 +385,9 @@ pub(super) async fn freeze_context_package(
     let scope_data = serde_json::json!({
         "destinationConversationId": conversation_id.as_str(),
         "requesterParticipantId": requester_participant_id.as_str(),
-        "teammateId": teammate_id.as_str(),
-        "teammateAccessRevision": access.access_revision,
-        "teammatePolicyRevisionId": access.policy_revision_id.as_str(),
+        "agentId": agent_id.as_str(),
+        "agentAccessRevision": access.access_revision,
+        "agentPolicyRevisionId": access.policy_revision_id.as_str(),
         "accessProfileRevisionId": access.access_profile_revision_id.as_str(),
         "executionEnvironmentId": &target.execution_environment_id,
         "workingFolderId": &target.working_folder_id,
@@ -424,7 +422,7 @@ pub(super) async fn freeze_context_package(
     sqlx::query(
         "INSERT INTO chat_assignment_authorization_revisions
             (id, assignment_id, revision, requester_participant_id,
-             teammate_policy_revision_id, teammate_access_revision,
+             agent_policy_revision_id, agent_access_revision,
              destination_conversation_id, access_profile_revision_id,
              execution_environment_id, working_folder_id,
              resolved_runtime_approval_policy, scope_digest, decision_state,
@@ -532,17 +530,17 @@ fn bounded_grants(
 const CONTEXT_COVERAGE_RESERVE_BYTES: usize = 512;
 /// Bytes the source records of one package may use.
 const CONTEXT_PACKAGE_BUDGET_BYTES: usize = MAX_MESSAGE_BYTES - CONTEXT_COVERAGE_RESERVE_BYTES;
-/// Largest trigger record. The trigger is what the teammate was asked, so half the budget keeps
+/// Largest trigger record. The trigger is what the agent was asked, so half the budget keeps
 /// it readable while leaving room for history.
 const MAX_TRIGGER_CONTEXT_BYTES: usize = CONTEXT_PACKAGE_BUDGET_BYTES / 2;
 /// Largest thread root record. The root frames the thread but must not crowd out recent replies.
 const MAX_ROOT_CONTEXT_BYTES: usize = CONTEXT_PACKAGE_BUDGET_BYTES / 4;
 
-/// Text above which an earlier teammate reply travels as a pointer record, in UTF-8 bytes.
+/// Text above which an earlier agent reply travels as a pointer record, in UTF-8 bytes.
 const POINTER_THRESHOLD_BYTES: usize = 4096;
 /// Largest opening a pointer record carries, in UTF-8 bytes, including its marker.
 const MAX_POINTER_OPENING_BYTES: usize = 480;
-/// Record kind of a long earlier teammate reply sent as its opening and size.
+/// Record kind of a long earlier agent reply sent as its opening and size.
 const POINTER_CONTEXT_KIND: &str = "pointer";
 /// Source kind of a reply in the assignment's reply thread.
 const THREAD_REPLY_SOURCE_KIND: &str = "thread_reply";
@@ -561,8 +559,8 @@ struct ContextSource {
     kind: String,
     revision: u64,
     text: String,
-    /// Whether an AI teammate wrote the source. Recorded for thread sources only.
-    teammate_authored: bool,
+    /// Whether an AI agent wrote the source. Recorded for thread sources only.
+    agent_authored: bool,
     /// Who saved and who proposed a channel note. Present for channel notes only.
     note: Option<NoteProvenance>,
 }
@@ -604,7 +602,7 @@ struct PackedContext<'a> {
 }
 
 /// A source held by a package, with the text its record stands for. The text is a prefix of
-/// the source text when the record was cut, so a source row hashes what the teammate received,
+/// the source text when the record was cut, so a source row hashes what the agent received,
 /// and the whole text for a pointer record, so a source row hashes the reply it points to.
 struct IncludedSource<'a> {
     source: &'a ContextSource,
@@ -623,7 +621,7 @@ struct EncodedSource<'a> {
 /// to `MAX_ROOT_CONTEXT_BYTES`), then the channel notes (within
 /// `MAX_CHANNEL_NOTES_CONTEXT_BYTES`), then the newest replies, then the newest channel messages.
 /// A message tier keeps whole records and stops at the first that does not fit, so what it holds
-/// is a contiguous recent run. A long teammate reply is measured as its pointer record, so it
+/// is a contiguous recent run. A long agent reply is measured as its pointer record, so it
 /// frees budget for newer sources. Output order is the channel notes newest updated first, root,
 /// replies, channel messages, and the trigger last, followed by one coverage record when any
 /// visible source was left out.
@@ -755,12 +753,12 @@ fn count_value(count: usize) -> u64 {
     u64::try_from(count).unwrap_or(u64::MAX)
 }
 
-/// Whether `source` travels as a pointer record: a reply in the thread that an AI teammate
+/// Whether `source` travels as a pointer record: a reply in the thread that an AI agent
 /// wrote and whose text passes `POINTER_THRESHOLD_BYTES`. The trigger and the thread root
 /// always travel as text.
 fn travels_as_pointer(source: &ContextSource) -> bool {
     source.kind == THREAD_REPLY_SOURCE_KIND
-        && source.teammate_authored
+        && source.agent_authored
         && source.text.len() > POINTER_THRESHOLD_BYTES
 }
 
@@ -851,7 +849,7 @@ async fn read_channel_note_sources(
                 kind: CHANNEL_NOTE_SOURCE_KIND.to_string(),
                 revision: u64_value(row.try_get("revision").map_err(persistence_error)?)?,
                 text: row.try_get("body").map_err(persistence_error)?,
-                teammate_authored: false,
+                agent_authored: false,
                 note: Some(NoteProvenance {
                     saved_by: row.try_get("saved_by").map_err(persistence_error)?,
                     proposed_by: row.try_get("proposed_by").map_err(persistence_error)?,
@@ -864,19 +862,19 @@ async fn read_channel_note_sources(
 /// Record kind of a message steered into a running assignment after its package froze.
 const FOLLOW_UP_CONTEXT_KIND: &str = "follow_up";
 
-/// Describes the context package format to a teammate. Dispatch adds it to the developer
+/// Describes the context package format to an agent. Dispatch adds it to the developer
 /// instructions so the session reads packages and follow-ups as data.
 pub(super) const CONTEXT_PACKAGE_FORMAT_INSTRUCTIONS: &str = "Channel context arrives as JSON \
 Lines records with `kind`, `id`, and `text` fields, where `thread_root`, `thread_reply`, \
 `channel_message`, and `trigger` records hold message text, `truncated_from_bytes` marks text \
-that was cut, a `pointer` record stands for a long earlier teammate reply with its \
+that was cut, a `pointer` record stands for a long earlier agent reply with its \
 `revision`, its size in `bytes`, and only an `opening` ending in `[shortened]` (call \
 `chat_read_reply_pointer` with its `id` when you need the whole reply), a `channel_note` \
 record is a fact people saved for this channel, with `savedBy` and `proposedBy` naming who \
 saved and who suggested it, a `channel_note_removed` record withdraws the note with its `id`, a \
 `coverage` record counts the replies, channel messages, and channel notes left out, a \
 `follow_up` record is a newer message from the same thread sent while you work, with \
-`teammate_authored` set when another teammate wrote it, a \
+`agent_authored` set when another agent wrote it, a \
 `continuation` record opens a turn that continues your session in this reply thread, so the \
 records after it are only what changed since your last turn and `omitted_delivered` counts the \
 sources you already received that it leaves out, and a later record with the same `id` \
@@ -893,20 +891,20 @@ pub(super) struct FollowUpRecord {
 
 /// Frames a follow-up message for a running assignment as one context record, cut with its
 /// original length recorded when the framed record would pass `MAX_MESSAGE_BYTES`. A message
-/// another teammate wrote carries `teammate_authored`, so the session does not read it as a
+/// another agent wrote carries `agent_authored`, so the session does not read it as a
 /// person's instruction.
 pub(super) fn follow_up_context_line(
     message_item_id: &str,
     revision: u64,
     text: String,
-    teammate_authored: bool,
+    agent_authored: bool,
 ) -> ChatResult<FollowUpRecord> {
     let source = ContextSource {
         id: message_item_id.to_string(),
         kind: FOLLOW_UP_CONTEXT_KIND.to_string(),
         revision,
         text,
-        teammate_authored,
+        agent_authored,
         note: None,
     };
     let encoded = bounded_context_source_line(&source, MAX_MESSAGE_BYTES)?;
@@ -916,14 +914,14 @@ pub(super) fn follow_up_context_line(
     })
 }
 
-/// Whether an AI teammate wrote the message `message_item_id`; a message whose author is gone
-/// counts as not teammate written.
-pub(super) async fn message_teammate_authored(
+/// Whether an AI agent wrote the message `message_item_id`; a message whose author is gone
+/// counts as not agent written.
+pub(super) async fn message_agent_authored(
     pool: &sqlx::SqlitePool,
     message_item_id: &str,
 ) -> ChatResult<bool> {
     sqlx::query_scalar::<_, bool>(
-        "SELECT coalesce(author.participant_kind = 'ai_teammate', 0)
+        "SELECT coalesce(author.participant_kind = 'ai_agent', 0)
          FROM chat_communication_messages message
          LEFT JOIN chat_participants author ON author.id = message.author_participant_id
          WHERE message.item_id = ?",
@@ -935,7 +933,7 @@ pub(super) async fn message_teammate_authored(
     .map_err(persistence_error)
 }
 
-/// Frames the question a teammate asked in its reply thread as one thread reply record, so a new
+/// Frames the question an agent asked in its reply thread as one thread reply record, so a new
 /// session that receives the person's answer also reads what it answers.
 pub(super) fn asked_question_context_line(
     message_item_id: &str,
@@ -947,7 +945,7 @@ pub(super) fn asked_question_context_line(
         kind: THREAD_REPLY_SOURCE_KIND.to_string(),
         revision,
         text,
-        teammate_authored: true,
+        agent_authored: true,
         note: None,
     };
     Ok(bounded_context_source_line(&source, MAX_MESSAGE_BYTES)?.line)
@@ -985,7 +983,7 @@ pub(super) fn test_package_records_with_notes(
         kind: kind.to_string(),
         revision: 1,
         text: text.to_string(),
-        teammate_authored: false,
+        agent_authored: false,
         note: (kind == CHANNEL_NOTE_SOURCE_KIND).then(|| NoteProvenance {
             saved_by: Some("Ada".to_string()),
             proposed_by: None,
@@ -1081,8 +1079,8 @@ fn encode_context_source(
         if let Some(original) = truncated_from_bytes {
             fields.insert("truncated_from_bytes".to_string(), original.into());
         }
-        if source.kind == FOLLOW_UP_CONTEXT_KIND && source.teammate_authored {
-            fields.insert("teammate_authored".to_string(), true.into());
+        if source.kind == FOLLOW_UP_CONTEXT_KIND && source.agent_authored {
+            fields.insert("agent_authored".to_string(), true.into());
         }
         if let Some(note) = &source.note {
             fields.insert("savedBy".to_string(), note.saved_by.clone().into());
@@ -1104,58 +1102,58 @@ fn context_encoding_error() -> ChatError {
 
 struct AssignmentAccess {
     requester_participant_id: ChatParticipantId,
-    policy_revision_id: ChatTeammatePolicyRevisionId,
+    policy_revision_id: ChatAgentPolicyRevisionId,
     access_revision: u64,
     access_profile_revision_id: ChatAccessProfileRevisionId,
     maximum_folder_capability: String,
-    history: TeammateHistoryAccess,
+    history: AgentHistoryAccess,
     channel_runtime_approval_policy: Option<String>,
     scratch_runtime_approval_policy: Option<String>,
-    teammate_runtime_approval_policy: ChatRuntimeApprovalPolicy,
+    agent_runtime_approval_policy: ChatRuntimeApprovalPolicy,
 }
 
 impl AssignmentAccess {
     /// Returns the wire runtime approval an assignment may use: the granted
-    /// policy, or the teammate default when nothing is granted, never broader
-    /// than the teammate's own approval behavior.
+    /// policy, or the agent default when nothing is granted, never broader
+    /// than the agent's own approval behavior.
     fn effective_runtime_approval(&self, granted: Option<&String>) -> ChatResult<&'static str> {
         let granted = granted
             .map(|value| parse_runtime_approval_policy(value))
             .transpose()?
-            .unwrap_or(self.teammate_runtime_approval_policy);
+            .unwrap_or(self.agent_runtime_approval_policy);
         Ok(wire_runtime_approval_policy(narrower_runtime_approval(
-            self.teammate_runtime_approval_policy,
+            self.agent_runtime_approval_policy,
             granted,
         )))
     }
 }
 
-/// The access a teammate would hold if an assignment ran now.
+/// The access an agent would hold if an assignment ran now.
 pub(super) struct GrantedAccess {
-    pub(super) policy_revision_id: ChatTeammatePolicyRevisionId,
+    pub(super) policy_revision_id: ChatAgentPolicyRevisionId,
     pub(super) grants: Vec<AcceptanceGrant>,
     pub(super) scratch_runtime_approval: &'static str,
 }
 
-/// Reads the access `teammate_id` would hold running the message `triggering_message_item_id`
+/// Reads the access `agent_id` would hold running the message `triggering_message_item_id`
 /// in `conversation_id`, resolved as a frozen context package resolves it.
 pub(super) async fn read_granted_access(
     transaction: &mut Transaction<'_, Sqlite>,
     conversation_id: &ChatConversationId,
     triggering_message_item_id: &ChatConversationItemId,
-    teammate_id: &ChatParticipantId,
+    agent_id: &ChatParticipantId,
 ) -> ChatResult<GrantedAccess> {
     let access = read_assignment_access(
         transaction,
         conversation_id,
         triggering_message_item_id,
-        teammate_id,
+        agent_id,
     )
     .await?;
     let folder_grants = read_folder_grants(
         transaction,
         conversation_id,
-        teammate_id,
+        agent_id,
         &access.maximum_folder_capability,
     )
     .await?;
@@ -1222,7 +1220,7 @@ struct ReferencedExecutionEnvironment {
 struct ResolveExecutionTargetInput<'a> {
     reply_thread_id: &'a ChatReplyThreadId,
     destination_conversation_id: &'a ChatConversationId,
-    teammate_id: &'a ChatParticipantId,
+    agent_id: &'a ChatParticipantId,
     requester_participant_id: &'a ChatParticipantId,
     explicit: Option<&'a ChatExecutionTarget>,
     grants: &'a [FolderGrant],
@@ -1240,14 +1238,14 @@ struct ChannelDisclosureInput<'a> {
     lower_order_key: &'a str,
     frozen_audience_revision: u64,
     requester_id: &'a ChatParticipantId,
-    teammate_id: &'a ChatParticipantId,
+    agent_id: &'a ChatParticipantId,
 }
 
 async fn read_assignment_access(
     transaction: &mut Transaction<'_, Sqlite>,
     conversation_id: &ChatConversationId,
     triggering_message_item_id: &ChatConversationItemId,
-    teammate_id: &ChatParticipantId,
+    agent_id: &ChatParticipantId,
 ) -> ChatResult<AssignmentAccess> {
     let row = sqlx::query(
         "SELECT message.author_participant_id AS requester_participant_id,
@@ -1263,14 +1261,14 @@ async fn read_assignment_access(
                 channel_access.history_from_order_key,
                 channel_access.runtime_approval_policy AS channel_runtime_approval_policy,
                 channel_access.scratch_runtime_approval_policy,
-                policy.safety_mode AS teammate_safety_mode
+                policy.safety_mode AS agent_safety_mode
          FROM chat_conversation_memberships membership
-         JOIN chat_teammate_channel_memberships channel_access
+         JOIN chat_agent_channel_memberships channel_access
            ON channel_access.conversation_id = membership.conversation_id
-          AND channel_access.teammate_id = membership.participant_id
+          AND channel_access.agent_id = membership.participant_id
           AND channel_access.removed_at IS NULL
-         JOIN chat_teammate_access_state access_state
-           ON access_state.teammate_id = membership.participant_id
+         JOIN chat_agent_access_state access_state
+           ON access_state.agent_id = membership.participant_id
           AND access_state.access_revision >= 1
          JOIN chat_access_profiles profile
            ON profile.id = channel_access.access_profile_id
@@ -1278,10 +1276,10 @@ async fn read_assignment_access(
          JOIN chat_access_profile_effective_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id
           AND profile_revision.default_participate = 1
-         JOIN chat_teammates teammate
-           ON teammate.participant_id = membership.participant_id
-         JOIN chat_teammate_effective_policies policy
-           ON policy.teammate_id = teammate.participant_id
+         JOIN chat_agents agent
+           ON agent.participant_id = membership.participant_id
+         JOIN chat_agent_effective_policies policy
+           ON policy.agent_id = agent.participant_id
          JOIN chat_communication_messages message ON message.item_id = ?
          JOIN chat_conversation_memberships requester_membership
            ON requester_membership.conversation_id = membership.conversation_id
@@ -1300,14 +1298,14 @@ async fn read_assignment_access(
     )
     .bind(triggering_message_item_id.as_str())
     .bind(conversation_id.as_str())
-    .bind(teammate_id.as_str())
+    .bind(agent_id.as_str())
     .fetch_optional(&mut **transaction)
     .await
     .map_err(persistence_error)?
     .ok_or_else(|| {
         ChatError::new(
             ChatErrorCode::Permission,
-            "The teammate cannot participate in this channel",
+            "The agent cannot participate in this channel",
             true,
         )
     })?;
@@ -1339,7 +1337,7 @@ async fn read_assignment_access(
         .try_get::<i64, _>("history_boundary_inherits_profile")
         .map_err(persistence_error)?
         == 1;
-    let history = TeammateHistoryAccess::resolve(
+    let history = AgentHistoryAccess::resolve(
         read_history,
         profile_history_boundary == "from_grant"
             || (!history_inherits && stored_history_boundary == "from_grant"),
@@ -1351,7 +1349,7 @@ async fn read_assignment_access(
                 .map_err(persistence_error)?,
         )
         .map_err(identifier_error)?,
-        policy_revision_id: ChatTeammatePolicyRevisionId::new(
+        policy_revision_id: ChatAgentPolicyRevisionId::new(
             row.try_get::<String, _>("policy_revision_id")
                 .map_err(persistence_error)?,
         )
@@ -1372,14 +1370,14 @@ async fn read_assignment_access(
         scratch_runtime_approval_policy: row
             .try_get("scratch_runtime_approval_policy")
             .map_err(persistence_error)?,
-        teammate_runtime_approval_policy: teammate_runtime_approval(parse_approval_policy(
-            &row.try_get::<String, _>("teammate_safety_mode")
+        agent_runtime_approval_policy: agent_runtime_approval(parse_approval_policy(
+            &row.try_get::<String, _>("agent_safety_mode")
                 .map_err(persistence_error)?,
         )?),
     })
 }
 
-/// Reads the teammate's active grants that carry authority in the conversation.
+/// Reads the agent's active grants that carry authority in the conversation.
 ///
 /// Sync applies a grant row without the project triggers, since refusing one would stop the
 /// apply, so the match is enforced on read: a grant naming another project, or a folder of
@@ -1387,24 +1385,24 @@ async fn read_assignment_access(
 async fn read_folder_grants(
     transaction: &mut Transaction<'_, Sqlite>,
     conversation_id: &ChatConversationId,
-    teammate_id: &ChatParticipantId,
+    agent_id: &ChatParticipantId,
     maximum_capability: &str,
 ) -> ChatResult<Vec<FolderGrant>> {
     let rows = sqlx::query(
         "SELECT grant_row.working_folder_id, grant_row.capability,
                 grant_row.capability_inherits_profile, grant_row.is_default,
                 grant_row.runtime_approval_policy
-         FROM chat_teammate_working_folder_grants grant_row
+         FROM chat_agent_working_folder_grants grant_row
          JOIN chat_conversations conversation ON conversation.id = grant_row.conversation_id
          JOIN project_working_folders folder ON folder.id = grant_row.working_folder_id
-         WHERE grant_row.conversation_id = ? AND grant_row.teammate_id = ?
+         WHERE grant_row.conversation_id = ? AND grant_row.agent_id = ?
            AND grant_row.revoked_at IS NULL
            AND grant_row.project_id = conversation.project_id
            AND folder.project_id = conversation.project_id
          ORDER BY grant_row.working_folder_id",
     )
     .bind(conversation_id.as_str())
-    .bind(teammate_id.as_str())
+    .bind(agent_id.as_str())
     .fetch_all(&mut **transaction)
     .await
     .map_err(persistence_error)?;
@@ -1527,7 +1525,7 @@ async fn resolve_execution_target(
     let ResolveExecutionTargetInput {
         reply_thread_id,
         destination_conversation_id,
-        teammate_id,
+        agent_id,
         requester_participant_id,
         explicit,
         grants,
@@ -1566,7 +1564,7 @@ async fn resolve_execution_target(
                 verify_explicit_scratch(
                     transaction,
                     reply_thread_id,
-                    teammate_id,
+                    agent_id,
                     scratch_scope_id.as_str(),
                     scratch_generation_id.as_str(),
                     execution_environment_id.as_str(),
@@ -1576,7 +1574,7 @@ async fn resolve_execution_target(
                     transaction,
                     scratch_generation_id.as_str(),
                     destination_conversation_id.as_str(),
-                    teammate_id.as_str(),
+                    agent_id.as_str(),
                     requester_participant_id.as_str(),
                     None,
                 )
@@ -1679,7 +1677,7 @@ fn unique_referenced_execution_environment(
 async fn verify_explicit_scratch(
     transaction: &mut Transaction<'_, Sqlite>,
     reply_thread_id: &ChatReplyThreadId,
-    teammate_id: &ChatParticipantId,
+    agent_id: &ChatParticipantId,
     scratch_scope_id: &str,
     scratch_generation_id: &str,
     execution_environment_id: &str,
@@ -1691,7 +1689,7 @@ async fn verify_explicit_scratch(
              ON generation.scratch_scope_id = scope.id
            JOIN chat_execution_environments environment
              ON environment.scratch_generation_id = generation.id
-           WHERE scope.id = ? AND scope.reply_thread_id = ? AND scope.teammate_id = ?
+           WHERE scope.id = ? AND scope.reply_thread_id = ? AND scope.agent_id = ?
              AND generation.id = ? AND generation.lifecycle_state = 'active'
              AND environment.id = ? AND environment.kind = 'scratch'
              AND environment.lifecycle_state = 'available'
@@ -1701,7 +1699,7 @@ async fn verify_explicit_scratch(
     )
     .bind(scratch_scope_id)
     .bind(reply_thread_id.as_str())
-    .bind(teammate_id.as_str())
+    .bind(agent_id.as_str())
     .bind(scratch_generation_id)
     .bind(execution_environment_id)
     .fetch_one(&mut **transaction)
@@ -1777,7 +1775,7 @@ async fn read_channel_sources(
     triggering_message_item_id: &ChatConversationItemId,
     destination_conversation_id: &ChatConversationId,
     requester_id: &ChatParticipantId,
-    teammate_id: &ChatParticipantId,
+    agent_id: &ChatParticipantId,
 ) -> ChatResult<Vec<FrozenChannelSource>> {
     let rows = sqlx::query(
         "SELECT reference.id AS reference_id, reference.label_snapshot,
@@ -1823,7 +1821,7 @@ async fn read_channel_sources(
                 lower_order_key: &lower_order_key,
                 frozen_audience_revision: destination_audience_revision,
                 requester_id,
-                teammate_id,
+                agent_id,
             },
         )
         .await?;
@@ -1862,7 +1860,7 @@ async fn verify_channel_disclosure(
         lower_order_key,
         frozen_audience_revision,
         requester_id,
-        teammate_id,
+        agent_id,
     } = input;
     let valid: bool = sqlx::query_scalar(
         "SELECT EXISTS(
@@ -1876,51 +1874,51 @@ async fn verify_channel_disclosure(
             AND requester.removed_at IS NULL
            JOIN chat_participants requester_participant
              ON requester_participant.id = requester.participant_id
-           JOIN chat_conversation_memberships teammate
-             ON teammate.conversation_id = ? AND teammate.participant_id = ?
-            AND teammate.removed_at IS NULL
-           JOIN chat_teammate_channel_memberships teammate_access
-             ON teammate_access.conversation_id = teammate.conversation_id
-            AND teammate_access.teammate_id = teammate.participant_id
-            AND teammate_access.removed_at IS NULL
-           JOIN chat_access_profiles teammate_profile
-             ON teammate_profile.id = teammate_access.access_profile_id
-            AND teammate_profile.archived_at IS NULL
-           JOIN chat_access_profile_effective_revisions teammate_profile_revision
-             ON teammate_profile_revision.access_profile_id = teammate_profile.id
+           JOIN chat_conversation_memberships agent
+             ON agent.conversation_id = ? AND agent.participant_id = ?
+            AND agent.removed_at IS NULL
+           JOIN chat_agent_channel_memberships agent_access
+             ON agent_access.conversation_id = agent.conversation_id
+            AND agent_access.agent_id = agent.participant_id
+            AND agent_access.removed_at IS NULL
+           JOIN chat_access_profiles agent_profile
+             ON agent_profile.id = agent_access.access_profile_id
+            AND agent_profile.archived_at IS NULL
+           JOIN chat_access_profile_effective_revisions agent_profile_revision
+             ON agent_profile_revision.access_profile_id = agent_profile.id
            WHERE audience.conversation_id = ? AND audience.revision >= ?
              AND CASE
-                   WHEN teammate_access.read_history_inherits_profile = 1
-                     THEN teammate_profile_revision.default_read_history
-                   ELSE teammate_access.read_history
-                        AND teammate_profile_revision.default_read_history
+                   WHEN agent_access.read_history_inherits_profile = 1
+                     THEN agent_profile_revision.default_read_history
+                   ELSE agent_access.read_history
+                        AND agent_profile_revision.default_read_history
                  END = 1
              AND (
                CASE
-                 WHEN teammate_access.history_boundary_inherits_profile = 1
-                   THEN teammate_profile_revision.default_history_boundary
-                 WHEN teammate_access.history_boundary = 'from_grant'
-                   OR teammate_profile_revision.default_history_boundary = 'from_grant'
+                 WHEN agent_access.history_boundary_inherits_profile = 1
+                   THEN agent_profile_revision.default_history_boundary
+                 WHEN agent_access.history_boundary = 'from_grant'
+                   OR agent_profile_revision.default_history_boundary = 'from_grant'
                    THEN 'from_grant'
                  ELSE 'entire'
                END = 'entire'
                OR (
-                 teammate_access.history_from_order_key IS NOT NULL
-                 AND teammate_access.history_from_order_key <= ?
+                 agent_access.history_from_order_key IS NOT NULL
+                 AND agent_access.history_from_order_key <= ?
                )
              )
              AND (
-               requester_participant.participant_kind != 'ai_teammate'
+               requester_participant.participant_kind != 'ai_agent'
                OR EXISTS (
                  SELECT 1
-                 FROM chat_teammate_channel_memberships requester_access
+                 FROM chat_agent_channel_memberships requester_access
                  JOIN chat_access_profiles requester_profile
                    ON requester_profile.id = requester_access.access_profile_id
                   AND requester_profile.archived_at IS NULL
                  JOIN chat_access_profile_effective_revisions requester_profile_revision
                    ON requester_profile_revision.access_profile_id = requester_profile.id
                  WHERE requester_access.conversation_id = ?
-                   AND requester_access.teammate_id = ?
+                   AND requester_access.agent_id = ?
                    AND requester_access.removed_at IS NULL
                    AND CASE
                          WHEN requester_access.read_history_inherits_profile = 1
@@ -1952,17 +1950,17 @@ async fn verify_channel_disclosure(
                WHERE destination_member.conversation_id = ?
                  AND destination_member.removed_at IS NULL
                  AND (
-                   participant.participant_kind != 'ai_teammate'
+                   participant.participant_kind != 'ai_agent'
                    OR EXISTS (
                      SELECT 1
-                     FROM chat_teammate_channel_memberships destination_ai
+                     FROM chat_agent_channel_memberships destination_ai
                      JOIN chat_access_profiles destination_profile
                        ON destination_profile.id = destination_ai.access_profile_id
                       AND destination_profile.archived_at IS NULL
                      JOIN chat_access_profile_effective_revisions destination_profile_revision
                        ON destination_profile_revision.access_profile_id = destination_profile.id
                      WHERE destination_ai.conversation_id = ?
-                       AND destination_ai.teammate_id = destination_member.participant_id
+                       AND destination_ai.agent_id = destination_member.participant_id
                        AND destination_ai.removed_at IS NULL
                        AND CASE
                              WHEN destination_ai.read_history_inherits_profile = 1
@@ -2001,17 +1999,17 @@ async fn verify_channel_disclosure(
                        AND source_member.removed_at IS NULL
                    )
                    OR (
-                     participant.participant_kind = 'ai_teammate'
+                     participant.participant_kind = 'ai_agent'
                      AND NOT EXISTS (
                        SELECT 1
-                       FROM chat_teammate_channel_memberships source_ai
+                       FROM chat_agent_channel_memberships source_ai
                        JOIN chat_access_profiles source_profile
                          ON source_profile.id = source_ai.access_profile_id
                         AND source_profile.archived_at IS NULL
                        JOIN chat_access_profile_effective_revisions source_profile_revision
                          ON source_profile_revision.access_profile_id = source_profile.id
                        WHERE source_ai.conversation_id = ?
-                         AND source_ai.teammate_id = destination_member.participant_id
+                         AND source_ai.agent_id = destination_member.participant_id
                          AND source_ai.removed_at IS NULL
                          AND CASE
                                WHEN source_ai.read_history_inherits_profile = 1
@@ -2043,7 +2041,7 @@ async fn verify_channel_disclosure(
     .bind(source_id)
     .bind(requester_id.as_str())
     .bind(source_id)
-    .bind(teammate_id.as_str())
+    .bind(agent_id.as_str())
     .bind(destination_id.as_str())
     .bind(i64_value(frozen_audience_revision)?)
     .bind(lower_order_key)
@@ -2160,7 +2158,7 @@ mod tests {
             kind: kind.to_string(),
             revision: 1,
             text: text.to_string(),
-            teammate_authored: false,
+            agent_authored: false,
             note: None,
         }
     }
@@ -2514,18 +2512,18 @@ mod tests {
         assert_eq!(record_delivery_kind(channel_line), DeliveryKind::Package);
     }
 
-    fn teammate_reply(id: &str, text: &str) -> ContextSource {
+    fn agent_reply(id: &str, text: &str) -> ContextSource {
         ContextSource {
-            teammate_authored: true,
+            agent_authored: true,
             ..source("thread_reply", id, text)
         }
     }
 
     #[test]
-    fn long_teammate_replies_travel_as_pointers_with_their_full_hash_text() {
+    fn long_agent_replies_travel_as_pointers_with_their_full_hash_text() {
         let long = "a".repeat(10 * 1024);
         let mut sources = package("Summarize", Some("Plan the release"), &[], &[]);
-        sources.replies = vec![teammate_reply("item:reply-long", &long)];
+        sources.replies = vec![agent_reply("item:reply-long", &long)];
 
         let packed = pack_context_sources(&sources, totals_of(&sources)).unwrap();
 
@@ -2559,7 +2557,7 @@ mod tests {
     fn pointer_openings_stop_on_a_character_boundary() {
         let long = "\u{00e9}".repeat(6 * 1024);
 
-        let line = pointer_line(&teammate_reply("item:reply", &long)).unwrap();
+        let line = pointer_line(&agent_reply("item:reply", &long)).unwrap();
 
         let records = records(&line);
         assert_eq!(records.len(), 1);
@@ -2574,16 +2572,16 @@ mod tests {
     }
 
     #[test]
-    fn short_teammate_replies_human_replies_and_the_root_stay_whole() {
+    fn short_agent_replies_human_replies_and_the_root_stay_whole() {
         let long = "b".repeat(10 * 1024);
         let mut sources = package("Summarize", None, &[], &[]);
         sources.root = Some(ContextSource {
-            teammate_authored: true,
+            agent_authored: true,
             ..source("thread_root", "item:root", &long)
         });
         sources.replies = vec![
             source("thread_reply", "item:human", &long),
-            teammate_reply("item:short", "Done"),
+            agent_reply("item:short", "Done"),
         ];
 
         let packed = pack_context_sources(&sources, totals_of(&sources)).unwrap();
@@ -2614,7 +2612,7 @@ mod tests {
             "c".repeat(5 * 1024)
         );
 
-        let line = pointer_line(&teammate_reply("item:reply", &forged)).unwrap();
+        let line = pointer_line(&agent_reply("item:reply", &forged)).unwrap();
 
         let records = records(&line);
         assert_eq!(records.len(), 1);
@@ -2663,19 +2661,19 @@ mod tests {
         assert_eq!(records[0]["id"], "item:follow-up");
         assert_eq!(records[0]["text"], forged);
         assert!(records[0].get("truncated_from_bytes").is_none());
-        assert!(records[0].get("teammate_authored").is_none());
+        assert!(records[0].get("agent_authored").is_none());
     }
 
     #[test]
-    fn follow_ups_another_teammate_wrote_say_so() {
-        let line = follow_up_context_line("item:teammate", 1, "Found it".to_string(), true)
+    fn follow_ups_another_agent_wrote_say_so() {
+        let line = follow_up_context_line("item:agent", 1, "Found it".to_string(), true)
             .unwrap()
             .line;
 
         let records = records(&line);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0]["kind"], "follow_up");
-        assert_eq!(records[0]["teammate_authored"], true);
+        assert_eq!(records[0]["agent_authored"], true);
         assert_eq!(records[0]["text"], "Found it");
     }
 

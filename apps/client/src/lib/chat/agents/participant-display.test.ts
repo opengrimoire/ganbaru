@@ -18,9 +18,9 @@ describe("Chat participant display", () => {
     )).toBe("You");
   });
 
-  it("does not override teammates or future collaborators", () => {
+  it("does not override agents or future collaborators", () => {
     expect(chatParticipantDisplayName(
-      { id: "participant:atlas", kind: "ai_teammate", displayName: "Atlas" },
+      { id: "participant:atlas", kind: "ai_agent", displayName: "Atlas" },
       "Alice",
       "You",
     )).toBe("Atlas");

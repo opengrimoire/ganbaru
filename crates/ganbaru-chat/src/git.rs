@@ -616,7 +616,7 @@ enum GitCall {
     User,
     /// Requested by the user and reaching a remote.
     UserNetwork,
-    /// Requested by a teammate, confirmed by a person, and possibly reaching a remote.
+    /// Requested by an agent, confirmed by a person, and possibly reaching a remote.
     Requested,
 }
 

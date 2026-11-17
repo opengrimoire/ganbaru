@@ -120,7 +120,7 @@ pub async fn folder_configuration(root: PathBuf) -> Result<FolderConfiguration, 
         .map_err(|_| GitRunError::Unavailable)?
 }
 
-/// The configuration a requested run reads, as a teammate's request records
+/// The configuration a requested run reads, as an agent's request records
 /// it and its confirmation compares it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RequestedConfiguration {
@@ -130,7 +130,7 @@ pub struct RequestedConfiguration {
     /// True when repository configuration (including files it includes)
     /// chooses how Git connects or authenticates: a credential helper, an SSH
     /// or proxy command, a proxy, or TLS trust. Such a folder is refused,
-    /// because a teammate could have written it.
+    /// because an agent could have written it.
     pub repository_connection: bool,
 }
 

@@ -1,4 +1,4 @@
-//! Chat sync conflicts: participant names, teammate roles and instructions, channel names and
+//! Chat sync conflicts: participant names, agent roles and instructions, channel names and
 //! topics, channel note wording, and message edits.
 //!
 //! Concurrent edits from linked devices whose values differ leave one displayed value on every
@@ -8,8 +8,8 @@
 
 use ganbaru_chat_contracts::models::{ChatError, ChatErrorCode, ChatResult};
 use ganbaru_sync::manifest::vault::chat::{
-    self as chat_manifest, channel_group, channel_note_group, message_group, participant_group,
-    teammate_group,
+    self as chat_manifest, agent_group, channel_group, channel_note_group, message_group,
+    participant_group,
 };
 use ganbaru_sync::manifest::{GroupStorage, TableSpec};
 use ganbaru_sync::{ConflictVersion, DeviceNames, DeviceRef, Engine, local};
@@ -25,8 +25,8 @@ use crate::chat::channels::{chat_pool, now_timestamp};
 pub enum ChatConflictTarget {
     /// A participant's display name and avatar.
     Participant,
-    /// An AI teammate's role and instructions.
-    Teammate,
+    /// An AI agent's role and instructions.
+    Agent,
     /// A channel's name and topic.
     Channel,
     /// A channel note's wording.
@@ -38,7 +38,7 @@ pub enum ChatConflictTarget {
 impl ChatConflictTarget {
     const ALL: [Self; 5] = [
         Self::Participant,
-        Self::Teammate,
+        Self::Agent,
         Self::Channel,
         Self::ChannelNote,
         Self::Message,
@@ -47,7 +47,7 @@ impl ChatConflictTarget {
     fn table(self) -> &'static TableSpec {
         match self {
             Self::Participant => &chat_manifest::PARTICIPANTS,
-            Self::Teammate => &chat_manifest::TEAMMATES,
+            Self::Agent => &chat_manifest::AGENTS,
             Self::Channel => &chat_manifest::CHANNELS,
             Self::ChannelNote => &chat_manifest::CHANNEL_NOTES,
             Self::Message => &chat_manifest::MESSAGES,
@@ -58,7 +58,7 @@ impl ChatConflictTarget {
     fn group(self) -> GroupId {
         match self {
             Self::Participant => participant_group::PROFILE,
-            Self::Teammate => teammate_group::PROFILE,
+            Self::Agent => agent_group::PROFILE,
             Self::Channel => channel_group::DETAILS,
             Self::ChannelNote => channel_note_group::BODY,
             Self::Message => message_group::CONTENT,
@@ -79,7 +79,7 @@ pub struct ChatConflictVersion {
     displayed: bool,
     /// Main text: a name, a role, a note, or message Markdown.
     text: String,
-    /// Secondary text: a teammate's instructions or a channel's topic.
+    /// Secondary text: an agent's instructions or a channel's topic.
     detail: Option<String>,
 }
 
@@ -179,7 +179,7 @@ async fn version_read(
         ChatConflictTarget::Participant | ChatConflictTarget::ChannelNote => {
             (text_field(&version.value, 0).unwrap_or_default(), None)
         }
-        ChatConflictTarget::Teammate | ChatConflictTarget::Channel => (
+        ChatConflictTarget::Agent | ChatConflictTarget::Channel => (
             text_field(&version.value, 0).unwrap_or_default(),
             text_field(&version.value, 1),
         ),

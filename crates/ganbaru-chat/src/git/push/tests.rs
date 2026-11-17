@@ -466,7 +466,7 @@ fn markers(marker: &Path) -> String {
     fs::read_to_string(marker).unwrap_or_default()
 }
 
-/// Hooks a teammate could plant in the folder, in a hooks path it names through an included
+/// Hooks an agent could plant in the folder, in a hooks path it names through an included
 /// worktree file, and in a local remote never run when a confirmed request pushes, even in a
 /// folder this device trusts. A trusted user push of another branch first proves they are live.
 #[cfg(unix)]
@@ -559,7 +559,7 @@ async fn confirmed_push_runs_no_folder_hooks_path_or_remote_hooks_even_when_trus
     assert_eq!(markers(&marker), "", "a planted hooks path must not run");
 }
 
-/// URL rewrites and push URLs a teammate plants through an included worktree file after the
+/// URL rewrites and push URLs an agent plants through an included worktree file after the
 /// request change what a fresh read reports, so confirmation can refuse. Credential helpers,
 /// SSH commands, and proxies from repository configuration are refused outright.
 #[tokio::test]

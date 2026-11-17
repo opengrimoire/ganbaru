@@ -1,7 +1,7 @@
-//! Daily usage summaries per teammate, which every linked device reads.
+//! Daily usage summaries per agent, which every linked device reads.
 //!
 //! The executing device adds what its runs used since the last flush to its own row for each
-//! teammate and local date, at the date of the flush. Each run remembers what it already added,
+//! agent and local date, at the date of the flush. Each run remembers what it already added,
 //! so a flush adds only new usage and counts each run once. Only the owning device writes a row
 //! and its counts only grow, so replicas converge on per-device rows that readers sum.
 
@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use chrono::{Days, NaiveDate};
 use ganbaru_sync_contracts::chat_usage::{
-    MAX_DAILY_COUNTED_TOKENS, MAX_DAILY_RUNS, MAX_DAILY_WORKING_SECONDS, teammate_usage_key,
+    MAX_DAILY_COUNTED_TOKENS, MAX_DAILY_RUNS, MAX_DAILY_WORKING_SECONDS, agent_usage_key,
 };
 use serde::Serialize;
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
@@ -84,10 +84,10 @@ impl RunLedger {
     }
 }
 
-/// One local day of a teammate's usage, summed across the devices that ran it.
+/// One local day of an agent's usage, summed across the devices that ran it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChatTeammateUsageDayRead {
+pub struct ChatAgentUsageDayRead {
     /// The day in `YYYY-MM-DD` form.
     pub local_date: String,
     /// Input, cache write, and output tokens, leaving out cache reads.
@@ -148,14 +148,14 @@ fn bounded_sum(current: SummaryCounts, delta: SummaryCounts) -> SummaryCounts {
     }
 }
 
-/// Runs with usage not yet added, by teammate.
+/// Runs with usage not yet added, by agent.
 async fn pending_runs(
     transaction: &mut Transaction<'_, Sqlite>,
     now: &str,
     scope: FlushScope,
 ) -> ChatResult<BTreeMap<String, Vec<RunLedger>>> {
     let rows = sqlx::query(
-        "SELECT counters.run_id, assignment.teammate_id, counters.counted_tokens,
+        "SELECT counters.run_id, assignment.agent_id, counters.counted_tokens,
                 counters.working_seconds + CASE
                     WHEN counters.working_since IS NULL THEN 0
                     ELSE coalesce(max(0, CAST(round(
@@ -168,13 +168,13 @@ async fn pending_runs(
          FROM chat_agent_run_usage counters
          JOIN chat_agent_runs run ON run.id = counters.run_id
          JOIN chat_work_assignments assignment ON assignment.id = run.assignment_id
-         JOIN chat_teammates teammate ON teammate.participant_id = assignment.teammate_id
+         JOIN chat_agents agent ON agent.participant_id = assignment.agent_id
          WHERE (?2 OR counters.working_since IS NULL)
            AND (counters.counted_tokens > counters.summarized_counted_tokens
                 OR counters.working_since IS NOT NULL
                 OR counters.working_seconds > counters.summarized_working_seconds
                 OR (run.started_at IS NOT NULL AND counters.summarized_run = 0))
-         ORDER BY assignment.teammate_id, counters.run_id",
+         ORDER BY assignment.agent_id, counters.run_id",
     )
     .bind(now)
     .bind(scope == FlushScope::All)
@@ -201,8 +201,8 @@ async fn pending_runs(
                 runs: row.try_get("summarized_run").map_err(persistence_error)?,
             },
         };
-        let teammate_id: String = row.try_get("teammate_id").map_err(persistence_error)?;
-        pending.entry(teammate_id).or_default().push(ledger);
+        let agent_id: String = row.try_get("agent_id").map_err(persistence_error)?;
+        pending.entry(agent_id).or_default().push(ledger);
     }
     Ok(pending)
 }
@@ -214,7 +214,7 @@ async fn stored_summary(
 ) -> ChatResult<SummaryCounts> {
     let row: Option<(i64, i64, i64)> = sqlx::query_as(
         "SELECT counted_tokens, working_seconds, run_count
-         FROM chat_teammate_usage_daily WHERE id = ?",
+         FROM chat_agent_usage_daily WHERE id = ?",
     )
     .bind(key)
     .fetch_optional(&mut **transaction)
@@ -267,7 +267,7 @@ async fn advance_ledger(
 ///
 /// A count that would pass its bound keeps the row's last value and is logged; the run still
 /// records it as added, so the overflow is not retried on every flush.
-pub async fn flush_teammate_usage(
+pub async fn flush_agent_usage(
     pool: &SqlitePool,
     device_id: &str,
     local_date: &str,
@@ -278,18 +278,18 @@ pub async fn flush_teammate_usage(
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
     let pending = pending_runs(&mut transaction, now, scope).await?;
     let mut changed = 0;
-    for (teammate_id, runs) in pending {
+    for (agent_id, runs) in pending {
         let delta = runs.iter().fold(SummaryCounts::default(), |sum, run| {
             sum.saturating_add(run.delta())
         });
         if !delta.is_zero() {
-            let key = teammate_usage_key(device_id, &teammate_id, local_date)
+            let key = agent_usage_key(device_id, &agent_id, local_date)
                 .map_err(|_| validation_error("Usage summary key parts are invalid"))?;
             let current = stored_summary(&mut transaction, key.as_str()).await?;
             let next = bounded_sum(current, delta);
             let written = sqlx::query(
-                "INSERT INTO chat_teammate_usage_daily
-                    (id, device_id, teammate_id, local_date, counted_tokens, working_seconds,
+                "INSERT INTO chat_agent_usage_daily
+                    (id, device_id, agent_id, local_date, counted_tokens, working_seconds,
                      run_count)
                  VALUES (?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT (id) DO UPDATE SET
@@ -302,7 +302,7 @@ pub async fn flush_teammate_usage(
             )
             .bind(key.as_str())
             .bind(device_id)
-            .bind(&teammate_id)
+            .bind(&agent_id)
             .bind(local_date)
             .bind(next.counted_tokens)
             .bind(next.working_seconds)
@@ -329,15 +329,15 @@ fn retention_start(today: NaiveDate) -> NaiveDate {
         .unwrap_or(NaiveDate::MIN)
 }
 
-/// Reads `teammate_id`'s usage per local day from `from_date` to `to_date`, both included,
+/// Reads `agent_id`'s usage per local day from `from_date` to `to_date`, both included,
 /// summed across devices. Days before the retention window that ends at `today` are left out.
-pub async fn read_teammate_usage(
+pub async fn read_agent_usage(
     pool: &SqlitePool,
-    teammate_id: &str,
+    agent_id: &str,
     from_date: &str,
     to_date: &str,
     today: &str,
-) -> ChatResult<Vec<ChatTeammateUsageDayRead>> {
+) -> ChatResult<Vec<ChatAgentUsageDayRead>> {
     let from = parse_local_date(from_date)?;
     let to = parse_local_date(to_date)?;
     let today = parse_local_date(today)?;
@@ -352,21 +352,21 @@ pub async fn read_teammate_usage(
     }
     let rows: Vec<(String, String, i64, i64, i64)> = sqlx::query_as(
         "SELECT local_date, device_id, counted_tokens, working_seconds, run_count
-         FROM chat_teammate_usage_daily
-         WHERE teammate_id = ? AND local_date BETWEEN ? AND ?
+         FROM chat_agent_usage_daily
+         WHERE agent_id = ? AND local_date BETWEEN ? AND ?
          ORDER BY local_date, device_id",
     )
-    .bind(teammate_id)
+    .bind(agent_id)
     .bind(from.format("%Y-%m-%d").to_string())
     .bind(to.format("%Y-%m-%d").to_string())
     .fetch_all(pool)
     .await
     .map_err(persistence_error)?;
-    let mut days: Vec<ChatTeammateUsageDayRead> = Vec::new();
+    let mut days: Vec<ChatAgentUsageDayRead> = Vec::new();
     for (local_date, device_id, counted_tokens, working_seconds, runs) in rows {
         let count = |value: i64| u64::try_from(value).unwrap_or(0);
         if days.last().map(|day| day.local_date.as_str()) != Some(local_date.as_str()) {
-            days.push(ChatTeammateUsageDayRead {
+            days.push(ChatAgentUsageDayRead {
                 local_date,
                 counted_tokens: 0,
                 working_seconds: 0,

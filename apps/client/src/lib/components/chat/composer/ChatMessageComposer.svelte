@@ -17,7 +17,7 @@
   import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
   import type {
-    ChatAiTeammateRead,
+    ChatAiAgentRead,
     ChatAttachmentRead,
     ChatAssignmentInputRead,
     ChatAssignmentReviewRequest,
@@ -34,7 +34,7 @@
     ChatPromptCatalogEntry,
     ChatRecurrenceSpec,
     ChatScheduledMessageRead,
-    ChatTeammateAccessRead,
+    ChatAgentAccessRead,
     ChatWorkAssignmentId,
     ChatWorkAssignmentState,
     ProjectWorkingFolderPathRead,
@@ -46,7 +46,7 @@
   import { pendingInputRows, pendingInputStartsWork, type PendingInputRow } from "$lib/chat/composer/pending-inputs";
   import { formatShortcut, hasOnlyShortcutModifier } from "$lib/keyboard-shortcuts";
   import { latestStructuredPlanSteps, summarizePlanProgress } from "$lib/chat/composer/plan-progress";
-  import { suggestTeammateMention, type MentionSuggestion } from "$lib/chat/composer/mention-suggestion";
+  import { suggestAgentMention, type MentionSuggestion } from "$lib/chat/composer/mention-suggestion";
   import { pastedTextLineCount } from "$lib/chat/composer/paste";
   import { providerTargetAuthorityBlockers } from "$lib/chat/composer/provider-authority";
   import {
@@ -102,7 +102,7 @@
         label: string;
         description: string;
         participant: ChatParticipantRead;
-        teammate: ChatAiTeammateRead | null;
+        agent: ChatAiAgentRead | null;
         needsMembership: boolean;
       }
     | {
@@ -235,9 +235,9 @@
   /** Attachment reads the chips label from, by attachment id. */
   let attachmentReads = $state<Record<string, ChatAttachmentRead>>({});
   const draftPlainText = $derived(chatComposerPlainText(editorDocument));
-  /** Teammates whose mention suggestion was dismissed for this draft. */
+  /** Agents whose mention suggestion was dismissed for this draft. */
   let dismissedMentionSuggestions = $state<ChatParticipantId[]>([]);
-  let teammateAccess = $state<ChatTeammateAccessRead | null>(null);
+  let agentAccess = $state<ChatAgentAccessRead | null>(null);
   let assignmentTargets = $state<ChatAssignmentTargetRead[]>([]);
   let assignmentPreviewLoading = $state(false);
   let assignmentPreviewRequest = 0;
@@ -274,12 +274,12 @@
     reference.kind === "participant"
   )));
   const aiParticipantReferences = $derived(participantReferences.filter((reference) => (
-    reference.kind === "participant" && reference.participantKind === "ai_teammate"
+    reference.kind === "participant" && reference.participantKind === "ai_agent"
   )));
   const invokedAiCount = $derived(new Set(aiParticipantReferences.map((reference) => (
     reference.kind === "participant" ? reference.participantId : ""
   ))).size);
-  const mentionedTeammateId = $derived(aiParticipantReferences.find((reference) => (
+  const mentionedAgentId = $derived(aiParticipantReferences.find((reference) => (
     reference.kind === "participant"
   ))?.participantId ?? null);
   const validation = $derived(invokedAiCount > 1 ? t("chat.organization.oneAgentOnly") : null);
@@ -322,10 +322,10 @@
     assignmentTargets,
   ));
   const providerBlockers = $derived.by(() => assignmentProviderBlockers(
-    mentionedTeammateId,
+    mentionedAgentId,
     inferredTarget,
     editorReferences,
-    teammateAccess,
+    agentAccess,
     assignmentTargets,
   ));
   const pickerGroups = $derived.by(() => groupReferenceCandidates(pickerEntries));
@@ -337,13 +337,13 @@
     ? nextScheduledMessage.recurrence?.deferredUntil ?? nextScheduledMessage.recurrence?.nextOccurrenceAt ?? nextScheduledMessage.scheduledFor
     : null);
   const threadAssignment = $derived(threadComposer ? chat.replyThread?.assignment ?? null : null);
-  /** The teammate a post starts or continues work for: the mentioned one, else the thread's. */
-  const targetTeammateId = $derived(mentionedTeammateId ?? threadAssignment?.teammate.id ?? null);
-  const targetTeammate = $derived(chat.teammates.find((candidate) => (
-    candidate.participant.id === targetTeammateId
+  /** The agent a post starts or continues work for: the mentioned one, else the thread's. */
+  const targetAgentId = $derived(mentionedAgentId ?? threadAssignment?.agent.id ?? null);
+  const targetAgent = $derived(chat.agents.find((candidate) => (
+    candidate.participant.id === targetAgentId
   )) ?? null);
   const targetProvider = $derived(chat.settings?.providerInstances.find((entry) => (
-    entry.configuration.instanceId === targetTeammate?.latestPolicy?.providerInstanceId
+    entry.configuration.instanceId === targetAgent?.latestPolicy?.providerInstanceId
   )) ?? null);
   const catalogWorkingFolderId = $derived.by(() => {
     const available = (id: string) => chat.workingFolders.some((folder) => (
@@ -362,7 +362,7 @@
   });
   const promptCatalogKey = $derived([
     catalogWorkingFolderId ?? "",
-    targetTeammate?.latestPolicy?.providerInstanceId ?? "",
+    targetAgent?.latestPolicy?.providerInstanceId ?? "",
     threadAssignment?.latestRunProviderThreadId ?? "",
   ].join("\u0000"));
   /** Whether the thread has work whose provider session /status can describe. */
@@ -391,20 +391,20 @@
     return summary && summary.completed < summary.total ? summary : null;
   });
   const sendBlocked = $derived(Boolean(validation || disclosureBlocker || providerBlockers.length || messageTooLarge));
-  /** Channel teammates that can take work, for the mention suggestion. */
+  /** Channel agents that can take work, for the mention suggestion. */
   const mentionRoster = $derived((chat.selectedChannel?.memberships ?? []).flatMap((membership) => (
     membership.removedAt === null
       && membership.participant.archivedAt === null
-      && membership.participant.kind === "ai_teammate"
+      && membership.participant.kind === "ai_agent"
       && membership.aiAccess?.capabilities.participate === true
       ? [{ id: membership.participant.id, displayName: membership.participant.displayName }]
       : []
   )));
-  /** A teammate the draft names without mentioning, offered as a local chip; never while editing a waiting reply. */
+  /** An agent the draft names without mentioning, offered as a local chip; never while editing a waiting reply. */
   const mentionSuggestion = $derived.by((): MentionSuggestion | null => {
     if (editingInput || pickerOpen) return null;
     const roster = mentionRoster.filter((candidate) => !dismissedMentionSuggestions.includes(candidate.id));
-    return suggestTeammateMention(draftPlainText, editorReferences, roster);
+    return suggestAgentMention(draftPlainText, editorReferences, roster);
   });
 
   onMount(() => {
@@ -498,20 +498,20 @@
   });
 
   $effect(() => {
-    const teammateId = mentionedTeammateId;
+    const agentId = mentionedAgentId;
     const channelId = chat.selectedChannel?.id ?? null;
     const replyThreadId = destinationReplyThreadId(destination);
-    if (!teammateId || !channelId) {
+    if (!agentId || !channelId) {
       assignmentPreviewRequest += 1;
-      teammateAccess = null;
+      agentAccess = null;
       assignmentTargets = [];
       assignmentPreviewLoading = false;
       assignmentPreviewPending = null;
       return;
     }
-    teammateAccess = null;
+    agentAccess = null;
     assignmentTargets = [];
-    assignmentPreviewPending = loadAssignmentPreview(teammateId, channelId, replyThreadId);
+    assignmentPreviewPending = loadAssignmentPreview(agentId, channelId, replyThreadId);
   });
 
   $effect(() => {
@@ -771,47 +771,47 @@
     const memberships = (chat.selectedChannel?.memberships ?? []).filter((membership) => (
       membership.removedAt === null
         && membership.participant.archivedAt === null
-        && (membership.participant.kind !== "ai_teammate"
+        && (membership.participant.kind !== "ai_agent"
           || membership.aiAccess?.capabilities.participate === true)
     ));
     const memberIds = new Set(memberships.map((membership) => membership.participant.id));
     const entries: ReferenceCandidate[] = memberships.flatMap((membership) => {
-      const teammate = chat.teammates.find((candidate) => (
+      const agent = chat.agents.find((candidate) => (
         candidate.participant.id === membership.participant.id
       )) ?? null;
-      if (!matchesQuery(normalized, membership.participant.displayName, teammate?.role ?? "")) return [];
+      if (!matchesQuery(normalized, membership.participant.displayName, agent?.role ?? "")) return [];
       return [{
         key: `participant:${membership.participant.id}`,
         kind: "participant" as const,
         group: t("chat.organization.channelParticipants"),
         label: membership.participant.displayName,
-        description: teammate?.role || t("chat.organization.humanMember"),
+        description: agent?.role || t("chat.organization.humanMember"),
         participant: membership.participant,
-        teammate,
+        agent,
         needsMembership: false,
       }];
     });
-    for (const teammate of chat.teammates) {
-      if (memberIds.has(teammate.participant.id)
-        || !matchesQuery(normalized, teammate.participant.displayName, teammate.role)) continue;
+    for (const agent of chat.agents) {
+      if (memberIds.has(agent.participant.id)
+        || !matchesQuery(normalized, agent.participant.displayName, agent.role)) continue;
       entries.push({
-        key: `outside-participant:${teammate.participant.id}`,
+        key: `outside-participant:${agent.participant.id}`,
         kind: "participant",
-        group: t("chat.organization.otherTeammates"),
-        label: teammate.participant.displayName,
+        group: t("chat.organization.otherAgents"),
+        label: agent.participant.displayName,
         description: t("chat.organization.addBeforeMentioning"),
-        participant: teammate.participant,
-        teammate,
+        participant: agent.participant,
+        agent,
         needsMembership: true,
       });
     }
     const projectId = chat.selectedChannel?.projectId;
-    const selectedAccess = mentionedTeammateId
-      ? teammateAccess?.channels.find((channel) => (
+    const selectedAccess = mentionedAgentId
+      ? agentAccess?.channels.find((channel) => (
         channel.channelId === chat.selectedChannel?.id && channel.removedAt === null
       )) ?? null
       : null;
-    const grantedFolderIds = mentionedTeammateId
+    const grantedFolderIds = mentionedAgentId
       ? new Set(selectedAccess?.folderGrants.flatMap((grant) => (
         grant.revokedAt === null && grant.capability !== "none" ? [grant.workingFolderId] : []
       )) ?? [])
@@ -887,7 +887,7 @@
     if (candidate.kind === "participant" && candidate.needsMembership) {
       persist();
       closePicker();
-      paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-configure-teammate", {
+      paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-configure-agent", {
         detail: {
           participantId: candidate.participant.id,
           channelId: chat.selectedChannel?.id,
@@ -966,12 +966,12 @@
 
   /**
    * Opens the skill or command menu for the typed query. App commands show at once; the provider
-   * catalog of the teammate's working folder follows when the teammate's provider can run here.
+   * catalog of the agent's working folder follows when the agent's provider can run here.
    */
   async function updatePromptMenu(kind: "skill" | "command", query: string): Promise<void> {
     const request = ++promptMenuRequest;
-    const appEntries = kind === "command" ? teammateCommandCatalog() : [];
-    const providerInstanceId = targetTeammate?.latestPolicy?.providerInstanceId ?? null;
+    const appEntries = kind === "command" ? agentCommandCatalog() : [];
+    const providerInstanceId = targetAgent?.latestPolicy?.providerInstanceId ?? null;
     const workingFolderId = catalogWorkingFolderId;
     const canReadProvider = localExecutionAvailable && providerInstanceId !== null && workingFolderId !== null;
     if (!canReadProvider && kind === "skill") {
@@ -996,12 +996,12 @@
       );
       if (key === promptCatalogKey) promptCatalogCache = { key, entries };
       if (request !== promptMenuRequest) return;
-      promptMenuEntries = mergePromptCatalog(teammateCommandCatalog(), entries, kind, query);
+      promptMenuEntries = mergePromptCatalog(agentCommandCatalog(), entries, kind, query);
       promptMenuIndex = Math.min(promptMenuIndex, Math.max(0, promptMenuEntries.length - 1));
     } catch {
       // App commands stay available when the provider catalog cannot be read on this device.
       if (request === promptMenuRequest) {
-        promptMenuEntries = mergePromptCatalog(teammateCommandCatalog(), [], kind, query);
+        promptMenuEntries = mergePromptCatalog(agentCommandCatalog(), [], kind, query);
       }
     } finally {
       if (request === promptMenuRequest) promptMenuLoading = false;
@@ -1029,13 +1029,13 @@
     if (!trigger || trigger.kind === "mention") return;
     if (entry.source === "app") {
       editorController.replaceRange(trigger.start, trigger.end, "");
-      await runTeammateCommand(entry.value);
+      await runAgentCommand(entry.value);
       return;
     }
     editorController.replaceRange(trigger.start, trigger.end, `${entry.value} `);
   }
 
-  async function runTeammateCommand(value: string): Promise<void> {
+  async function runAgentCommand(value: string): Promise<void> {
     switch (value) {
       case "/schedule": toggleScheduleMenu(); return;
       case "/attach": await pickImages(); return;
@@ -1044,18 +1044,18 @@
     }
   }
 
-  /** The app commands a teammate conversation offers; provider direct actions never show here. */
-  function teammateCommandCatalog(): ChatPromptCatalogEntry[] {
+  /** The app commands an agent conversation offers; provider direct actions never show here. */
+  function agentCommandCatalog(): ChatPromptCatalogEntry[] {
     return [
-      appCommand("/schedule", t("chat.composer.teammateCommands.schedule"), t("chat.composer.teammateCommands.scheduleDescription")),
+      appCommand("/schedule", t("chat.composer.agentCommands.schedule"), t("chat.composer.agentCommands.scheduleDescription")),
       ...(localExecutionAvailable
-        ? [appCommand("/attach", t("chat.composer.teammateCommands.attach"), t("chat.composer.teammateCommands.attachDescription"))]
+        ? [appCommand("/attach", t("chat.composer.agentCommands.attach"), t("chat.composer.agentCommands.attachDescription"))]
         : []),
       ...(activeAssignment
-        ? [appCommand("/stop", t("chat.composer.teammateCommands.stop"), t("chat.composer.teammateCommands.stopDescription"))]
+        ? [appCommand("/stop", t("chat.composer.agentCommands.stop"), t("chat.composer.agentCommands.stopDescription"))]
         : []),
       ...(statusAvailable
-        ? [appCommand("/status", t("chat.composer.teammateCommands.status"), t("chat.composer.teammateCommands.statusDescription"))]
+        ? [appCommand("/status", t("chat.composer.agentCommands.status"), t("chat.composer.agentCommands.statusDescription"))]
         : []),
     ];
   }
@@ -1065,8 +1065,8 @@
   }
 
   /** What the status panel shows about the provider session of the thread's latest run. */
-  function teammateComposerStatus(): ComposerStatusRead {
-    const policy = targetTeammate?.latestPolicy ?? null;
+  function agentComposerStatus(): ComposerStatusRead {
+    const policy = targetAgent?.latestPolicy ?? null;
     const modelId = policy?.modelId ?? null;
     return {
       providerLabel: targetProvider?.configuration.label ?? null,
@@ -1253,7 +1253,7 @@
 
   /**
    * The explanation of an edit or cancel refused because the reply already left the list's view of
-   * it, as when it reached the teammate or started its own work after the list loaded, or null for
+   * it, as when it reached the agent or started its own work after the list loaded, or null for
    * any other failure.
    *
    * @param cause The failure of the edit or cancel.
@@ -1451,7 +1451,7 @@
     return t("chat.organization.imageNumber", imageIndex + 1);
   }
 
-  /** Turns the suggested teammate's name into a mention reference; nothing is posted. */
+  /** Turns the suggested agent's name into a mention reference; nothing is posted. */
   function applyMentionSuggestion(suggestion: MentionSuggestion): void {
     if (!editorController) return;
     const participant = mentionRoster.find((candidate) => candidate.id === suggestion.participantId);
@@ -1460,7 +1460,7 @@
     const inserted = editorController.insertReference(suggestion.start, suggestion.end, {
       kind: "participant",
       participantId: participant.id,
-      participantKind: "ai_teammate",
+      participantKind: "ai_agent",
       metadata: { referenceId: crypto.randomUUID(), labelSnapshot: label, startOffset: 0, endOffset: 0, plainTextProjection: `@${label}` },
     });
     announcement = inserted
@@ -1469,7 +1469,7 @@
   }
 
   async function loadAssignmentPreview(
-    teammateId: string,
+    agentId: string,
     channelId: string,
     replyThreadId: string | null,
   ): Promise<void> {
@@ -1477,21 +1477,21 @@
     assignmentPreviewLoading = true;
     try {
       const [access, targets] = await Promise.all([
-        chatApi.readChatTeammateAccess(teammateId),
-        chatApi.listChatAssignmentTargets({ teammateId, channelId, replyThreadId }),
+        chatApi.readChatAgentAccess(agentId),
+        chatApi.listChatAssignmentTargets({ agentId, channelId, replyThreadId }),
       ]);
       if (
         requestId !== assignmentPreviewRequest
-        || mentionedTeammateId !== teammateId
+        || mentionedAgentId !== agentId
         || chat.selectedChannel?.id !== channelId
         || destinationReplyThreadId(destination) !== replyThreadId
       ) return;
-      teammateAccess = access;
+      agentAccess = access;
       assignmentTargets = targets;
     } catch (cause: unknown) {
       if (
         requestId === assignmentPreviewRequest
-        && mentionedTeammateId === teammateId
+        && mentionedAgentId === agentId
         && chat.selectedChannel?.id === channelId
         && destinationReplyThreadId(destination) === replyThreadId
       ) {
@@ -1529,14 +1529,14 @@
     const requester = sourceRoster.memberships.find((membership) => (
       membership.participant.kind === "local_user" && membership.removedAt === null
     ));
-    const teammateCanRead = aiParticipantReferences.every((reference) => (
+    const agentCanRead = aiParticipantReferences.every((reference) => (
       reference.kind !== "participant" || sourceReaders.has(reference.participantId)
     ));
     const missing = rosterReaders(destinationRoster).filter((reader) => !sourceReaders.has(reader.id));
-    if (requester && teammateCanRead && missing.length === 0) return null;
+    if (requester && agentCanRead && missing.length === 0) return null;
     const labels = missing.map((reader) => reader.displayName);
     if (!requester) labels.unshift(t("chat.organization.you"));
-    if (!teammateCanRead) {
+    if (!agentCanRead) {
       for (const reference of aiParticipantReferences) {
         if (reference.kind === "participant" && !sourceReaders.has(reference.participantId)) {
           labels.push(reference.metadata.labelSnapshot);
@@ -1560,7 +1560,7 @@
   function rosterReaders(roster: ChatChannelRosterRead): ChatParticipantRead[] {
     return roster.memberships.flatMap((membership) => {
       if (membership.removedAt !== null) return [];
-      if (membership.participant.kind === "ai_teammate"
+      if (membership.participant.kind === "ai_agent"
         && membership.aiAccess?.capabilities.readHistory !== true) return [];
       return [membership.participant];
     });
@@ -1611,7 +1611,7 @@
     alsoSendToChannel = false;
     scheduledFor = null;
     scheduledRecurrence = null;
-    teammateAccess = null;
+    agentAccess = null;
     assignmentTargets = [];
     disclosureBlocker = null;
     dismissedMentionSuggestions = [];
@@ -1680,7 +1680,7 @@
   }
 
   /**
-   * Waits for the mentioned teammate's access and targets so a send checks its blockers against them instead of
+   * Waits for the mentioned agent's access and targets so a send checks its blockers against them instead of
    * flashing a resolving state; the send stays busy meanwhile so a second send cannot start.
    */
   async function waitForAssignmentPreview(): Promise<void> {
@@ -1971,18 +1971,18 @@
   }
 
   function assignmentProviderBlockers(
-    teammateId: string | null,
+    agentId: string | null,
     target: ChatAssignmentTargetRead | null,
     references: readonly ChatMessageReference[],
-    access: ChatTeammateAccessRead | null,
+    access: ChatAgentAccessRead | null,
     targets: readonly ChatAssignmentTargetRead[],
   ): string[] {
-    if (!teammateId) return [];
-    const teammate = chat.teammates.find((candidate) => candidate.participant.id === teammateId);
+    if (!agentId) return [];
+    const agent = chat.agents.find((candidate) => candidate.participant.id === agentId);
     const blockers: string[] = [];
-    if (!teammate?.latestPolicy) blockers.push(t("chat.organization.providerNotConfigured"));
-    if (teammate && teammate.configurationState !== "healthy") {
-      blockers.push(t("chat.organization.teammateNeedsSetup", teammate.participant.displayName));
+    if (!agent?.latestPolicy) blockers.push(t("chat.organization.providerNotConfigured"));
+    if (agent && agent.configurationState !== "healthy") {
+      blockers.push(t("chat.organization.agentNeedsSetup", agent.participant.displayName));
     }
     if (target && !target.eligible) {
       blockers.push(target.unavailableReason ?? t("chat.organization.targetUnavailable"));
@@ -1991,7 +1991,7 @@
       channel.channelId === chat.selectedChannel?.id && channel.removedAt === null
     )) ?? null;
     if (!assignmentPreviewLoading && !channelAccess) {
-      blockers.push(t("chat.organization.teammateChannelAccessUnavailable"));
+      blockers.push(t("chat.organization.agentChannelAccessUnavailable"));
     }
     if (channelAccess) {
       const grantedFolderIds = new Set(channelAccess.folderGrants.flatMap((grant) => (
@@ -2032,10 +2032,10 @@
       ));
     }
     const provider = chat.settings?.providerInstances.find((entry) => (
-      entry.configuration.instanceId === teammate?.latestPolicy?.providerInstanceId
+      entry.configuration.instanceId === agent?.latestPolicy?.providerInstanceId
     ));
     const authority = provider?.lastProbe?.authoritySupport;
-    if (teammate?.latestPolicy && !authority && !assignmentPreviewLoading) {
+    if (agent?.latestPolicy && !authority && !assignmentPreviewLoading) {
       blockers.push(t("chat.organization.providerAuthorityNotVerified"));
     }
     const requiresHostTools = references.some((reference) => (
@@ -2047,8 +2047,8 @@
       blockers.push(t("chat.organization.providerCannotUseHostTools"));
     }
     if (target && authority) {
-      const teammateSafetyMode = teammate?.latestPolicy?.safetyMode ?? null;
-      for (const blocker of providerTargetAuthorityBlockers(authority, target, teammateSafetyMode)) {
+      const agentSafetyMode = agent?.latestPolicy?.safetyMode ?? null;
+      for (const blocker of providerTargetAuthorityBlockers(authority, target, agentSafetyMode)) {
         blockers.push(t(blocker));
       }
     }
@@ -2061,20 +2061,20 @@
 
   function folderCapabilityLabel(capability: ChatFolderCapability): string {
     switch (capability) {
-      case "none": return t("settings.agents.teammates.folderCapabilities.none");
-      case "read": return t("settings.agents.teammates.folderCapabilities.read");
-      case "edit": return t("settings.agents.teammates.folderCapabilities.edit");
-      case "execute": return t("settings.agents.teammates.folderCapabilities.execute");
-      case "publish": return t("settings.agents.teammates.folderCapabilities.publish");
+      case "none": return t("settings.agents.agents.folderCapabilities.none");
+      case "read": return t("settings.agents.agents.folderCapabilities.read");
+      case "edit": return t("settings.agents.agents.folderCapabilities.edit");
+      case "execute": return t("settings.agents.agents.folderCapabilities.execute");
+      case "publish": return t("settings.agents.agents.folderCapabilities.publish");
     }
   }
 
   function runtimeApprovalLabel(policy: ChatAssignmentTargetRead["effectiveRuntimeApproval"]): string {
     switch (policy) {
-      case "ask": return t("settings.agents.teammates.runtime.ask");
-      case "autoApprove": return t("settings.agents.teammates.runtime.autoApprove");
-      case "unattended": return t("settings.agents.teammates.runtime.unattended");
-      case "providerCustom": return t("settings.agents.teammates.runtime.providerCustom");
+      case "ask": return t("settings.agents.agents.runtime.ask");
+      case "autoApprove": return t("settings.agents.agents.runtime.autoApprove");
+      case "unattended": return t("settings.agents.agents.runtime.unattended");
+      case "providerCustom": return t("settings.agents.agents.runtime.providerCustom");
     }
   }
 </script>
@@ -2142,7 +2142,7 @@
     >
       {#snippet above()}
         {#if statusPanelOpen}
-          <ChatComposerInfoPanel panel="status" status={teammateComposerStatus()} mcpStatus={null} loading={false} error={null} onClose={() => { statusPanelOpen = false; }} />
+          <ChatComposerInfoPanel panel="status" status={agentComposerStatus()} mcpStatus={null} loading={false} error={null} onClose={() => { statusPanelOpen = false; }} />
         {/if}
         {#if attachmentIds.length > 0}
           <div class="context-chips">
@@ -2175,7 +2175,7 @@
                       {@const index = entry.index}
                       <button id={`chat-reference-${index}`} data-reference-index={index} type="button" role="option" tabindex="-1" aria-selected={pickerIndex === index} disabled={candidateIsDisabled(candidate)} class="menu-item" data-highlighted={pickerIndex === index ? "" : undefined} onpointerenter={() => { if (!candidateIsDisabled(candidate)) pickerIndex = index; }} onpointerdown={(event) => event.preventDefault()} onclick={() => void chooseReferenceCandidate(candidate)}>
                         <span class="candidate-icon">
-                          {#if candidate.kind === "participant"}<ChatParticipantAvatar participant={candidate.participant} teammate={candidate.teammate ?? undefined} size={28} />
+                          {#if candidate.kind === "participant"}<ChatParticipantAvatar participant={candidate.participant} agent={candidate.agent ?? undefined} size={28} />
                           {:else if candidate.kind === "channel"}<Hash size={15} />
                           {:else if candidate.kind === "workingFolder"}<Folder size={15} />
                           {:else if candidate.kind === "workspacePath"}{#if candidate.path.kind === "directory"}<Folder size={15} />{:else}<FileIcon size={15} />{/if}

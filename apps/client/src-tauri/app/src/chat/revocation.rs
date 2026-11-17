@@ -61,7 +61,7 @@ pub(crate) async fn revoke_active_run_authorizations(
     let now = now_timestamp();
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
     let rows = sqlx::query(
-        "SELECT DISTINCT authorization.id, assignment.teammate_id,
+        "SELECT DISTINCT authorization.id, assignment.agent_id,
                 assignment.id AS assignment_id
          FROM chat_agent_runs run
          JOIN chat_assignment_authorization_revisions authorization
@@ -87,7 +87,7 @@ pub(crate) async fn revoke_active_run_authorizations(
     .map_err(persistence_error)?;
     for row in &rows {
         let authorization_id: String = row.try_get("id").map_err(persistence_error)?;
-        let teammate_id: String = row.try_get("teammate_id").map_err(persistence_error)?;
+        let agent_id: String = row.try_get("agent_id").map_err(persistence_error)?;
         sqlx::query(
             "UPDATE chat_assignment_authorization_revisions
              SET decision_state = 'revoked', reason = ?, revoked_at = ?
@@ -101,7 +101,7 @@ pub(crate) async fn revoke_active_run_authorizations(
         .map_err(persistence_error)?;
         sqlx::query(
             "INSERT INTO chat_access_revocation_jobs
-                (id, teammate_id, authorization_revision_id, reason,
+                (id, agent_id, authorization_revision_id, reason,
                  available_at, created_at, updated_at)
              SELECT 'access-revocation:' || lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?
              WHERE NOT EXISTS (
@@ -110,7 +110,7 @@ pub(crate) async fn revoke_active_run_authorizations(
                    AND existing.state IN ('queued', 'claimed')
              )",
         )
-        .bind(&teammate_id)
+        .bind(&agent_id)
         .bind(&authorization_id)
         .bind(reason)
         .bind(&now)
@@ -865,7 +865,7 @@ pub(crate) mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     const NOW: &str = "2026-10-20T12:00:00.000Z";
-    const TEAMMATE: &str = "participant:folder-agent";
+    const AGENT: &str = "participant:folder-agent";
 
     /// Seeds one working run in `workspace-1` that also holds `workspace-2` as a read source,
     /// and a queued follow-up run for the same assignment.
@@ -884,29 +884,29 @@ pub(crate) mod tests {
                  'none', 2, '{NOW}', '{NOW}');
              INSERT INTO chat_participants
                 (id, participant_kind, display_name, created_at, updated_at)
-             VALUES ('{TEAMMATE}', 'ai_teammate', 'Folder agent', '{NOW}', '{NOW}');
-             INSERT INTO chat_teammates (participant_id, role, created_at, updated_at)
-             VALUES ('{TEAMMATE}', 'Test', '{NOW}', '{NOW}');
-             INSERT INTO chat_teammate_policy_revisions
-                (id, teammate_id, provider_instance_id, model_selection_data, created_at)
-             VALUES ('policy:folders', '{TEAMMATE}', 'codex-personal', '{{}}', '{NOW}');
+             VALUES ('{AGENT}', 'ai_agent', 'Folder agent', '{NOW}', '{NOW}');
+             INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
+             VALUES ('{AGENT}', 'Test', '{NOW}', '{NOW}');
+             INSERT INTO chat_agent_policy_revisions
+                (id, agent_id, provider_instance_id, model_selection_data, created_at)
+             VALUES ('policy:folders', '{AGENT}', 'codex-personal', '{{}}', '{NOW}');
              INSERT INTO chat_conversation_memberships
                 (conversation_id, participant_id, sync_key, membership_role, created_at,
                  updated_at)
-             VALUES ('{conversation}', '{TEAMMATE}', 'membership:folders', 'member',
+             VALUES ('{conversation}', '{AGENT}', 'membership:folders', 'member',
                      '{NOW}', '{NOW}');
-             INSERT INTO chat_teammate_channel_memberships
-                (conversation_id, teammate_id, sync_key, access_profile_id,
+             INSERT INTO chat_agent_channel_memberships
+                (conversation_id, agent_id, sync_key, access_profile_id,
                  read_history, participate, history_boundary, created_at, updated_at)
-             VALUES ('{conversation}', '{TEAMMATE}', 'channel-membership:folders',
+             VALUES ('{conversation}', '{AGENT}', 'channel-membership:folders',
                      'access-profile:build-and-test', 1, 1, 'entire', '{NOW}', '{NOW}');
-             INSERT INTO chat_teammate_working_folder_grants
-                (conversation_id, teammate_id, project_id, working_folder_id, sync_key,
+             INSERT INTO chat_agent_working_folder_grants
+                (conversation_id, agent_id, project_id, working_folder_id, sync_key,
                  capability, capability_inherits_profile, is_default, created_at)
              VALUES
-                ('{conversation}', '{TEAMMATE}', 'project-chat', 'workspace-1',
+                ('{conversation}', '{AGENT}', 'project-chat', 'workspace-1',
                  'grant:folders-1', 'execute', 1, 1, '{NOW}'),
-                ('{conversation}', '{TEAMMATE}', 'project-chat', 'workspace-2',
+                ('{conversation}', '{AGENT}', 'project-chat', 'workspace-2',
                  'grant:folders-2', 'read', 0, 0, '{NOW}');
              INSERT INTO chat_conversation_items
                 (id, conversation_id, item_kind, order_key, created_at)
@@ -919,13 +919,13 @@ pub(crate) mod tests {
              VALUES ('reply:folders', '{conversation}', 'item:folders',
                      '{NOW}', '{NOW}', '{NOW}');
              INSERT INTO chat_work_assignments
-                (id, reply_thread_id, teammate_id, triggering_message_item_id, state,
+                (id, reply_thread_id, agent_id, triggering_message_item_id, state,
                  created_at, updated_at)
-             VALUES ('assignment:folders', 'reply:folders', '{TEAMMATE}', 'item:folders',
+             VALUES ('assignment:folders', 'reply:folders', '{AGENT}', 'item:folders',
                      'working', '{NOW}', '{NOW}');
              INSERT INTO chat_assignment_authorization_revisions
                 (id, assignment_id, revision, requester_participant_id,
-                 teammate_policy_revision_id, teammate_access_revision,
+                 agent_policy_revision_id, agent_access_revision,
                  destination_conversation_id, access_profile_revision_id,
                  execution_environment_id, working_folder_id,
                  resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
@@ -954,7 +954,7 @@ pub(crate) mod tests {
                  '{NOW}', '{NOW}');
              INSERT INTO chat_agent_runs
                 (id, assignment_id, project_id, working_folder_id, execution_environment_id,
-                 teammate_policy_revision_id, authorization_revision_id,
+                 agent_policy_revision_id, authorization_revision_id,
                  authorization_scope_digest, provider_turn_id, provider_thread_id, state,
                  run_ordinal, created_at, updated_at)
              VALUES
@@ -1289,7 +1289,7 @@ pub(crate) mod tests {
                 "authorization:working".to_string()
             ])
         );
-        assert!(effects.revoked_teammates.is_empty());
+        assert!(effects.revoked_agents.is_empty());
         assert_eq!(stop_orphaned_run_scopes(&host, &pool).await.unwrap(), 0);
         assert_eq!(host.shutdowns(), vec!["thread-1".to_string()]);
     }

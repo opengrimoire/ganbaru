@@ -1,4 +1,4 @@
-//! Kernel-enforced confinement for the processes that Chat teammates run.
+//! Kernel-enforced confinement for the processes that Chat agents run.
 //!
 //! A [`SandboxPolicy`] names the paths a process may read, execute, and write, and the network
 //! access it keeps. The `ganbaru-sandbox` helper binary applies a policy to itself and then

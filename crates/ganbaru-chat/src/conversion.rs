@@ -11,9 +11,9 @@ use sqlx::{AssertSqlSafe, SqliteConnection, SqlitePool};
 
 /// Prefix of conversation membership keys, over the conversation and participant.
 pub const MEMBERSHIP_KEY_PREFIX: &str = "conversation-membership";
-/// Prefix of AI channel membership keys, over the conversation and teammate.
+/// Prefix of AI channel membership keys, over the conversation and agent.
 pub const CHANNEL_MEMBERSHIP_KEY_PREFIX: &str = "ai-channel-membership";
-/// Prefix of working folder grant keys, over the conversation, teammate, and working folder.
+/// Prefix of working folder grant keys, over the conversation, agent, and working folder.
 pub const FOLDER_GRANT_KEY_PREFIX: &str = "folder-grant";
 /// Prefix of conversation read cursor keys, over the conversation and participant.
 pub const CONVERSATION_CURSOR_KEY_PREFIX: &str = "conversation-read-cursor";
@@ -32,22 +32,19 @@ pub fn membership_key(conversation_id: &str, participant_id: &str) -> Result<Str
 }
 
 /// The `sync_key` of an AI channel membership.
-pub fn channel_membership_key(conversation_id: &str, teammate_id: &str) -> Result<String, String> {
-    key(
-        CHANNEL_MEMBERSHIP_KEY_PREFIX,
-        &[conversation_id, teammate_id],
-    )
+pub fn channel_membership_key(conversation_id: &str, agent_id: &str) -> Result<String, String> {
+    key(CHANNEL_MEMBERSHIP_KEY_PREFIX, &[conversation_id, agent_id])
 }
 
 /// The `sync_key` of a working folder grant.
 pub fn folder_grant_key(
     conversation_id: &str,
-    teammate_id: &str,
+    agent_id: &str,
     working_folder_id: &str,
 ) -> Result<String, String> {
     key(
         FOLDER_GRANT_KEY_PREFIX,
-        &[conversation_id, teammate_id, working_folder_id],
+        &[conversation_id, agent_id, working_folder_id],
     )
 }
 
@@ -81,13 +78,13 @@ const KEYED_TABLES: [KeyedTable; 5] = [
         derive: |parts| membership_key(&parts[0], &parts[1]),
     },
     KeyedTable {
-        table: "chat_teammate_channel_memberships",
-        parts: &["conversation_id", "teammate_id"],
+        table: "chat_agent_channel_memberships",
+        parts: &["conversation_id", "agent_id"],
         derive: |parts| channel_membership_key(&parts[0], &parts[1]),
     },
     KeyedTable {
-        table: "chat_teammate_working_folder_grants",
-        parts: &["conversation_id", "teammate_id", "working_folder_id"],
+        table: "chat_agent_working_folder_grants",
+        parts: &["conversation_id", "agent_id", "working_folder_id"],
         derive: |parts| folder_grant_key(&parts[0], &parts[1], &parts[2]),
     },
     KeyedTable {

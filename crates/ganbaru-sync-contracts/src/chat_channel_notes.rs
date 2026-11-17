@@ -1,6 +1,6 @@
 //! Bounds and keys of Chat channel notes.
 //!
-//! Sync admission, the Chat commands, and the teammate proposal tool all read these, so a note
+//! Sync admission, the Chat commands, and the agent proposal tool all read these, so a note
 //! one replica accepts is a note every replica can apply.
 
 /// Characters of a channel note body after trimming. A note holds a fact, not a document.

@@ -10,12 +10,12 @@ import type {
 import { parseChatPushApprovals, parseChatPushRequestStates, parsePostChatMessageResult } from "$lib/chat/validation";
 import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
 
-/** Push requests are confirmed only where Chat runs teammates, since the push runs in the folder. */
+/** Push requests are confirmed only where Chat runs agents, since the push runs in the folder. */
 export const chatPushRequestsAvailable = platformHasCapability(BUILD_PLATFORM_PROFILE, "chat.local-execution");
 
 /**
- * Pushes the commit a teammate's open push request names and posts the confirming reply. Rust refuses
- * when the request is no longer open, the teammate lost its publish grant, or the folder changed.
+ * Pushes the commit an agent's open push request names and posts the confirming reply. Rust refuses
+ * when the request is no longer open, the agent lost its publish grant, or the folder changed.
  */
 export async function confirmChatPushRequest(request: ConfirmPushRequestRequest): Promise<PostChatMessageResult> {
   if (!chatPushRequestsAvailable) throw new Error("Chat push requests need local execution on this device");
@@ -34,10 +34,10 @@ export async function readChatPushRequestStates(
   }));
 }
 
-/** Lists a teammate's active standing push approvals, by folder name, push URL, and branch. */
-export async function listChatPushApprovals(teammateId: string): Promise<ChatPushApproval[]> {
+/** Lists an agent's active standing push approvals, by folder name, push URL, and branch. */
+export async function listChatPushApprovals(agentId: string): Promise<ChatPushApproval[]> {
   return parseChatPushApprovals(await invoke<unknown>("chat_list_push_approvals", {
-    dbUrl: await ensureDbUrl(), teammateId,
+    dbUrl: await ensureDbUrl(), agentId,
   }));
 }
 

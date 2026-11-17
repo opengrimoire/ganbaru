@@ -18,7 +18,7 @@
   import { getPreferences } from "$lib/stores/preferences.svelte";
 
   /**
-   * A teammate's schedule proposal: when it would first send, how it repeats, and why. Nothing is
+   * An agent's schedule proposal: when it would first send, how it repeats, and why. Nothing is
    * scheduled until a person confirms it in the schedule menu; dismissing it hides it on this device.
    */
   let {

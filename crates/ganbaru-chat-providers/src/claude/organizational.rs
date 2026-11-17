@@ -354,7 +354,7 @@ fn unverified_reply(frame: &Value) -> ChatResult<Value> {
 
 /// Message a denied organizational permission request returns to the CLI.
 const OUTSIDE_SCOPE_DENIAL: &str =
-    "This teammate run cannot use that tool or path. Stay inside the working directory.";
+    "This agent run cannot use that tool or path. Stay inside the working directory.";
 
 /// Permission routing of an organizational session, as defense in depth behind the launch
 /// surface: tools the scope does not allow and file paths outside the working directory are

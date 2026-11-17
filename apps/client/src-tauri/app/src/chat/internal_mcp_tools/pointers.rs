@@ -1,4 +1,4 @@
-//! The reply pointer host tool: a teammate expands a long earlier reply that its context
+//! The reply pointer host tool: an agent expands a long earlier reply that its context
 //! arrived with only as a shortened pointer record.
 //!
 //! The tool reads only a reply that the run's current native session received as a pointer,
@@ -136,7 +136,7 @@ mod tests {
     };
 
     const NOW: &str = "2026-11-12T09:00:00.000Z";
-    const TEAMMATE: &str = "participant:folder-agent";
+    const AGENT: &str = "participant:folder-agent";
 
     fn scope() -> InternalMcpRunScope {
         InternalMcpRunScope {
@@ -162,7 +162,7 @@ mod tests {
         }
     }
 
-    /// Posts a teammate reply `item_id` with `text` in the run's reply thread, or at the channel
+    /// Posts an agent reply `item_id` with `text` in the run's reply thread, or at the channel
     /// root when `in_thread` is false.
     async fn post_reply(pool: &SqlitePool, item_id: &str, text: &str, in_thread: bool) {
         let (conversation, _) =
@@ -178,7 +178,7 @@ mod tests {
              VALUES ('{item_id}', '{conversation}', {reply_thread}, 'message',
                      'b{order_key}', '{NOW}');
              INSERT INTO chat_communication_messages (item_id, author_participant_id, created_at)
-             VALUES ('{item_id}', '{TEAMMATE}', '{NOW}');"
+             VALUES ('{item_id}', '{AGENT}', '{NOW}');"
         )))
         .execute(pool)
         .await

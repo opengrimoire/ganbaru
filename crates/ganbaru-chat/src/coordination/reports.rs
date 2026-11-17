@@ -1,9 +1,9 @@
-//! Questions and reports a teammate posts through its host tools.
+//! Questions and reports an agent posts through its host tools.
 //!
 //! A host question moves working work to `waiting_for_answer` until the person who assigned it
 //! replies, and a host report posts a plan, replan, result, or channel note proposal in the reply
-//! thread. Both are teammate messages with a semantic update whose payload carries
-//! [`HOST_TOOL_SOURCE`], so the provider event projection can tell what the teammate reported
+//! thread. Both are agent messages with a semantic update whose payload carries
+//! [`HOST_TOOL_SOURCE`], so the provider event projection can tell what the agent reported
 //! from what it would infer. Their ids derive from the run and the client request id, so a
 //! repeated call writes nothing new.
 
@@ -15,10 +15,10 @@ use ganbaru_sync_contracts::chat_channel_notes::MAX_CHANNEL_NOTE_CHARS;
 use serde_json::{Value, json};
 use sqlx::SqliteConnection;
 
-/// Most channel note proposals one run may post, so a teammate cannot flood the channel.
+/// Most channel note proposals one run may post, so an agent cannot flood the channel.
 pub const MAX_NOTE_PROPOSALS_PER_RUN: i64 = 3;
 
-/// Longest question a teammate may ask, in characters.
+/// Longest question an agent may ask, in characters.
 pub const MAX_QUESTION_CHARS: usize = 4000;
 /// Most answer choices one question may offer.
 pub const MAX_QUESTION_CHOICES: usize = 4;
@@ -38,7 +38,7 @@ pub enum ReportKind {
     Plan,
     Replan,
     Result,
-    /// A fact the teammate suggests saving as a channel note, which only a person can accept.
+    /// A fact the agent suggests saving as a channel note, which only a person can accept.
     NoteProposal,
 }
 
@@ -63,7 +63,7 @@ impl ReportKind {
 }
 
 /// Why a host report or question was refused. [`HostReportRefusal::code`] is the tool error
-/// code, so the teammate can correct its next call.
+/// code, so the agent can correct its next call.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HostReportRefusal {
     /// The report body is empty once trimmed.
@@ -103,7 +103,7 @@ impl HostReportRefusal {
         }
     }
 
-    /// The refusal as the tool error the teammate receives.
+    /// The refusal as the tool error the agent receives.
     pub fn into_error(self) -> ChatError {
         ChatError::new(ChatErrorCode::Permission, self.code(), false)
     }
@@ -211,13 +211,13 @@ pub(super) async fn record_question_update(
     .execute(&mut *connection)
     .await
     .map_err(persistence_error)?;
-    insert_teammate_update(
+    insert_agent_update(
         connection,
-        &TeammateUpdate {
+        &AgentUpdate {
             item_id: &ids.item_id,
             revision_id: &ids.revision_id,
             reply_thread_id: &target.reply_thread_id,
-            teammate_id: &target.teammate_id,
+            agent_id: &target.agent_id,
             assignment_id: call.assignment_id,
             run_id: Some(call.run_id),
             update_kind: "question",
@@ -259,13 +259,13 @@ pub async fn record_host_report(
     {
         return Err(HostReportRefusal::TooManyNoteProposals.into_error());
     }
-    insert_teammate_update(
+    insert_agent_update(
         connection,
-        &TeammateUpdate {
+        &AgentUpdate {
             item_id: &ids.item_id,
             revision_id: &ids.revision_id,
             reply_thread_id: &target.reply_thread_id,
-            teammate_id: &target.teammate_id,
+            agent_id: &target.agent_id,
             assignment_id: call.assignment_id,
             run_id: Some(call.run_id),
             update_kind: kind.as_str(),
@@ -347,7 +347,7 @@ pub async fn run_result_report(
 }
 
 /// SQL condition that holds when the input in `input` was posted by a person, so it can answer
-/// a host question. A teammate's message or a delegation outcome never answers one.
+/// a host question. An agent's message or a delegation outcome never answers one.
 const PERSON_INPUT_SQL: &str = "EXISTS(
            SELECT 1 FROM chat_communication_messages message
            JOIN chat_participants author ON author.id = message.author_participant_id
@@ -663,7 +663,7 @@ async fn replayed_report(
     }))
 }
 
-/// A stored teammate update, as a replay compares it.
+/// A stored agent update, as a replay compares it.
 struct StoredUpdate {
     update_kind: String,
     payload: Option<Value>,
@@ -699,13 +699,13 @@ async fn stored_update(
     }))
 }
 
-/// The reply thread and teammate of a call's run.
+/// The reply thread and agent of a call's run.
 pub(super) struct ActiveTarget {
     pub(super) reply_thread_id: String,
-    pub(super) teammate_id: String,
+    pub(super) agent_id: String,
 }
 
-/// Reads the reply thread and teammate of `call` when its run belongs to its assignment and has
+/// Reads the reply thread and agent of `call` when its run belongs to its assignment and has
 /// not ended, and the assignment is in one of `assignment_states`.
 pub(super) async fn read_active_target(
     connection: &mut SqliteConnection,
@@ -713,7 +713,7 @@ pub(super) async fn read_active_target(
     assignment_states: &[&str],
 ) -> ChatResult<ActiveTarget> {
     let row: Option<(String, String, String)> = sqlx::query_as(
-        "SELECT assignment.reply_thread_id, assignment.teammate_id, assignment.state
+        "SELECT assignment.reply_thread_id, assignment.agent_id, assignment.state
          FROM chat_agent_runs run
          JOIN chat_work_assignments assignment ON assignment.id = run.assignment_id
          WHERE run.id = ? AND run.assignment_id = ?
@@ -725,24 +725,22 @@ pub(super) async fn read_active_target(
     .await
     .map_err(persistence_error)?;
     match row {
-        Some((reply_thread_id, teammate_id, state))
-            if assignment_states.contains(&state.as_str()) =>
-        {
+        Some((reply_thread_id, agent_id, state)) if assignment_states.contains(&state.as_str()) => {
             Ok(ActiveTarget {
                 reply_thread_id,
-                teammate_id,
+                agent_id,
             })
         }
         _ => Err(HostReportRefusal::AssignmentInactive.into_error()),
     }
 }
 
-/// A teammate message with one semantic update, posted in an assignment's reply thread.
-pub(crate) struct TeammateUpdate<'a> {
+/// An agent message with one semantic update, posted in an assignment's reply thread.
+pub(crate) struct AgentUpdate<'a> {
     pub(crate) item_id: &'a str,
     pub(crate) revision_id: &'a str,
     pub(crate) reply_thread_id: &'a str,
-    pub(crate) teammate_id: &'a str,
+    pub(crate) agent_id: &'a str,
     pub(crate) assignment_id: &'a str,
     /// The run that produced the update, `None` for an update no run produced.
     pub(crate) run_id: Option<&'a str>,
@@ -752,16 +750,16 @@ pub(crate) struct TeammateUpdate<'a> {
     pub(crate) created_at: &'a str,
 }
 
-/// Inserts `update` as the next message of its reply thread, authored by its teammate, and
+/// Inserts `update` as the next message of its reply thread, authored by its agent, and
 /// bumps the thread and conversation. Returns `false` and writes nothing when the item exists.
 ///
 /// # Errors
 ///
 /// Returns a persistence error when a read or write fails, and a validation error when the rich
 /// content cannot fit its bound.
-pub(crate) async fn insert_teammate_update(
+pub(crate) async fn insert_agent_update(
     connection: &mut SqliteConnection,
-    update: &TeammateUpdate<'_>,
+    update: &AgentUpdate<'_>,
 ) -> ChatResult<bool> {
     let exists: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_conversation_items WHERE id = ?)")
@@ -799,8 +797,8 @@ pub(crate) async fn insert_teammate_update(
          VALUES (?, ?, (SELECT display_name FROM chat_participants WHERE id = ?), ?)",
     )
     .bind(update.item_id)
-    .bind(update.teammate_id)
-    .bind(update.teammate_id)
+    .bind(update.agent_id)
+    .bind(update.agent_id)
     .bind(update.created_at)
     .execute(&mut *connection)
     .await
@@ -881,7 +879,7 @@ fn persistence_error(_error: sqlx::Error) -> ChatError {
 fn serialization_error() -> ChatError {
     ChatError::new(
         ChatErrorCode::Persistence,
-        "Chat teammate update data is invalid",
+        "Chat agent update data is invalid",
         false,
     )
 }

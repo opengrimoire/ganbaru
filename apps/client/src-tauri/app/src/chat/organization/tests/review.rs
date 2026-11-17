@@ -269,7 +269,7 @@ fn requesting_changes_continues_in_one_follow_up_and_records_the_request() {
 }
 
 #[test]
-fn requesting_changes_without_a_device_for_the_teammate_is_refused_and_posts_nothing() {
+fn requesting_changes_without_a_device_for_the_agent_is_refused_and_posts_nothing() {
     tauri::async_runtime::block_on(async {
         let (pool, before) = reviewed_work("ready_for_review").await;
 

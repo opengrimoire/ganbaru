@@ -170,7 +170,7 @@ export interface GitStatusRead {
   files: GitChangedPathRead[];
 }
 
-/** Bounded changes a teammate drafts commit or change request text from; every cut is reported. */
+/** Bounded changes an agent drafts commit or change request text from; every cut is reported. */
 export interface ChatCommitDraftContextRead {
   /** Changed repository-relative paths, staged for a commit or in the branch range for a change request. */
   stagedPaths: string[];

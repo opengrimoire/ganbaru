@@ -7,40 +7,40 @@
   import type { AgentsSettingsSubsection, ChatProviderSetupTarget } from "$lib/settings/types";
   import AgentFilesSettings from "$lib/components/settings/agents/AgentFilesSettings.svelte";
   import ProvidersSettings from "$lib/components/settings/agents/ProvidersSettings.svelte";
-  import TeammatesSettings from "$lib/components/settings/agents/TeammatesSettings.svelte";
+  import AgentsSettings from "$lib/components/settings/agents/AgentsSettings.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
     initialSubsection,
-    initialTeammateId,
+    initialAgentId,
     initialChannelId,
-    initialCreateTeammate,
+    initialCreateAgent,
     onOpenProviderSetup = () => {},
     onSubsectionChange = () => {},
     onRequestNavigation = (navigate) => navigate(),
-    onTeammateDraftStateChange = () => {},
+    onAgentDraftStateChange = () => {},
   }: {
     initialSubsection?: AgentsSettingsSubsection;
-    initialTeammateId?: string;
+    initialAgentId?: string;
     initialChannelId?: string;
-    initialCreateTeammate?: boolean;
+    initialCreateAgent?: boolean;
     onOpenProviderSetup?: (target: ChatProviderSetupTarget) => void;
     onSubsectionChange?: (subsection: AgentsSettingsSubsection) => void;
     onRequestNavigation?: (navigate: () => void) => void;
-    onTeammateDraftStateChange?: (open: boolean) => void;
+    onAgentDraftStateChange?: (open: boolean) => void;
   } = $props();
 
   const { t } = getLocalization();
   const chat = getChat();
-  let activeTab = $state<AgentsSettingsSubsection>("teammates");
+  let activeTab = $state<AgentsSettingsSubsection>("agents");
   let initializing = $state(!chat.loaded);
   let loadError = $state<string | null>(null);
   const tabs: ReadonlyArray<{
     id: AgentsSettingsSubsection;
     label: () => string;
   }> = [
-    { id: "teammates", label: () => t("settings.agents.teammates.heading") },
+    { id: "agents", label: () => t("settings.agents.agents.heading") },
     { id: "providers", label: () => t("settings.agents.providers.heading") },
     { id: "files", label: () => t("settings.agents.files.heading") },
   ];
@@ -107,8 +107,8 @@
     <Loading layout="fill" class="min-h-40" />
   {:else if loadError}
     <div class="min-h-40 text-sm"><Notice layout="fill" message={loadError} onRetry={retryInitialize} /></div>
-  {:else if activeTab === "teammates"}
-    <TeammatesSettings initialTeammateId={initialTeammateId} initialChannelId={initialChannelId} initialCreate={initialCreateTeammate} onDraftStateChange={onTeammateDraftStateChange} />
+  {:else if activeTab === "agents"}
+    <AgentsSettings initialAgentId={initialAgentId} initialChannelId={initialChannelId} initialCreate={initialCreateAgent} onDraftStateChange={onAgentDraftStateChange} />
   {:else if activeTab === "providers"}
     <ProvidersSettings {onOpenProviderSetup} />
   {:else}

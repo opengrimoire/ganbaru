@@ -766,7 +766,7 @@ fn organizational_init_report_requires_both_lists() {
 }
 
 #[test]
-fn organizational_launch_requires_the_teammate_floor() {
+fn organizational_launch_requires_the_agent_floor() {
     let refused = ensure_organizational_version(parse_version("2.1.313").unwrap()).unwrap_err();
     assert_eq!(refused.code, ChatErrorCode::UnsupportedVersion);
     assert!(refused.recoverable);
@@ -1100,9 +1100,9 @@ fn confined_shell_requires_the_sandbox_floor() {
 }
 
 #[test]
-fn teammate_minimum_names_the_floor_this_device_needs() {
+fn agent_minimum_names_the_floor_this_device_needs() {
     let minimum = |version: &str, confined: bool| {
-        teammate_minimum_version(parse_version(version).unwrap(), confined)
+        agent_minimum_version(parse_version(version).unwrap(), confined)
             .map(|minimum| minimum.to_string())
     };
     assert_eq!(minimum("2.1.313", false).as_deref(), Some("2.1.314"));

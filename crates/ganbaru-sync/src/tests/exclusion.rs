@@ -893,12 +893,12 @@ fn a_late_operation_of_a_newer_manifest_stays_listed_and_restores() {
     });
 }
 
-/// SQL creating a teammate participant with no revisions.
+/// SQL creating an agent participant with no revisions.
 fn participant(id: &str) -> String {
     format!(
         "INSERT INTO chat_participants
             (id, participant_kind, display_name, created_at, updated_at)
-         VALUES ({}, 'ai_teammate', 'Late', '{CREATED_AT}', '{CREATED_AT}');",
+         VALUES ({}, 'ai_agent', 'Late', '{CREATED_AT}', '{CREATED_AT}');",
         quoted(id),
     )
 }

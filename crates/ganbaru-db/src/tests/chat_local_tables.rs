@@ -3,9 +3,9 @@ use sqlx::{AssertSqlSafe, SqlitePool};
 
 /// A queued access revocation job for the fixture authorization.
 const REVOCATION_JOB: &str = "INSERT INTO chat_access_revocation_jobs
-    (id, teammate_id, conversation_id, authorization_revision_id, reason,
+    (id, agent_id, conversation_id, authorization_revision_id, reason,
      available_at, created_at, updated_at)
-VALUES ('revocation-1', 'participant-teammate', 'conversation-general', 'authorization-1',
+VALUES ('revocation-1', 'participant-agent', 'conversation-general', 'authorization-1',
         'Access was reduced', '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z',
         '2026-10-23T00:00:00.000Z');";
 
@@ -50,18 +50,18 @@ const NON_CASCADING_FOREIGN_KEYS: [(&str, &str); 3] = [
 const GATED_TRIGGERS: [&str; 15] = [
     "chat_reply_threads_root_item_insert",
     "chat_communication_message_current_revision_update",
-    "chat_teammate_folder_grant_identity_insert",
+    "chat_agent_folder_grant_identity_insert",
     "chat_channels_default_name_insert",
     "chat_channels_default_protected_update",
-    "chat_teammate_create_access_state",
+    "chat_agent_create_access_state",
     "chat_conversation_create_audience_state",
     "chat_access_profile_audience_publish",
     "chat_generic_membership_audience_insert",
     "chat_generic_membership_audience_update",
     "chat_generic_membership_audience_delete",
-    "chat_teammate_channel_membership_audience_insert",
-    "chat_teammate_channel_membership_audience_update",
-    "chat_teammate_channel_membership_audience_delete",
+    "chat_agent_channel_membership_audience_insert",
+    "chat_agent_channel_membership_audience_update",
+    "chat_agent_channel_membership_audience_delete",
     "chat_communication_search_insert",
 ];
 
@@ -70,14 +70,14 @@ const APPLY_GATE: &str = "(SELECT applying FROM sync_apply_state WHERE singleton
 /// Chat tables that replicate; every other Chat table is device-local.
 const REPLICATED_CHAT_TABLES: [&str; 29] = [
     "chat_participants",
-    "chat_teammates",
-    "chat_teammate_policy_revisions",
+    "chat_agents",
+    "chat_agent_policy_revisions",
     "chat_access_profiles",
     "chat_access_profile_revisions",
     "chat_conversations",
     "chat_conversation_memberships",
-    "chat_teammate_channel_memberships",
-    "chat_teammate_working_folder_grants",
+    "chat_agent_channel_memberships",
+    "chat_agent_working_folder_grants",
     "chat_channels",
     "chat_reply_threads",
     "chat_conversation_items",
@@ -173,7 +173,7 @@ fn chat_local_tables_cascade_from_organizational_rows_and_gated_triggers_stand_d
             );
         }
         let removal_columns: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM pragma_table_info('chat_teammate_channel_memberships')
+            "SELECT count(*) FROM pragma_table_info('chat_agent_channel_memberships')
              WHERE name = 'removed_at'",
         )
         .fetch_one(&pool)
@@ -321,20 +321,20 @@ fn derived_state_triggers_run_for_commands_and_stand_down_while_sync_applies() {
         assert_eq!(
             count_where(
                 &pool,
-                "chat_teammate_access_state",
-                "teammate_id = 'participant-teammate'"
+                "chat_agent_access_state",
+                "agent_id = 'participant-agent'"
             )
             .await,
             1,
-            "a teammate created by a command gets its access state"
+            "an agent created by a command gets its access state"
         );
 
         set_applying(&pool, true).await;
         sqlx::raw_sql(
             "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
-             VALUES ('participant-synced', 'ai_teammate', 'Synced',
+             VALUES ('participant-synced', 'ai_agent', 'Synced',
                      '2026-10-24T00:00:00.000Z', '2026-10-24T00:00:00.000Z');
-             INSERT INTO chat_teammates (participant_id, role, created_at, updated_at)
+             INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
              VALUES ('participant-synced', 'Arrived by sync',
                      '2026-10-24T00:00:00.000Z', '2026-10-24T00:00:00.000Z');",
         )
@@ -344,8 +344,8 @@ fn derived_state_triggers_run_for_commands_and_stand_down_while_sync_applies() {
         assert_eq!(
             count_where(
                 &pool,
-                "chat_teammate_access_state",
-                "teammate_id = 'participant-synced'"
+                "chat_agent_access_state",
+                "agent_id = 'participant-synced'"
             )
             .await,
             0,
@@ -355,9 +355,9 @@ fn derived_state_triggers_run_for_commands_and_stand_down_while_sync_applies() {
 
         sqlx::raw_sql(
             "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
-             VALUES ('participant-local', 'ai_teammate', 'Local',
+             VALUES ('participant-local', 'ai_agent', 'Local',
                      '2026-10-24T00:00:00.000Z', '2026-10-24T00:00:00.000Z');
-             INSERT INTO chat_teammates (participant_id, role, created_at, updated_at)
+             INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
              VALUES ('participant-local', 'Made here',
                      '2026-10-24T00:00:00.000Z', '2026-10-24T00:00:00.000Z');",
         )
@@ -367,8 +367,8 @@ fn derived_state_triggers_run_for_commands_and_stand_down_while_sync_applies() {
         assert_eq!(
             count_where(
                 &pool,
-                "chat_teammate_access_state",
-                "teammate_id = 'participant-local'"
+                "chat_agent_access_state",
+                "agent_id = 'participant-local'"
             )
             .await,
             1

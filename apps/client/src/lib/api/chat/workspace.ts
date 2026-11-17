@@ -520,7 +520,7 @@ export async function readGitStatus(workingFolderId: ProjectWorkingFolderId, exe
 }
 
 /**
- * Reads the bounded staged changes and recent commit subjects a teammate drafts a commit message from.
+ * Reads the bounded staged changes and recent commit subjects an agent drafts a commit message from.
  *
  * @param workingFolderId Working folder whose staged changes are read.
  * @param executionEnvironmentId Execution environment of the folder, or null for the folder itself.

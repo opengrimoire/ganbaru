@@ -1,5 +1,5 @@
-//! Host tools through which a running teammate asks a person for a secret value and learns
-//! whether it arrived. The tools never carry the value: the teammate reads it from the
+//! Host tools through which a running agent asks a person for a secret value and learns
+//! whether it arrived. The tools never carry the value: the agent reads it from the
 //! private file the request names, once the person provided it.
 
 use super::delegation::required_text;
@@ -19,7 +19,7 @@ use std::path::Path;
 /// Longest request id the status tool accepts.
 const MAX_REQUEST_ID_CHARS: usize = 64;
 
-/// A secret tool call the teammate may correct. The code is the error message.
+/// A secret tool call the agent may correct. The code is the error message.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SecretToolRefusal {
     /// The run already has [`crate::chat::secrets::MAX_OPEN_SECRET_REQUESTS_PER_RUN`] open requests.

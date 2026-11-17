@@ -1,4 +1,4 @@
-//! Secret requests: a running teammate asks for a value it needs, a person provides it on the
+//! Secret requests: a running agent asks for a value it needs, a person provides it on the
 //! device that executes the run, and the host writes the value to a file only this user can
 //! read, under the app config directory and outside every vault and working folder.
 //!
@@ -170,7 +170,7 @@ pub(crate) enum SecretRefusal {
     TooShort,
     /// The value is longer than [`MAX_SECRET_VALUE_BYTES`].
     TooLarge,
-    /// The value occurs in the request's label or purpose, which the teammate wrote.
+    /// The value occurs in the request's label or purpose, which the agent wrote.
     MatchesRequest,
 }
 
@@ -324,7 +324,7 @@ pub(crate) async fn request_state(
 /// Registers `value` for redaction, writes it to the request's private file, and marks the
 /// request provided.
 ///
-/// The value is registered before the file exists, so the teammate cannot read it and echo
+/// The value is registered before the file exists, so the agent cannot read it and echo
 /// it before its events are redacted. A refused or failed write leaves the value registered;
 /// redacting a value that was never delivered costs nothing.
 pub(crate) async fn provide_secret(
@@ -391,7 +391,7 @@ pub(crate) async fn provide_secret(
     Ok(())
 }
 
-/// Marks `request_id` declined, so the teammate learns no value is coming.
+/// Marks `request_id` declined, so the agent learns no value is coming.
 pub(crate) async fn decline_secret(
     pool: &SqlitePool,
     request_id: &str,
@@ -814,7 +814,7 @@ fn persistence_error(_error: sqlx::Error) -> ChatError {
     )
 }
 
-/// Provides a value for an open secret request. The value goes to a private file the teammate
+/// Provides a value for an open secret request. The value goes to a private file the agent
 /// reads; it is never stored in the vault.
 #[tauri::command]
 pub async fn chat_provide_secret(

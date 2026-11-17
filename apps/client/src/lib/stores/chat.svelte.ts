@@ -17,7 +17,7 @@ import type {
   ChatScheduledMessageDispatchRead,
   ChatScheduledMessageId,
   ChatScheduledMessageRead,
-  ChatAiTeammateRead,
+  ChatAiAgentRead,
   ChatWorkAssignmentId,
   ChatAssignmentReviewRequest,
   ChatAttachmentRead,
@@ -62,7 +62,7 @@ import {
   toggleChatMessageReactionParticipant,
   type ChatMessageReaction,
 } from "$lib/chat/timeline/organizational-message-model";
-import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/teammates/participant-display";
+import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/agents/participant-display";
 import { getProjectsStore, type ProjectsStore } from "$lib/stores/projects.svelte";
 import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
 import { preferredProjectWorkingFolder } from "$lib/chat/workspace/working-folder-selection";
@@ -116,8 +116,8 @@ const paneStores = new ChatPaneStores<ChatStore>();
  * WebView.
  */
 class ChatSharedState {
-  teammates = $state<ChatAiTeammateRead[]>([]);
-  archivedTeammates = $state<ChatAiTeammateRead[]>([]);
+  agents = $state<ChatAiAgentRead[]>([]);
+  archivedAgents = $state<ChatAiAgentRead[]>([]);
   providerDiscoveryStarted = false;
   readonly configuration = new ChatConfigurationController({
     onSettingsChanged: () => {
@@ -138,7 +138,7 @@ const shared = new ChatSharedState();
 
 /**
  * The Chat state of one split pane: its channel, thread, reply thread, composer, timeline, and panels. Settings,
- * working folders, and teammates are shared by every pane, and only the primary pane's store loads them and
+ * working folders, and agents are shared by every pane, and only the primary pane's store loads them and
  * remembers its selection for the next launch.
  */
 export class ChatStore {
@@ -153,7 +153,7 @@ export class ChatStore {
   /** Exact execution reads of recently shown reply threads, kept across remounts of the reply thread view. */
   readonly exactExecutionReads = new ExactExecutionReadCache<ExactExecutionRead>(EXACT_EXECUTION_READ_THREADS);
   selectedChannelId = $state<ChatChannelId | null>(null);
-  teammateIdentities = $derived([...this.teammates, ...this.archivedTeammates]);
+  agentIdentities = $derived([...this.agents, ...this.archivedAgents]);
   openReplyThreadId = $state<ChatReplyThreadId | null>(null);
   /**
    * The reply thread this pane shows on its own, as a workspace tab of its own, or null while it shows a channel.
@@ -303,10 +303,10 @@ export class ChatStore {
     this.configurationController.setSettings(settings);
   }
 
-  get teammates(): ChatAiTeammateRead[] { return shared.teammates; }
-  set teammates(teammates: ChatAiTeammateRead[]) { shared.teammates = teammates; }
-  get archivedTeammates(): ChatAiTeammateRead[] { return shared.archivedTeammates; }
-  set archivedTeammates(teammates: ChatAiTeammateRead[]) { shared.archivedTeammates = teammates; }
+  get agents(): ChatAiAgentRead[] { return shared.agents; }
+  set agents(agents: ChatAiAgentRead[]) { shared.agents = agents; }
+  get archivedAgents(): ChatAiAgentRead[] { return shared.archivedAgents; }
+  set archivedAgents(agents: ChatAiAgentRead[]) { shared.archivedAgents = agents; }
   /** The vault-wide queue of work that waits for the person, or `null` before the first read. */
   get reviewQueue(): ChatReviewQueueRead | null { return shared.reviewQueue.queue; }
   set reviewQueue(queue: ChatReviewQueueRead | null) { shared.reviewQueue.queue = queue; }
@@ -607,23 +607,23 @@ export class ChatStore {
     }
   }
 
-  /** Recovers interrupted turns and loads the settings, working folders, and teammates every pane shows. */
+  /** Recovers interrupted turns and loads the settings, working folders, and agents every pane shows. */
   private async loadSharedState(): Promise<{ settings: ChatSettingsRead; navigationChannels: ChatChannelRead[] }> {
     const vaultGeneration = this.vaultGeneration;
     if (localExecutionAvailable) await chatApi.recoverInterruptedChatTurns();
-    const [settings, workingFolders, navigationChannels, teammates, archivedTeammates] = await Promise.all([
+    const [settings, workingFolders, navigationChannels, agents, archivedAgents] = await Promise.all([
       chatApi.readChatSettings(),
       localExecutionAvailable
         ? workingFolderApi.listCachedProjectWorkingFolders()
         : Promise.resolve([]),
       chatApi.listChatNavigationChannels(),
-      chatApi.listChatTeammates(false),
-      chatApi.listChatTeammates(true),
+      chatApi.listChatAgents(false),
+      chatApi.listChatAgents(true),
     ]);
     if (vaultGeneration === this.vaultGeneration) {
       this.configurationController.hydrate(settings, workingFolders);
-      this.teammates = teammates;
-      this.archivedTeammates = archivedTeammates;
+      this.agents = agents;
+      this.archivedAgents = archivedAgents;
     }
     return { settings, navigationChannels };
   }
@@ -885,13 +885,13 @@ export class ChatStore {
     return this.channelNavigationController.updateDetails(channel, name, topic);
   }
 
-  async refreshTeammates(): Promise<void> {
-    const [teammates, archivedTeammates] = await Promise.all([
-      chatApi.listChatTeammates(false),
-      chatApi.listChatTeammates(true),
+  async refreshAgents(): Promise<void> {
+    const [agents, archivedAgents] = await Promise.all([
+      chatApi.listChatAgents(false),
+      chatApi.listChatAgents(true),
     ]);
-    this.teammates = teammates;
-    this.archivedTeammates = archivedTeammates;
+    this.agents = agents;
+    this.archivedAgents = archivedAgents;
     if (this.selectedChannelId) {
       this.channelNavigationController.upsert(await chatApi.readChatChannel(this.selectedChannelId));
     }
@@ -972,7 +972,7 @@ export class ChatStore {
     this.publishChannelChange(channelId);
   }
 
-  /** Schedules the message a person confirmed from a teammate's schedule proposal in the selected channel. */
+  /** Schedules the message a person confirmed from an agent's schedule proposal in the selected channel. */
   async confirmScheduleProposal(
     request: import("$lib/chat/contracts").ConfirmScheduleProposalRequest,
   ): Promise<ChatScheduledMessageRead> {
@@ -982,7 +982,7 @@ export class ChatStore {
     return scheduled;
   }
 
-  /** Pushes the commit of a teammate's push request in `workingFolderId` and posts the confirming reply. */
+  /** Pushes the commit of an agent's push request in `workingFolderId` and posts the confirming reply. */
   async confirmPushRequest(
     request: import("$lib/chat/contracts").ConfirmPushRequestRequest,
     workingFolderId: string,
@@ -1580,7 +1580,7 @@ export class ChatStore {
   }
 
   /**
-   * Rereads channels, teammates, and the open conversation after sync changed Chat rows. Sync names tables, not
+   * Rereads channels, agents, and the open conversation after sync changed Chat rows. Sync names tables, not
    * rows, so this rereads what the pane shows. Receiving never publishes, so windows do not echo each other.
    */
   private async refreshFromSync(): Promise<void> {
@@ -1592,7 +1592,7 @@ export class ChatStore {
     this.channelNavigationController.refreshNavigation(channels);
     this.refreshWaitingAssignments();
     this.refreshReviewQueue();
-    if (this.owner) await this.refreshTeammates();
+    if (this.owner) await this.refreshAgents();
     const channelId = this.selectedChannelId;
     if (!isCurrentVault() || !channelId || !this.channelNavigationController.find(channelId)) return;
     this.organizationalController.scheduledMessagesVersion += 1;
@@ -1775,8 +1775,8 @@ export function useChat(): ChatStore {
 export function resetChatForVault(): void {
   for (const store of paneStores.all()) store.resetPaneForVault();
   shared.providerDiscoveryStarted = false;
-  shared.teammates = [];
-  shared.archivedTeammates = [];
+  shared.agents = [];
+  shared.archivedAgents = [];
   shared.configuration.reset();
   shared.reviewQueue.reset();
   chatPanelVisibility.clear();

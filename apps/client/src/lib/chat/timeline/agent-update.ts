@@ -15,7 +15,7 @@ import { compareOrderKeyThenId } from "$lib/utils/order-key";
 /** Payload source a host tool call writes on the agent updates it posts. */
 export const HOST_TOOL_UPDATE_SOURCE = "host_tool";
 
-/** Kinds of report a teammate posts through the report host tool. */
+/** Kinds of report an agent posts through the report host tool. */
 const HOST_REPORT_KINDS = ["plan", "replan", "result"] as const;
 
 /** A report kind posted through the report host tool. */
@@ -201,7 +201,7 @@ export function answerableHostQuestion(
       return presentation.choices.length > 0 ? { messageItemId: reply.itemId, choices: presentation.choices } : null;
     }
     if (presentation?.kind === "push_request" && presentation.assignmentId === assignment.id) return null;
-    if (reply.author && reply.author.kind !== "ai_teammate") return null;
+    if (reply.author && reply.author.kind !== "ai_agent") return null;
   }
   return null;
 }

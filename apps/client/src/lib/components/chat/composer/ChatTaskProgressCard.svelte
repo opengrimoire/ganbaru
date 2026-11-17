@@ -1,6 +1,6 @@
 <!--
   @component
-  A calm summary of the teammate's latest structured plan above the reply composer: how many steps
+  A calm summary of the agent's latest structured plan above the reply composer: how many steps
   are done, one bar segment per step, and the step in progress. The step text collapses away.
 -->
 <script lang="ts">

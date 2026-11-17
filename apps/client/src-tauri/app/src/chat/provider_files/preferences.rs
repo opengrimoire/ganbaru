@@ -1,8 +1,8 @@
 //! Typed reads and edits of the preferences in a provider configuration file.
 //!
 //! Each provider family with a catalog shows those entries as typed controls: the Claude and
-//! Cursor teammate allowlists in [`ganbaru_chat_providers::teammate_preferences`], and the
-//! [`catalogs`] of providers whose teammates read the user's configuration themselves. A read
+//! Cursor agent allowlists in [`ganbaru_chat_providers::agent_preferences`], and the
+//! [`catalogs`] of providers whose agents read the user's configuration themselves. A read
 //! reports the value the provider keeps, and an edit changes only that entry of the user's
 //! document and keeps every other key and its order. TOML and JSON with comments also keep their
 //! comments and formatting.
@@ -12,8 +12,8 @@ mod jsonc;
 mod toml_document;
 
 use ganbaru_chat_contracts::models::{ChatError, ChatResult};
-use ganbaru_chat_providers::teammate_preferences::{
-    PreferenceLocation, PreferenceType, TeammatePreference, checked_setting, checked_variable,
+use ganbaru_chat_providers::agent_preferences::{
+    AgentPreference, PreferenceLocation, PreferenceType, checked_setting, checked_variable,
     insert_at, remove_at, scalar_text, switch_enabled, value_at,
 };
 use serde::Serialize;
@@ -41,7 +41,7 @@ pub(super) enum DocumentSyntax {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct PreferenceCatalog {
     pub syntax: DocumentSyntax,
-    pub preferences: &'static [TeammatePreference],
+    pub preferences: &'static [AgentPreference],
 }
 
 /// A configuration document whose entries a preference reads and edits.
@@ -117,7 +117,7 @@ pub struct ProviderPreferenceRead {
     pub variable: bool,
     /// A boolean for switches and booleans, a string otherwise, or null when unset.
     pub value: Value,
-    /// Whether the file sets a value that fails its check, so the provider or teammate launch
+    /// Whether the file sets a value that fails its check, so the provider or agent launch
     /// may not keep it.
     pub ignored: bool,
     /// Longest accepted text, for text preferences.
@@ -180,7 +180,7 @@ pub(super) fn apply_preference(
 
 fn read_document<D: PreferenceDocument>(
     contents: &str,
-    preferences: &[TeammatePreference],
+    preferences: &[AgentPreference],
 ) -> ProviderPreferencesRead {
     let document = D::parse(contents);
     ProviderPreferencesRead {
@@ -199,7 +199,7 @@ fn read_document<D: PreferenceDocument>(
 
 fn apply_to_document<D: PreferenceDocument>(
     contents: &str,
-    preferences: &[TeammatePreference],
+    preferences: &[AgentPreference],
     preference_id: &str,
     value: &Value,
 ) -> ChatResult<String> {
@@ -231,14 +231,14 @@ fn apply_to_document<D: PreferenceDocument>(
 }
 
 /// Key path of a preference inside the document.
-fn document_path(preference: &TeammatePreference) -> Vec<&'static str> {
+fn document_path(preference: &AgentPreference) -> Vec<&'static str> {
     match preference.location {
         PreferenceLocation::Setting(path) => path.to_vec(),
         PreferenceLocation::Variable(name) => vec![VARIABLES_OBJECT, name],
     }
 }
 
-fn read_preference(preference: &TeammatePreference, raw: Option<&Value>) -> ProviderPreferenceRead {
+fn read_preference(preference: &AgentPreference, raw: Option<&Value>) -> ProviderPreferenceRead {
     let value = raw.and_then(|raw| shown_value(preference, raw));
     let (max_bytes, multiline, empty_allowed) = match preference.value_type {
         PreferenceType::Text {
@@ -267,7 +267,7 @@ fn read_preference(preference: &TeammatePreference, raw: Option<&Value>) -> Prov
 
 /// The value the settings page shows for a raw document value, when it passes its check.
 /// Counts and shares are shown as text, as the page edits them in text fields.
-fn shown_value(preference: &TeammatePreference, raw: &Value) -> Option<Value> {
+fn shown_value(preference: &AgentPreference, raw: &Value) -> Option<Value> {
     match preference.location {
         PreferenceLocation::Setting(_) => {
             let checked = checked_setting(preference.value_type, raw)?;
@@ -291,7 +291,7 @@ fn shown_value(preference: &TeammatePreference, raw: &Value) -> Option<Value> {
 }
 
 /// The document value for an edit, or `None` to remove the entry.
-fn stored_value(preference: &TeammatePreference, value: &Value) -> ChatResult<Option<Value>> {
+fn stored_value(preference: &AgentPreference, value: &Value) -> ChatResult<Option<Value>> {
     if value.is_null() {
         return Ok(None);
     }
@@ -344,7 +344,7 @@ fn preference_type(value_type: PreferenceType) -> ProviderPreferenceType {
 mod tests {
     use super::*;
     use crate::chat::provider_files::ProviderFileFormat;
-    use ganbaru_chat_providers::teammate_preferences::{CLAUDE_PREFERENCES, CURSOR_PREFERENCES};
+    use ganbaru_chat_providers::agent_preferences::{CLAUDE_PREFERENCES, CURSOR_PREFERENCES};
     use serde_json::json;
 
     const CLAUDE: PreferenceCatalog = PreferenceCatalog {

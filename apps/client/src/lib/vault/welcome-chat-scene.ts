@@ -10,7 +10,7 @@ import { cursorClick, cursorRest, WELCOME_CURSOR_TRAVEL_MS, type WelcomeCursorSc
 import { easeInOutCubic, filmCaretOn, filmSpan, filmTap, filmTyped } from "./welcome-film";
 import { PROJECTS_CURSOR_REST_ANCHOR } from "./welcome-projects-scene";
 
-/** The agents in the channel, by the names their teammate identities carry, and the model company each one runs on. */
+/** The agents in the channel, by the names their agent identities carry, and the model company each one runs on. */
 export const CHAT_SCENE_AGENTS = [
   { key: "claude", name: "Claude", familyId: "claude" },
   { key: "codex", name: "Codex", familyId: "codex" },

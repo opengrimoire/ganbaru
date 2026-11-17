@@ -1,4 +1,4 @@
-//! Fixtures for reads of assignment attention: channels, reply threads, teammates, and
+//! Fixtures for reads of assignment attention: channels, reply threads, agents, and
 //! assignments in any state, written directly so a test controls every timestamp.
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
@@ -29,12 +29,12 @@ pub(crate) fn minutes_after_seed(minutes: i64) -> String {
     (seeded + Duration::minutes(minutes)).to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-/// Writes an AI teammate named `display_name`.
-pub(crate) async fn seed_teammate(pool: &sqlx::SqlitePool, id: &str, display_name: &str) {
+/// Writes an AI agent named `display_name`.
+pub(crate) async fn seed_agent(pool: &sqlx::SqlitePool, id: &str, display_name: &str) {
     sqlx::query(
         "INSERT INTO chat_participants
             (id, participant_kind, display_name, created_at, updated_at)
-         VALUES (?, 'ai_teammate', ?, ?, ?)",
+         VALUES (?, 'ai_agent', ?, ?, ?)",
     )
     .bind(id)
     .bind(display_name)
@@ -44,7 +44,7 @@ pub(crate) async fn seed_teammate(pool: &sqlx::SqlitePool, id: &str, display_nam
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO chat_teammates (participant_id, role, created_at, updated_at)
+        "INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
          VALUES (?, 'Reviewer', ?, ?)",
     )
     .bind(id)
@@ -173,7 +173,7 @@ fn root_item_id(thread_id: &str) -> String {
 pub(crate) struct SeedAssignment<'a> {
     pub id: &'a str,
     pub reply_thread_id: &'a str,
-    pub teammate_id: &'a str,
+    pub agent_id: &'a str,
     pub state: &'a str,
     pub updated_at: String,
     pub settled_at: Option<String>,
@@ -188,7 +188,7 @@ impl<'a> SeedAssignment<'a> {
     pub(crate) fn new(
         id: &'a str,
         reply_thread_id: &'a str,
-        teammate_id: &'a str,
+        agent_id: &'a str,
         state: &'a str,
         minutes: i64,
     ) -> Self {
@@ -198,7 +198,7 @@ impl<'a> SeedAssignment<'a> {
         Self {
             id,
             reply_thread_id,
-            teammate_id,
+            agent_id,
             state,
             updated_at,
             settled_at,
@@ -215,7 +215,7 @@ pub(crate) async fn seed_assignment(pool: &sqlx::SqlitePool, assignment: &SeedAs
     let delegated = assignment.parent_assignment_id.is_some();
     sqlx::query(
         "INSERT INTO chat_work_assignments
-            (id, reply_thread_id, teammate_id, triggering_message_item_id,
+            (id, reply_thread_id, agent_id, triggering_message_item_id,
              executing_device_id, previous_assignment_id, state, state_reason, settled_at,
              parent_assignment_id, delegation_depth, delegation_objective,
              delegation_expected_result, delegation_folder_ceiling, created_at, updated_at)
@@ -223,7 +223,7 @@ pub(crate) async fn seed_assignment(pool: &sqlx::SqlitePool, assignment: &SeedAs
     )
     .bind(assignment.id)
     .bind(assignment.reply_thread_id)
-    .bind(assignment.teammate_id)
+    .bind(assignment.agent_id)
     .bind(root_item_id(assignment.reply_thread_id))
     .bind(assignment.executing_device_id)
     .bind(assignment.previous_assignment_id)
@@ -326,13 +326,13 @@ pub(crate) async fn seed_reply(
     .unwrap();
 }
 
-/// Writes the failure message `item_id` of `assignment_id` as a reply by `teammate_id`, the way
+/// Writes the failure message `item_id` of `assignment_id` as a reply by `agent_id`, the way
 /// a failed run posts it.
 pub(crate) async fn seed_failure_update(
     pool: &sqlx::SqlitePool,
     reply_thread_id: &str,
     assignment_id: &str,
-    teammate_id: &str,
+    agent_id: &str,
     item_id: &str,
     order_key: &str,
     created_at: &str,
@@ -341,7 +341,7 @@ pub(crate) async fn seed_failure_update(
         pool,
         reply_thread_id,
         item_id,
-        teammate_id,
+        agent_id,
         order_key,
         created_at,
     )

@@ -13,7 +13,7 @@ import type {
   ChatParticipantId,
   ChatReplyThreadId,
   ChatScheduledMessageId,
-  ChatTeammatePolicyRevisionId,
+  ChatAgentPolicyRevisionId,
   ChatExecutionEnvironmentId,
   ChatScratchGenerationId,
   ChatScratchScopeId,
@@ -32,20 +32,20 @@ import type {
 import type { ModelOptionSelection } from "./provider";
 import type { ChatRecurrenceSpec, ChatScheduledRecurrenceRead } from "./scheduling";
 
-export const CHAT_PARTICIPANT_KINDS = ["local_user", "ai_teammate", "human"] as const;
+export const CHAT_PARTICIPANT_KINDS = ["local_user", "ai_agent", "human"] as const;
 export type ChatParticipantKind = (typeof CHAT_PARTICIPANT_KINDS)[number];
 
 /** How a reply reaches active work: `steer` into the running turn, or `queue` after it ends. */
 export const CHAT_FOLLOWUP_ROUTINGS = ["steer", "queue"] as const;
 export type ChatFollowupRouting = (typeof CHAT_FOLLOWUP_ROUTINGS)[number];
 
-export const CHAT_TEAMMATE_CONFIGURATION_STATES = [
+export const CHAT_AGENT_CONFIGURATION_STATES = [
   "healthy",
   "needs_setup",
   "provider_unavailable",
   "folder_access_missing",
 ] as const;
-export type ChatTeammateConfigurationState = (typeof CHAT_TEAMMATE_CONFIGURATION_STATES)[number];
+export type ChatAgentConfigurationState = (typeof CHAT_AGENT_CONFIGURATION_STATES)[number];
 
 export const CHAT_WORK_ASSIGNMENT_STATES = [
   "queued",
@@ -123,7 +123,7 @@ export const CHAT_ACCESS_ISSUE_CODES = [
   "profile_ceiling_exceeded",
   "profile_not_found",
   "retained_reference_disclosure",
-  "teammate_not_found",
+  "agent_not_found",
 ] as const;
 export type ChatAccessIssueCode = (typeof CHAT_ACCESS_ISSUE_CODES)[number];
 
@@ -152,8 +152,8 @@ export interface ChatAccessProfileRead {
   archivedAt: UtcTimestamp | null;
 }
 
-/** One local day of a teammate's usage, summed across the devices that ran it. */
-export interface ChatTeammateUsageDayRead {
+/** One local day of an agent's usage, summed across the devices that ran it. */
+export interface ChatAgentUsageDayRead {
   /** The day in `YYYY-MM-DD` form. */
   localDate: string;
   countedTokens: number;
@@ -196,7 +196,7 @@ export interface ChatFolderGrant {
   revokedAt: UtcTimestamp | null;
 }
 
-export interface ChatTeammateChannelAccess {
+export interface ChatAgentChannelAccess {
   channelId: ChatChannelId;
   conversationId: ChatConversationId;
   projectId: string;
@@ -215,14 +215,14 @@ export interface ChatTeammateChannelAccess {
   removedAt: UtcTimestamp | null;
 }
 
-export interface ChatTeammateAccessRead {
-  teammateId: ChatParticipantId;
+export interface ChatAgentAccessRead {
+  agentId: ChatParticipantId;
   accessRevision: number;
-  teammateDefaultRuntimeApproval: ChatRuntimeApprovalPolicy;
-  channels: ChatTeammateChannelAccess[];
+  agentDefaultRuntimeApproval: ChatRuntimeApprovalPolicy;
+  channels: ChatAgentChannelAccess[];
 }
 
-export interface ChatTeammateChannelAccessInput {
+export interface ChatAgentChannelAccessInput {
   channelId: ChatChannelId;
   accessProfileId: ChatAccessProfileId;
   /** Effective profile revision the draft was made against; saving refuses any other. */
@@ -239,26 +239,26 @@ export interface ChatTeammateChannelAccessInput {
   }>;
 }
 
-export interface ReplaceChatTeammateAccessRequest {
-  teammateId: ChatParticipantId;
+export interface ReplaceChatAgentAccessRequest {
+  agentId: ChatParticipantId;
   expectedAccessRevision: number;
-  channels: ChatTeammateChannelAccessInput[];
-  teammateProfile?: UpdateChatTeammateProfileRequest | null;
-  policy?: ChatTeammatePolicyInput | null;
+  channels: ChatAgentChannelAccessInput[];
+  agentProfile?: UpdateChatAgentProfileRequest | null;
+  policy?: ChatAgentPolicyInput | null;
 }
 
-export interface ChatTeammateAccessPreviewIssue {
+export interface ChatAgentAccessPreviewIssue {
   code: ChatAccessIssueCode;
   fieldPath: string;
   message: string;
 }
 
-export interface ChatTeammateAccessPreviewRead {
-  proposed: ChatTeammateAccessRead | null;
+export interface ChatAgentAccessPreviewRead {
+  proposed: ChatAgentAccessRead | null;
   isExpansion: boolean;
   addedChannelIds: ChatChannelId[];
   removedChannelIds: ChatChannelId[];
-  issues: ChatTeammateAccessPreviewIssue[];
+  issues: ChatAgentAccessPreviewIssue[];
 }
 
 export interface ChatAccessProfileImpactPreviewRead {
@@ -266,10 +266,10 @@ export interface ChatAccessProfileImpactPreviewRead {
   currentRevision: ChatAccessProfileRevision;
   isExpansion: boolean;
   isReduction: boolean;
-  affectedTeammateIds: ChatParticipantId[];
+  affectedAgentIds: ChatParticipantId[];
   affectedChannelIds: ChatChannelId[];
   activeAuthorizationCount: number;
-  issues: ChatTeammateAccessPreviewIssue[];
+  issues: ChatAgentAccessPreviewIssue[];
 }
 
 export type ChatExecutionTarget =
@@ -324,7 +324,7 @@ export interface ChatAssignmentTargetRead {
 }
 
 export interface ListChatAssignmentTargetsRequest {
-  teammateId: ChatParticipantId;
+  agentId: ChatParticipantId;
   channelId: ChatChannelId;
   replyThreadId: ChatReplyThreadId | null;
 }
@@ -381,8 +381,8 @@ export interface ChatScratchGenerationRead {
 export interface ChatScratchScopeRead {
   id: ChatScratchScopeId;
   replyThreadId: ChatReplyThreadId;
-  teammateId: ChatParticipantId;
-  teammateName: string;
+  agentId: ChatParticipantId;
+  agentName: string;
   channelId: ChatChannelId;
   channelName: string;
   projectId: string;
@@ -489,7 +489,7 @@ export interface ChatScratchReclaimRow {
   scratchGenerationId: ChatScratchGenerationId;
   replyThreadId: ChatReplyThreadId;
   generation: number;
-  teammateName: string;
+  agentName: string;
   channelName: string;
   projectName: string;
   groupName: string | null;
@@ -562,9 +562,9 @@ export interface ChatParticipantRead {
   archivedAt: UtcTimestamp | null;
 }
 
-export interface ChatTeammatePolicyRead {
-  id: ChatTeammatePolicyRevisionId;
-  teammateId: ChatParticipantId;
+export interface ChatAgentPolicyRead {
+  id: ChatAgentPolicyRevisionId;
+  agentId: ChatParticipantId;
   revision: number;
   providerInstanceId: ProviderInstanceId;
   safetyMode: SafetyMode;
@@ -577,12 +577,12 @@ export interface ChatTeammatePolicyRead {
   createdAt: UtcTimestamp;
 }
 
-export interface ChatAiTeammateRead {
+export interface ChatAiAgentRead {
   participant: ChatParticipantRead;
   role: string;
   instructions: string;
-  configurationState: ChatTeammateConfigurationState;
-  latestPolicy: ChatTeammatePolicyRead | null;
+  configurationState: ChatAgentConfigurationState;
+  latestPolicy: ChatAgentPolicyRead | null;
   channelCount: number;
   activeAssignmentCount: number;
 }
@@ -615,18 +615,18 @@ export interface ChatChannelRosterRead {
 }
 
 export interface PreviewChatChannelMembershipRemovalRequest {
-  teammateId: ChatParticipantId;
+  agentId: ChatParticipantId;
   channelId: ChatChannelId;
   expectedAccessRevision: number;
 }
 
 export interface ChatChannelMembershipRemovalPreview {
-  teammateId: ChatParticipantId;
+  agentId: ChatParticipantId;
   channelId: ChatChannelId;
   activeAssignmentCount: number;
   activeAuthorizationCount: number;
   willRevokeActiveWork: boolean;
-  proposedAccess: ChatTeammateAccessRead;
+  proposedAccess: ChatAgentAccessRead;
 }
 
 export interface ChatProjectPrimaryWorkingFolderRead {
@@ -720,12 +720,12 @@ export interface ChatChannelPageRead {
 export interface ChatWorkAssignmentRead {
   id: ChatWorkAssignmentId;
   replyThreadId: ChatReplyThreadId;
-  teammate: ChatParticipantRead;
+  agent: ChatParticipantRead;
   triggeringMessageItemId: ChatConversationItemId;
   previousAssignmentId: ChatWorkAssignmentId | null;
   state: ChatWorkAssignmentState;
   stateReason: string | null;
-  /** Where this work came from when another teammate delegated it; null for work a person started. */
+  /** Where this work came from when another agent delegated it; null for work a person started. */
   delegation: ChatAssignmentDelegationRead | null;
   revision: number;
   settledAt: UtcTimestamp | null;
@@ -750,19 +750,19 @@ export interface ChatAssignmentDelegationRead {
   expectedResult: string;
 }
 
-/** Work a teammate delegated from an assignment, with its live state. */
+/** Work an agent delegated from an assignment, with its live state. */
 export interface ChatDelegatedChildRead {
   assignmentId: ChatWorkAssignmentId;
   parentAssignmentId: ChatWorkAssignmentId;
   replyThreadId: ChatReplyThreadId;
-  teammate: ChatParticipantRead;
+  agent: ChatParticipantRead;
   objective: string;
   state: ChatWorkAssignmentState;
   stateReason: string | null;
   createdAt: UtcTimestamp;
 }
 
-/** A secret value a running teammate asked for, open until a person provides or declines it or it expires. */
+/** A secret value a running agent asked for, open until a person provides or declines it or it expires. */
 export interface ChatSecretRequestRead {
   id: string;
   assignmentId: ChatWorkAssignmentId;
@@ -794,7 +794,7 @@ export interface ChatWaitingAssignmentRead {
   channelId: ChatChannelId;
   channelName: string;
   replyThreadId: ChatReplyThreadId;
-  teammateDisplayName: string;
+  agentDisplayName: string;
   createdAt: UtcTimestamp;
 }
 
@@ -824,8 +824,8 @@ export interface ChatReviewQueueItemRead {
   channelId: ChatChannelId;
   channelName: string;
   replyThreadId: ChatReplyThreadId;
-  teammateParticipantId: ChatParticipantId;
-  teammateDisplayName: string;
+  agentParticipantId: ChatParticipantId;
+  agentDisplayName: string;
   /** The assignment state reason, clipped for display. */
   stateReason: string | null;
   /** Distinct files the assignment's review updates report as changed. */
@@ -885,7 +885,7 @@ export interface ChatAgentRunRead {
   workingFolderId: ProjectWorkingFolderId | null;
   executionEnvironmentId: ChatExecutionEnvironmentId;
   scratchGenerationId: ChatScratchGenerationId | null;
-  teammatePolicyRevisionId: ChatTeammatePolicyRevisionId;
+  agentPolicyRevisionId: ChatAgentPolicyRevisionId;
   effort: string | null;
   providerExecutionTurnId: ChatTurnId;
   providerExecutionThreadId: ChatThreadId | null;
@@ -929,7 +929,7 @@ export interface ChatMessageSearchResultRead {
   createdAt: UtcTimestamp;
 }
 
-export interface ChatTeammatePolicyInput {
+export interface ChatAgentPolicyInput {
   providerInstanceId: ProviderInstanceId;
   safetyMode: SafetyMode;
   providerManagedModel: boolean;
@@ -940,17 +940,17 @@ export interface ChatTeammatePolicyInput {
   providerOptions: VersionedJson;
 }
 
-export interface CreateChatTeammateRequest {
-  teammateId: ChatParticipantId;
+export interface CreateChatAgentRequest {
+  agentId: ChatParticipantId;
   displayName: string;
   avatar: VersionedJson;
   role: string;
   instructions: string;
-  policy: ChatTeammatePolicyInput;
+  policy: ChatAgentPolicyInput;
 }
 
-export interface UpdateChatTeammateProfileRequest {
-  teammateId: ChatParticipantId;
+export interface UpdateChatAgentProfileRequest {
+  agentId: ChatParticipantId;
   displayName: string;
   avatar: VersionedJson;
   role: string;

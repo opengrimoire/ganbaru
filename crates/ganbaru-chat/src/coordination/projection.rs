@@ -9,7 +9,7 @@ use super::super::models::{
     ChatWorkAssignmentId,
 };
 use super::reports::{
-    TeammateUpdate, insert_teammate_update, run_asked_host_question, run_result_report,
+    AgentUpdate, insert_agent_update, run_asked_host_question, run_result_report,
 };
 use crate::models::ChatTurnState;
 use crate::usage_counters::record_run_usage;
@@ -47,7 +47,7 @@ pub async fn project_provider_event_in_transaction(
 ) -> ChatResult<bool> {
     let run = sqlx::query(
         "SELECT run.id AS run_id, run.state AS run_state, run.assignment_id,
-                assignment.reply_thread_id, assignment.teammate_id
+                assignment.reply_thread_id, assignment.agent_id
          FROM chat_agent_runs run
          JOIN chat_work_assignments assignment ON assignment.id = run.assignment_id
          WHERE (
@@ -81,8 +81,8 @@ pub async fn project_provider_event_in_transaction(
             .map_err(persistence_error)?,
     )
     .map_err(identifier_error)?;
-    let teammate_id = ChatParticipantId::new(
-        run.try_get::<String, _>("teammate_id")
+    let agent_id = ChatParticipantId::new(
+        run.try_get::<String, _>("agent_id")
             .map_err(persistence_error)?,
     )
     .map_err(identifier_error)?;
@@ -90,7 +90,7 @@ pub async fn project_provider_event_in_transaction(
         run_id: &run_id,
         assignment_id: &assignment_id,
         reply_thread_id: &reply_thread_id,
-        teammate_id: &teammate_id,
+        agent_id: &agent_id,
     };
     // Usage folds before any exit of the event arms, so a turn that settles only its run, or
     // that finds its assignment already settled, still counts what it spent.
@@ -132,7 +132,7 @@ async fn project_event_arms(
     };
     let projected = match &runtime.event {
         CanonicalEvent::PlanUpdated(event) => {
-            insert_projected_teammate_message(
+            insert_projected_agent_message(
                 transaction,
                 runtime,
                 target,
@@ -143,7 +143,7 @@ async fn project_event_arms(
             .await?
         }
         CanonicalEvent::ProposedPlanCompleted(event) => {
-            insert_projected_teammate_message(
+            insert_projected_agent_message(
                 transaction,
                 runtime,
                 target,
@@ -173,7 +173,7 @@ async fn project_event_arms(
             {
                 return Ok(false);
             }
-            insert_projected_teammate_message(
+            insert_projected_agent_message(
                 transaction,
                 runtime,
                 target,
@@ -208,7 +208,7 @@ async fn project_event_arms(
             {
                 return Ok(false);
             }
-            insert_projected_teammate_message(
+            insert_projected_agent_message(
                 transaction,
                 runtime,
                 target,
@@ -254,7 +254,7 @@ async fn project_event_arms(
                 .or(markdown.as_deref())
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or("The provider reached its usage limit.");
-            insert_projected_teammate_message(
+            insert_projected_agent_message(
                 transaction,
                 runtime,
                 target,
@@ -289,7 +289,7 @@ async fn project_event_arms(
                 if changed_files.is_empty() {
                     false
                 } else {
-                    insert_projected_teammate_message(
+                    insert_projected_agent_message(
                         transaction,
                         runtime,
                         target,
@@ -318,7 +318,7 @@ async fn project_event_arms(
                 {
                     return Ok(true);
                 }
-                insert_projected_teammate_message(
+                insert_projected_agent_message(
                     transaction,
                     runtime,
                     target,
@@ -360,7 +360,7 @@ async fn project_event_arms(
             {
                 return Ok(true);
             }
-            insert_projected_teammate_message(
+            insert_projected_agent_message(
                 transaction,
                 runtime,
                 target,
@@ -384,7 +384,7 @@ async fn project_event_arms(
             {
                 return Ok(true);
             }
-            insert_projected_teammate_message(
+            insert_projected_agent_message(
                 transaction,
                 runtime,
                 target,
@@ -545,10 +545,10 @@ struct ProjectionTarget<'a> {
     run_id: &'a str,
     assignment_id: &'a ChatWorkAssignmentId,
     reply_thread_id: &'a ChatReplyThreadId,
-    teammate_id: &'a ChatParticipantId,
+    agent_id: &'a ChatParticipantId,
 }
 
-async fn insert_projected_teammate_message(
+async fn insert_projected_agent_message(
     transaction: &mut Transaction<'_, Sqlite>,
     runtime: &CanonicalRuntimeEvent,
     target: &ProjectionTarget<'_>,
@@ -559,13 +559,13 @@ async fn insert_projected_teammate_message(
     let event_hash = sha256_hex(runtime.event_id.as_str().as_bytes());
     let item_id = format!("organizational-item:{event_hash}");
     let revision_id = format!("organizational-revision:{event_hash}");
-    insert_teammate_update(
+    insert_agent_update(
         transaction,
-        &TeammateUpdate {
+        &AgentUpdate {
             item_id: &item_id,
             revision_id: &revision_id,
             reply_thread_id: target.reply_thread_id.as_str(),
-            teammate_id: target.teammate_id.as_str(),
+            agent_id: target.agent_id.as_str(),
             assignment_id: target.assignment_id.as_str(),
             run_id: Some(target.run_id),
             update_kind,

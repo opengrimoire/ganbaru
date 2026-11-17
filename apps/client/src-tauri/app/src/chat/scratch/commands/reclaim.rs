@@ -45,7 +45,7 @@ struct ReclaimCandidate {
     execution_environment_id: ChatExecutionEnvironmentId,
     reply_thread_id: ChatReplyThreadId,
     generation: u64,
-    teammate_name: String,
+    agent_name: String,
     channel_name: String,
     project_name: String,
     group_name: Option<String>,
@@ -68,7 +68,7 @@ impl ReclaimCandidate {
             scratch_generation_id: self.generation_id,
             reply_thread_id: self.reply_thread_id,
             generation: self.generation,
-            teammate_name: self.teammate_name,
+            agent_name: self.agent_name,
             channel_name: self.channel_name,
             project_name: self.project_name,
             group_name: self.group_name,
@@ -86,7 +86,7 @@ async fn read_reclaim_candidates(pool: &SqlitePool) -> ChatResult<Vec<ReclaimCan
     let rows = sqlx::query(
         "SELECT scope.id AS scope_id, scope.reply_thread_id,
                 scope.lifecycle_state AS scope_lifecycle,
-                teammate.display_name AS teammate_name,
+                agent.display_name AS agent_name,
                 channel.name AS channel_name, project.name AS project_name,
                 project_group.name AS group_name,
                 generation.id AS generation_id, generation.generation,
@@ -101,7 +101,7 @@ async fn read_reclaim_candidates(pool: &SqlitePool) -> ChatResult<Vec<ReclaimCan
                  WHERE run.scratch_generation_id = generation.id) AS last_run_at
          FROM chat_scratch_generations generation
          JOIN chat_scratch_scopes scope ON scope.id = generation.scratch_scope_id
-         JOIN chat_participants teammate ON teammate.id = scope.teammate_id
+         JOIN chat_participants agent ON agent.id = scope.agent_id
          JOIN chat_reply_threads thread ON thread.id = scope.reply_thread_id
          JOIN chat_channels channel ON channel.conversation_id = thread.conversation_id
          JOIN projects project ON project.id = channel.project_id
@@ -138,7 +138,7 @@ async fn read_reclaim_candidates(pool: &SqlitePool) -> ChatResult<Vec<ReclaimCan
             )?,
             reply_thread_id: parse_id(row.try_get("reply_thread_id").map_err(persistence_error)?)?,
             generation: u64_value(row.try_get("generation").map_err(persistence_error)?)?,
-            teammate_name: row.try_get("teammate_name").map_err(persistence_error)?,
+            agent_name: row.try_get("agent_name").map_err(persistence_error)?,
             channel_name: row.try_get("channel_name").map_err(persistence_error)?,
             project_name: row.try_get("project_name").map_err(persistence_error)?,
             group_name: row.try_get("group_name").map_err(persistence_error)?,

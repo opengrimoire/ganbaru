@@ -37,13 +37,13 @@ INSERT INTO project_tasks
 VALUES ('task-child', 'project-chat', 'section-later', 'status-todo', 'task-now', 'Child', 'a2', 'a1');
 
 INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
-VALUES ('participant-teammate', 'ai_teammate', 'Helper',
+VALUES ('participant-agent', 'ai_agent', 'Helper',
         '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
-INSERT INTO chat_teammates (participant_id, role, created_at, updated_at)
-VALUES ('participant-teammate', 'Builds things', '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
-INSERT INTO chat_teammate_policy_revisions
-    (id, teammate_id, provider_instance_id, model_selection_data, created_at)
-VALUES ('policy-1', 'participant-teammate', 'codex-personal', '{}', '2026-10-23T00:00:00.000Z');
+INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
+VALUES ('participant-agent', 'Builds things', '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
+INSERT INTO chat_agent_policy_revisions
+    (id, agent_id, provider_instance_id, model_selection_data, created_at)
+VALUES ('policy-1', 'participant-agent', 'codex-personal', '{}', '2026-10-23T00:00:00.000Z');
 
 INSERT INTO chat_conversations (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
 VALUES ('conversation-general', 'project-chat', 'channel', '2026-10-23T00:00:00.000Z',
@@ -55,17 +55,17 @@ INSERT INTO chat_conversation_memberships
     (conversation_id, participant_id, sync_key, membership_role, created_at, updated_at)
 VALUES ('conversation-general', 'participant:local-owner', 'membership-owner', 'owner',
         '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z'),
-       ('conversation-general', 'participant-teammate', 'membership-teammate', 'member',
+       ('conversation-general', 'participant-agent', 'membership-agent', 'member',
         '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
-INSERT INTO chat_teammate_channel_memberships
-    (conversation_id, teammate_id, sync_key, access_profile_id, created_at, updated_at)
-VALUES ('conversation-general', 'participant-teammate', 'channel-membership-teammate',
+INSERT INTO chat_agent_channel_memberships
+    (conversation_id, agent_id, sync_key, access_profile_id, created_at, updated_at)
+VALUES ('conversation-general', 'participant-agent', 'channel-membership-agent',
         'access-profile:edit-files', '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
-INSERT INTO chat_teammate_working_folder_grants
-    (conversation_id, teammate_id, project_id, working_folder_id, sync_key, capability, created_at)
-VALUES ('conversation-general', 'participant-teammate', 'project-chat', 'folder-managed',
+INSERT INTO chat_agent_working_folder_grants
+    (conversation_id, agent_id, project_id, working_folder_id, sync_key, capability, created_at)
+VALUES ('conversation-general', 'participant-agent', 'project-chat', 'folder-managed',
         'grant-managed', 'edit', '2026-10-23T00:00:00.000Z'),
-       ('conversation-general', 'participant-teammate', 'project-chat', 'folder-archived',
+       ('conversation-general', 'participant-agent', 'project-chat', 'folder-archived',
         'grant-archived', 'read', '2026-10-23T00:00:00.000Z');
 
 INSERT INTO chat_conversation_items (id, conversation_id, item_kind, order_key, created_at)
@@ -93,12 +93,12 @@ VALUES ('reply-thread', 'conversation-general', 'item-root', '2026-10-23T00:00:0
         '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 
 INSERT INTO chat_work_assignments
-    (id, reply_thread_id, teammate_id, triggering_message_item_id, state, created_at, updated_at)
-VALUES ('assignment-1', 'reply-thread', 'participant-teammate', 'item-root', 'working',
+    (id, reply_thread_id, agent_id, triggering_message_item_id, state, created_at, updated_at)
+VALUES ('assignment-1', 'reply-thread', 'participant-agent', 'item-root', 'working',
         '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_assignment_authorization_revisions
-    (id, assignment_id, revision, requester_participant_id, teammate_policy_revision_id,
-     teammate_access_revision, destination_conversation_id, access_profile_revision_id,
+    (id, assignment_id, revision, requester_participant_id, agent_policy_revision_id,
+     agent_access_revision, destination_conversation_id, access_profile_revision_id,
      execution_environment_id, working_folder_id, resolved_runtime_approval_policy, scope_digest,
      decision_state, created_at)
 VALUES ('authorization-1', 'assignment-1', 1, 'participant:local-owner', 'policy-1', 1,
@@ -134,7 +134,7 @@ VALUES ('turn-1', 'thread-managed', 0, 'active', 'ask_for_approval', 'build',
         '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_agent_runs
     (id, assignment_id, project_id, working_folder_id, execution_environment_id,
-     teammate_policy_revision_id, authorization_revision_id, authorization_scope_digest,
+     agent_policy_revision_id, authorization_revision_id, authorization_scope_digest,
      provider_turn_id, provider_thread_id, state, run_ordinal, created_at, updated_at)
 VALUES ('run-1', 'assignment-1', 'project-chat', 'folder-managed', 'current-folder:folder-managed',
         'policy-1', 'authorization-1',
@@ -174,8 +174,8 @@ VALUES ('scheduled-1', 'working_folder', 'Archived', 'Archived', 0, 4,
        ('scheduled-1', 'workspace_path', 'src', 'src', 5, 8,
         'folder-managed', 'file', 'src/main.rs', 1);
 
-INSERT INTO chat_scratch_scopes (id, reply_thread_id, teammate_id, created_at, updated_at)
-VALUES ('scratch-scope', 'reply-thread', 'participant-teammate',
+INSERT INTO chat_scratch_scopes (id, reply_thread_id, agent_id, created_at, updated_at)
+VALUES ('scratch-scope', 'reply-thread', 'participant-agent',
         '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_scratch_generations (id, scratch_scope_id, generation, created_at, updated_at)
 VALUES ('scratch-generation', 'scratch-scope', 1, '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
@@ -196,8 +196,8 @@ INSERT INTO chat_scheduled_message_references
 VALUES ('scheduled-1', 'execution_environment', 'Scratch', 'Scratch',
         9, 12, 'scratch-environment', 2);
 INSERT INTO chat_assignment_authorization_revisions
-    (id, assignment_id, revision, requester_participant_id, teammate_policy_revision_id,
-     teammate_access_revision, destination_conversation_id, access_profile_revision_id,
+    (id, assignment_id, revision, requester_participant_id, agent_policy_revision_id,
+     agent_access_revision, destination_conversation_id, access_profile_revision_id,
      execution_environment_id, working_folder_id, resolved_runtime_approval_policy, scope_digest,
      decision_state, created_at)
 VALUES ('authorization-scratch', 'assignment-1', 2, 'participant:local-owner', 'policy-1', 1,
@@ -216,7 +216,7 @@ VALUES ('turn-scratch', 'thread-scratch', 0, 'active', 'ask_for_approval', 'buil
         '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_agent_runs
     (id, assignment_id, project_id, execution_environment_id, scratch_generation_id,
-     teammate_policy_revision_id, authorization_revision_id, authorization_scope_digest,
+     agent_policy_revision_id, authorization_revision_id, authorization_scope_digest,
      provider_turn_id, provider_thread_id, state, run_ordinal, created_at, updated_at)
 VALUES ('run-scratch', 'assignment-1', 'project-chat', 'scratch-environment', 'scratch-generation',
         'policy-1', 'authorization-scratch',

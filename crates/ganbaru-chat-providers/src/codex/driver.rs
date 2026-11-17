@@ -524,7 +524,7 @@ impl ProviderDriver for CodexProviderDriver {
                         detail: (!authenticated)
                             .then(|| "Codex requires authentication".to_string()),
                         version_admission,
-                        teammate_minimum_version: None,
+                        agent_minimum_version: None,
                         usage_limits: snapshot.usage_limits,
                     })
                 }
@@ -543,7 +543,7 @@ impl ProviderDriver for CodexProviderDriver {
                         checked_at,
                         detail: Some(probe_detail(error.code).to_string()),
                         version_admission: refusal.map(|(admission, _)| admission),
-                        teammate_minimum_version: None,
+                        agent_minimum_version: None,
                         usage_limits: None,
                     })
                 }

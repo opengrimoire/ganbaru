@@ -111,18 +111,18 @@
   <div class="review-queue">
     {#each sections as section (section.kind)}
       {#each section.items as item (item.assignmentId)}
-        <div class="queue-row explorer-row" role="group" aria-label={t("chat.reviewQueue.open", item.teammateDisplayName, item.channelName)} data-review-kind={item.kind}>
+        <div class="queue-row explorer-row" role="group" aria-label={t("chat.reviewQueue.open", item.agentDisplayName, item.channelName)} data-review-kind={item.kind}>
           {#if canSelect && item.kind === "review"}
             <Checkbox
               class="queue-check"
               checked={selectedIds.includes(item.assignmentId)}
               disabled={accepting}
-              label={t("chat.reviewQueue.select", item.teammateDisplayName, item.channelName)}
+              label={t("chat.reviewQueue.select", item.agentDisplayName, item.channelName)}
               onChange={(selected) => setSelected(item.assignmentId, selected)}
             />
           {/if}
           <button type="button" class="queue-open explorer-row-label" onclick={() => void open(item)}>
-            <span class="queue-primary"><strong>{item.teammateDisplayName}</strong><span>#{item.channelName}</span></span>
+            <span class="queue-primary"><strong>{item.agentDisplayName}</strong><span>#{item.channelName}</span></span>
             <span class="queue-secondary">
               <span class="queue-kind" data-kind={item.kind}>{t(`chat.reviewQueue.kinds.${item.kind}`)}</span>
               {#if item.kind === "review"}<span>{t("chat.reviewQueue.changedFiles", item.changedFileCount)}</span>{/if}

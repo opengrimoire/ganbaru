@@ -1,4 +1,4 @@
-//! Teammate access previews, atomic replacement, and authority-change classification.
+//! Agent access previews, atomic replacement, and authority-change classification.
 
 mod channels;
 mod profiles;
@@ -6,14 +6,14 @@ mod retained_references;
 mod targets;
 
 // Preserve command paths and generated Tauri wrappers at the access facade.
-pub(super) use channels::read_teammate_access;
+pub(super) use channels::read_agent_access;
 use channels::{proposed_access_read, resolve_channel_access};
 pub use profiles::*;
 use retained_references::{retained_reference_issues, retained_reference_issues_in_transaction};
 pub use targets::*;
 
 use super::common::{
-    effective_runtime_approval, runtime_approval_rank, teammate_runtime_approval,
+    agent_runtime_approval, effective_runtime_approval, runtime_approval_rank,
     wire_folder_capability, wire_history_boundary, wire_runtime_approval_policy,
 };
 use super::*;
@@ -42,7 +42,7 @@ struct ResolvedChannelAccess {
     folder_grants: Vec<ChatFolderGrantInput>,
 }
 
-pub(super) struct ValidatedTeammateConfiguration {
+pub(super) struct ValidatedAgentConfiguration {
     display_name: String,
     role: String,
     instructions: String,
@@ -51,30 +51,30 @@ pub(super) struct ValidatedTeammateConfiguration {
     expected_revision: u64,
 }
 
-fn validate_teammate_configuration(
+fn validate_agent_configuration(
     app: &tauri::AppHandle,
-    teammate_id: &ChatParticipantId,
-    teammate_profile: Option<&UpdateChatTeammateProfileCommand>,
-    policy: Option<&ChatTeammatePolicyInput>,
-) -> ChatResult<Option<ValidatedTeammateConfiguration>> {
-    match (teammate_profile, policy) {
+    agent_id: &ChatParticipantId,
+    agent_profile: Option<&UpdateChatAgentProfileCommand>,
+    policy: Option<&ChatAgentPolicyInput>,
+) -> ChatResult<Option<ValidatedAgentConfiguration>> {
+    match (agent_profile, policy) {
         (None, None) => Ok(None),
         (Some(profile), Some(policy)) => {
-            if &profile.teammate_id != teammate_id {
+            if &profile.agent_id != agent_id {
                 return Err(ChatError::validation(
-                    "teammateProfile.teammateId",
-                    "The teammate profile does not match the access draft",
+                    "agentProfile.agentId",
+                    "The agent profile does not match the access draft",
                 ));
             }
             let display_name = validate_display_name(&profile.display_name)?;
-            let role = validate_teammate_role(&profile.role)?;
+            let role = validate_agent_role(&profile.role)?;
             validate_profile_text(
                 &profile.instructions,
-                super::continuation::MAX_TEAMMATE_INSTRUCTIONS_BYTES,
+                super::continuation::MAX_AGENT_INSTRUCTIONS_BYTES,
                 "instructions",
             )?;
             validate_policy(app, policy)?;
-            Ok(Some(ValidatedTeammateConfiguration {
+            Ok(Some(ValidatedAgentConfiguration {
                 display_name,
                 role,
                 instructions: profile.instructions.trim().to_string(),
@@ -84,19 +84,19 @@ fn validate_teammate_configuration(
             }))
         }
         _ => Err(ChatError::validation(
-            "teammateProfile",
-            "Teammate profile and policy changes must be saved together",
+            "agentProfile",
+            "Agent profile and policy changes must be saved together",
         )),
     }
 }
 
 #[tauri::command]
-pub async fn chat_read_teammate_access(
+pub async fn chat_read_agent_access(
     app: tauri::AppHandle,
     db_url: String,
-    teammate_id: ChatParticipantId,
-) -> ChatResult<ChatTeammateAccessRead> {
-    read_teammate_access(&chat_pool(app, db_url).await?, &teammate_id).await
+    agent_id: ChatParticipantId,
+) -> ChatResult<ChatAgentAccessRead> {
+    read_agent_access(&chat_pool(app, db_url).await?, &agent_id).await
 }
 
 #[tauri::command]
@@ -131,11 +131,11 @@ pub async fn chat_preview_channel_membership_removal(
 ) -> ChatResult<ChatChannelMembershipRemovalPreview> {
     let pool = chat_pool(app, db_url).await?;
     let channel = super::super::channels::read_channel(&pool, &request.channel_id).await?;
-    let mut proposed_access = read_teammate_access(&pool, &request.teammate_id).await?;
+    let mut proposed_access = read_agent_access(&pool, &request.agent_id).await?;
     if proposed_access.access_revision != request.expected_access_revision {
         return Err(ChatError::new(
             ChatErrorCode::StaleRevision,
-            "The teammate access changed before the removal preview",
+            "The agent access changed before the removal preview",
             true,
         ));
     }
@@ -146,7 +146,7 @@ pub async fn chat_preview_channel_membership_removal(
     {
         return Err(ChatError::new(
             ChatErrorCode::NotFound,
-            "The teammate is not a member of this channel",
+            "The agent is not a member of this channel",
             true,
         ));
     }
@@ -154,13 +154,13 @@ pub async fn chat_preview_channel_membership_removal(
         "SELECT count(*)
          FROM chat_work_assignments assignment
          JOIN chat_reply_threads thread ON thread.id = assignment.reply_thread_id
-         WHERE assignment.teammate_id = ? AND thread.conversation_id = ?
+         WHERE assignment.agent_id = ? AND thread.conversation_id = ?
            AND assignment.state IN (
              'queued', 'working', 'waiting_for_answer',
              'waiting_for_approval', 'ready_for_review'
            )",
     )
-    .bind(request.teammate_id.as_str())
+    .bind(request.agent_id.as_str())
     .bind(channel.conversation_id.as_str())
     .fetch_one(&pool)
     .await
@@ -169,12 +169,12 @@ pub async fn chat_preview_channel_membership_removal(
         "SELECT count(*)
          FROM chat_assignment_authorization_revisions authorization
          JOIN chat_work_assignments assignment ON assignment.id = authorization.assignment_id
-         WHERE assignment.teammate_id = ?
+         WHERE assignment.agent_id = ?
            AND authorization.destination_conversation_id = ?
            AND authorization.decision_state = 'allowed'
            AND authorization.revoked_at IS NULL",
     )
-    .bind(request.teammate_id.as_str())
+    .bind(request.agent_id.as_str())
     .bind(channel.conversation_id.as_str())
     .fetch_one(&pool)
     .await
@@ -184,7 +184,7 @@ pub async fn chat_preview_channel_membership_removal(
         .retain(|member| member.channel_id != request.channel_id);
     proposed_access.access_revision += 1;
     Ok(ChatChannelMembershipRemovalPreview {
-        teammate_id: request.teammate_id,
+        agent_id: request.agent_id,
         channel_id: request.channel_id,
         active_assignment_count: u64_value(active_assignment_count)?,
         active_authorization_count: u64_value(active_authorization_count)?,
@@ -194,31 +194,31 @@ pub async fn chat_preview_channel_membership_removal(
 }
 
 #[tauri::command]
-pub async fn chat_preview_teammate_access(
+pub async fn chat_preview_agent_access(
     app: tauri::AppHandle,
     db_url: String,
-    request: PreviewChatTeammateAccessCommand,
-) -> ChatResult<ChatTeammateAccessPreview> {
-    let validated_configuration = validate_teammate_configuration(
+    request: PreviewChatAgentAccessCommand,
+) -> ChatResult<ChatAgentAccessPreview> {
+    let validated_configuration = validate_agent_configuration(
         &app,
-        &request.teammate_id,
-        request.teammate_profile.as_ref(),
+        &request.agent_id,
+        request.agent_profile.as_ref(),
         request.policy.as_ref(),
     )?;
     let pool = chat_pool(app, db_url).await?;
     if let Some(configuration) = validated_configuration {
-        let current = read_teammate(&pool, &request.teammate_id).await?;
+        let current = read_agent(&pool, &request.agent_id).await?;
         if current.participant.revision != configuration.expected_revision {
             return Err(ChatError::new(
                 ChatErrorCode::StaleRevision,
-                "The teammate changed before the draft could be previewed",
+                "The agent changed before the draft could be previewed",
                 true,
             ));
         }
     }
-    preview_teammate_access(
+    preview_agent_access(
         &pool,
-        &request.teammate_id,
+        &request.agent_id,
         request.expected_access_revision,
         request.policy.as_ref(),
         &request.channels,
@@ -227,35 +227,35 @@ pub async fn chat_preview_teammate_access(
 }
 
 #[tauri::command]
-pub async fn chat_replace_teammate_access(
+pub async fn chat_replace_agent_access(
     app: tauri::AppHandle,
     db_url: String,
-    request: ReplaceChatTeammateAccessCommand,
-) -> ChatResult<ChatTeammateAccessRead> {
-    let validated_configuration = validate_teammate_configuration(
+    request: ReplaceChatAgentAccessCommand,
+) -> ChatResult<ChatAgentAccessRead> {
+    let validated_configuration = validate_agent_configuration(
         &app,
-        &request.teammate_id,
-        request.teammate_profile.as_ref(),
+        &request.agent_id,
+        request.agent_profile.as_ref(),
         request.policy.as_ref(),
     )?;
     let pool = chat_pool(app.clone(), db_url).await?;
-    if write_teammate_access(&pool, &request, validated_configuration).await? {
+    if write_agent_access(&pool, &request, validated_configuration).await? {
         super::super::revocation::drain_access_revocation_jobs(&app, &pool).await?;
     }
-    read_teammate_access(&pool, &request.teammate_id).await
+    read_agent_access(&pool, &request.agent_id).await
 }
 
 /// Saves the access draft of `request`, with its profile and policy change when
-/// `validated_configuration` carries one, and returns whether the draft reduced the teammate's
+/// `validated_configuration` carries one, and returns whether the draft reduced the agent's
 /// access, which revoked its authorizations and queued revocation jobs for the caller to drain.
-pub(super) async fn write_teammate_access(
+pub(super) async fn write_agent_access(
     pool: &SqlitePool,
-    request: &ReplaceChatTeammateAccessCommand,
-    validated_configuration: Option<ValidatedTeammateConfiguration>,
+    request: &ReplaceChatAgentAccessCommand,
+    validated_configuration: Option<ValidatedAgentConfiguration>,
 ) -> ChatResult<bool> {
-    let preview = preview_teammate_access(
+    let preview = preview_agent_access(
         pool,
-        &request.teammate_id,
+        &request.agent_id,
         request.expected_access_revision,
         request.policy.as_ref(),
         &request.channels,
@@ -267,13 +267,13 @@ pub(super) async fn write_teammate_access(
             issue.message.clone(),
         ));
     }
-    let current = read_teammate_access(pool, &request.teammate_id).await?;
-    let resolved = resolve_channel_access(pool, &request.teammate_id, &request.channels)
+    let current = read_agent_access(pool, &request.agent_id).await?;
+    let resolved = resolve_channel_access(pool, &request.agent_id, &request.channels)
         .await?
         .0;
-    let has_reduction = teammate_access_has_reduction(
+    let has_reduction = agent_access_has_reduction(
         &current,
-        proposed_teammate_default(&current, request.policy.as_ref()),
+        proposed_agent_default(&current, request.policy.as_ref()),
         &resolved,
     );
     let now = now_timestamp()?;
@@ -287,12 +287,12 @@ pub(super) async fn write_teammate_access(
         ));
     }
     let updated = sqlx::query(
-        "UPDATE chat_teammate_access_state
+        "UPDATE chat_agent_access_state
          SET access_revision = access_revision + 1, updated_at = ?
-         WHERE teammate_id = ? AND access_revision = ?",
+         WHERE agent_id = ? AND access_revision = ?",
     )
     .bind(now.as_str())
-    .bind(request.teammate_id.as_str())
+    .bind(request.agent_id.as_str())
     .bind(i64_value(request.expected_access_revision)?)
     .execute(&mut *transaction)
     .await
@@ -300,30 +300,30 @@ pub(super) async fn write_teammate_access(
     if updated.rows_affected() != 1 {
         return Err(ChatError::new(
             ChatErrorCode::StaleRevision,
-            "The teammate access changed before it could be saved",
+            "The agent access changed before it could be saved",
             true,
         ));
     }
     require_expected_profile_revisions_in_transaction(&mut transaction, &request.channels).await?;
 
     if let Some(configuration) = validated_configuration {
-        require_unused_teammate_name(
+        require_unused_agent_name(
             &mut transaction,
             &configuration.display_name,
-            request.teammate_id.as_str(),
+            request.agent_id.as_str(),
         )
         .await?;
         let updated = sqlx::query(
             "UPDATE chat_participants
              SET display_name = ?, avatar_schema_version = ?, avatar_data = ?,
                  revision = revision + 1, updated_at = ?
-             WHERE id = ? AND participant_kind = 'ai_teammate' AND revision = ?",
+             WHERE id = ? AND participant_kind = 'ai_agent' AND revision = ?",
         )
         .bind(configuration.display_name)
         .bind(i64::from(configuration.avatar_schema_version))
         .bind(configuration.avatar_data)
         .bind(now.as_str())
-        .bind(request.teammate_id.as_str())
+        .bind(request.agent_id.as_str())
         .bind(i64_value(configuration.expected_revision)?)
         .execute(&mut *transaction)
         .await
@@ -331,28 +331,28 @@ pub(super) async fn write_teammate_access(
         if updated.rows_affected() != 1 {
             return Err(ChatError::new(
                 ChatErrorCode::StaleRevision,
-                "The teammate changed before the access draft could be saved",
+                "The agent changed before the access draft could be saved",
                 true,
             ));
         }
         sqlx::query(
-            "UPDATE chat_teammates SET role = ?, instructions = ?, updated_at = ?
+            "UPDATE chat_agents SET role = ?, instructions = ?, updated_at = ?
              WHERE participant_id = ?",
         )
         .bind(configuration.role)
         .bind(configuration.instructions)
         .bind(now.as_str())
-        .bind(request.teammate_id.as_str())
+        .bind(request.agent_id.as_str())
         .execute(&mut *transaction)
         .await
         .map_err(persistence_error)?;
         insert_policy_revision(
             &mut transaction,
-            &request.teammate_id,
+            &request.agent_id,
             request
                 .policy
                 .as_ref()
-                .expect("validated teammate policy must be present"),
+                .expect("validated agent policy must be present"),
             &now,
         )
         .await?;
@@ -363,18 +363,18 @@ pub(super) async fn write_teammate_access(
         .map(|channel| channel.conversation_id.as_str())
         .collect::<BTreeSet<_>>();
     let existing_conversations = sqlx::query_scalar::<_, String>(
-        "SELECT conversation_id FROM chat_teammate_channel_memberships
-         WHERE teammate_id = ? AND removed_at IS NULL",
+        "SELECT conversation_id FROM chat_agent_channel_memberships
+         WHERE agent_id = ? AND removed_at IS NULL",
     )
-    .bind(request.teammate_id.as_str())
+    .bind(request.agent_id.as_str())
     .fetch_all(&mut *transaction)
     .await
     .map_err(persistence_error)?;
     for conversation_id in existing_conversations {
         if !proposed_conversations.contains(conversation_id.as_str()) {
-            remove_teammate_from_conversation(
+            remove_agent_from_conversation(
                 &mut transaction,
-                &request.teammate_id,
+                &request.agent_id,
                 &conversation_id,
                 &now,
             )
@@ -394,10 +394,10 @@ pub(super) async fn write_teammate_access(
                 updated_at = excluded.updated_at",
         )
         .bind(channel.conversation_id.as_str())
-        .bind(request.teammate_id.as_str())
+        .bind(request.agent_id.as_str())
         .bind(sync_key(membership_key(
             channel.conversation_id.as_str(),
-            request.teammate_id.as_str(),
+            request.agent_id.as_str(),
         ))?)
         .bind(now.as_str())
         .bind(now.as_str())
@@ -423,15 +423,15 @@ pub(super) async fn write_teammate_access(
         let history_boundary_inherits_profile = wire_history_boundary(&channel.history_boundary)
             == wire_history_boundary(&channel.profile_default_history_boundary);
         sqlx::query(
-            "INSERT INTO chat_teammate_channel_memberships
-                (conversation_id, teammate_id, sync_key, access_profile_id,
+            "INSERT INTO chat_agent_channel_memberships
+                (conversation_id, agent_id, sync_key, access_profile_id,
                  read_history, read_history_inherits_profile,
                  participate, participate_inherits_profile,
                  history_boundary, history_boundary_inherits_profile,
                  history_from_order_key, runtime_approval_policy,
                  scratch_runtime_approval_policy, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(conversation_id, teammate_id) DO UPDATE SET
+             ON CONFLICT(conversation_id, agent_id) DO UPDATE SET
                 access_profile_id = excluded.access_profile_id,
                 read_history = excluded.read_history,
                 read_history_inherits_profile = excluded.read_history_inherits_profile,
@@ -445,10 +445,10 @@ pub(super) async fn write_teammate_access(
                 removed_at = NULL, updated_at = excluded.updated_at",
         )
         .bind(channel.conversation_id.as_str())
-        .bind(request.teammate_id.as_str())
+        .bind(request.agent_id.as_str())
         .bind(sync_key(channel_membership_key(
             channel.conversation_id.as_str(),
-            request.teammate_id.as_str(),
+            request.agent_id.as_str(),
         ))?)
         .bind(channel.access_profile_id.as_str())
         .bind(channel.capabilities.read_history)
@@ -477,7 +477,7 @@ pub(super) async fn write_teammate_access(
         replace_folder_grants(
             &mut transaction,
             &channel.conversation_id,
-            &request.teammate_id,
+            &request.agent_id,
             &channel.project_id,
             &channel.folder_grants,
             channel.profile_maximum_folder_capability,
@@ -487,11 +487,11 @@ pub(super) async fn write_teammate_access(
     }
 
     if has_reduction {
-        revoke_teammate_authorizations(
+        revoke_agent_authorizations(
             &mut transaction,
-            &request.teammate_id,
+            &request.agent_id,
             &now,
-            "Teammate access was reduced",
+            "Agent access was reduced",
         )
         .await?;
     }
@@ -507,47 +507,47 @@ pub(super) async fn write_teammate_access(
 pub(super) async fn replace_folder_grants(
     transaction: &mut Transaction<'_, Sqlite>,
     conversation_id: &ChatConversationId,
-    teammate_id: &ChatParticipantId,
+    agent_id: &ChatParticipantId,
     project_id: &str,
     grants: &[ChatFolderGrantInput],
     profile_maximum_folder_capability: ChatFolderCapability,
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
     sqlx::query(
-        "UPDATE chat_teammate_working_folder_grants
+        "UPDATE chat_agent_working_folder_grants
          SET revoked_at = ?, is_default = 0, revision = revision + 1
-         WHERE conversation_id = ? AND teammate_id = ? AND revoked_at IS NULL",
+         WHERE conversation_id = ? AND agent_id = ? AND revoked_at IS NULL",
     )
     .bind(now.as_str())
     .bind(conversation_id.as_str())
-    .bind(teammate_id.as_str())
+    .bind(agent_id.as_str())
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
     for grant in grants {
         sqlx::query(
-            "INSERT INTO chat_teammate_working_folder_grants
-                (conversation_id, teammate_id, project_id, working_folder_id, sync_key,
+            "INSERT INTO chat_agent_working_folder_grants
+                (conversation_id, agent_id, project_id, working_folder_id, sync_key,
                  capability, capability_inherits_profile,
                  is_default, runtime_approval_policy,
                  revision, created_at, revoked_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL)
-             ON CONFLICT(conversation_id, teammate_id, working_folder_id) DO UPDATE SET
+             ON CONFLICT(conversation_id, agent_id, working_folder_id) DO UPDATE SET
                 project_id = excluded.project_id,
                 capability = excluded.capability,
                 capability_inherits_profile = excluded.capability_inherits_profile,
                 is_default = excluded.is_default,
                 runtime_approval_policy = excluded.runtime_approval_policy,
-                revision = chat_teammate_working_folder_grants.revision + 1,
+                revision = chat_agent_working_folder_grants.revision + 1,
                 revoked_at = NULL",
         )
         .bind(conversation_id.as_str())
-        .bind(teammate_id.as_str())
+        .bind(agent_id.as_str())
         .bind(project_id)
         .bind(grant.working_folder_id.as_str())
         .bind(sync_key(folder_grant_key(
             conversation_id.as_str(),
-            teammate_id.as_str(),
+            agent_id.as_str(),
             grant.working_folder_id.as_str(),
         ))?)
         .bind(wire_folder_capability(grant.capability))
@@ -566,23 +566,23 @@ pub(super) async fn replace_folder_grants(
     Ok(())
 }
 
-async fn preview_teammate_access(
+async fn preview_agent_access(
     pool: &SqlitePool,
-    teammate_id: &ChatParticipantId,
+    agent_id: &ChatParticipantId,
     expected_access_revision: u64,
-    policy: Option<&ChatTeammatePolicyInput>,
-    channels: &[ChatTeammateChannelAccessInput],
-) -> ChatResult<ChatTeammateAccessPreview> {
-    let current = read_teammate_access(pool, teammate_id).await?;
+    policy: Option<&ChatAgentPolicyInput>,
+    channels: &[ChatAgentChannelAccessInput],
+) -> ChatResult<ChatAgentAccessPreview> {
+    let current = read_agent_access(pool, agent_id).await?;
     if current.access_revision != expected_access_revision {
         return Err(ChatError::new(
             ChatErrorCode::StaleRevision,
-            "The teammate access changed before the preview",
+            "The agent access changed before the preview",
             true,
         ));
     }
-    let teammate_default_runtime_approval = proposed_teammate_default(&current, policy);
-    let (resolved, mut issues) = resolve_channel_access(pool, teammate_id, channels).await?;
+    let agent_default_runtime_approval = proposed_agent_default(&current, policy);
+    let (resolved, mut issues) = resolve_channel_access(pool, agent_id, channels).await?;
     issues.extend(retained_reference_issues(pool, &resolved).await?);
     let current_ids = current
         .channels
@@ -596,18 +596,18 @@ async fn preview_teammate_access(
     let added_channel_ids = proposed_ids.difference(&current_ids).cloned().collect();
     let removed_channel_ids = current_ids.difference(&proposed_ids).cloned().collect();
     let is_expansion =
-        teammate_access_is_expansion(&current, teammate_default_runtime_approval, &resolved);
+        agent_access_is_expansion(&current, agent_default_runtime_approval, &resolved);
     let proposed = if issues.is_empty() {
         Some(proposed_access_read(
-            teammate_id,
+            agent_id,
             expected_access_revision + 1,
-            teammate_default_runtime_approval,
+            agent_default_runtime_approval,
             &resolved,
         ))
     } else {
         None
     };
-    Ok(ChatTeammateAccessPreview {
+    Ok(ChatAgentAccessPreview {
         proposed,
         is_expansion,
         added_channel_ids,
@@ -622,7 +622,7 @@ async fn preview_teammate_access(
 /// saw.
 pub(super) async fn require_expected_profile_revisions_in_transaction(
     transaction: &mut Transaction<'_, Sqlite>,
-    channels: &[ChatTeammateChannelAccessInput],
+    channels: &[ChatAgentChannelAccessInput],
 ) -> ChatResult<()> {
     let expected = channels
         .iter()
@@ -648,14 +648,14 @@ pub(super) async fn require_expected_profile_revisions_in_transaction(
         let Some(effective_revision_id) = effective_revision_id else {
             return Err(ChatError::new(
                 ChatErrorCode::StaleRevision,
-                "An access profile became unavailable before teammate access could be saved",
+                "An access profile became unavailable before agent access could be saved",
                 true,
             ));
         };
         if effective_revision_id != expected_revision_id {
             return Err(ChatError::new(
                 ChatErrorCode::StaleRevision,
-                "An access profile changed before teammate access could be saved",
+                "An access profile changed before agent access could be saved",
                 true,
             ));
         }
@@ -663,23 +663,23 @@ pub(super) async fn require_expected_profile_revisions_in_transaction(
     Ok(())
 }
 
-/// Returns the runtime approval a saved draft leaves as the teammate default, which follows the
-/// teammate's approval behavior.
-fn proposed_teammate_default(
-    current: &ChatTeammateAccessRead,
-    policy: Option<&ChatTeammatePolicyInput>,
+/// Returns the runtime approval a saved draft leaves as the agent default, which follows the
+/// agent's approval behavior.
+fn proposed_agent_default(
+    current: &ChatAgentAccessRead,
+    policy: Option<&ChatAgentPolicyInput>,
 ) -> ChatRuntimeApprovalPolicy {
     policy
-        .map(|policy| teammate_runtime_approval(policy.safety_mode))
-        .unwrap_or(current.teammate_default_runtime_approval)
+        .map(|policy| agent_runtime_approval(policy.safety_mode))
+        .unwrap_or(current.agent_default_runtime_approval)
 }
 
-fn teammate_access_is_expansion(
-    current: &ChatTeammateAccessRead,
+fn agent_access_is_expansion(
+    current: &ChatAgentAccessRead,
     proposed_runtime: ChatRuntimeApprovalPolicy,
     proposed: &[ResolvedChannelAccess],
 ) -> bool {
-    if runtime_approval_is_expansion(current.teammate_default_runtime_approval, proposed_runtime) {
+    if runtime_approval_is_expansion(current.agent_default_runtime_approval, proposed_runtime) {
         return true;
     }
     let current_by_channel = current
@@ -700,7 +700,7 @@ fn teammate_access_is_expansion(
             || runtime_approval_is_expansion(
                 resolve_runtime_approval(
                     current_channel.runtime_approval_override,
-                    current.teammate_default_runtime_approval,
+                    current.agent_default_runtime_approval,
                 ),
                 resolve_runtime_approval(channel.runtime_approval_override, proposed_runtime),
             )
@@ -708,7 +708,7 @@ fn teammate_access_is_expansion(
                 resolve_nested_runtime_approval(
                     current_channel.scratch_runtime_approval_override,
                     current_channel.runtime_approval_override,
-                    current.teammate_default_runtime_approval,
+                    current.agent_default_runtime_approval,
                 ),
                 resolve_nested_runtime_approval(
                     channel.scratch_runtime_approval_override,
@@ -727,7 +727,7 @@ fn teammate_access_is_expansion(
                                 resolve_nested_runtime_approval(
                                     current_grant.runtime_approval_override,
                                     current_channel.runtime_approval_override,
-                                    current.teammate_default_runtime_approval,
+                                    current.agent_default_runtime_approval,
                                 ),
                                 resolve_nested_runtime_approval(
                                     grant.runtime_approval_override,
@@ -740,12 +740,12 @@ fn teammate_access_is_expansion(
     })
 }
 
-fn teammate_access_has_reduction(
-    current: &ChatTeammateAccessRead,
+fn agent_access_has_reduction(
+    current: &ChatAgentAccessRead,
     proposed_runtime: ChatRuntimeApprovalPolicy,
     proposed: &[ResolvedChannelAccess],
 ) -> bool {
-    if runtime_approval_is_reduction(current.teammate_default_runtime_approval, proposed_runtime) {
+    if runtime_approval_is_reduction(current.agent_default_runtime_approval, proposed_runtime) {
         return true;
     }
     let proposed_by_channel = proposed
@@ -765,7 +765,7 @@ fn teammate_access_has_reduction(
             || runtime_approval_is_reduction(
                 resolve_runtime_approval(
                     channel.runtime_approval_override,
-                    current.teammate_default_runtime_approval,
+                    current.agent_default_runtime_approval,
                 ),
                 resolve_runtime_approval(
                     proposed_channel.runtime_approval_override,
@@ -776,7 +776,7 @@ fn teammate_access_has_reduction(
                 resolve_nested_runtime_approval(
                     channel.scratch_runtime_approval_override,
                     channel.runtime_approval_override,
-                    current.teammate_default_runtime_approval,
+                    current.agent_default_runtime_approval,
                 ),
                 resolve_nested_runtime_approval(
                     proposed_channel.scratch_runtime_approval_override,
@@ -795,7 +795,7 @@ fn teammate_access_has_reduction(
                                 resolve_nested_runtime_approval(
                                     grant.runtime_approval_override,
                                     channel.runtime_approval_override,
-                                    current.teammate_default_runtime_approval,
+                                    current.agent_default_runtime_approval,
                                 ),
                                 resolve_nested_runtime_approval(
                                     proposed_grant.runtime_approval_override,
@@ -810,20 +810,17 @@ fn teammate_access_has_reduction(
 
 fn resolve_runtime_approval(
     override_policy: Option<ChatRuntimeApprovalPolicy>,
-    teammate_default: ChatRuntimeApprovalPolicy,
+    agent_default: ChatRuntimeApprovalPolicy,
 ) -> ChatRuntimeApprovalPolicy {
-    effective_runtime_approval(
-        teammate_default,
-        override_policy.unwrap_or(teammate_default),
-    )
+    effective_runtime_approval(agent_default, override_policy.unwrap_or(agent_default))
 }
 
 fn resolve_nested_runtime_approval(
     resource_override: Option<ChatRuntimeApprovalPolicy>,
     channel_override: Option<ChatRuntimeApprovalPolicy>,
-    teammate_default: ChatRuntimeApprovalPolicy,
+    agent_default: ChatRuntimeApprovalPolicy,
 ) -> ChatRuntimeApprovalPolicy {
-    resolve_runtime_approval(resource_override.or(channel_override), teammate_default)
+    resolve_runtime_approval(resource_override.or(channel_override), agent_default)
 }
 
 fn runtime_approval_is_expansion(
@@ -852,36 +849,36 @@ fn runtime_approval_is_reduction(
     )
 }
 
-/// Removes a teammate from one channel conversation: revokes its folder grants there and marks
-/// its teammate channel membership and conversation membership removed.
+/// Removes an agent from one channel conversation: revokes its folder grants there and marks
+/// its agent channel membership and conversation membership removed.
 ///
 /// The rows stay, so a removal is an ordinary replicated update rather than a delete, and adding
-/// the teammate back clears the removal.
-pub(in crate::chat::organization) async fn remove_teammate_from_conversation(
+/// the agent back clears the removal.
+pub(in crate::chat::organization) async fn remove_agent_from_conversation(
     transaction: &mut Transaction<'_, Sqlite>,
-    teammate_id: &ChatParticipantId,
+    agent_id: &ChatParticipantId,
     conversation_id: &str,
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
     sqlx::query(
-        "UPDATE chat_teammate_working_folder_grants
+        "UPDATE chat_agent_working_folder_grants
          SET revoked_at = ?, is_default = 0, revision = revision + 1
-         WHERE conversation_id = ? AND teammate_id = ? AND revoked_at IS NULL",
+         WHERE conversation_id = ? AND agent_id = ? AND revoked_at IS NULL",
     )
     .bind(now.as_str())
     .bind(conversation_id)
-    .bind(teammate_id.as_str())
+    .bind(agent_id.as_str())
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
     sqlx::query(
-        "UPDATE chat_teammate_channel_memberships SET removed_at = ?, updated_at = ?
-         WHERE conversation_id = ? AND teammate_id = ? AND removed_at IS NULL",
+        "UPDATE chat_agent_channel_memberships SET removed_at = ?, updated_at = ?
+         WHERE conversation_id = ? AND agent_id = ? AND removed_at IS NULL",
     )
     .bind(now.as_str())
     .bind(now.as_str())
     .bind(conversation_id)
-    .bind(teammate_id.as_str())
+    .bind(agent_id.as_str())
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
@@ -893,22 +890,22 @@ pub(in crate::chat::organization) async fn remove_teammate_from_conversation(
     .bind(now.as_str())
     .bind(now.as_str())
     .bind(conversation_id)
-    .bind(teammate_id.as_str())
+    .bind(agent_id.as_str())
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
     Ok(())
 }
 
-async fn revoke_teammate_authorizations(
+async fn revoke_agent_authorizations(
     transaction: &mut Transaction<'_, Sqlite>,
-    teammate_id: &ChatParticipantId,
+    agent_id: &ChatParticipantId,
     now: &UtcTimestamp,
     reason: &str,
 ) -> ChatResult<()> {
-    ganbaru_chat::coordination::revocation::revoke_teammate_authorizations(
+    ganbaru_chat::coordination::revocation::revoke_agent_authorizations(
         transaction,
-        teammate_id.as_str(),
+        agent_id.as_str(),
         now.as_str(),
         reason,
     )
@@ -969,7 +966,7 @@ mod tests {
     }
 
     #[test]
-    fn resource_approval_precedes_channel_and_teammate_defaults() {
+    fn resource_approval_precedes_channel_and_agent_defaults() {
         assert_eq!(
             resolve_nested_runtime_approval(
                 Some(ChatRuntimeApprovalPolicy::Ask),
@@ -989,12 +986,12 @@ mod tests {
     }
 
     #[test]
-    fn grants_never_widen_the_teammate_approval_behavior() {
+    fn grants_never_widen_the_agent_approval_behavior() {
         assert_eq!(
             resolve_nested_runtime_approval(
                 Some(ChatRuntimeApprovalPolicy::Unattended),
                 None,
-                teammate_runtime_approval(ChatApprovalPolicy::AskForApproval),
+                agent_runtime_approval(ChatApprovalPolicy::AskForApproval),
             ),
             ChatRuntimeApprovalPolicy::Ask,
         );
@@ -1002,7 +999,7 @@ mod tests {
             resolve_nested_runtime_approval(
                 None,
                 Some(ChatRuntimeApprovalPolicy::Unattended),
-                teammate_runtime_approval(ChatApprovalPolicy::ApproveForMe),
+                agent_runtime_approval(ChatApprovalPolicy::ApproveForMe),
             ),
             ChatRuntimeApprovalPolicy::AutoApprove,
         );
@@ -1010,7 +1007,7 @@ mod tests {
             resolve_nested_runtime_approval(
                 Some(ChatRuntimeApprovalPolicy::Ask),
                 None,
-                teammate_runtime_approval(ChatApprovalPolicy::FullAccess),
+                agent_runtime_approval(ChatApprovalPolicy::FullAccess),
             ),
             ChatRuntimeApprovalPolicy::Ask,
         );
@@ -1018,7 +1015,7 @@ mod tests {
             resolve_nested_runtime_approval(
                 None,
                 None,
-                teammate_runtime_approval(ChatApprovalPolicy::FullAccess),
+                agent_runtime_approval(ChatApprovalPolicy::FullAccess),
             ),
             ChatRuntimeApprovalPolicy::Unattended,
         );
@@ -1030,7 +1027,7 @@ mod tests {
             resolve_nested_runtime_approval(
                 Some(ChatRuntimeApprovalPolicy::ProviderCustom),
                 None,
-                teammate_runtime_approval(ChatApprovalPolicy::AskForApproval),
+                agent_runtime_approval(ChatApprovalPolicy::AskForApproval),
             ),
             ChatRuntimeApprovalPolicy::ProviderCustom,
         );
@@ -1038,7 +1035,7 @@ mod tests {
             resolve_nested_runtime_approval(
                 Some(ChatRuntimeApprovalPolicy::Unattended),
                 None,
-                teammate_runtime_approval(ChatApprovalPolicy::Custom),
+                agent_runtime_approval(ChatApprovalPolicy::Custom),
             ),
             ChatRuntimeApprovalPolicy::Unattended,
         );

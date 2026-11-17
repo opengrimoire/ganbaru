@@ -1,4 +1,4 @@
-//! The delegation host tool: a teammate hands bounded work to another teammate in its channel.
+//! The delegation host tool: an agent hands bounded work to another agent in its channel.
 //!
 //! The child is a separate assignment in its own reply thread. Its folders and ranks never
 //! exceed what the calling run holds, and the organization layer enforces depth, fan-out, the
@@ -17,15 +17,15 @@ use std::collections::BTreeSet;
 pub(crate) const MAX_DELEGATION_DEPTH: u8 = 2;
 /// Open delegated children one assignment may hold, which also bounds its delegation calls.
 pub(crate) const MAX_OPEN_CHILDREN_PER_ASSIGNMENT: u32 = 4;
-/// Longest objective a teammate may delegate, in characters.
+/// Longest objective an agent may delegate, in characters.
 pub(crate) const MAX_DELEGATION_OBJECTIVE_CHARS: usize = 4000;
-/// Longest expected result a teammate may describe, in characters.
+/// Longest expected result an agent may describe, in characters.
 pub(crate) const MAX_DELEGATION_EXPECTED_RESULT_CHARS: usize = 2000;
 /// Longest client request id, in characters.
 pub(crate) const MAX_CLIENT_REQUEST_ID_CHARS: usize = 256;
 
 /// Why a delegation call was refused. [`DelegationRefusal::code`] is the tool error code, so
-/// the teammate can tell a limit from a missing target and adjust its next call.
+/// the agent can tell a limit from a missing target and adjust its next call.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DelegationRefusal {
     /// The child would sit deeper than [`MAX_DELEGATION_DEPTH`].
@@ -34,7 +34,7 @@ pub(crate) enum DelegationRefusal {
     FanOutExceeded,
     /// A requested folder or rank is above what the parent holds.
     AuthorityExceeded,
-    /// The target is not a participating teammate of the channel, is archived, or is the caller.
+    /// The target is not a participating agent of the channel, is archived, or is the caller.
     TargetUnavailable,
     /// The client request id was used before with different input.
     RequestConflict,
@@ -64,7 +64,7 @@ impl DelegationRefusal {
         Self::ParentInactive,
     ];
 
-    /// The refusal as the tool error the teammate receives.
+    /// The refusal as the tool error the agent receives.
     pub(crate) fn into_error(self) -> ChatError {
         ChatError::new(ChatErrorCode::Permission, self.code(), false)
     }
@@ -80,7 +80,7 @@ impl DelegationRefusal {
     }
 }
 
-/// A delegation call failed either with a typed refusal the teammate may act on, or with an
+/// A delegation call failed either with a typed refusal the agent may act on, or with an
 /// error that is denied generically.
 pub(super) enum DelegationCallError {
     Refused(DelegationRefusal),
@@ -96,7 +96,7 @@ impl From<ChatError> for DelegationCallError {
 /// The input properties of the delegation tool.
 pub(super) fn properties() -> Value {
     json!({
-        "teammateId": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "agentId": { "type": "string", "minLength": 1, "maxLength": 1024 },
         "objective": {
             "type": "string", "minLength": 1, "maxLength": MAX_DELEGATION_OBJECTIVE_CHARS
         },
@@ -138,7 +138,7 @@ pub(super) async fn delegate(
             parent_assignment_id: &context.scope.assignment_id,
             parent_authorization_revision_id: &context.scope.authorization_revision_id,
             conversation_id: &context.scope.destination_conversation_id,
-            teammate_id: &input.teammate_id,
+            agent_id: &input.agent_id,
             objective: &input.objective,
             expected_result: &input.expected_result,
             folders: &folders,
@@ -155,7 +155,7 @@ pub(super) async fn delegate(
 }
 
 struct DelegationInput {
-    teammate_id: ChatParticipantId,
+    agent_id: ChatParticipantId,
     objective: String,
     expected_result: String,
     folders: Option<Vec<DelegatedFolder>>,
@@ -163,7 +163,7 @@ struct DelegationInput {
 }
 
 fn parse_input(arguments: &Map<String, Value>) -> ChatResult<DelegationInput> {
-    let teammate_id = ChatParticipantId::new(required_string(arguments, "teammateId", 1024)?)
+    let agent_id = ChatParticipantId::new(required_string(arguments, "agentId", 1024)?)
         .map_err(|_| generic_denial_error())?;
     let objective = required_text(arguments, "objective", MAX_DELEGATION_OBJECTIVE_CHARS)?;
     let expected_result = required_text(
@@ -187,7 +187,7 @@ fn parse_input(arguments: &Map<String, Value>) -> ChatResult<DelegationInput> {
         Some(_) => return Err(generic_denial_error()),
     };
     Ok(DelegationInput {
-        teammate_id,
+        agent_id,
         objective,
         expected_result,
         folders,
@@ -290,7 +290,7 @@ mod tests {
     #[test]
     fn delegation_input_keeps_multiline_prose_and_refuses_duplicate_or_unknown_folders() {
         let input = parse_input(&arguments(json!({
-            "teammateId": "participant:reviewer",
+            "agentId": "participant:reviewer",
             "objective": "  Review the parser.\nList every bug.  ",
             "expectedResult": "A list\tof bugs",
             "clientRequestId": "request-1",
@@ -301,7 +301,7 @@ mod tests {
         assert!(input.folders.is_none());
 
         let duplicate = parse_input(&arguments(json!({
-            "teammateId": "participant:reviewer",
+            "agentId": "participant:reviewer",
             "objective": "Review",
             "expectedResult": "Bugs",
             "clientRequestId": "request-1",
@@ -313,7 +313,7 @@ mod tests {
         assert!(duplicate.is_err());
         for capability in ["none", "owner"] {
             let unknown = parse_input(&arguments(json!({
-                "teammateId": "participant:reviewer",
+                "agentId": "participant:reviewer",
                 "objective": "Review",
                 "expectedResult": "Bugs",
                 "clientRequestId": "request-1",
@@ -322,14 +322,14 @@ mod tests {
             assert!(unknown.is_err(), "{capability}");
         }
         let blank = parse_input(&arguments(json!({
-            "teammateId": "participant:reviewer",
+            "agentId": "participant:reviewer",
             "objective": "   ",
             "expectedResult": "Bugs",
             "clientRequestId": "request-1",
         })));
         assert!(blank.is_err());
         let control = parse_input(&arguments(json!({
-            "teammateId": "participant:reviewer",
+            "agentId": "participant:reviewer",
             "objective": "Review\u{7}",
             "expectedResult": "Bugs",
             "clientRequestId": "request-1",

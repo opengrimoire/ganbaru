@@ -6,8 +6,8 @@ use sqlx::SqlitePool;
 const NOW: &str = "2026-11-12T09:00:00.000Z";
 const LATER: &str = "2026-11-12T09:05:00.000Z";
 const PROJECT_ID: &str = "project-delegation-outcome";
-const PARENT_TEAMMATE: &str = "participant:delegation-lead";
-const CHILD_TEAMMATE: &str = "participant:delegation-helper";
+const PARENT_AGENT: &str = "participant:delegation-lead";
+const CHILD_AGENT: &str = "participant:delegation-helper";
 const PARENT: &str = "assignment:delegation-parent";
 const CHILD: &str = "assignment:delegation-child";
 
@@ -50,17 +50,17 @@ async fn seed_delegation(pool: &SqlitePool, parent_state: &str) {
     let conversation = default_channel_ids(PROJECT_ID).unwrap().0;
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
-         VALUES ('{PARENT_TEAMMATE}', 'ai_teammate', 'Lead', '{NOW}', '{NOW}'),
-                ('{CHILD_TEAMMATE}', 'ai_teammate', 'Helper', '{NOW}', '{NOW}');
-         INSERT INTO chat_teammates (participant_id, role, created_at, updated_at)
-         VALUES ('{PARENT_TEAMMATE}', 'Lead', '{NOW}', '{NOW}'),
-                ('{CHILD_TEAMMATE}', 'Helper', '{NOW}', '{NOW}');
+         VALUES ('{PARENT_AGENT}', 'ai_agent', 'Lead', '{NOW}', '{NOW}'),
+                ('{CHILD_AGENT}', 'ai_agent', 'Helper', '{NOW}', '{NOW}');
+         INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
+         VALUES ('{PARENT_AGENT}', 'Lead', '{NOW}', '{NOW}'),
+                ('{CHILD_AGENT}', 'Helper', '{NOW}', '{NOW}');
          INSERT INTO chat_conversation_items (id, conversation_id, item_kind, order_key, created_at)
          VALUES ('item:parent-root', '{conversation}', 'message', 'c000', '{NOW}'),
                 ('item:child-root', '{conversation}', 'message', 'c001', '{NOW}');
          INSERT INTO chat_communication_messages (item_id, author_participant_id, created_at)
          VALUES ('item:parent-root', 'participant:local-owner', '{NOW}'),
-                ('item:child-root', '{PARENT_TEAMMATE}', '{NOW}');
+                ('item:child-root', '{PARENT_AGENT}', '{NOW}');
          INSERT INTO chat_communication_message_revisions
             (id, message_item_id, normalized_markdown, created_at)
          VALUES ('revision:parent-root', 'item:parent-root', 'Ship the release', '{NOW}'),
@@ -72,15 +72,15 @@ async fn seed_delegation(pool: &SqlitePool, parent_state: &str) {
          VALUES ('reply:parent', '{conversation}', 'item:parent-root', '{NOW}', '{NOW}', '{NOW}'),
                 ('reply:child', '{conversation}', 'item:child-root', '{NOW}', '{NOW}', '{NOW}');
          INSERT INTO chat_work_assignments
-            (id, reply_thread_id, teammate_id, triggering_message_item_id, state,
+            (id, reply_thread_id, agent_id, triggering_message_item_id, state,
              created_at, updated_at)
-         VALUES ('{PARENT}', 'reply:parent', '{PARENT_TEAMMATE}', 'item:parent-root',
+         VALUES ('{PARENT}', 'reply:parent', '{PARENT_AGENT}', 'item:parent-root',
                  '{parent_state}', '{NOW}', '{NOW}');
          INSERT INTO chat_work_assignments
-            (id, reply_thread_id, teammate_id, triggering_message_item_id, state,
+            (id, reply_thread_id, agent_id, triggering_message_item_id, state,
              parent_assignment_id, delegation_depth, delegation_objective,
              delegation_expected_result, delegation_folder_ceiling, created_at, updated_at)
-         VALUES ('{CHILD}', 'reply:child', '{CHILD_TEAMMATE}', 'item:child-root', 'working',
+         VALUES ('{CHILD}', 'reply:child', '{CHILD_AGENT}', 'item:child-root', 'working',
                  '{PARENT}', 1, 'Write notes', 'A summary', '[]', '{NOW}', '{NOW}');"
     )))
     .execute(pool)
@@ -96,7 +96,7 @@ async fn settle_child_with_update(pool: &SqlitePool, state: &str, update_kind: &
             (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
          VALUES ('item:child-result', '{conversation}', 'reply:child', 'message', 'c002', '{NOW}');
          INSERT INTO chat_communication_messages (item_id, author_participant_id, created_at)
-         VALUES ('item:child-result', '{CHILD_TEAMMATE}', '{NOW}');
+         VALUES ('item:child-result', '{CHILD_AGENT}', '{NOW}');
          INSERT INTO chat_communication_message_revisions
             (id, message_item_id, normalized_markdown, created_at)
          VALUES ('revision:child-result', 'item:child-result', '{body}', '{NOW}');
@@ -178,7 +178,7 @@ async fn a_completed_child_posts_one_settled_update_and_a_continuation_of_its_wo
     assert_eq!(
         outcome_messages(&pool).await,
         vec![(
-            CHILD_TEAMMATE.to_owned(),
+            CHILD_AGENT.to_owned(),
             "Notes are drafted".to_owned(),
             "delegation".to_owned(),
             PARENT.to_owned(),
@@ -281,14 +281,14 @@ async fn unsettled_undelegated_and_moved_children_post_nothing() {
     set_child_state(&pool, "cancelled", Some("rerouted")).await;
     sqlx::query(
         "INSERT INTO chat_work_assignments
-            (id, reply_thread_id, teammate_id, triggering_message_item_id, state,
+            (id, reply_thread_id, agent_id, triggering_message_item_id, state,
              previous_assignment_id, parent_assignment_id, delegation_depth,
              delegation_objective, delegation_expected_result, delegation_folder_ceiling,
              created_at, updated_at)
          VALUES ('assignment:delegation-successor', 'reply:child', ?, 'item:child-root',
                  'queued', ?, ?, 1, 'Write notes', 'A summary', '[]', ?, ?)",
     )
-    .bind(CHILD_TEAMMATE)
+    .bind(CHILD_AGENT)
     .bind(CHILD)
     .bind(PARENT)
     .bind(NOW)
@@ -307,7 +307,7 @@ async fn seed_grandchild(pool: &SqlitePool) {
         "INSERT INTO chat_conversation_items (id, conversation_id, item_kind, order_key, created_at)
          VALUES ('item:grandchild-root', '{conversation}', 'message', 'c003', '{NOW}');
          INSERT INTO chat_communication_messages (item_id, author_participant_id, created_at)
-         VALUES ('item:grandchild-root', '{CHILD_TEAMMATE}', '{NOW}');
+         VALUES ('item:grandchild-root', '{CHILD_AGENT}', '{NOW}');
          INSERT INTO chat_communication_message_revisions
             (id, message_item_id, normalized_markdown, created_at)
          VALUES ('revision:grandchild-root', 'item:grandchild-root', '@Lead check notes', '{NOW}');
@@ -318,10 +318,10 @@ async fn seed_grandchild(pool: &SqlitePool) {
          VALUES ('reply:grandchild', '{conversation}', 'item:grandchild-root', '{NOW}', '{NOW}',
                  '{NOW}');
          INSERT INTO chat_work_assignments
-            (id, reply_thread_id, teammate_id, triggering_message_item_id, state,
+            (id, reply_thread_id, agent_id, triggering_message_item_id, state,
              parent_assignment_id, delegation_depth, delegation_objective,
              delegation_expected_result, delegation_folder_ceiling, created_at, updated_at)
-         VALUES ('assignment:delegation-grandchild', 'reply:grandchild', '{PARENT_TEAMMATE}',
+         VALUES ('assignment:delegation-grandchild', 'reply:grandchild', '{PARENT_AGENT}',
                  'item:grandchild-root', 'queued', '{CHILD}', 2, 'Check notes', 'A verdict',
                  '[]', '{NOW}', '{NOW}');"
     )))
@@ -368,7 +368,7 @@ async fn cancelling_a_parent_cancels_its_open_children_and_grandchildren() {
     // to the cancelled child the same way.
     let messages = outcome_messages(&pool).await;
     assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].0, CHILD_TEAMMATE);
+    assert_eq!(messages[0].0, CHILD_AGENT);
     assert_eq!(messages[0].1, PARENT_CANCELLED_REASON);
     assert!(parent_inputs(&pool).await.is_empty());
     let grandchild_outcomes: i64 = sqlx::query_scalar(

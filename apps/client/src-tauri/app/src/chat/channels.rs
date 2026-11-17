@@ -946,7 +946,7 @@ mod tests {
         )
     }
 
-    async fn seed_teammate_messages(
+    async fn seed_agent_messages(
         pool: &sqlx::SqlitePool,
         conversation_id: &ChatConversationId,
         messages: &[(&str, &str, bool)],
@@ -954,7 +954,7 @@ mod tests {
         sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
             "INSERT OR IGNORE INTO chat_participants
                 (id, participant_kind, display_name, created_at, updated_at)
-             VALUES ('participant:teammate', 'ai_teammate', 'Teammate', '{NOW}', '{NOW}');"
+             VALUES ('participant:agent', 'ai_agent', 'Agent', '{NOW}', '{NOW}');"
         )))
         .execute(pool)
         .await
@@ -977,7 +977,7 @@ mod tests {
             sqlx::query(
                 "INSERT INTO chat_communication_messages
                     (item_id, author_participant_id, deleted_at, created_at)
-                 VALUES (?, 'participant:teammate', ?, ?)",
+                 VALUES (?, 'participant:agent', ?, ?)",
             )
             .bind(item_id)
             .bind(deleted_at)
@@ -1028,7 +1028,7 @@ mod tests {
     async fn channel_summaries_leave_out_deleted_messages() {
         let pool = crate::chat::tests::repository::pool_with_thread().await;
         let (channel_id, conversation_id) = project_channel(&pool).await;
-        seed_teammate_messages(
+        seed_agent_messages(
             &pool,
             &conversation_id,
             &[("item:kept", "c000", false), ("item:deleted", "c001", true)],
@@ -1046,7 +1046,7 @@ mod tests {
     async fn unread_counts_break_equal_order_keys_by_item_id() {
         let pool = crate::chat::tests::repository::pool_with_thread().await;
         let (channel_id, conversation_id) = project_channel(&pool).await;
-        seed_teammate_messages(
+        seed_agent_messages(
             &pool,
             &conversation_id,
             &[("item:a", "c000", false), ("item:b", "c000", false)],
@@ -1075,7 +1075,7 @@ mod tests {
     async fn read_cursor_never_moves_backward_or_rewrites_an_unchanged_position() {
         let pool = crate::chat::tests::repository::pool_with_thread().await;
         let (channel_id, conversation_id) = project_channel(&pool).await;
-        seed_teammate_messages(
+        seed_agent_messages(
             &pool,
             &conversation_id,
             &[("item:a", "c000", false), ("item:b", "c000", false)],
@@ -1127,16 +1127,16 @@ mod tests {
             LOCAL_PARTICIPANT_ID, mark_conversation_read, read_channel, read_channels, timestamp,
         };
         use crate::chat::tests::attention::{
-            SeedAssignment, days_ago, minutes_after_seed, seed_assignment, seed_channel,
-            seed_failure_update, seed_reply, seed_reply_thread, seed_reply_thread_cursor,
-            seed_teammate,
+            SeedAssignment, days_ago, minutes_after_seed, seed_agent, seed_assignment,
+            seed_channel, seed_failure_update, seed_reply, seed_reply_thread,
+            seed_reply_thread_cursor,
         };
         use ganbaru_chat_contracts::models::{
             ChatChannelId, ChatConversationId, ChatReplyThreadId, ChatReplyThreadSummaryRead,
             ChatWorkAssignmentState,
         };
 
-        const TEAMMATE: &str = "participant:attention-agent";
+        const AGENT: &str = "participant:attention-agent";
 
         /// Opens the channel `channel_id` at `minutes` after the seed time.
         async fn open_channel_at(
@@ -1183,7 +1183,7 @@ mod tests {
                 pool,
                 assignment.reply_thread_id,
                 assignment.id,
-                TEAMMATE,
+                AGENT,
                 item_id,
                 order_key,
                 &minutes_after_seed(minutes),
@@ -1191,7 +1191,7 @@ mod tests {
             .await;
         }
 
-        /// A channel of the seeded project with `threads` reply threads and a teammate.
+        /// A channel of the seeded project with `threads` reply threads and an agent.
         async fn channel_with_threads(
             pool: &sqlx::SqlitePool,
             channel_id: &str,
@@ -1246,15 +1246,14 @@ mod tests {
         #[tokio::test]
         async fn attention_prefers_answer_over_approval_over_review_and_leaves_out_failures() {
             let pool = crate::chat::tests::repository::pool_with_thread().await;
-            seed_teammate(&pool, TEAMMATE, "Attention agent").await;
+            seed_agent(&pool, AGENT, "Attention agent").await;
             let channel = channel_with_threads(
                 &pool,
                 "channel:priority",
                 &["thread:a", "thread:b", "thread:c", "thread:d"],
             )
             .await;
-            let mut failed =
-                SeedAssignment::new("assignment:d", "thread:d", TEAMMATE, "failed", 40);
+            let mut failed = SeedAssignment::new("assignment:d", "thread:d", AGENT, "failed", 40);
             failed.settled_at = Some(days_ago(1));
             seed_failure(&pool, &failed, "item:failure:d", "a1", 40).await;
             assert_eq!(attention_of(&pool, &channel).await, None);
@@ -1281,7 +1280,7 @@ mod tests {
                 ),
             ];
             for (id, thread, state, attention) in expected {
-                seed_assignment(&pool, &SeedAssignment::new(id, thread, TEAMMATE, state, 1)).await;
+                seed_assignment(&pool, &SeedAssignment::new(id, thread, AGENT, state, 1)).await;
                 assert_eq!(attention_of(&pool, &channel).await, Some(attention));
             }
         }
@@ -1289,15 +1288,14 @@ mod tests {
         #[tokio::test]
         async fn a_failure_continued_by_a_later_assignment_is_not_marked() {
             let pool = crate::chat::tests::repository::pool_with_thread().await;
-            seed_teammate(&pool, TEAMMATE, "Attention agent").await;
+            seed_agent(&pool, AGENT, "Attention agent").await;
             let channel = channel_with_threads(&pool, "channel:successor", &["thread:a"]).await;
-            let failed =
-                SeedAssignment::new("assignment:failed", "thread:a", TEAMMATE, "failed", 1);
+            let failed = SeedAssignment::new("assignment:failed", "thread:a", AGENT, "failed", 1);
             seed_failure(&pool, &failed, "item:failure", "a1", 1).await;
             assert!(unseen_failure_of(&pool, &channel).await);
 
             let mut successor =
-                SeedAssignment::new("assignment:successor", "thread:a", TEAMMATE, "completed", 2);
+                SeedAssignment::new("assignment:successor", "thread:a", AGENT, "completed", 2);
             successor.previous_assignment_id = Some("assignment:failed");
             seed_assignment(&pool, &successor).await;
 
@@ -1307,9 +1305,9 @@ mod tests {
         #[tokio::test]
         async fn a_retried_failure_is_not_marked() {
             let pool = crate::chat::tests::repository::pool_with_thread().await;
-            seed_teammate(&pool, TEAMMATE, "Attention agent").await;
+            seed_agent(&pool, AGENT, "Attention agent").await;
             let channel = channel_with_threads(&pool, "channel:retried", &["thread:a"]).await;
-            let failed = SeedAssignment::new("assignment:a", "thread:a", TEAMMATE, "failed", 1);
+            let failed = SeedAssignment::new("assignment:a", "thread:a", AGENT, "failed", 1);
             seed_failure(&pool, &failed, "item:failure", "a1", 1).await;
 
             sqlx::query(
@@ -1330,10 +1328,10 @@ mod tests {
         #[tokio::test]
         async fn an_unseen_failure_clears_when_the_channel_is_opened_after_it() {
             let pool = crate::chat::tests::repository::pool_with_thread().await;
-            seed_teammate(&pool, TEAMMATE, "Attention agent").await;
+            seed_agent(&pool, AGENT, "Attention agent").await;
             let channel = channel_with_threads(&pool, "channel:opened", &["thread:a"]).await;
             open_channel_at(&pool, &channel, 1).await;
-            let failed = SeedAssignment::new("assignment:a", "thread:a", TEAMMATE, "failed", 5);
+            let failed = SeedAssignment::new("assignment:a", "thread:a", AGENT, "failed", 5);
             seed_failure(&pool, &failed, "item:failure", "a1", 5).await;
             assert!(
                 unseen_failure_of(&pool, &channel).await,
@@ -1353,9 +1351,9 @@ mod tests {
         #[tokio::test]
         async fn an_unseen_failure_clears_when_its_thread_is_read() {
             let pool = crate::chat::tests::repository::pool_with_thread().await;
-            seed_teammate(&pool, TEAMMATE, "Attention agent").await;
+            seed_agent(&pool, AGENT, "Attention agent").await;
             let channel = channel_with_threads(&pool, "channel:thread-read", &["thread:a"]).await;
-            let failed = SeedAssignment::new("assignment:a", "thread:a", TEAMMATE, "failed", 5);
+            let failed = SeedAssignment::new("assignment:a", "thread:a", AGENT, "failed", 5);
             seed_failure(&pool, &failed, "item:failure", "a1", 5).await;
 
             seed_reply_thread_cursor(&pool, "thread:a", "a1", "item:failure").await;
@@ -1368,18 +1366,18 @@ mod tests {
         #[tokio::test]
         async fn a_delegated_failure_waits_on_its_open_parent() {
             let pool = crate::chat::tests::repository::pool_with_thread().await;
-            seed_teammate(&pool, TEAMMATE, "Attention agent").await;
+            seed_agent(&pool, AGENT, "Attention agent").await;
             let parent_channel =
                 channel_with_threads(&pool, "channel:parent", &["thread:parent"]).await;
             let child_channel =
                 channel_with_threads(&pool, "channel:child", &["thread:child"]).await;
             seed_assignment(
                 &pool,
-                &SeedAssignment::new("assignment:parent", "thread:parent", TEAMMATE, "working", 1),
+                &SeedAssignment::new("assignment:parent", "thread:parent", AGENT, "working", 1),
             )
             .await;
             let mut child =
-                SeedAssignment::new("assignment:child", "thread:child", TEAMMATE, "failed", 2);
+                SeedAssignment::new("assignment:child", "thread:child", AGENT, "failed", 2);
             child.parent_assignment_id = Some("assignment:parent");
             seed_failure(&pool, &child, "item:failure:child", "a1", 2).await;
 
@@ -1409,26 +1407,26 @@ mod tests {
         #[tokio::test]
         async fn unread_replies_count_only_threads_the_person_took_part_in() {
             let pool = crate::chat::tests::repository::pool_with_thread().await;
-            seed_teammate(&pool, TEAMMATE, "Attention agent").await;
+            seed_agent(&pool, AGENT, "Attention agent").await;
             let channel = channel_with_threads(
                 &pool,
                 "channel:replies",
                 &["thread:own", "thread:joined", "thread:other"],
             )
             .await;
-            // `thread:joined` and `thread:other` start from a teammate's message.
+            // `thread:joined` and `thread:other` start from an agent's message.
             sqlx::query(
                 "UPDATE chat_communication_messages SET author_participant_id = ?
                  WHERE item_id IN ('item:root:thread:joined', 'item:root:thread:other')",
             )
-            .bind(TEAMMATE)
+            .bind(AGENT)
             .execute(&pool)
             .await
             .unwrap();
             let unread_roots = read_channel(&pool, &channel).await.unwrap().unread_count;
             let at = minutes_after_seed(5);
-            seed_reply(&pool, "thread:own", "item:own:1", TEAMMATE, "a1", &at).await;
-            seed_reply(&pool, "thread:own", "item:own:2", TEAMMATE, "a2", &at).await;
+            seed_reply(&pool, "thread:own", "item:own:1", AGENT, "a1", &at).await;
+            seed_reply(&pool, "thread:own", "item:own:2", AGENT, "a2", &at).await;
             seed_reply(
                 &pool,
                 "thread:own",
@@ -1447,8 +1445,8 @@ mod tests {
                 &at,
             )
             .await;
-            seed_reply(&pool, "thread:joined", "item:joined:1", TEAMMATE, "a2", &at).await;
-            seed_reply(&pool, "thread:other", "item:other:1", TEAMMATE, "a1", &at).await;
+            seed_reply(&pool, "thread:joined", "item:joined:1", AGENT, "a2", &at).await;
+            seed_reply(&pool, "thread:other", "item:other:1", AGENT, "a1", &at).await;
 
             assert_eq!(unread_replies_of(&pool, &channel).await, 3);
             assert_eq!(
@@ -1471,7 +1469,7 @@ mod tests {
                 &pool,
                 "thread:joined",
                 "item:joined:2",
-                TEAMMATE,
+                AGENT,
                 "a3",
                 &minutes_after_seed(20),
             )
@@ -1486,7 +1484,7 @@ mod tests {
         #[tokio::test]
         async fn opening_a_channel_stamps_its_cursor_only_when_replies_arrived() {
             let pool = crate::chat::tests::repository::pool_with_thread().await;
-            seed_teammate(&pool, TEAMMATE, "Attention agent").await;
+            seed_agent(&pool, AGENT, "Attention agent").await;
             let channel = channel_with_threads(&pool, "channel:stamp", &["thread:a"]).await;
             open_channel_at(&pool, &channel, 1).await;
             let conversation_id = read_channel(&pool, &channel).await.unwrap().conversation_id;
@@ -1506,7 +1504,7 @@ mod tests {
                 &pool,
                 "thread:a",
                 "item:reply",
-                TEAMMATE,
+                AGENT,
                 "a1",
                 &minutes_after_seed(3),
             )
@@ -1521,7 +1519,7 @@ mod tests {
         #[tokio::test]
         async fn many_assignments_read_as_one_row_per_channel() {
             let pool = crate::chat::tests::repository::pool_with_thread().await;
-            seed_teammate(&pool, TEAMMATE, "Attention agent").await;
+            seed_agent(&pool, AGENT, "Attention agent").await;
             for (channel, state) in [
                 ("channel:busy-a", "ready_for_review"),
                 ("channel:busy-b", "working"),
@@ -1540,7 +1538,7 @@ mod tests {
                     let state = if index == 150 { state } else { "completed" };
                     seed_assignment(
                         &pool,
-                        &SeedAssignment::new(&id, &thread, TEAMMATE, state, index),
+                        &SeedAssignment::new(&id, &thread, AGENT, state, index),
                     )
                     .await;
                 }

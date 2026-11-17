@@ -1,7 +1,7 @@
 //! Outcome delivery of delegated work to the assignment that delegated it.
 //!
-//! When a delegated child settles, the parent's reply thread receives one teammate message
-//! authored by the child teammate with a `delegation` update. Its ids derive from the child, so
+//! When a delegated child settles, the parent's reply thread receives one agent message
+//! authored by the child agent with a `delegation` update. Its ids derive from the child, so
 //! the device that settled the child and the parent's executing device, which writes it after
 //! sync applied the settled child, produce the same rows and sync merges them into one message.
 
@@ -13,7 +13,7 @@ use crate::timeline::{bounded_projected_revision, next_order_key, truncate_at_ch
 use serde_json::json;
 use sqlx::{Row, SqliteConnection};
 
-/// Most bytes of a teammate's report body, and of the child result an outcome carries.
+/// Most bytes of an agent's report body, and of the child result an outcome carries.
 pub const MAX_REPORT_BODY_BYTES: usize = 16 * 1024;
 
 /// First id part of every row an outcome writes, followed by the child assignment id.
@@ -47,7 +47,7 @@ pub fn outcome_item_id(child_assignment_id: &str) -> ChatResult<String> {
 /// Posts the outcome of the delegated child `child_assignment_id` in its parent's reply thread
 /// when the child reached `completed`, `ready_for_review`, `failed`, or `cancelled`.
 ///
-/// The message is authored by the child teammate and carries the child's last result, review,
+/// The message is authored by the child agent and carries the child's last result, review,
 /// or failure body, else its state reason, bounded to [`MAX_REPORT_BODY_BYTES`]. When the parent
 /// still accepts continuation, the message also becomes a `queued_continuation` input of the
 /// parent; otherwise it stays visible only. An undelegated or unsettled child, a child already
@@ -108,8 +108,8 @@ pub async fn post_delegation_outcome(
          VALUES (?, ?, ?, ?)",
     )
     .bind(&item_id)
-    .bind(&child.teammate_id)
-    .bind(&child.teammate_label)
+    .bind(&child.agent_id)
+    .bind(&child.agent_label)
     .bind(now)
     .execute(&mut *connection)
     .await
@@ -295,8 +295,8 @@ async fn cancel_open_descendants(
 struct SettledChild {
     state: String,
     state_reason: Option<String>,
-    teammate_id: String,
-    teammate_label: String,
+    agent_id: String,
+    agent_label: String,
     parent_assignment_id: String,
     parent_state: ChatWorkAssignmentState,
     parent_reply_thread_id: String,
@@ -310,8 +310,8 @@ async fn read_settled_child(
     child_assignment_id: &str,
 ) -> ChatResult<Option<SettledChild>> {
     let row = sqlx::query(
-        "SELECT child.state, child.state_reason, child.teammate_id,
-                participant.display_name AS teammate_label,
+        "SELECT child.state, child.state_reason, child.agent_id,
+                participant.display_name AS agent_label,
                 parent.id AS parent_assignment_id, parent.state AS parent_state,
                 parent.reply_thread_id AS parent_reply_thread_id, thread.conversation_id,
                 EXISTS(
@@ -321,7 +321,7 @@ async fn read_settled_child(
          FROM chat_work_assignments child
          JOIN chat_work_assignments parent ON parent.id = child.parent_assignment_id
          JOIN chat_reply_threads thread ON thread.id = parent.reply_thread_id
-         JOIN chat_participants participant ON participant.id = child.teammate_id
+         JOIN chat_participants participant ON participant.id = child.agent_id
          WHERE child.id = ?",
     )
     .bind(child_assignment_id)
@@ -340,8 +340,8 @@ async fn read_settled_child(
     Ok(Some(SettledChild {
         state,
         state_reason: row.try_get("state_reason").map_err(persistence_error)?,
-        teammate_id: row.try_get("teammate_id").map_err(persistence_error)?,
-        teammate_label: row.try_get("teammate_label").map_err(persistence_error)?,
+        agent_id: row.try_get("agent_id").map_err(persistence_error)?,
+        agent_label: row.try_get("agent_label").map_err(persistence_error)?,
         parent_assignment_id: row
             .try_get("parent_assignment_id")
             .map_err(persistence_error)?,

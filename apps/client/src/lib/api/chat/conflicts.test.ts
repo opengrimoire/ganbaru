@@ -32,7 +32,7 @@ describe("chat conflict mapping", () => {
 
   it("rejects a version without a device", () => {
     expect(() => mapChatConflicts([{
-      target: "teammate",
+      target: "agent",
       id: "t",
       context: null,
       versions: [{ version: "ab", editedAtMs: 1, displayed: true, text: "Reviewer", detail: "Review" }],

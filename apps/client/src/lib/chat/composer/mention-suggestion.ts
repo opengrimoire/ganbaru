@@ -1,12 +1,12 @@
 import type { ChatMessageReference, ChatParticipantId } from "$lib/chat/contracts";
 
-/** A channel teammate the composer can suggest mentioning. */
+/** A channel agent the composer can suggest mentioning. */
 export interface MentionSuggestionCandidate {
   id: ChatParticipantId;
   displayName: string;
 }
 
-/** A teammate named in the draft without a mention, and where the name is. */
+/** An agent named in the draft without a mention, and where the name is. */
 export interface MentionSuggestion {
   participantId: ChatParticipantId;
   displayName: string;
@@ -19,19 +19,19 @@ export interface MentionSuggestion {
 const WORD_CHARACTER = /[\p{L}\p{N}\p{M}_]/u;
 
 /**
- * Finds a channel teammate the draft names in plain words but does not mention.
+ * Finds a channel agent the draft names in plain words but does not mention.
  *
  * A name matches as a whole word, ignoring case, and never inside an existing reference or right
- * after `@`, which the reference picker owns. A teammate already mentioned is never suggested.
+ * after `@`, which the reference picker owns. An agent already mentioned is never suggested.
  * The earliest name in the text wins; at the same position the longer name wins, and then roster
  * order. The suggestion is local: it never posts and never calls a provider.
  *
  * @param text The draft's plain text.
  * @param references The draft's references, with offsets into `text`.
- * @param roster The channel teammates that can be mentioned, in roster order.
- * @returns The suggested teammate and the range of the name, or `null`.
+ * @param roster The channel agents that can be mentioned, in roster order.
+ * @returns The suggested agent and the range of the name, or `null`.
  */
-export function suggestTeammateMention(
+export function suggestAgentMention(
   text: string,
   references: readonly ChatMessageReference[],
   roster: readonly MentionSuggestionCandidate[],

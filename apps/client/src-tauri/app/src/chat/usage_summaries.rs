@@ -1,4 +1,4 @@
-//! Daily teammate usage summaries: the flush loop of the executing device and the read every
+//! Daily agent usage summaries: the flush loop of the executing device and the read every
 //! device uses.
 //!
 //! The loop adds this device's run usage to its summaries every
@@ -6,11 +6,9 @@
 //! settled run reaches other devices without waiting for the next tick.
 
 use super::channels::chat_pool;
-use ganbaru_chat::usage_summaries::{ChatTeammateUsageDayRead, read_teammate_usage};
+use ganbaru_chat::usage_summaries::{ChatAgentUsageDayRead, read_agent_usage};
 #[cfg(desktop)]
-use ganbaru_chat::usage_summaries::{
-    FlushScope, USAGE_SUMMARY_FLUSH_SECONDS, flush_teammate_usage,
-};
+use ganbaru_chat::usage_summaries::{FlushScope, USAGE_SUMMARY_FLUSH_SECONDS, flush_agent_usage};
 use ganbaru_chat_contracts::models::{ChatError, ChatErrorCode, ChatParticipantId, ChatResult};
 use jiff::tz::TimeZone;
 use sqlx::SqlitePool;
@@ -60,20 +58,20 @@ pub(crate) async fn flush_at(
     scope: FlushScope,
 ) -> ChatResult<usize> {
     let (local_date, now) = local_date_and_timestamp(epoch_ms, zone)?;
-    flush_teammate_usage(pool, device_id, &local_date, &now, scope).await
+    flush_agent_usage(pool, device_id, &local_date, &now, scope).await
 }
 
-/// Reads a teammate's usage per local day, with the retention window ending today in `zone`.
+/// Reads an agent's usage per local day, with the retention window ending today in `zone`.
 pub(crate) async fn read_usage_at(
     pool: &SqlitePool,
-    teammate_id: &ChatParticipantId,
+    agent_id: &ChatParticipantId,
     from_date: &str,
     to_date: &str,
     epoch_ms: i64,
     zone: &TimeZone,
-) -> ChatResult<Vec<ChatTeammateUsageDayRead>> {
+) -> ChatResult<Vec<ChatAgentUsageDayRead>> {
     let (today, _) = local_date_and_timestamp(epoch_ms, zone)?;
-    read_teammate_usage(pool, teammate_id.as_str(), from_date, to_date, &today).await
+    read_agent_usage(pool, agent_id.as_str(), from_date, to_date, &today).await
 }
 
 #[cfg(desktop)]
@@ -137,28 +135,20 @@ pub(crate) fn wake<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     }
 }
 
-/// Reads a teammate's usage per local day from `from_date` to `to_date` (`YYYY-MM-DD`, both
+/// Reads an agent's usage per local day from `from_date` to `to_date` (`YYYY-MM-DD`, both
 /// included), summed across the devices that ran it, within the last
 /// [`ganbaru_chat::usage_summaries::USAGE_DAILY_RETENTION_DAYS`] local days.
 #[tauri::command]
-pub async fn chat_read_teammate_usage(
+pub async fn chat_read_agent_usage(
     app: tauri::AppHandle,
     db_url: String,
-    teammate_id: ChatParticipantId,
+    agent_id: ChatParticipantId,
     from_date: String,
     to_date: String,
-) -> ChatResult<Vec<ChatTeammateUsageDayRead>> {
+) -> ChatResult<Vec<ChatAgentUsageDayRead>> {
     let pool = chat_pool(app, db_url).await?;
     let zone = ganbaru_civil_time::system_zone().map_err(local_time_error)?;
-    read_usage_at(
-        &pool,
-        &teammate_id,
-        &from_date,
-        &to_date,
-        now_millis(),
-        &zone,
-    )
-    .await
+    read_usage_at(&pool, &agent_id, &from_date, &to_date, now_millis(), &zone).await
 }
 
 #[cfg(all(test, desktop))]

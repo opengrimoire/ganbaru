@@ -603,7 +603,7 @@ fn grok_folder_callbacks(
 }
 
 #[test]
-fn teammates_without_command_access_never_start_or_hold_terminals() {
+fn agents_without_command_access_never_start_or_hold_terminals() {
     crate::test_block_on(async {
         let workspace = TestDirectory::new();
         for capability in [

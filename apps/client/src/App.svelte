@@ -959,7 +959,7 @@
   async function deliverChatNotification(delivery: ChatNotificationDelivery): Promise<void> {
     // The gate holds delivery while the settings are unknown; content stays out if they were cleared since.
     const text = chatNotificationText(delivery, chatBehavior()?.notificationIncludeContent ?? false, {
-      title: (kind, teammate) => t(`chat.notifications.titles.${kind}`, teammate),
+      title: (kind, agent) => t(`chat.notifications.titles.${kind}`, agent),
       body: (channel) => t("chat.notifications.body", channel),
       bodyWithReason: (channel, reason) => t("chat.notifications.bodyWithReason", channel, reason),
       summaryTitle: (count) => t("chat.notifications.summaryTitle", count),

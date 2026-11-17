@@ -14,9 +14,9 @@ function assignmentWire(overrides: Record<string, unknown>): Record<string, unkn
   return {
     id: "assignment:review",
     replyThreadId: "reply-thread:review",
-    teammate: {
+    agent: {
       id: "participant:atlas",
-      kind: "ai_teammate",
+      kind: "ai_agent",
       displayName: "Atlas",
       avatar: { schemaVersion: 1, value: {} },
       revision: 1,
@@ -107,12 +107,12 @@ describe("delegated work reads", () => {
   });
 
   it("reads the delegated children of a reply thread page and refuses unknown states", () => {
-    const participant = assignmentWire({}).teammate;
+    const participant = assignmentWire({}).agent;
     const child = {
       assignmentId: "assignment:child",
       parentAssignmentId: "assignment:review",
       replyThreadId: "reply-thread:child",
-      teammate: participant,
+      agent: participant,
       objective: "Check the build",
       state: "waiting_for_answer",
       stateReason: null,
@@ -191,7 +191,7 @@ describe("parseChatWaitingAssignments", () => {
     channelId: "channel:general",
     channelName: "general",
     replyThreadId: "reply-thread:waiting",
-    teammateDisplayName: "Atlas",
+    agentDisplayName: "Atlas",
     createdAt: TIMESTAMP,
   };
 
@@ -217,8 +217,8 @@ describe("parseChatReviewQueue", () => {
     channelId: "channel:general",
     channelName: "general",
     replyThreadId: "reply-thread:review",
-    teammateParticipantId: "participant:atlas",
-    teammateDisplayName: "Atlas",
+    agentParticipantId: "participant:atlas",
+    agentDisplayName: "Atlas",
     stateReason: null,
     changedFileCount: 3,
     executedHere: true,

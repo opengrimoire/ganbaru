@@ -220,21 +220,24 @@ pub(crate) struct ProviderDiscoveryRun {
     pub(crate) discovered_probes: BTreeMap<ProviderInstanceId, ProviderProbeResult>,
 }
 
+/// Discovers default providers the first time this app session asks for the active vault, and
+/// reports whether this call ran the discovery.
 pub(crate) async fn discover_default_providers_once(
     app: &tauri::AppHandle,
     state: &ChatSettingsState,
-) -> ChatResult<()> {
+) -> ChatResult<bool> {
     let vault_id = vault::active_vault_id(app).map_err(config_io_error)?;
     if discovery_finished(state, &vault_id)? {
-        return Ok(());
+        return Ok(false);
     }
 
     let _guard = state.discovery_lock.lock().await;
     if discovery_finished(state, &vault_id)? {
-        return Ok(());
+        return Ok(false);
     }
     discover_default_providers(app, state).await?;
-    mark_discovery_finished(state, vault_id)
+    mark_discovery_finished(state, vault_id)?;
+    Ok(true)
 }
 
 pub(crate) async fn discover_default_providers(

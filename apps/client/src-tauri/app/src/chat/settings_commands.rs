@@ -11,20 +11,21 @@ use super::device_state::{read_active_device_scope, update_active_device_scope};
 use super::settings::installed_provider_executables;
 pub(crate) use super::settings::read_provider;
 use super::settings::{
+    CHAT_PROVIDER_ACTIVITY_EVENT, apply_provider_probe, config_io_error, credential_error,
+    device_configuration, device_state_error, discover_default_providers,
+    discover_default_providers_once, executable_search_directories,
+    invalidate_provider_state_for_credential, mark_discovery_finished, mutate_chat_config,
+    mutate_chat_configuration, operation_context, pick_local_path, portable_configuration,
+    provider_instance_read, provider_mut, provider_not_found_error, provider_runtime_changed,
+    read_chat_config, read_settings, remember_composer_selection,
+    replacement_provider_configurations, set_working_folder_provider_preference, unique_model_ids,
+    validate_picker_title,
+};
+use super::settings::{
     ProviderRuntimePrompt, ProviderRuntimeReviewRead, RuntimeReceipts, approval_digests,
     approved_runtime, ask_runtime_approval, ingress_review_items, launch_configuration,
     pending_portable_items, remove_private_home, require_runtime_approved_on_device,
     validate_runtime_prompt,
-};
-use super::settings::{
-    apply_provider_probe, config_io_error, credential_error, device_configuration,
-    device_state_error, discover_default_providers, discover_default_providers_once,
-    executable_search_directories, invalidate_provider_state_for_credential,
-    mark_discovery_finished, mutate_chat_config, mutate_chat_configuration, operation_context,
-    pick_local_path, portable_configuration, provider_instance_read, provider_mut,
-    provider_not_found_error, provider_runtime_changed, read_chat_config, read_settings,
-    remember_composer_selection, replacement_provider_configurations,
-    set_working_folder_provider_preference, unique_model_ids, validate_picker_title,
 };
 #[cfg(test)]
 use super::settings::{
@@ -48,6 +49,7 @@ use ganbaru_chat_providers::{ProviderDriverFactory, ProviderDriverRegistry};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::sync::Mutex;
+use tauri::{Emitter, Manager};
 
 #[derive(Default)]
 pub struct ChatSettingsState {
@@ -115,13 +117,58 @@ pub async fn chat_read_settings(app: tauri::AppHandle) -> ChatResult<ChatSetting
     read_settings(&app).await
 }
 
+/// Age after which opening Chat rereads a provider's status and plan limits; matches when the
+/// limits views call a reading out of date.
+const PROVIDER_READING_MAX_AGE: chrono::TimeDelta = chrono::TimeDelta::hours(1);
+
 #[tauri::command]
 pub async fn chat_discover_default_providers(
     app: tauri::AppHandle,
     state: tauri::State<'_, ChatSettingsState>,
 ) -> ChatResult<ChatSettingsRead> {
-    discover_default_providers_once(&app, &state).await?;
+    if discover_default_providers_once(&app, &state).await? {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move { refresh_stale_provider_readings(app).await });
+    }
     read_settings(&app).await
+}
+
+/// Probes, one at a time, each enabled provider this device has not heard from within
+/// [`PROVIDER_READING_MAX_AGE`], so plan limits and sign-in state are current without a
+/// visit to Settings. It runs once per vault and app session, beside discovery, and stops
+/// when the active vault changes.
+async fn refresh_stale_provider_readings(app: tauri::AppHandle) {
+    let state = app.state::<ChatSettingsState>();
+    let _guard = state.discovery_lock.lock().await;
+    let (Ok(vault_id), Ok(config), Ok(scope)) = (
+        vault::active_vault_id(&app),
+        read_chat_config(&app),
+        read_active_device_scope(&app),
+    ) else {
+        eprintln!("Chat could not read providers to refresh their status");
+        return;
+    };
+    let now = chrono::Utc::now();
+    let stale = config.providers.into_iter().filter(|provider| {
+        provider.enabled
+            && !scope
+                .provider_instances
+                .get(&provider.instance_id)
+                .is_some_and(|device| device.has_reading_within(now, PROVIDER_READING_MAX_AGE))
+    });
+    let mut refreshed = false;
+    for provider in stale {
+        if vault::active_vault_id(&app).ok().as_ref() != Some(&vault_id) {
+            break;
+        }
+        match chat_probe_provider(app.clone(), provider.instance_id).await {
+            Ok(_) => refreshed = true,
+            Err(error) => eprintln!("Chat provider status refresh failed: {error}"),
+        }
+    }
+    if refreshed && app.emit(CHAT_PROVIDER_ACTIVITY_EVENT, ()).is_err() {
+        eprintln!("Chat provider activity notification failed");
+    }
 }
 
 #[tauri::command]

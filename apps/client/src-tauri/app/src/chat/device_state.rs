@@ -55,6 +55,21 @@ impl ChatProviderDeviceState {
         });
         true
     }
+
+    /// Whether this device heard from the instance less than `max_age` before `now`, through a
+    /// successful status probe or a usage limit report.
+    pub fn has_reading_within(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+        max_age: chrono::TimeDelta,
+    ) -> bool {
+        let limits_at = self.usage_limits.as_ref().map(|limits| &limits.observed_at);
+        [self.last_successful_probe_at.as_ref(), limits_at]
+            .into_iter()
+            .flatten()
+            .filter_map(|value| chrono::DateTime::parse_from_rfc3339(value.as_str()).ok())
+            .any(|observed_at| now.signed_duration_since(observed_at) < max_age)
+    }
 }
 
 /// Usage limits a provider reported, with the time this device observed them.
@@ -663,5 +678,34 @@ mod tests {
             &instance("removed"),
             at(50)
         ));
+    }
+    #[test]
+    fn a_reading_is_recent_from_either_a_successful_probe_or_a_limit_report() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-04T12:00:00Z")
+            .unwrap()
+            .to_utc();
+        let hour = chrono::TimeDelta::hours(1);
+        let mut device = ChatProviderDeviceState::default();
+        assert!(
+            !device.has_reading_within(now, hour),
+            "an instance never read is stale"
+        );
+
+        device.last_successful_probe_at = Some(at(10 * 3600));
+        assert!(!device.has_reading_within(now, hour));
+        device.observe_usage_limits(limits(false), at(11 * 3600 + 30 * 60));
+        assert!(
+            device.has_reading_within(now, hour),
+            "a newer limit report counts"
+        );
+
+        device.usage_limits = None;
+        device.last_successful_probe_at = Some(at(11 * 3600));
+        assert!(
+            !device.has_reading_within(now, hour),
+            "exactly the maximum age is stale"
+        );
+        device.last_successful_probe_at = Some(UtcTimestamp::new("2026-08-04T11:00:01Z").unwrap());
+        assert!(device.has_reading_within(now, hour));
     }
 }

@@ -30,7 +30,8 @@
   let files = $state<ProviderFileRead[]>([]);
   let loading = $state(false);
   let error = $state<string | null>(null);
-  let loadGeneration = $state(0);
+  let loadGeneration = 0;
+  let editorKey = $state(0);
   let instructionsDirty = $state(false);
   let configurationDirty = $state(false);
   let configurationOpen = $state(false);
@@ -83,6 +84,7 @@
       const next = await readChatProviderFiles(instanceId);
       if (generation !== loadGeneration || instanceId !== selectedInstanceId) return;
       files = next;
+      editorKey += 1;
     } catch (cause: unknown) {
       if (generation !== loadGeneration) return;
       files = [];
@@ -258,7 +260,7 @@
         </div>
       {/if}
 
-      {#key `${selectedInstanceId} ${loadGeneration}`}
+      {#key `${selectedInstanceId} ${editorKey}`}
         {#if groups.instructions.length > 0}
           <div class="flex flex-col gap-2">
             {@render sectionHeading(t("settings.chat.permissions.instructionsHeading"), t("settings.chat.permissions.instructionsDescription"))}

@@ -347,7 +347,7 @@ export const agentsSettings = {
     refreshSummary: (discovered: string, issues: string) =>
       `Se encontraron ${discovered} proveedores nuevos, ${issues} requieren atención.`,
     empty: "No hay un proveedor de programación configurado.",
-    healthy: "Disponible",
+    healthy: "Listo",
     unavailable: "No disponible",
     authenticationRequired: "Se requiere autenticación",
     unsupported: "No compatible",

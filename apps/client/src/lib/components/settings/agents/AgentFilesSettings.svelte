@@ -24,7 +24,6 @@
   import Notice from "$lib/components/ui/Notice.svelte";
   import ChatModelAvatar from "$lib/components/chat/identity/ChatModelAvatar.svelte";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
-  import { SETTINGS_SECONDARY_BUTTON_CLASS } from "$lib/components/settings/action-buttons";
   import ProviderFileEditor from "./ProviderFileEditor.svelte";
   import ProviderPreferenceList from "./ProviderPreferenceList.svelte";
 
@@ -177,13 +176,11 @@
 
 <section class="agent-files" data-agents-settings-subsection="files">
   <header class="directory-header">
-    <h2>{t("settings.agents.files.heading")}</h2>
-    {#if selectedInstanceId}
-      <button type="button" class={SETTINGS_SECONDARY_BUTTON_CLASS} disabled={loading} onclick={reload}>
-        <RefreshCw size={13} />
-        {dirty ? t("settings.agents.files.discardAndReload") : t("settings.agents.files.reload")}
-      </button>
-    {/if}
+    <div><h2>{t("settings.agents.files.heading")}</h2></div>
+    <button type="button" class="settings-button" disabled={loading || !selectedInstanceId} onclick={reload}>
+      <RefreshCw size={13} />
+      {dirty ? t("settings.agents.files.discardAndReload") : t("settings.agents.files.reload")}
+    </button>
   </header>
 
   {#if chat.loading}
@@ -331,8 +328,11 @@
 
 <style>
   .agent-files { display:grid; height:100%; min-height:0; grid-template-rows:auto minmax(0,1fr); gap:0.8rem; }
-  .directory-header { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:0.75rem; padding-inline:0.25rem; }
+  .directory-header { display:flex; flex-wrap:wrap; align-items:start; justify-content:space-between; gap:0.75rem; padding-inline:0.25rem; }
   .directory-header h2 { font-size:calc(0.866667rem * var(--type-scale)); font-weight:600; }
+  .settings-button { display:inline-flex; min-height:1.9rem; align-items:center; justify-content:center; gap:0.35rem; border:1px solid var(--border); border-radius:0.42rem; background:var(--background); padding:0.3rem 0.65rem; color:var(--foreground); font-size:calc(0.733333rem * var(--type-scale)); font-weight:600; line-height:1; white-space:nowrap; }
+  .settings-button:hover:not(:disabled) { background:var(--accent); }
+  .settings-button:disabled { cursor:not-allowed; opacity:0.5; }
   .directory-layout { display:grid; min-height:0; isolation:isolate; grid-template-columns:minmax(12.5rem,0.62fr) minmax(0,1.6fr); }
   .directory-panel { position:relative; z-index:1; min-width:0; min-height:0; padding-right:0.75rem; }
   .scroll-frame,.detail-scroll-frame { position:relative; height:100%; min-height:0; }

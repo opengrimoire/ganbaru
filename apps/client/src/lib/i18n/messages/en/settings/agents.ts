@@ -344,7 +344,7 @@ export const agentsSettings = {
     refreshSummary: (discovered: string, issues: string) =>
       `${discovered} new providers found, ${issues} need attention.`,
     empty: "No coding-agent provider is configured.",
-    healthy: "Healthy",
+    healthy: "Ready",
     unavailable: "Unavailable",
     authenticationRequired: "Authentication required",
     unsupported: "Unsupported",

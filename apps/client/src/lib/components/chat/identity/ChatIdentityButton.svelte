@@ -120,20 +120,24 @@
     : null);
   const approvalLabel = $derived(approvalPolicy ? approvalPolicyLabel(approvalPolicy) : null);
   let usageState = $state<ChatInteractionStateRead | null>(null);
+  let usageReadFailed = $state(false);
   let usageRequest = 0;
+  /** Whether a hover preview is counting down, so context usage can load before the card opens. */
+  let previewPending = $state(false);
+  const usageWanted = $derived(open || previewPending);
   const usageMeter = $derived(usageState ? composerMeterRead(usageState.usage, usageState.rateLimitStatus).meter : null);
 
   $effect(() => {
-    const threadId = open ? usageThreadId : null;
+    const threadId = usageWanted ? usageThreadId : null;
     const request = ++usageRequest;
-    if (!threadId) {
-      usageState = null;
-      return;
-    }
+    usageState = null;
+    usageReadFailed = false;
+    if (!threadId) return;
     chatApi.readChatInteractionState(threadId)
       .then((read) => { if (request === usageRequest) usageState = read; })
       .catch(() => {
-        // Context usage is advisory, so a failed read leaves the card without it.
+        // Context usage is advisory, so a failed read only says it is unavailable.
+        if (request === usageRequest) usageReadFailed = true;
       });
   });
 
@@ -181,6 +185,7 @@
     if (previewTimer === null) return;
     clearTimeout(previewTimer);
     previewTimer = null;
+    previewPending = false;
   }
 
   function cancelClose(): void {
@@ -192,9 +197,11 @@
   function schedulePreview(): void {
     cancelClose();
     if (open || previewTimer !== null) return;
+    previewPending = true;
     previewTimer = setTimeout(() => {
       previewTimer = null;
       open = true;
+      previewPending = false;
     }, previewDelayMs);
   }
 
@@ -403,11 +410,14 @@
       {:else}
         <p class="identity-description">{t("chat.organization.collaboratorIdentity")}</p>
       {/if}
-      {#if usageState}
-        <div class="identity-context" data-identity-context>
+      {#if usageThreadId}
+        <div class="identity-context" data-identity-context aria-busy={!usageState && !usageReadFailed}>
           <span class="identity-settings-label">{t("chat.composer.contextWindow")}</span>
-          {#if usageMeter}<span>{contextUsageLabel()}</span>{:else}<small>{contextUsageLabel()}</small>{/if}
-          {#if usageState.automaticCompactionReported || usageMeter?.warning}<small>{t("chat.composer.contextCompaction")}</small>{/if}
+          {#if usageState}
+            {#if usageMeter}<span>{contextUsageLabel()}</span>{:else}<small>{contextUsageLabel()}</small>{/if}
+            {#if usageState.automaticCompactionReported || usageMeter?.warning}<small>{t("chat.composer.contextCompaction")}</small>{/if}
+          {:else if usageReadFailed}<small>{t("chat.composer.contextUnavailable")}</small>
+          {:else}<span class="identity-context-pending">{t("common.loading")}</span>{/if}
         </div>
       {/if}
       {#if cardProvider}<ProviderPlanLimits provider={cardProvider} />{/if}
@@ -449,6 +459,7 @@
   .identity-approval { overflow:hidden; min-width:0; color:var(--foreground); text-overflow:ellipsis; white-space:nowrap; }
   .identity-context { display:grid; min-width:0; gap:0.22rem; font-size:var(--panel-font-size); }
   .identity-context small { color:var(--muted-foreground); font-size:var(--panel-detail-font-size); }
+  .identity-context-pending { color:var(--muted-foreground); }
   footer { display:flex; justify-content:flex-end; padding:0.25rem 0.65rem 0.5rem; }
   footer button { display:inline-flex; min-height:1.75rem; align-items:center; gap:0.35rem; border-radius:var(--floating-item-radius); padding:0.25rem 0.45rem; color:var(--muted-foreground); font-size:var(--panel-detail-font-size); }
   footer button:hover,footer button:focus-visible { background:var(--accent); color:var(--foreground); }

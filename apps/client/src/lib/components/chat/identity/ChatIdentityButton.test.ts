@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { mount, tick, unmount } from "svelte";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ChatAiTeammateRead,
   ChatChannelRead,
@@ -118,6 +118,13 @@ describe("ChatIdentityButton", () => {
   const originalActiveChannels = chat.activeChannels;
   const originalSelectedChannelId = chat.selectedChannelId;
 
+  beforeEach(() => {
+    vi.stubGlobal("ResizeObserver", class {
+      observe(): void {}
+      disconnect(): void {}
+    });
+  });
+
   afterEach(async () => {
     if (component) await unmount(component);
     target?.remove();
@@ -133,6 +140,7 @@ describe("ChatIdentityButton", () => {
     settings.close();
     vi.restoreAllMocks();
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it("opens local identity details with the full name and links to profile settings", async () => {
@@ -192,7 +200,7 @@ describe("ChatIdentityButton", () => {
     expect(card?.textContent).not.toContain("Available");
   });
 
-  it("shows the context usage of its provider thread only once the card opens", async () => {
+  it("reads the context usage of its provider thread only when the card opens", async () => {
     const read = vi.spyOn(chatApi, "readChatInteractionState").mockResolvedValue(interactionState());
     chat.teammates = [teammate];
     target = document.createElement("div");
@@ -205,7 +213,7 @@ describe("ChatIdentityButton", () => {
     expect(read).not.toHaveBeenCalled();
 
     target.querySelector<HTMLButtonElement>(".identity-trigger")?.click();
-    await vi.waitFor(() => expect(document.body.querySelector("[data-identity-context]")).not.toBeNull());
+    await vi.waitFor(() => expect(document.body.querySelector("[data-identity-context]")?.textContent).toContain("39% used"));
     expect(read).toHaveBeenCalledWith("thread:atlas");
     const context = document.body.querySelector<HTMLElement>("[data-identity-context]");
     expect(context?.textContent).toContain("Context window");
@@ -213,7 +221,7 @@ describe("ChatIdentityButton", () => {
     expect(context?.textContent).not.toContain("left");
   });
 
-  it("keeps the card without context usage when the usage read fails", async () => {
+  it("says context usage is unavailable when the usage read fails", async () => {
     const read = vi.spyOn(chatApi, "readChatInteractionState").mockRejectedValue(new Error("offline"));
     chat.teammates = [teammate];
     target = document.createElement("div");
@@ -227,7 +235,37 @@ describe("ChatIdentityButton", () => {
     await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
     await tick();
     expect(document.body.querySelector(".identity-card")).not.toBeNull();
-    expect(document.body.querySelector("[data-identity-context]")).toBeNull();
+    await vi.waitFor(() => expect(document.body.querySelector("[data-identity-context]")?.textContent)
+      .toContain("Context usage is not available yet"));
+  });
+
+  it("keeps the context row in place while usage loads, starting the read when a hover preview begins", async () => {
+    let resolve: (read: ReturnType<typeof interactionState>) => void = () => {};
+    const read = vi.spyOn(chatApi, "readChatInteractionState")
+      .mockReturnValue(new Promise((settle) => { resolve = settle; }));
+    chat.teammates = [teammate];
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatIdentityButton, {
+      target,
+      props: { participant: teammateParticipant, presentation: "name", usageThreadId: "thread:atlas" },
+    });
+
+    await tick();
+    target.querySelector(".identity-trigger")?.dispatchEvent(new MouseEvent("pointerenter", { bubbles: true }));
+    await tick();
+    expect(read).toHaveBeenCalledOnce();
+    expect(document.body.querySelector(".identity-card")).toBeNull();
+
+    await new Promise((settle) => setTimeout(settle, 200));
+    await tick();
+    const context = document.body.querySelector<HTMLElement>("[data-identity-context]");
+    expect(context?.textContent).toContain("Loading");
+    expect(context?.getAttribute("aria-busy")).toBe("true");
+
+    resolve(interactionState());
+    await vi.waitFor(() => expect(context?.textContent).toContain("39% used"));
+    expect(read).toHaveBeenCalledOnce();
   });
 
   it("omits the fast icon for standard speed", async () => {

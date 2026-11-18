@@ -34,7 +34,9 @@ On a device where a provider is not installed, its agent still appears in channe
 | Project | The project's Chat settings panel | Project instructions, the project's folders, and the access its channels inherit |
 | Channel | The channel's details panel, under Agents | Channel instructions, the agents in the channel, the access, and model overrides |
 
-Instructions are concatenated in that order (app, project, channel), so a channel adds to what is above it instead of replacing it. Channel notes stay what they are today: facts the channel keeps, read by every agent there, which a person saves and an agent may only suggest. They play the role of Claude Tag's channel memory.
+Instructions are concatenated in that order (app, project, channel), so a channel adds to what is above it instead of replacing it. Instructions are guidance for the agent, not limits: what an agent may touch is decided only by access. Channel notes stay what they are today: facts the channel keeps, read by every agent there, which a person saves and an agent may only suggest. They play the role of Claude Tag's channel memory.
+
+Work reads its instructions and model when it starts, so editing them changes new work and leaves running threads alone. Access is different: lowering it applies to running work at once, and raising it applies to work that starts afterward.
 
 The channel's Agents section shows the resolved values, each with where it comes from ("From project"), and a reset to inherit. The channel dialog keeps name, topic, and members; agents are added and removed there or in the details panel, and both open the same controls.
 
@@ -52,7 +54,7 @@ Access is one setting per channel, inherited from the project and the app. It ap
 
 | Option | What agents can do |
 | --- | --- |
-| Talk only | Agents reply in the channel without opening any folder. |
+| Talk only | Agents reply from the channel alone, with no folder, file name, or path from disk. |
 | Read only | Agents read the project's folders but cannot change them. |
 | Ask before commands (default) | Agents edit files and ask you before running each command. |
 | Work on their own | Agents edit files and run commands without asking, confined to the project's folders. |
@@ -67,7 +69,7 @@ A channel uses every folder of its project. A run uses the folder its thread alr
 
 ## Model and effort
 
-Each agent's default model and effort are set in Settings > Agents. A channel may override the model for an agent in its Agents section; the row shows "Default (model)" until it does. A thread switches its own model with `/model` in the message that starts the work, and work that continues in that thread keeps it. This command replaces the composer's model and effort controls, so a post never carries hidden model choices.
+Each agent's default model and effort are set in Settings > Agents. A channel may override the model for an agent in its Agents section; the row shows "Default (model)" until it does. A thread switches its own model with `/model` in the message that starts the work, and work that continues in that thread keeps it. This command replaces the composer's model and effort controls, so a post never carries hidden model choices. Every agent reply names the model that produced it, so a switch, a channel override, or a device falling back to the provider default is visible where it happened.
 
 ## Common journeys
 
@@ -86,4 +88,3 @@ The membership keeps only presence. Read history, take assignments, the history 
 - Should a channel be able to use fewer folders than its project? Recommendation: not until human collaborators ship, since one person's channels rarely need different folders.
 - How does delegation pick a helper without roles? Recommendation: the delegating agent names the agent and the task, and the helper works under the same channel access.
 - How do planned human collaborators combine with channel access? Recommendation: a collaborator's agent works under the channel's access capped by that collaborator's role.
-- Should Talk only also hide the project's file names from the context package? Recommendation: yes, Talk only shares the channel and nothing from disk.

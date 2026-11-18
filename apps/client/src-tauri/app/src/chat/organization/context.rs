@@ -263,13 +263,7 @@ pub(super) async fn freeze_context_package(
         .await
         .map_err(persistence_error)?;
     }
-    let grants = read_folder_grants(
-        transaction,
-        &conversation_id,
-        agent_id,
-        &access.maximum_folder_capability,
-    )
-    .await?;
+    let grants = read_folder_grants(transaction, &conversation_id, agent_id).await?;
     let grants = match &bound {
         Some(ceiling) => bounded_grants(grants, ceiling)?,
         None => grants,
@@ -388,7 +382,6 @@ pub(super) async fn freeze_context_package(
         "agentId": agent_id.as_str(),
         "agentAccessRevision": access.access_revision,
         "agentPolicyRevisionId": access.policy_revision_id.as_str(),
-        "accessProfileRevisionId": access.access_profile_revision_id.as_str(),
         "executionEnvironmentId": &target.execution_environment_id,
         "workingFolderId": &target.working_folder_id,
         "scratchGenerationId": &target.scratch_generation_id,
@@ -423,11 +416,11 @@ pub(super) async fn freeze_context_package(
         "INSERT INTO chat_assignment_authorization_revisions
             (id, assignment_id, revision, requester_participant_id,
              agent_policy_revision_id, agent_access_revision,
-             destination_conversation_id, access_profile_revision_id,
+             destination_conversation_id,
              execution_environment_id, working_folder_id,
              resolved_runtime_approval_policy, scope_digest, decision_state,
              reason, created_at)
-         VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'allowed', '', ?)",
+         VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 'allowed', '', ?)",
     )
     .bind(authorization_id.as_str())
     .bind(assignment_id.as_str())
@@ -435,7 +428,6 @@ pub(super) async fn freeze_context_package(
     .bind(access.policy_revision_id.as_str())
     .bind(i64_value(access.access_revision)?)
     .bind(conversation_id.as_str())
-    .bind(access.access_profile_revision_id.as_str())
     .bind(&target.execution_environment_id)
     .bind(&target.working_folder_id)
     .bind(resolved_runtime_approval_policy)
@@ -1104,8 +1096,6 @@ struct AssignmentAccess {
     requester_participant_id: ChatParticipantId,
     policy_revision_id: ChatAgentPolicyRevisionId,
     access_revision: u64,
-    access_profile_revision_id: ChatAccessProfileRevisionId,
-    maximum_folder_capability: String,
     history: AgentHistoryAccess,
     channel_runtime_approval_policy: Option<String>,
     scratch_runtime_approval_policy: Option<String>,
@@ -1150,13 +1140,7 @@ pub(super) async fn read_granted_access(
         agent_id,
     )
     .await?;
-    let folder_grants = read_folder_grants(
-        transaction,
-        conversation_id,
-        agent_id,
-        &access.maximum_folder_capability,
-    )
-    .await?;
+    let folder_grants = read_folder_grants(transaction, conversation_id, agent_id).await?;
     let channel_approval = access.channel_runtime_approval_policy.as_ref();
     let grants = folder_grants
         .into_iter()
@@ -1250,14 +1234,7 @@ async fn read_assignment_access(
     let row = sqlx::query(
         "SELECT message.author_participant_id AS requester_participant_id,
                 policy.id AS policy_revision_id, access_state.access_revision,
-                profile_revision.id AS access_profile_revision_id,
-                profile_revision.maximum_folder_capability,
-                profile_revision.default_read_history,
-                profile_revision.default_history_boundary,
                 channel_access.read_history, channel_access.history_boundary,
-                channel_access.read_history_inherits_profile,
-                channel_access.participate_inherits_profile,
-                channel_access.history_boundary_inherits_profile,
                 channel_access.history_from_order_key,
                 channel_access.runtime_approval_policy AS channel_runtime_approval_policy,
                 channel_access.scratch_runtime_approval_policy,
@@ -1270,12 +1247,6 @@ async fn read_assignment_access(
          JOIN chat_agent_access_state access_state
            ON access_state.agent_id = membership.participant_id
           AND access_state.access_revision >= 1
-         JOIN chat_access_profiles profile
-           ON profile.id = channel_access.access_profile_id
-          AND profile.archived_at IS NULL
-         JOIN chat_access_profile_effective_revisions profile_revision
-           ON profile_revision.access_profile_id = profile.id
-          AND profile_revision.default_participate = 1
          JOIN chat_agents agent
            ON agent.participant_id = membership.participant_id
          JOIN chat_agent_effective_policies policy
@@ -1289,11 +1260,7 @@ async fn read_assignment_access(
          WHERE membership.conversation_id = ?
           AND membership.participant_id = ?
           AND membership.removed_at IS NULL
-           AND CASE
-             WHEN channel_access.participate_inherits_profile = 1
-               THEN profile_revision.default_participate
-             ELSE channel_access.participate AND profile_revision.default_participate
-           END = 1
+           AND channel_access.participate = 1
            AND participant.archived_at IS NULL",
     )
     .bind(triggering_message_item_id.as_str())
@@ -1312,35 +1279,14 @@ async fn read_assignment_access(
     let history_from_order_key = row
         .try_get::<Option<String>, _>("history_from_order_key")
         .map_err(persistence_error)?;
-    let profile_read_history = row
-        .try_get::<i64, _>("default_read_history")
+    let read_history = row
+        .try_get::<i64, _>("read_history")
         .map_err(persistence_error)?
         == 1;
-    let read_history = if row
-        .try_get::<i64, _>("read_history_inherits_profile")
-        .map_err(persistence_error)?
-        == 1
-    {
-        profile_read_history
-    } else {
-        row.try_get::<i64, _>("read_history")
-            .map_err(persistence_error)?
-            == 1
-            && profile_read_history
-    };
-    let stored_history_boundary: String =
-        row.try_get("history_boundary").map_err(persistence_error)?;
-    let profile_history_boundary: String = row
-        .try_get("default_history_boundary")
-        .map_err(persistence_error)?;
-    let history_inherits = row
-        .try_get::<i64, _>("history_boundary_inherits_profile")
-        .map_err(persistence_error)?
-        == 1;
+    let history_boundary: String = row.try_get("history_boundary").map_err(persistence_error)?;
     let history = AgentHistoryAccess::resolve(
         read_history,
-        profile_history_boundary == "from_grant"
-            || (!history_inherits && stored_history_boundary == "from_grant"),
+        history_boundary == "from_grant",
         history_from_order_key,
     );
     Ok(AssignmentAccess {
@@ -1355,14 +1301,6 @@ async fn read_assignment_access(
         )
         .map_err(identifier_error)?,
         access_revision: u64_value(row.try_get("access_revision").map_err(persistence_error)?)?,
-        access_profile_revision_id: ChatAccessProfileRevisionId::new(
-            row.try_get::<String, _>("access_profile_revision_id")
-                .map_err(persistence_error)?,
-        )
-        .map_err(identifier_error)?,
-        maximum_folder_capability: row
-            .try_get("maximum_folder_capability")
-            .map_err(persistence_error)?,
         history,
         channel_runtime_approval_policy: row
             .try_get("channel_runtime_approval_policy")
@@ -1386,11 +1324,9 @@ async fn read_folder_grants(
     transaction: &mut Transaction<'_, Sqlite>,
     conversation_id: &ChatConversationId,
     agent_id: &ChatParticipantId,
-    maximum_capability: &str,
 ) -> ChatResult<Vec<FolderGrant>> {
     let rows = sqlx::query(
-        "SELECT grant_row.working_folder_id, grant_row.capability,
-                grant_row.capability_inherits_profile, grant_row.is_default,
+        "SELECT grant_row.working_folder_id, grant_row.capability, grant_row.is_default,
                 grant_row.runtime_approval_policy
          FROM chat_agent_working_folder_grants grant_row
          JOIN chat_conversations conversation ON conversation.id = grant_row.conversation_id
@@ -1409,19 +1345,8 @@ async fn read_folder_grants(
     let grants = rows
         .into_iter()
         .map(|row| {
-            let stored: String = row.try_get("capability").map_err(persistence_error)?;
-            let inherits = row
-                .try_get::<i64, _>("capability_inherits_profile")
-                .map_err(persistence_error)?
-                == 1;
-            let capability = if inherits {
-                maximum_capability.to_string()
-            } else {
-                capability_for_rank(
-                    capability_rank(&stored)?.min(capability_rank(maximum_capability)?),
-                )?
-                .to_string()
-            };
+            let capability: String = row.try_get("capability").map_err(persistence_error)?;
+            capability_rank(&capability)?;
             Ok(FolderGrant {
                 working_folder_id: row
                     .try_get("working_folder_id")
@@ -1881,27 +1806,10 @@ async fn verify_channel_disclosure(
              ON agent_access.conversation_id = agent.conversation_id
             AND agent_access.agent_id = agent.participant_id
             AND agent_access.removed_at IS NULL
-           JOIN chat_access_profiles agent_profile
-             ON agent_profile.id = agent_access.access_profile_id
-            AND agent_profile.archived_at IS NULL
-           JOIN chat_access_profile_effective_revisions agent_profile_revision
-             ON agent_profile_revision.access_profile_id = agent_profile.id
            WHERE audience.conversation_id = ? AND audience.revision >= ?
-             AND CASE
-                   WHEN agent_access.read_history_inherits_profile = 1
-                     THEN agent_profile_revision.default_read_history
-                   ELSE agent_access.read_history
-                        AND agent_profile_revision.default_read_history
-                 END = 1
+             AND agent_access.read_history = 1
              AND (
-               CASE
-                 WHEN agent_access.history_boundary_inherits_profile = 1
-                   THEN agent_profile_revision.default_history_boundary
-                 WHEN agent_access.history_boundary = 'from_grant'
-                   OR agent_profile_revision.default_history_boundary = 'from_grant'
-                   THEN 'from_grant'
-                 ELSE 'entire'
-               END = 'entire'
+               agent_access.history_boundary = 'entire'
                OR (
                  agent_access.history_from_order_key IS NOT NULL
                  AND agent_access.history_from_order_key <= ?
@@ -1912,29 +1820,12 @@ async fn verify_channel_disclosure(
                OR EXISTS (
                  SELECT 1
                  FROM chat_agent_channel_memberships requester_access
-                 JOIN chat_access_profiles requester_profile
-                   ON requester_profile.id = requester_access.access_profile_id
-                  AND requester_profile.archived_at IS NULL
-                 JOIN chat_access_profile_effective_revisions requester_profile_revision
-                   ON requester_profile_revision.access_profile_id = requester_profile.id
                  WHERE requester_access.conversation_id = ?
                    AND requester_access.agent_id = ?
                    AND requester_access.removed_at IS NULL
-                   AND CASE
-                         WHEN requester_access.read_history_inherits_profile = 1
-                           THEN requester_profile_revision.default_read_history
-                         ELSE requester_access.read_history
-                              AND requester_profile_revision.default_read_history
-                       END = 1
+                   AND requester_access.read_history = 1
                    AND (
-                     CASE
-                       WHEN requester_access.history_boundary_inherits_profile = 1
-                         THEN requester_profile_revision.default_history_boundary
-                       WHEN requester_access.history_boundary = 'from_grant'
-                         OR requester_profile_revision.default_history_boundary = 'from_grant'
-                         THEN 'from_grant'
-                       ELSE 'entire'
-                     END = 'entire'
+                     requester_access.history_boundary = 'entire'
                      OR (
                        requester_access.history_from_order_key IS NOT NULL
                        AND requester_access.history_from_order_key <= ?
@@ -1954,29 +1845,12 @@ async fn verify_channel_disclosure(
                    OR EXISTS (
                      SELECT 1
                      FROM chat_agent_channel_memberships destination_ai
-                     JOIN chat_access_profiles destination_profile
-                       ON destination_profile.id = destination_ai.access_profile_id
-                      AND destination_profile.archived_at IS NULL
-                     JOIN chat_access_profile_effective_revisions destination_profile_revision
-                       ON destination_profile_revision.access_profile_id = destination_profile.id
                      WHERE destination_ai.conversation_id = ?
                        AND destination_ai.agent_id = destination_member.participant_id
                        AND destination_ai.removed_at IS NULL
-                       AND CASE
-                             WHEN destination_ai.read_history_inherits_profile = 1
-                               THEN destination_profile_revision.default_read_history
-                             ELSE destination_ai.read_history
-                                  AND destination_profile_revision.default_read_history
-                           END = 1
+                       AND destination_ai.read_history = 1
                        AND (
-                         CASE
-                           WHEN destination_ai.history_boundary_inherits_profile = 1
-                             THEN destination_profile_revision.default_history_boundary
-                           WHEN destination_ai.history_boundary = 'from_grant'
-                             OR destination_profile_revision.default_history_boundary = 'from_grant'
-                             THEN 'from_grant'
-                           ELSE 'entire'
-                         END = 'entire'
+                         destination_ai.history_boundary = 'entire'
                          OR (
                            destination_ai.history_from_order_key IS NOT NULL
                            AND destination_ai.history_from_order_key <= coalesce(
@@ -2003,29 +1877,12 @@ async fn verify_channel_disclosure(
                      AND NOT EXISTS (
                        SELECT 1
                        FROM chat_agent_channel_memberships source_ai
-                       JOIN chat_access_profiles source_profile
-                         ON source_profile.id = source_ai.access_profile_id
-                        AND source_profile.archived_at IS NULL
-                       JOIN chat_access_profile_effective_revisions source_profile_revision
-                         ON source_profile_revision.access_profile_id = source_profile.id
                        WHERE source_ai.conversation_id = ?
                          AND source_ai.agent_id = destination_member.participant_id
                          AND source_ai.removed_at IS NULL
-                         AND CASE
-                               WHEN source_ai.read_history_inherits_profile = 1
-                                 THEN source_profile_revision.default_read_history
-                               ELSE source_ai.read_history
-                                    AND source_profile_revision.default_read_history
-                             END = 1
+                         AND source_ai.read_history = 1
                          AND (
-                           CASE
-                             WHEN source_ai.history_boundary_inherits_profile = 1
-                               THEN source_profile_revision.default_history_boundary
-                             WHEN source_ai.history_boundary = 'from_grant'
-                               OR source_profile_revision.default_history_boundary = 'from_grant'
-                               THEN 'from_grant'
-                             ELSE 'entire'
-                           END = 'entire'
+                           source_ai.history_boundary = 'entire'
                            OR (
                              source_ai.history_from_order_key IS NOT NULL
                              AND source_ai.history_from_order_key <= ?

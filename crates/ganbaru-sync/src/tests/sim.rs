@@ -39,7 +39,6 @@ use super::replica::{ENROLLED_DEVICES, Replica, START_MS, converge, device_id, q
 use crate::acknowledge::{ACKNOWLEDGEMENT_INTERVAL_MS, KEEPALIVE_INTERVAL_MS};
 use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
-use crate::manifest::vault::chat::PROFILES_TABLE;
 use crate::manifest::vault::contacts::{CARD_KEY, CARD_TABLE};
 use crate::manifest::vault::distractions::{SETTINGS_KEY, SETTINGS_TABLE};
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, TAGS_TABLE, note_group};
@@ -150,11 +149,8 @@ const HOSTILE_OVERRIDE_PERCENT: u64 = 25;
 /// A key the card table refuses.
 const HOSTILE_CARD_KEY: &str = "not-the-card";
 /// Rows of the singleton and seeded tables whose rows no operation deletes.
-const NEVER_DELETED: [(TableId, &str); 3] = [
-    (CARD_TABLE, CARD_KEY),
-    (SETTINGS_TABLE, SETTINGS_KEY),
-    (PROFILES_TABLE, "access-profile:read-only"),
-];
+const NEVER_DELETED: [(TableId, &str); 2] =
+    [(CARD_TABLE, CARD_KEY), (SETTINGS_TABLE, SETTINGS_KEY)];
 /// Bytes of a page of stored operations, more than any one operation.
 const MAX_OP_PAGE_BYTES: usize = 64 * 1024;
 /// Id prefix of forged overrides.

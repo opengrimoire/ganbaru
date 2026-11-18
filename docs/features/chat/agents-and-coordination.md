@@ -1,6 +1,6 @@
 # Chat agents and coordination
 
-Status: Partial. AI agents, channel access profiles, mention-triggered assignments, frozen context packages, assignment review states, structured delegation, and daily agent usage summaries are implemented. Quiet periods, task-linked assignments, and human collaborators are planned.
+Status: Partial. AI agents, per-channel agent access, mention-triggered assignments, frozen context packages, assignment review states, structured delegation, and daily agent usage summaries are implemented. Quiet periods, task-linked assignments, and human collaborators are planned.
 
 Ganbaru coordinates work through durable conversations, explicit assignments, and review. AI providers are execution mechanisms beneath that model, not organizational identities. There is no privileged manager agent or general vault agent, and no planning agent is seeded by default.
 
@@ -10,16 +10,14 @@ A participant is the local person, a persistent AI agent, or (planned) a human c
 
 An agent's policy selects the provider instance, model and options, effort, and approval mode. Its configuration state reports when it needs setup, its provider is unavailable, or it lacks folder access.
 
-Profiles never grant authority by themselves. An agent acts in a channel only through a channel membership that carries:
+Nothing grants authority by itself. An agent acts in a channel only through a channel membership that carries:
 
-- An access profile, either a built-in recipe (Conversation only, Read only, Edit files, Build and test, Publish changes) or a custom one.
-- Separate capabilities to read channel history and to participate.
+- Two channel capabilities, shown as the toggles Read channel history and Take assignments.
 - A history boundary: the entire channel or only messages from the grant onward.
-- Working-folder grants, each ordered as none, read, edit, execute, or publish.
+- Optional runtime approval overrides.
+- Working-folder grants, each ordered as none, read, edit, execute, or publish and shown as the cumulative toggles Read files, Edit files, Run commands, and Push to Git. The capability is the effective one, with no ceiling above it.
 
-Settings > Agents > Access profiles manages profiles: built-ins are immutable and can be duplicated, while custom profiles publish revisions after an impact review and can be archived.
-
-Effective authority is the intersection of these ceilings, resolved by [Chat access control](../../data/access-control.md). An agent added to a project channel works in the project's folder at execute with every command asked of the person, or joins in conversation only when its provider cannot enforce that, as specified in [Channel join defaults](../../data/access-control.md#channel-join-defaults).
+Effective authority is the intersection of these restrictions, resolved by [Chat access control](../../data/access-control.md). An agent added to a project channel works in the project's folder at execute with every command asked of the person, or joins in conversation only when its provider cannot enforce that, as specified in [Channel join defaults](../../data/access-control.md#channel-join-defaults).
 
 ## Invocation
 

@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { ChatAgentChannelAccessInput } from "$lib/chat/contracts";
 import {
-  applyAccessProfileToScope,
   applyChannelPresetToScope,
   capabilitiesForPreset,
   channelCapabilityPreset,
-  folderCapabilityFits,
+  folderAccessToggles,
+  folderCapabilityIncludes,
+  folderCapabilityWithToggle,
   impliedFolderGrantId,
   resolveRuntimeApproval,
   selectionState,
@@ -19,8 +20,6 @@ import {
 function access(channelId: string): ChatAgentChannelAccessInput {
   return {
     channelId,
-    accessProfileId: "profile:build",
-    accessProfileRevisionId: "profile:build:revision:1",
     capabilities: { readHistory: true, participate: true },
     historyBoundary: { kind: "entire" },
     runtimeApprovalOverride: null,
@@ -37,9 +36,44 @@ describe("agent access", () => {
     expect(channelCapabilityPreset({ readHistory: false, participate: false })).toBe("custom");
   });
 
-  it("keeps folder capabilities inside the profile ceiling", () => {
-    expect(folderCapabilityFits("read", "execute")).toBe(true);
-    expect(folderCapabilityFits("publish", "execute")).toBe(false);
+  it("orders folder capabilities from none to publish", () => {
+    expect(folderCapabilityIncludes("execute", "read")).toBe(true);
+    expect(folderCapabilityIncludes("execute", "execute")).toBe(true);
+    expect(folderCapabilityIncludes("execute", "publish")).toBe(false);
+    expect(folderCapabilityIncludes("none", "read")).toBe(false);
+  });
+
+  it("shows every level up to the granted capability as on", () => {
+    expect(folderAccessToggles("none")).toEqual({ read: false, edit: false, execute: false, publish: false });
+    expect(folderAccessToggles("edit")).toEqual({ read: true, edit: true, execute: false, publish: false });
+    expect(folderAccessToggles("publish")).toEqual({ read: true, edit: true, execute: true, publish: true });
+  });
+
+  it("turns on every lower level when a level is turned on", () => {
+    expect(folderCapabilityWithToggle("none", "execute", true)).toBe("execute");
+    expect(folderCapabilityWithToggle("read", "publish", true)).toBe("publish");
+    expect(folderCapabilityWithToggle("none", "read", true)).toBe("read");
+  });
+
+  it("keeps a higher capability when an already included level is turned on", () => {
+    expect(folderCapabilityWithToggle("publish", "read", true)).toBe("publish");
+    expect(folderCapabilityWithToggle("execute", "execute", true)).toBe("execute");
+  });
+
+  it("turns off every higher level when a level is turned off", () => {
+    expect(folderCapabilityWithToggle("publish", "edit", false)).toBe("read");
+    expect(folderCapabilityWithToggle("execute", "execute", false)).toBe("edit");
+    expect(folderCapabilityWithToggle("publish", "publish", false)).toBe("execute");
+  });
+
+  it("maps every level off to no file access", () => {
+    expect(folderCapabilityWithToggle("publish", "read", false)).toBe("none");
+    expect(folderCapabilityWithToggle("read", "read", false)).toBe("none");
+  });
+
+  it("leaves a lower capability unchanged when a level above it is turned off", () => {
+    expect(folderCapabilityWithToggle("read", "execute", false)).toBe("read");
+    expect(folderCapabilityWithToggle("none", "publish", false)).toBe("none");
   });
 
   it("resolves the most local runtime approval", () => {
@@ -71,25 +105,6 @@ describe("agent access", () => {
     expect(next.slice(0, 2).map((entry) => channelCapabilityPreset(entry.capabilities)))
       .toEqual(["isolatedResponder", "isolatedResponder"]);
     expect(next[2]).toBe(outside);
-  });
-
-  it("applies a profile to a scope and removes grants above its ceiling", () => {
-    const inside = access("channel:a");
-    inside.folderGrants = [
-      { workingFolderId: "folder:read", capability: "read", isDefault: false, runtimeApprovalOverride: null },
-      { workingFolderId: "folder:build", capability: "execute", isDefault: true, runtimeApprovalOverride: null },
-    ];
-    const outside = access("channel:outside");
-    const next = applyAccessProfileToScope(
-      [inside, outside],
-      new Set(["channel:a"]),
-      { id: "profile:read", revisionId: "profile:read:revision:4", maximumFolderCapability: "read" },
-    );
-
-    expect(next[0]?.accessProfileId).toBe("profile:read");
-    expect(next[0]?.accessProfileRevisionId).toBe("profile:read:revision:4");
-    expect(next[0]?.folderGrants.map((grant) => grant.workingFolderId)).toEqual(["folder:read"]);
-    expect(next[1]).toBe(outside);
   });
 
   it("creates order-independent atomic snapshots", () => {
@@ -146,29 +161,15 @@ describe("agent access", () => {
       .not.toBe(agentAccessDraftSnapshot([second]));
   });
 
-  it("keeps the reviewed profile revision in atomic drafts", () => {
+  it("rejects duplicated channels and duplicated default folders", () => {
     const first = access("channel:a");
-    const second = access("channel:a");
-    second.accessProfileRevisionId = "profile:build:revision:2";
-
-    expect(agentAccessDraftSnapshot([first]))
-      .not.toBe(agentAccessDraftSnapshot([second]));
-  });
-
-  it("rejects duplicated channels and grants above the profile ceiling", () => {
-    const first = access("channel:a");
-    first.folderGrants = [{
-      workingFolderId: "folder:a",
-      capability: "publish",
-      isDefault: true,
-      runtimeApprovalOverride: null,
-    }];
-    const errors = agentAccessDraftErrors(
-      [first, access("channel:a")],
-      new Map([["profile:build", "execute"]]),
-    );
+    first.folderGrants = [
+      { workingFolderId: "folder:a", capability: "publish", isDefault: true, runtimeApprovalOverride: null },
+      { workingFolderId: "folder:b", capability: "read", isDefault: true, runtimeApprovalOverride: null },
+    ];
+    const errors = agentAccessDraftErrors([first, access("channel:a")]);
     expect(errors).toContain("Duplicate channel channel:a");
-    expect(errors).toContain("Folder folder:a exceeds its access profile");
+    expect(errors).toContain("Channel channel:a has multiple default folders");
   });
 
   it("allows executable access to fall back to private scratch", () => {
@@ -179,10 +180,7 @@ describe("agent access", () => {
       isDefault: false,
       runtimeApprovalOverride: null,
     }];
-    expect(agentAccessDraftErrors(
-      [draft],
-      new Map([["profile:build", "execute"]]),
-    )).toEqual([]);
+    expect(agentAccessDraftErrors([draft])).toEqual([]);
   });
 });
 

@@ -11,8 +11,6 @@ export const CHAT_SYNC_TABLES: readonly string[] = [
   "chat_participants",
   "chat_agents",
   "chat_agent_policy_revisions",
-  "chat_access_profiles",
-  "chat_access_profile_revisions",
   "chat_conversations",
   "chat_conversation_memberships",
   "chat_agent_channel_memberships",

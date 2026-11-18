@@ -13,8 +13,6 @@ import type {
   ChatAssignmentInputRead,
   ChatAssignmentReviewRequest,
   ChatAiAgentRead,
-  ChatAccessProfileRead,
-  ChatAccessProfileImpactPreviewRead,
   ChatAgentAccessPreviewRead,
   ChatAgentAccessRead,
   ChatChannelRosterRead,
@@ -38,10 +36,6 @@ import type {
   ChatMessageSearchResultRead,
   CreateChatAgentRequest,
   ReplaceChatAgentAccessRequest,
-  CreateChatAccessProfileRequest,
-  DuplicateChatAccessProfileRequest,
-  PublishChatAccessProfileRevisionRequest,
-  ArchiveChatAccessProfileRequest,
   PostChatMessageRequest,
   PostChatMessageResult,
   ScheduleChatMessageRequest,
@@ -62,9 +56,6 @@ import {
   parseChatChannels,
   parseChatAiAgent,
   parseChatAiAgents,
-  parseChatAccessProfiles,
-  parseChatAccessProfile,
-  parseChatAccessProfileImpactPreview,
   parseChatAgentAccess,
   parseChatAgentAccessPreview,
   parseChatChannelRoster,
@@ -162,53 +153,6 @@ export async function listChatAgents(archived = false): Promise<ChatAiAgentRead[
 export async function readChatAgent(agentId: ChatParticipantId): Promise<ChatAiAgentRead> {
   return parseChatAiAgent(await invoke<unknown>("chat_read_agent", {
     dbUrl: await ensureDbUrl(), agentId,
-  }));
-}
-
-export async function listChatAccessProfiles(archived = false): Promise<ChatAccessProfileRead[]> {
-  return parseChatAccessProfiles(await invoke<unknown>("chat_list_access_profiles", {
-    dbUrl: await ensureDbUrl(), archived,
-  }));
-}
-
-export async function createChatAccessProfile(
-  request: CreateChatAccessProfileRequest,
-): Promise<ChatAccessProfileRead> {
-  return parseChatAccessProfile(await invoke<unknown>("chat_create_access_profile", {
-    dbUrl: await ensureDbUrl(), request,
-  }));
-}
-
-export async function duplicateChatAccessProfile(
-  request: DuplicateChatAccessProfileRequest,
-): Promise<ChatAccessProfileRead> {
-  return parseChatAccessProfile(await invoke<unknown>("chat_duplicate_access_profile", {
-    dbUrl: await ensureDbUrl(), request,
-  }));
-}
-
-export async function previewChatAccessProfileRevision(
-  request: PublishChatAccessProfileRevisionRequest,
-): Promise<ChatAccessProfileImpactPreviewRead> {
-  return parseChatAccessProfileImpactPreview(await invoke<unknown>(
-    "chat_preview_access_profile_revision",
-    { dbUrl: await ensureDbUrl(), request },
-  ));
-}
-
-export async function publishChatAccessProfileRevision(
-  request: PublishChatAccessProfileRevisionRequest,
-): Promise<ChatAccessProfileRead> {
-  return parseChatAccessProfile(await invoke<unknown>("chat_publish_access_profile_revision", {
-    dbUrl: await ensureDbUrl(), request,
-  }));
-}
-
-export async function archiveChatAccessProfile(
-  request: ArchiveChatAccessProfileRequest,
-): Promise<ChatAccessProfileRead> {
-  return parseChatAccessProfile(await invoke<unknown>("chat_archive_access_profile", {
-    dbUrl: await ensureDbUrl(), request,
   }));
 }
 

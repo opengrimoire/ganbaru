@@ -70,8 +70,6 @@ fn every_replicated_table_with_derived_chat_state_has_a_hook() {
         sync_effects::AGENTS_TABLE,
         sync_effects::POLICY_REVISIONS_TABLE,
         sync_effects::CONVERSATIONS_TABLE,
-        sync_effects::ACCESS_PROFILES_TABLE,
-        sync_effects::ACCESS_PROFILE_REVISIONS_TABLE,
         sync_effects::MEMBERSHIPS_TABLE,
         sync_effects::CHANNEL_MEMBERSHIPS_TABLE,
         sync_effects::FOLDER_GRANTS_TABLE,
@@ -130,31 +128,10 @@ fn the_vault_engine_accepts_the_chat_folder_grant_settle() {
     );
 }
 
-const NARROW_PROFILE: &str = "access-profile:chat-sync-narrow";
-const WIDE_PROFILE: &str = "access-profile:chat-sync-wide";
-
-/// Seeds a read-only profile and a publishing one, each with an effective revision granting
-/// history and participation.
-async fn seed_access_profiles(pool: &SqlitePool) {
-    for (profile, capability) in [(NARROW_PROFILE, "read"), (WIDE_PROFILE, "publish")] {
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "INSERT INTO chat_access_profiles (id, display_name, created_at, updated_at)
-             VALUES ('{profile}', 'Profile', '{NOW}', '{NOW}');
-             INSERT INTO chat_access_profile_revisions
-                (id, access_profile_id, default_read_history, default_participate,
-                 default_history_boundary, maximum_folder_capability, created_at)
-             VALUES ('{profile}:1', '{profile}', 1, 1, 'entire', '{capability}', '{NOW}');"
-        )))
-        .execute(pool)
-        .await
-        .unwrap();
-    }
-}
-
-/// A channel access version under `profile` inheriting its capabilities and boundary.
+/// A channel access version reading entire history, participating when `participate` is set.
 fn access_version(
     writer: u8,
-    profile: &str,
+    participate: bool,
     channel: Option<&str>,
     scratch: Option<&str>,
     removed: bool,
@@ -165,13 +142,9 @@ fn access_version(
         writer: ganbaru_sync_contracts::WriterId::from_bytes([writer; 16]),
         clock: ganbaru_sync_contracts::Hlc::new(u64::from(writer), 0),
         value: Value::new(vec![
-            Field::Text(profile.to_string()),
             Field::Integer(1),
-            Field::Integer(1),
-            Field::Integer(1),
-            Field::Integer(1),
+            Field::Integer(i64::from(participate)),
             Field::Text("entire".to_string()),
-            Field::Integer(1),
             Field::Null,
             optional(channel),
             optional(scratch),
@@ -186,45 +159,26 @@ fn access_version(
     }
 }
 
-/// A switch to a narrower profile concurrent with an "ask" edit the priority kept settles onto
-/// both, a removal stands, and an access value round-trips through its codec.
-#[tokio::test]
-async fn a_channel_access_settle_keeps_a_narrower_profile_and_a_removal() {
-    let pool = migrated_pool().await;
-    seed_access_profiles(&pool).await;
-    let mut connection = pool.acquire().await.unwrap();
-
+/// A participation clear concurrent with an "ask" edit the priority kept settles onto both, a
+/// removal stands, and an access value round-trips through its codec.
+#[test]
+fn a_channel_access_settle_keeps_a_cleared_participation_and_a_removal() {
     let narrowing = [
-        access_version(1, NARROW_PROFILE, None, None, false, false),
-        access_version(2, WIDE_PROFILE, Some("ask"), None, false, true),
+        access_version(1, false, None, None, false, false),
+        access_version(2, true, Some("ask"), None, false, true),
     ];
-    let settled = settle_channel_access(&mut connection, &narrowing)
-        .await
-        .unwrap();
     assert_eq!(
-        settled,
-        Some(access_version(3, NARROW_PROFILE, Some("ask"), None, false, true).value)
+        settle_channel_access(&narrowing),
+        Some(access_version(3, false, Some("ask"), None, false, true).value)
     );
 
     let removed = [
-        access_version(1, NARROW_PROFILE, None, None, false, false),
-        access_version(2, WIDE_PROFILE, Some("ask"), None, true, true),
+        access_version(1, false, None, None, false, false),
+        access_version(2, true, Some("ask"), None, true, true),
     ];
-    assert_eq!(
-        settle_channel_access(&mut connection, &removed)
-            .await
-            .unwrap(),
-        None
-    );
+    assert_eq!(settle_channel_access(&removed), None);
 
-    let live = access_version(
-        1,
-        WIDE_PROFILE,
-        Some("ask"),
-        Some("unattended"),
-        false,
-        true,
-    );
+    let live = access_version(1, true, Some("ask"), Some("unattended"), false, true);
     let decoded = channel_access(&live.value).expect("a live access value");
     assert_eq!(channel_access_value(decoded), Some(live.value));
 }
@@ -240,7 +194,6 @@ fn grant_version(
         clock: ganbaru_sync_contracts::Hlc::new(u64::from(writer), 0),
         value: Value::new(vec![
             Field::Text("edit".to_string()),
-            Field::Integer(0),
             Field::Integer(1),
             approval.map_or(Field::Null, |policy| Field::Text(policy.to_string())),
             if revoked {

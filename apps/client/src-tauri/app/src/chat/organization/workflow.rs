@@ -1175,20 +1175,12 @@ async fn insert_message_reference(
                    ON destination_ai.conversation_id = destination.conversation_id
                   AND destination_ai.agent_id = destination.participant_id
                   AND destination_ai.removed_at IS NULL
-                 LEFT JOIN chat_access_profiles destination_profile
-                   ON destination_profile.id = destination_ai.access_profile_id
-                 LEFT JOIN chat_access_profile_effective_revisions destination_revision
-                   ON destination_revision.access_profile_id = destination_profile.id
                  WHERE destination.conversation_id = ?
                    AND destination.removed_at IS NULL
                    AND (
                      participant.participant_kind != 'ai_agent'
                      OR (
-                       CASE WHEN destination_ai.read_history_inherits_profile = 1
-                         THEN destination_revision.default_read_history
-                         ELSE min(destination_ai.read_history,
-                                  destination_revision.default_read_history)
-                       END = 1
+                       destination_ai.read_history = 1
                      )
                    )
                    AND NOT EXISTS (
@@ -1198,21 +1190,13 @@ async fn insert_message_reference(
                        ON source_ai.conversation_id = source_membership.conversation_id
                       AND source_ai.agent_id = source_membership.participant_id
                       AND source_ai.removed_at IS NULL
-                     LEFT JOIN chat_access_profiles source_profile
-                       ON source_profile.id = source_ai.access_profile_id
-                     LEFT JOIN chat_access_profile_effective_revisions source_revision
-                       ON source_revision.access_profile_id = source_profile.id
                      WHERE source_membership.conversation_id = ?
                        AND source_membership.participant_id = destination.participant_id
                        AND source_membership.removed_at IS NULL
                        AND (
                          participant.participant_kind != 'ai_agent'
                          OR (
-                           CASE WHEN source_ai.read_history_inherits_profile = 1
-                             THEN source_revision.default_read_history
-                             ELSE min(source_ai.read_history,
-                                      source_revision.default_read_history)
-                           END = 1
+                           source_ai.read_history = 1
                          )
                        )
                    )",
@@ -1245,11 +1229,7 @@ async fn insert_message_reference(
                 "SELECT coalesce(max(
                    CASE
                      WHEN participant.participant_kind = 'ai_agent'
-                       AND CASE WHEN source_ai.history_boundary_inherits_profile = 1
-                         THEN source_revision.default_history_boundary
-                         WHEN source_revision.default_history_boundary = 'from_grant'
-                           OR source_ai.history_boundary = 'from_grant'
-                         THEN 'from_grant' ELSE 'entire' END = 'from_grant'
+                       AND source_ai.history_boundary = 'from_grant'
                      THEN coalesce(source_ai.history_from_order_key, ?)
                      ELSE ?
                    END
@@ -1260,10 +1240,6 @@ async fn insert_message_reference(
                    ON destination_ai.conversation_id = destination.conversation_id
                   AND destination_ai.agent_id = destination.participant_id
                   AND destination_ai.removed_at IS NULL
-                 LEFT JOIN chat_access_profiles destination_profile
-                   ON destination_profile.id = destination_ai.access_profile_id
-                 LEFT JOIN chat_access_profile_effective_revisions destination_revision
-                   ON destination_revision.access_profile_id = destination_profile.id
                  JOIN chat_conversation_memberships source_membership
                    ON source_membership.participant_id = destination.participant_id
                   AND source_membership.conversation_id = ?
@@ -1272,20 +1248,12 @@ async fn insert_message_reference(
                    ON source_ai.conversation_id = source_membership.conversation_id
                   AND source_ai.agent_id = source_membership.participant_id
                   AND source_ai.removed_at IS NULL
-                 LEFT JOIN chat_access_profiles source_profile
-                   ON source_profile.id = source_ai.access_profile_id
-                 LEFT JOIN chat_access_profile_effective_revisions source_revision
-                   ON source_revision.access_profile_id = source_profile.id
                  WHERE destination.conversation_id = ?
                    AND destination.removed_at IS NULL
                    AND (
                      participant.participant_kind != 'ai_agent'
                      OR (
-                       CASE WHEN destination_ai.read_history_inherits_profile = 1
-                         THEN destination_revision.default_read_history
-                         ELSE min(destination_ai.read_history,
-                                  destination_revision.default_read_history)
-                       END = 1
+                       destination_ai.read_history = 1
                      )
                    )",
             )
@@ -1300,12 +1268,7 @@ async fn insert_message_reference(
             if let Some(agent_id) = invoked_agent_id {
                 let agent_lower_order_key = sqlx::query_scalar::<_, String>(
                     "SELECT CASE
-                              WHEN CASE
-                                WHEN ai_membership.history_boundary_inherits_profile = 1
-                                THEN profile_revision.default_history_boundary
-                                WHEN ai_membership.history_boundary = 'from_grant'
-                                  OR profile_revision.default_history_boundary = 'from_grant'
-                                THEN 'from_grant' ELSE 'entire' END = 'from_grant'
+                              WHEN ai_membership.history_boundary = 'from_grant'
                               THEN coalesce(ai_membership.history_from_order_key, ?)
                               ELSE ?
                             END
@@ -1314,18 +1277,10 @@ async fn insert_message_reference(
                           ON ai_membership.conversation_id = membership.conversation_id
                          AND ai_membership.agent_id = membership.participant_id
                          AND ai_membership.removed_at IS NULL
-                        JOIN chat_access_profiles profile
-                          ON profile.id = ai_membership.access_profile_id
-                        JOIN chat_access_profile_effective_revisions profile_revision
-                          ON profile_revision.access_profile_id = profile.id
                         WHERE membership.conversation_id = ?
                           AND membership.participant_id = ?
                           AND membership.removed_at IS NULL
-                          AND CASE WHEN ai_membership.read_history_inherits_profile = 1
-                            THEN profile_revision.default_read_history
-                            ELSE min(ai_membership.read_history,
-                                     profile_revision.default_read_history)
-                          END = 1",
+                          AND ai_membership.read_history = 1",
                 )
                 .bind(&after_high_order_key)
                 .bind(&first_root_order_key)
@@ -1612,9 +1567,7 @@ where
 {
     let row = sqlx::query(
         "SELECT membership.removed_at, participant.archived_at,
-                policy.id AS policy_revision_id, ai_membership.participate,
-                ai_membership.participate_inherits_profile,
-                profile_revision.default_participate
+                policy.id AS policy_revision_id, ai_membership.participate
          FROM chat_conversation_memberships membership
          JOIN chat_participants participant ON participant.id = membership.participant_id
          JOIN chat_agents agent ON agent.participant_id = membership.participant_id
@@ -1624,9 +1577,6 @@ where
            ON ai_membership.conversation_id = membership.conversation_id
           AND ai_membership.agent_id = membership.participant_id
           AND ai_membership.removed_at IS NULL
-         JOIN chat_access_profiles profile ON profile.id = ai_membership.access_profile_id
-         JOIN chat_access_profile_effective_revisions profile_revision
-           ON profile_revision.access_profile_id = profile.id
          WHERE membership.conversation_id = ? AND membership.participant_id = ?",
     )
     .bind(conversation_id.as_str())
@@ -1649,23 +1599,10 @@ where
             .try_get::<Option<String>, _>("policy_revision_id")
             .map_err(persistence_error)?
             .is_some()
-        && if row
-            .try_get::<i64, _>("participate_inherits_profile")
+        && row
+            .try_get::<i64, _>("participate")
             .map_err(persistence_error)?
-            != 0
-        {
-            row.try_get::<i64, _>("default_participate")
-                .map_err(persistence_error)?
-                != 0
-        } else {
-            row.try_get::<i64, _>("participate")
-                .map_err(persistence_error)?
-                != 0
-                && row
-                    .try_get::<i64, _>("default_participate")
-                    .map_err(persistence_error)?
-                    != 0
-        };
+            != 0;
     if !available {
         return Err(ChatError::new(
             ChatErrorCode::Conflict,

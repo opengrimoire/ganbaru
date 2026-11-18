@@ -1,11 +1,10 @@
 use super::{
-    ChatAccessProfileId, ChatAccessProfileRevisionId, ChatAgentPolicyRevisionId, ChatAgentRunId,
-    ChatAssignmentInputId, ChatAttachmentId, ChatChannelId, ChatConversationId,
-    ChatConversationItemId, ChatExecutionEnvironmentId, ChatMessageReferenceId,
-    ChatMessageRevisionId, ChatParticipantId, ChatReplyThreadId, ChatScratchCleanupJobId,
-    ChatScratchGenerationId, ChatScratchPromotionId, ChatScratchScopeId, ChatThreadId, ChatTurnId,
-    ChatWorkAssignmentId, ModelId, ModelOptionSelection, ProjectWorkingFolderId,
-    ProviderInstanceId, UtcTimestamp, VersionedJson,
+    ChatAgentPolicyRevisionId, ChatAgentRunId, ChatAssignmentInputId, ChatAttachmentId,
+    ChatChannelId, ChatConversationId, ChatConversationItemId, ChatExecutionEnvironmentId,
+    ChatMessageReferenceId, ChatMessageRevisionId, ChatParticipantId, ChatReplyThreadId,
+    ChatScratchCleanupJobId, ChatScratchGenerationId, ChatScratchPromotionId, ChatScratchScopeId,
+    ChatThreadId, ChatTurnId, ChatWorkAssignmentId, ModelId, ModelOptionSelection,
+    ProjectWorkingFolderId, ProviderInstanceId, UtcTimestamp, VersionedJson,
 };
 use serde::{Deserialize, Serialize};
 
@@ -150,40 +149,6 @@ pub enum ChatRuntimeApprovalPolicy {
     ProviderCustom,
 }
 
-/// Stable keys for application-provided access profile recipes.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ChatAccessProfileBuiltinKey {
-    ConversationOnly,
-    ReadOnly,
-    EditFiles,
-    BuildAndTest,
-    PublishChanges,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatAccessProfileRevision {
-    pub id: ChatAccessProfileRevisionId,
-    pub access_profile_id: ChatAccessProfileId,
-    pub revision: u64,
-    pub default_channel_capabilities: ChatChannelCapabilities,
-    pub default_history_boundary: ChatHistoryBoundary,
-    pub maximum_folder_capability: ChatFolderCapability,
-    pub created_at: UtcTimestamp,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatAccessProfileRead {
-    pub id: ChatAccessProfileId,
-    pub builtin_key: Option<ChatAccessProfileBuiltinKey>,
-    pub display_name: String,
-    pub latest_revision: ChatAccessProfileRevision,
-    pub revision: u64,
-    pub archived_at: Option<UtcTimestamp>,
-}
-
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatFolderGrantRead {
@@ -205,9 +170,6 @@ pub struct ChatAgentChannelAccessRead {
     pub group_id: Option<String>,
     pub conversation_id: ChatConversationId,
     pub channel_name: String,
-    pub access_profile_id: ChatAccessProfileId,
-    pub access_profile_revision_id: ChatAccessProfileRevisionId,
-    pub access_profile_revision: u64,
     pub capabilities: ChatChannelCapabilities,
     pub history_boundary: ChatHistoryBoundary,
     pub runtime_approval_override: Option<ChatRuntimeApprovalPolicy>,
@@ -235,8 +197,6 @@ pub enum ChatAccessIssueCode {
     DuplicateChannel,
     DuplicateFolder,
     MultipleDefaultFolders,
-    ProfileCeilingExceeded,
-    ProfileNotFound,
     RetainedReferenceDisclosure,
     AgentNotFound,
 }
@@ -256,19 +216,6 @@ pub struct ChatAgentAccessPreview {
     pub is_expansion: bool,
     pub added_channel_ids: Vec<ChatChannelId>,
     pub removed_channel_ids: Vec<ChatChannelId>,
-    pub issues: Vec<ChatAccessValidationIssue>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatAccessProfileImpactPreview {
-    pub access_profile_id: ChatAccessProfileId,
-    pub current_revision: ChatAccessProfileRevision,
-    pub is_expansion: bool,
-    pub is_reduction: bool,
-    pub affected_agent_ids: Vec<ChatParticipantId>,
-    pub affected_channel_ids: Vec<ChatChannelId>,
-    pub active_authorization_count: u64,
     pub issues: Vec<ChatAccessValidationIssue>,
 }
 
@@ -872,10 +819,6 @@ pub struct ChatConversationMembershipRead {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatChannelRosterAiSummary {
-    pub access_profile_id: ChatAccessProfileId,
-    pub access_profile_revision: u64,
-    pub access_profile_builtin_key: Option<ChatAccessProfileBuiltinKey>,
-    pub access_profile_name: String,
     pub capabilities: ChatChannelCapabilities,
     pub history_boundary: ChatHistoryBoundary,
     pub runtime_approval_override: Option<ChatRuntimeApprovalPolicy>,

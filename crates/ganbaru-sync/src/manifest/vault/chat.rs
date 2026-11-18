@@ -1,10 +1,10 @@
 //! Chat: table ids 352 to 447.
 //!
-//! The identity and policy tables replicate: participants, AI agents, agent policy
-//! revisions, access profiles, and access profile revisions (tables 352 to 356). Agents and
-//! profiles point at their effective revision through a silent coupled register that carries a
-//! copy of the revision's restrictiveness, so concurrent policy edits settle on the stricter one.
-//! Revisions are immutable rows; display numbers come from `(created_at, id)` order.
+//! The identity and policy tables replicate: participants, AI agents, and agent policy revisions
+//! (tables 352 to 354; 355 and 356 are retired). Agents point at their effective revision through
+//! a silent coupled register that carries a copy of the revision's safety mode, so concurrent
+//! policy edits settle on the stricter one. Revisions are immutable rows; display numbers come
+//! from `(created_at, id)` order.
 //!
 //! Conversations, their memberships, AI channel memberships, working folder grants, and
 //! channels replicate too (tables 360 to 364). The three tables keyed by several columns use a
@@ -92,10 +92,6 @@ pub const PARTICIPANTS_TABLE: TableId = TableId(352);
 pub const AGENTS_TABLE: TableId = TableId(353);
 /// `chat_agent_policy_revisions`.
 pub const POLICY_REVISIONS_TABLE: TableId = TableId(354);
-/// `chat_access_profiles`.
-pub const PROFILES_TABLE: TableId = TableId(355);
-/// `chat_access_profile_revisions`.
-pub const PROFILE_REVISIONS_TABLE: TableId = TableId(356);
 /// `chat_conversations`.
 pub const CONVERSATIONS_TABLE: TableId = TableId(360);
 /// `chat_conversation_memberships`.
@@ -202,30 +198,6 @@ pub mod policy_revision_group {
     pub const CREATED: GroupId = group_id(0);
 }
 
-/// Access profile field groups.
-pub mod profile_group {
-    use super::{GroupId, group_id};
-
-    /// `builtin_key` and `created_at`.
-    pub const CREATED: GroupId = group_id(0);
-    /// `display_name`.
-    pub const NAME: GroupId = group_id(1);
-    /// `current_revision_id` and the copied `current_maximum_folder_capability`.
-    pub const CURRENT: GroupId = group_id(2);
-    /// `archived_at`.
-    pub const LIFECYCLE: GroupId = group_id(3);
-    /// `updated_at`.
-    pub const UPDATED: GroupId = group_id(4);
-}
-
-/// Access profile revision field groups.
-pub mod profile_revision_group {
-    use super::{GroupId, group_id};
-
-    /// Every column, fixed when the revision is saved.
-    pub const CREATED: GroupId = group_id(0);
-}
-
 /// Conversation field groups.
 pub mod conversation_group {
     use super::{GroupId, group_id};
@@ -262,8 +234,7 @@ pub mod channel_membership_group {
 
     /// `conversation_id` and `agent_id`.
     pub const IDENTITY: GroupId = group_id(0);
-    /// The access profile, channel capabilities, history boundary, approval overrides, and
-    /// `removed_at`.
+    /// Channel capabilities, history boundary, approval overrides, and `removed_at`.
     pub const ACCESS: GroupId = group_id(1);
     /// `created_at`.
     pub const CREATED: GroupId = group_id(2);
@@ -292,8 +263,7 @@ pub mod folder_grant_group {
 
     /// `conversation_id`, `agent_id`, and `working_folder_id`.
     pub const IDENTITY: GroupId = group_id(0);
-    /// `capability`, `capability_inherits_profile`, `is_default`, `runtime_approval_policy`,
-    /// and `revoked_at`.
+    /// `capability`, `is_default`, `runtime_approval_policy`, and `revoked_at`.
     pub const GRANT: GroupId = group_id(1);
     /// `project_id` and `created_at`.
     pub const CREATED: GroupId = group_id(2);
@@ -880,90 +850,6 @@ pub const POLICY_REVISIONS: TableSpec = TableSpec {
     ..BASE
 };
 
-/// `chat_access_profiles`, archive-only. Built-in profiles are seeded with fixed ids, and the
-/// adapter admits a built-in key only on the row seeded with it, so a collision reaches the
-/// duplicate repair only as defense in depth. Concurrent edits of a custom profile keep the
-/// revision with the lower folder capability.
-pub const PROFILES: TableSpec = TableSpec {
-    id: PROFILES_TABLE,
-    name: "chat_access_profiles",
-    groups: &[
-        immutable(
-            profile_group::CREATED,
-            &[
-                optional_text("builtin_key", MAX_ENUM_CHARS),
-                timestamp("created_at"),
-            ],
-            &[],
-        ),
-        bumps(register(
-            profile_group::NAME,
-            "name",
-            &[trimmed("display_name", MAX_DISPLAY_NAME_CHARS)],
-        )),
-        bumps(coupled(
-            profile_group::CURRENT,
-            "current",
-            &[
-                optional_row_key("current_revision_id"),
-                optional_text("current_maximum_folder_capability", MAX_ENUM_CHARS),
-            ],
-        )),
-        bumps(register(
-            profile_group::LIFECYCLE,
-            "lifecycle",
-            &[optional_timestamp("archived_at")],
-        )),
-        updated(profile_group::UPDATED),
-    ],
-    local_columns: &[REVISION],
-    revision_column: Some("revision"),
-    resolutions: &[
-        Resolution::DuplicateRepair {
-            columns: &["builtin_key"],
-            collation: Collation::Binary,
-        },
-        within(
-            &["current_revision_id", "current_maximum_folder_capability"],
-            profile_group::CURRENT,
-        ),
-    ],
-    redirects: true,
-    triggers: &[
-        applier_visible("chat_access_profile_builtin_protected"),
-        gated("chat_access_profile_push_approvals_update"),
-        gated("chat_access_profile_revision_counter_monotonic"),
-    ],
-    deletion: Deletion::Never,
-    ..BASE
-};
-
-/// `chat_access_profile_revisions`, immutable and never deleted.
-pub const PROFILE_REVISIONS: TableSpec = TableSpec {
-    id: PROFILE_REVISIONS_TABLE,
-    name: "chat_access_profile_revisions",
-    groups: &[immutable(
-        profile_revision_group::CREATED,
-        &[
-            row_key("access_profile_id"),
-            flag("default_read_history"),
-            flag("default_participate"),
-            text("default_history_boundary", MAX_ENUM_CHARS),
-            text("maximum_folder_capability", MAX_ENUM_CHARS),
-            timestamp("created_at"),
-        ],
-        &[cascade("access_profile_id", PROFILES_TABLE)],
-    )],
-    triggers: &[
-        applier_visible("chat_access_profile_builtin_revision_protected"),
-        applier_visible("chat_access_profile_revision_immutable_delete"),
-        applier_visible("chat_access_profile_revision_immutable_update"),
-        gated("chat_access_profile_audience_publish"),
-    ],
-    deletion: Deletion::Never,
-    ..BASE
-};
-
 /// `chat_conversations`, archive-only and deleted only with their project. An archive wins over
 /// a concurrent unarchive.
 pub const CONVERSATIONS: TableSpec = TableSpec {
@@ -1044,12 +930,11 @@ pub const MEMBERSHIPS: TableSpec = TableSpec {
     ..BASE
 };
 
-/// `chat_agent_channel_memberships`, removed by `removed_at`. The access profile, channel
-/// capabilities, history boundary, and approval overrides form one coupled value, so concurrent
-/// edits keep one whole setting: a removal first, then the one that clears more capabilities
-/// explicitly, then the stricter approval overrides, with no override counting as the least
-/// strict. The Chat materialize hook settles the access group onto the narrowest profile and
-/// resolved parts the priority cannot rank.
+/// `chat_agent_channel_memberships`, removed by `removed_at`. The channel capabilities, history
+/// boundary, and approval overrides form one coupled value, so concurrent edits keep one whole
+/// setting: a removal first, then the one that clears more capabilities, then the stricter
+/// approval overrides, with no override counting as the least strict. The Chat materialize hook
+/// settles the access group onto the strictest resolved parts the priority cannot rank.
 pub const CHANNEL_MEMBERSHIPS: TableSpec = TableSpec {
     id: CHANNEL_MEMBERSHIPS_TABLE,
     name: "chat_agent_channel_memberships",
@@ -1063,25 +948,18 @@ pub const CHANNEL_MEMBERSHIPS: TableSpec = TableSpec {
                 cascade("agent_id", AGENTS_TABLE),
             ],
         ),
-        referencing(
-            coupled(
-                channel_membership_group::ACCESS,
-                "access",
-                &[
-                    row_key("access_profile_id"),
-                    flag("read_history"),
-                    flag("read_history_inherits_profile"),
-                    flag("participate"),
-                    flag("participate_inherits_profile"),
-                    text("history_boundary", MAX_ENUM_CHARS),
-                    flag("history_boundary_inherits_profile"),
-                    optional_text("history_from_order_key", MAX_ORDER_KEY_BYTES),
-                    optional_text("runtime_approval_policy", MAX_ENUM_CHARS),
-                    optional_text("scratch_runtime_approval_policy", MAX_ENUM_CHARS),
-                    optional_timestamp("removed_at"),
-                ],
-            ),
-            &[cascade("access_profile_id", PROFILES_TABLE)],
+        coupled(
+            channel_membership_group::ACCESS,
+            "access",
+            &[
+                flag("read_history"),
+                flag("participate"),
+                text("history_boundary", MAX_ENUM_CHARS),
+                optional_text("history_from_order_key", MAX_ORDER_KEY_BYTES),
+                optional_text("runtime_approval_policy", MAX_ENUM_CHARS),
+                optional_text("scratch_runtime_approval_policy", MAX_ENUM_CHARS),
+                optional_timestamp("removed_at"),
+            ],
         ),
         register(
             channel_membership_group::CREATED,
@@ -1113,8 +991,7 @@ pub const CHANNEL_MEMBERSHIPS: TableSpec = TableSpec {
 };
 
 /// `chat_agent_working_folder_grants`, revoked by `revoked_at`. Concurrent edits keep a
-/// revocation first, then the lower capability (an inherited one counting as the highest), then
-/// the stricter approval override, with no override counting as the least strict. Commands
+/// revocation first, then the lower capability, then the stricter approval override, with no override counting as the least strict. Commands
 /// never rewrite the creation time, and rewrite the project only to the conversation's when a
 /// save reactivates a grant. The group stays a register because a derived key table admits only
 /// key columns in immutable groups, so concurrent creations converge.
@@ -1141,7 +1018,6 @@ pub const FOLDER_GRANTS: TableSpec = TableSpec {
             "grant",
             &[
                 text("capability", MAX_ENUM_CHARS),
-                flag("capability_inherits_profile"),
                 flag("is_default"),
                 optional_text("runtime_approval_policy", MAX_ENUM_CHARS),
                 optional_timestamp("revoked_at"),
@@ -1174,9 +1050,9 @@ pub const FOLDER_GRANTS: TableSpec = TableSpec {
 };
 
 /// `chat_push_approvals`, revoked by `revoked_at`. Only a person approves, which local triggers
-/// check, and the triggers of the grants, channel memberships, access profiles, participants,
-/// and agents that let an agent publish revoke its approvals when that access narrows. A
-/// revocation wins over a concurrent approval.
+/// check, and the triggers of the grants, channel memberships, participants, and agents that let
+/// an agent publish revoke its approvals when that access narrows. A revocation wins over a
+/// concurrent approval.
 pub const PUSH_APPROVALS: TableSpec = TableSpec {
     id: PUSH_APPROVALS_TABLE,
     name: "chat_push_approvals",
@@ -2136,8 +2012,6 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         PARTICIPANTS,
         AGENTS,
         POLICY_REVISIONS,
-        PROFILES,
-        PROFILE_REVISIONS,
         CONVERSATIONS,
         MEMBERSHIPS,
         CHANNEL_MEMBERSHIPS,

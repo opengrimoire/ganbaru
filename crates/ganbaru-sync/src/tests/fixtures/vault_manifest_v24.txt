@@ -651,16 +651,6 @@ table 353 chat_agents replicated key participant_id rule any never_deleted
   check current_policy_revision_id,current_policy_safety_mode within 2
 table 354 chat_agent_policy_revisions replicated key id rule any never_deleted
   group 0 immutable agent_id:row_key->353:cascade provider_instance_id:text(..=1024) model_selection_schema_version:integer(1..=9223372036854775807) model_selection_data:text(..=16384) effort:optional_text(..=32) speed:optional_text(..=32) provider_options_schema_version:integer(1..=9223372036854775807) provider_options_data:text(..=16384) interaction_mode:text(..=32) created_at:timestamp safety_mode:text(..=32)
-table 355 chat_access_profiles replicated key id rule any redirects never_deleted
-  group 0 immutable builtin_key:optional_text(..=32) created_at:timestamp
-  group 1 register display_name:trimmed_text(1..=160)
-  group 2 coupled current_revision_id:optional_row_key current_maximum_folder_capability:optional_text(..=32)
-  group 3 register archived_at:optional_timestamp
-  group 4 max updated_at:timestamp
-  unique builtin_key binary
-  check current_revision_id,current_maximum_folder_capability within 2
-table 356 chat_access_profile_revisions replicated key id rule any never_deleted
-  group 0 immutable access_profile_id:row_key->355:cascade default_read_history:flag default_participate:flag default_history_boundary:text(..=32) maximum_folder_capability:text(..=32) created_at:timestamp
 table 360 chat_conversations replicated key id rule any
   group 0 immutable project_id:row_key->97:cascade conversation_kind:text(..=32) created_at:timestamp
   group 1 max last_activity_at:timestamp
@@ -676,7 +666,7 @@ table 361 chat_conversation_memberships replicated key sync_key rule any
 table 362 chat_agent_channel_memberships replicated key sync_key rule any
   derived key exists 4 inputs conversation_id,agent_id prefix ai-channel-membership
   group 0 immutable conversation_id:row_key->360:cascade agent_id:row_key->353:cascade
-  group 1 coupled access_profile_id:row_key->355:cascade read_history:flag read_history_inherits_profile:flag participate:flag participate_inherits_profile:flag history_boundary:text(..=32) history_boundary_inherits_profile:flag history_from_order_key:optional_text(..=128) runtime_approval_policy:optional_text(..=32) scratch_runtime_approval_policy:optional_text(..=32) removed_at:optional_timestamp
+  group 1 coupled read_history:flag participate:flag history_boundary:text(..=32) history_from_order_key:optional_text(..=128) runtime_approval_policy:optional_text(..=32) scratch_runtime_approval_policy:optional_text(..=32) removed_at:optional_timestamp
   group 2 register created_at:timestamp
   group 3 max updated_at:timestamp
   group 4 register
@@ -684,7 +674,7 @@ table 362 chat_agent_channel_memberships replicated key sync_key rule any
 table 363 chat_agent_working_folder_grants replicated key sync_key rule any
   derived key exists 3 inputs conversation_id,agent_id,working_folder_id prefix folder-grant
   group 0 immutable conversation_id:row_key->360:cascade agent_id:row_key->353:cascade working_folder_id:row_key->98:cascade
-  group 1 coupled capability:text(..=32) capability_inherits_profile:flag is_default:flag runtime_approval_policy:optional_text(..=32) revoked_at:optional_timestamp
+  group 1 coupled capability:text(..=32) is_default:flag runtime_approval_policy:optional_text(..=32) revoked_at:optional_timestamp
   group 2 register project_id:row_key created_at:timestamp
   group 3 register
 table 365 chat_push_approvals replicated key sync_key rule any

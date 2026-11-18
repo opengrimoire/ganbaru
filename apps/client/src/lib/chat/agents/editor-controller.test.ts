@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
-  ChatAccessProfileRead,
   ChatChannelRead,
   ChatSettingsRead,
   ProjectWorkingFolderRead,
@@ -17,7 +16,6 @@ import {
 const api = vi.hoisted(() => ({
   listChatAgents: vi.fn<typeof import("$lib/api/chat").listChatAgents>(),
   listChatNavigationChannels: vi.fn<typeof import("$lib/api/chat").listChatNavigationChannels>(),
-  listChatAccessProfiles: vi.fn<typeof import("$lib/api/chat").listChatAccessProfiles>(),
   readChatAgent: vi.fn<typeof import("$lib/api/chat").readChatAgent>(),
   readChatAgentAccess: vi.fn<typeof import("$lib/api/chat").readChatAgentAccess>(),
   createChatAgent: vi.fn<typeof import("$lib/api/chat").createChatAgent>(),
@@ -55,23 +53,6 @@ function access(agentId = "participant:atlas", accessRevision = 1): ChatAgentAcc
   return { agentId, accessRevision, agentDefaultRuntimeApproval: "ask", channels: [] };
 }
 
-function profile(): ChatAccessProfileRead {
-  return {
-    id: "profile:conversation",
-    builtinKey: "conversationOnly",
-    displayName: "Conversation",
-    revision: 1,
-    archivedAt: null,
-    latestRevision: {
-      id: "profile-revision:conversation", accessProfileId: "profile:conversation", revision: 1,
-      defaultChannelCapabilities: { readHistory: false, participate: true },
-      defaultHistoryBoundary: { kind: "entire" },
-      maximumFolderCapability: "none",
-      createdAt: CREATED_AT,
-    },
-  };
-}
-
 function setup(agents = [agent()], overrides: Partial<AgentEditorOptions["chat"]> = {}) {
   const chat: AgentEditorOptions["chat"] = {
     agents,
@@ -93,7 +74,6 @@ function setup(agents = [agent()], overrides: Partial<AgentEditorOptions["chat"]
     focusConflict,
     focusRecoveryNotice,
   });
-  editor.accessProfiles = [profile()];
   return { editor, chat, focusConflict, focusRecoveryNotice };
 }
 
@@ -110,7 +90,6 @@ describe("agent editor workflow", () => {
     api.readChatAgentAccess.mockImplementation(async (id) => access(id));
     api.listChatAgents.mockResolvedValue([]);
     api.listChatNavigationChannels.mockResolvedValue([]);
-    api.listChatAccessProfiles.mockResolvedValue([profile()]);
     api.previewChatAgentAccess.mockResolvedValue({
       proposed: null, isExpansion: true, addedChannelIds: [], removedChannelIds: [], issues: [],
     });
@@ -194,7 +173,7 @@ describe("agent editor workflow", () => {
       capabilities: { readHistory: true, participate: true },
     }];
     await editor.save();
-    expect(editor.accessConfirmationImpact?.entireHistoryChannelIds).toEqual(["channel:general"]);
+    expect(editor.accessConfirmationImpact?.historyChannelIds).toEqual(["channel:general"]);
     expect(api.replaceChatAgentAccess).not.toHaveBeenCalled();
     editor.instructions = "Changed after preview";
     await editor.save(true);
@@ -292,6 +271,8 @@ describe("agent editor workflow", () => {
     expect(editor.accessDraft.map((entry) => entry.channelId)).toEqual(["channel:general"]);
     expect(editor.dirty).toBe(true);
     await editor.save();
+    expect(editor.accessConfirmationImpact?.historyChannelIds).toEqual(["channel:general"]);
+    await editor.save(true);
     expect(api.createChatAgent).toHaveBeenCalledOnce();
     expect(api.replaceChatAgentAccess).toHaveBeenCalledTimes(2);
     expect(editor.error).toBeNull();
@@ -306,7 +287,6 @@ describe("agent editor workflow", () => {
     api.listChatNavigationChannels.mockRejectedValue(new Error("Channels unavailable"));
     await editor.loadDirectoryData();
     expect(chat.archivedAgents).toEqual([archived]);
-    expect(editor.accessProfiles).toEqual([profile()]);
     expect(editor.error).toBe("settings.agents.agents.loadFailed");
     expect(editor.loadingDirectory).toBe(false);
   });
@@ -324,13 +304,6 @@ describe("agent editor workflow", () => {
         lastProbe: { authoritySupport: { ...authority, networkBoundary: false, personApprovedCommands: false } },
       },
     ] as unknown as ProviderInstanceRead[];
-    const build: ChatAccessProfileRead = {
-      ...profile(),
-      id: "profile:build",
-      builtinKey: "buildAndTest",
-      latestRevision: { ...profile().latestRevision, id: "profile-revision:build", maximumFolderCapability: "execute" },
-    };
-    api.listChatAccessProfiles.mockResolvedValue([profile(), build]);
     api.listChatNavigationChannels.mockResolvedValue([
       { id: "channel:general", projectId: "project:app" } as ChatChannelRead,
     ]);
@@ -349,7 +322,7 @@ describe("agent editor workflow", () => {
       { workingFolderId: "folder:app", capability: "execute", isDefault: true, runtimeApprovalOverride: "ask" },
     ]);
     choose("provider:cursor");
-    expect(editor.accessDraft[0]).toMatchObject({ accessProfileId: "profile:conversation", folderGrants: [] });
+    expect(editor.accessDraft[0]).toMatchObject({ capabilities: { readHistory: true, participate: true }, folderGrants: [] });
     choose("provider:claude");
     editor.accessDraft = editor.accessDraft.map((channel) => ({ ...channel, folderGrants: [] }));
     choose("provider:cursor");

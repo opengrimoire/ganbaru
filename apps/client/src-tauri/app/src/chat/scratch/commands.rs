@@ -136,15 +136,9 @@ async fn require_current_scratch_authority(
              ON access.conversation_id = membership.conversation_id
             AND access.agent_id = membership.participant_id
             AND access.removed_at IS NULL
-           JOIN chat_access_profiles profile ON profile.id = access.access_profile_id
-           JOIN chat_access_profile_effective_revisions revision
-             ON revision.access_profile_id = profile.id
            WHERE membership.conversation_id = ? AND membership.participant_id = ?
              AND membership.removed_at IS NULL
-             AND CASE
-                   WHEN access.participate_inherits_profile = 1 THEN revision.default_participate
-                   ELSE access.participate AND revision.default_participate
-                 END = 1
+             AND access.participate = 1
          )",
     )
     .bind(identity.conversation_id.as_str())

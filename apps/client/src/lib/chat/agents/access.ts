@@ -30,12 +30,51 @@ const CAPABILITY_RANK: Record<ChatFolderCapability, number> = {
   publish: 4,
 };
 
-/** Returns whether a requested folder capability fits inside a profile ceiling. */
-export function folderCapabilityFits(
-  requested: ChatFolderCapability,
-  ceiling: ChatFolderCapability,
+/** File access levels a folder grant toggles, from least to most authority. Each level includes the ones before it. */
+export const CHAT_FOLDER_ACCESS_LEVELS = ["read", "edit", "execute", "publish"] as const;
+export type ChatFolderAccessLevel = (typeof CHAT_FOLDER_ACCESS_LEVELS)[number];
+
+const LEVEL_BELOW: Record<ChatFolderAccessLevel, ChatFolderCapability> = {
+  read: "none",
+  edit: "read",
+  execute: "edit",
+  publish: "execute",
+};
+
+/** Returns whether a folder capability includes the given capability level. */
+export function folderCapabilityIncludes(
+  capability: ChatFolderCapability,
+  level: ChatFolderCapability,
 ): boolean {
-  return CAPABILITY_RANK[requested] <= CAPABILITY_RANK[ceiling];
+  return CAPABILITY_RANK[capability] >= CAPABILITY_RANK[level];
+}
+
+/** Returns which file access toggles are on for a folder capability, keyed by level. */
+export function folderAccessToggles(
+  capability: ChatFolderCapability,
+): Record<ChatFolderAccessLevel, boolean> {
+  return {
+    read: folderCapabilityIncludes(capability, "read"),
+    edit: folderCapabilityIncludes(capability, "edit"),
+    execute: folderCapabilityIncludes(capability, "execute"),
+    publish: folderCapabilityIncludes(capability, "publish"),
+  };
+}
+
+/**
+ * Returns the folder capability after turning one file access toggle on or off.
+ *
+ * Toggles are cumulative: turning a level on also turns on every lower level, and turning a level off also turns
+ * off every higher level. Turning every level off yields `none`.
+ */
+export function folderCapabilityWithToggle(
+  capability: ChatFolderCapability,
+  level: ChatFolderAccessLevel,
+  enabled: boolean,
+): ChatFolderCapability {
+  const includes = folderCapabilityIncludes(capability, level);
+  if (enabled) return includes ? capability : level;
+  return includes ? LEVEL_BELOW[level] : capability;
 }
 
 /** Returns a deterministic preset name for independent channel capabilities. */
@@ -104,29 +143,6 @@ export function applyChannelPresetToScope(
     : channel);
 }
 
-/** Applies one profile ceiling to an exact scope and removes grants above it. */
-export function applyAccessProfileToScope(
-  channels: readonly ChatAgentChannelAccessInput[],
-  channelIds: ReadonlySet<string>,
-  profile: {
-    id: string;
-    revisionId: string;
-    maximumFolderCapability: ChatFolderCapability;
-  },
-): ChatAgentChannelAccessInput[] {
-  return channels.map((channel) => channelIds.has(channel.channelId)
-    ? {
-        ...channel,
-        accessProfileId: profile.id,
-        accessProfileRevisionId: profile.revisionId,
-        folderGrants: channel.folderGrants.filter((grant) => folderCapabilityFits(
-          grant.capability,
-          profile.maximumFolderCapability,
-        )),
-      }
-    : channel);
-}
-
 /** Creates a stable access snapshot for dirty checks and optimistic replacement. */
 export function agentAccessDraftSnapshot(
   channels: readonly ChatAgentChannelAccessInput[],
@@ -185,11 +201,11 @@ export function agentAccessConfirmationImpact(
     );
     for (const grant of channel.folderGrants) {
       const priorCapability = priorGrants.get(grant.workingFolderId)?.capability ?? "none";
-      if (grant.capability === "publish" && !folderCapabilityFits("publish", priorCapability)) {
+      if (grant.capability === "publish" && !folderCapabilityIncludes(priorCapability, "publish")) {
         publishFolderIds.add(grant.workingFolderId);
       } else if (
         grant.capability === "execute"
-        && !folderCapabilityFits("execute", priorCapability)
+        && !folderCapabilityIncludes(priorCapability, "execute")
       ) {
         executeFolderIds.add(grant.workingFolderId);
       }
@@ -229,7 +245,6 @@ function normalizeHistoryBoundary(boundary: ChatHistoryBoundary): ChatHistoryBou
 /** Returns all configuration errors that must block an atomic access save. */
 export function agentAccessDraftErrors(
   channels: readonly ChatAgentChannelAccessInput[],
-  profileCeilings: ReadonlyMap<string, ChatFolderCapability>,
 ): string[] {
   const errors: string[] = [];
   const channelIds = new Set<string>();
@@ -239,8 +254,6 @@ export function agentAccessDraftErrors(
     if (!channel.capabilities.readHistory && channel.historyBoundary.kind !== "entire") {
       errors.push(`Channel ${channel.channelId} has a history boundary without history access`);
     }
-    const ceiling = profileCeilings.get(channel.accessProfileId);
-    if (!ceiling) errors.push(`Channel ${channel.channelId} uses an unavailable access profile`);
     const folderIds = new Set<string>();
     let defaultCount = 0;
     for (const grant of channel.folderGrants) {
@@ -249,9 +262,6 @@ export function agentAccessDraftErrors(
       }
       folderIds.add(grant.workingFolderId);
       if (grant.isDefault) defaultCount += 1;
-      if (ceiling && !folderCapabilityFits(grant.capability, ceiling)) {
-        errors.push(`Folder ${grant.workingFolderId} exceeds its access profile`);
-      }
     }
     if (defaultCount > 1) errors.push(`Channel ${channel.channelId} has multiple default folders`);
   }

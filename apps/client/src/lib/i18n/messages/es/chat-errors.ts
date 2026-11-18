@@ -43,8 +43,6 @@ export const chatErrors = {
     duplicate_channel: "Un canal aparece más de una vez, así que quita la entrada sobrante.",
     duplicate_folder: "Una carpeta de trabajo aparece más de una vez, así que quita la entrada sobrante.",
     multiple_default_folders: "Solo una carpeta de trabajo puede ser la predeterminada, así que deja solo una.",
-    profile_ceiling_exceeded: "Este acceso supera lo que permite el perfil vinculado, así que redúcelo o elige otro perfil.",
-    profile_not_found: "El perfil de acceso vinculado ya no existe, así que elige otro.",
     retained_reference_disclosure: "Los mensajes anteriores mencionan canales que este agente no puede leer, así que empieza su historial desde que se concede el acceso.",
     agent_not_found: "Este agente ya no existe.",
   },

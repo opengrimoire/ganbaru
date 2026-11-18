@@ -471,18 +471,11 @@ pub(crate) async fn generation_constraints_hold_in_connection(
            ON channel_access.conversation_id = membership.conversation_id
           AND channel_access.agent_id = membership.participant_id
           AND channel_access.removed_at IS NULL
-         LEFT JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
-         LEFT JOIN chat_access_profile_effective_revisions profile_revision
-           ON profile_revision.access_profile_id = profile.id
          WHERE membership.conversation_id = ?
            AND membership.removed_at IS NULL
            AND (
              participant.participant_kind != 'ai_agent'
-             OR CASE
-                  WHEN channel_access.read_history_inherits_profile = 1
-                    THEN profile_revision.default_read_history
-                  ELSE channel_access.read_history AND profile_revision.default_read_history
-                END = 1
+             OR channel_access.read_history = 1
            )",
     )
     .bind(destination_conversation_id)
@@ -549,29 +542,15 @@ async fn participant_can_read_source(
              ON channel_access.conversation_id = membership.conversation_id
             AND channel_access.agent_id = membership.participant_id
             AND channel_access.removed_at IS NULL
-           LEFT JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
-           LEFT JOIN chat_access_profile_effective_revisions profile_revision
-             ON profile_revision.access_profile_id = profile.id
            WHERE membership.conversation_id = ?
              AND membership.participant_id = ?
              AND membership.removed_at IS NULL
              AND (
                participant.participant_kind != 'ai_agent'
                OR (
-                 CASE
-                   WHEN channel_access.read_history_inherits_profile = 1
-                     THEN profile_revision.default_read_history
-                   ELSE channel_access.read_history AND profile_revision.default_read_history
-                 END = 1
+                 channel_access.read_history = 1
                  AND (
-                   CASE
-                     WHEN channel_access.history_boundary_inherits_profile = 1
-                       THEN profile_revision.default_history_boundary
-                     WHEN channel_access.history_boundary = 'from_grant'
-                       OR profile_revision.default_history_boundary = 'from_grant'
-                       THEN 'from_grant'
-                     ELSE 'entire'
-                   END = 'entire'
+                   channel_access.history_boundary = 'entire'
                    OR (
                      channel_access.history_from_order_key IS NOT NULL
                      AND channel_access.history_from_order_key <= ?
@@ -819,10 +798,9 @@ mod tests {
              VALUES ('{conversation}', '{AGENT}', 'membership:scratch', 'member',
                      '{NOW}', '{NOW}');
              INSERT INTO chat_agent_channel_memberships
-                (conversation_id, agent_id, sync_key, access_profile_id,
+                (conversation_id, agent_id, sync_key,
                  read_history, participate, history_boundary, created_at, updated_at)
              VALUES ('{conversation}', '{AGENT}', 'channel-membership:scratch',
-                     'access-profile:conversation-only',
                      1, 1, 'entire', '{NOW}', '{NOW}');
              INSERT INTO chat_conversation_items
                 (id, conversation_id, item_kind, order_key, created_at)
@@ -862,11 +840,11 @@ mod tests {
              WHERE id = 'thread-1';
              INSERT INTO chat_assignment_authorization_revisions
                 (id, assignment_id, revision, requester_participant_id, agent_policy_revision_id,
-                 agent_access_revision, destination_conversation_id, access_profile_revision_id,
+                 agent_access_revision, destination_conversation_id,
                  execution_environment_id, resolved_runtime_approval_policy, scope_digest,
                  decision_state, created_at)
              VALUES ('{AUTHORIZATION}', 'assignment:scratch', 1, 'participant:local-owner',
-                     'policy:scratch', 1, '{conversation}', 'access-profile-revision:conversation-only:1',
+                     'policy:scratch', 1, '{conversation}',
                      'environment:scratch', '{approval}', printf('%064d', 0), 'allowed', '{NOW}');
              INSERT INTO chat_turns
                 (id, thread_id, ordinal, state, safety_mode, interaction_mode, created_at, updated_at)

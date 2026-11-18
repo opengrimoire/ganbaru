@@ -178,7 +178,7 @@ pub(super) async fn insert_revision_copied_attachments(
 /// if revoked. Saving the membership's access revokes it, or rewrites its project to the
 /// conversation's when the user keeps that folder granted.
 pub(super) const ACTIVE_FOLDER_GRANTS_SQL: &str = "SELECT grant_row.working_folder_id,
-        folder.display_name, grant_row.capability, grant_row.capability_inherits_profile,
+        folder.display_name, grant_row.capability,
         (grant_row.is_default <> 0 AND NOT EXISTS (
             SELECT 1 FROM chat_agent_working_folder_grants other
             JOIN project_working_folders other_folder ON other_folder.id = other.working_folder_id
@@ -731,8 +731,7 @@ pub(super) fn parse_history_boundary(
     }
 }
 
-/// Channel history one agent membership may read, resolved from the
-/// membership and its access profile revision.
+/// Channel history one agent membership may read, resolved from the membership.
 ///
 /// Positions are root timeline order keys. A reply thread sits at its root's
 /// position, because reply order keys count within their thread.
@@ -779,21 +778,6 @@ pub(super) fn wire_history_boundary(value: &ChatHistoryBoundary) -> &'static str
         ChatHistoryBoundary::Entire => "entire",
         ChatHistoryBoundary::FromGrant { .. } => "from_grant",
     }
-}
-
-pub(super) fn parse_access_profile_builtin_key(
-    value: Option<&str>,
-) -> ChatResult<Option<ChatAccessProfileBuiltinKey>> {
-    value
-        .map(|value| match value {
-            "conversation_only" => Ok(ChatAccessProfileBuiltinKey::ConversationOnly),
-            "read_only" => Ok(ChatAccessProfileBuiltinKey::ReadOnly),
-            "edit_files" => Ok(ChatAccessProfileBuiltinKey::EditFiles),
-            "build_and_test" => Ok(ChatAccessProfileBuiltinKey::BuildAndTest),
-            "publish_changes" => Ok(ChatAccessProfileBuiltinKey::PublishChanges),
-            _ => Err(stored_value_error("access profile built-in key")),
-        })
-        .transpose()
 }
 
 pub(super) fn parse_work_state(value: &str) -> ChatResult<ChatWorkAssignmentState> {

@@ -12,10 +12,7 @@ use super::replica::{Replica, connection_from, converge, forge_change, quoted, r
 use crate::domains::themes::PALETTE_SIZE;
 use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
-use crate::manifest::vault::chat::{
-    AGENTS_TABLE, PARTICIPANTS_TABLE, POLICY_REVISIONS_TABLE, PROFILE_REVISIONS_TABLE,
-    PROFILES_TABLE,
-};
+use crate::manifest::vault::chat::{AGENTS_TABLE, PARTICIPANTS_TABLE, POLICY_REVISIONS_TABLE};
 use crate::manifest::vault::contacts::{CARD_KEY, CARD_TABLE, CONTACTS_TABLE};
 use crate::manifest::vault::distractions::{SETTINGS_KEY, SETTINGS_TABLE};
 use crate::manifest::vault::themes::THEMES_TABLE;
@@ -44,17 +41,12 @@ const NARROWED_KEYS: [(TableId, &str, &[&str]); 4] = [
 ];
 
 /// A row key of every table whose rows no replicated operation deletes.
-const NEVER_DELETED: [(TableId, &str); 7] = [
+const NEVER_DELETED: [(TableId, &str); 5] = [
     (CARD_TABLE, CARD_KEY),
     (SETTINGS_TABLE, SETTINGS_KEY),
     (PARTICIPANTS_TABLE, "participant:reviewer"),
     (AGENTS_TABLE, "participant:reviewer"),
     (POLICY_REVISIONS_TABLE, "policy-0"),
-    (PROFILES_TABLE, "access-profile:read-only"),
-    (
-        PROFILE_REVISIONS_TABLE,
-        "access-profile-revision:read-only:1",
-    ),
 ];
 
 /// A key sorting before every key of [`NEVER_DELETED`], so a redirect to it is well formed.

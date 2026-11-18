@@ -146,16 +146,6 @@ chat_identifier!(
     MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
 );
 chat_identifier!(
-    ChatAccessProfileId,
-    "Chat access profile ID",
-    MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
-);
-chat_identifier!(
-    ChatAccessProfileRevisionId,
-    "Chat access profile revision ID",
-    MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
-);
-chat_identifier!(
     ChatMessageReferenceId,
     "Chat message reference ID",
     MAX_ORGANIZATIONAL_IDENTIFIER_BYTES

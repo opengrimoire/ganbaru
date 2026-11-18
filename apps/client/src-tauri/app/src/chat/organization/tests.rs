@@ -259,22 +259,20 @@ async fn seed_review_assignment_with_stranded_replies(pool: &SqlitePool) {
              '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z'
          );
          INSERT INTO chat_agent_channel_memberships
-             (conversation_id, agent_id, sync_key, access_profile_id,
-              read_history, read_history_inherits_profile,
-              participate, participate_inherits_profile,
-              history_boundary, history_boundary_inherits_profile,
+             (conversation_id, agent_id, sync_key,
+              read_history, participate, history_boundary,
               created_at, updated_at)
          VALUES (
              'conversation:review', 'participant:review-agent', 'channel-membership:review',
-             'access-profile:build-and-test', 1, 1, 1, 1, 'entire', 1,
+             1, 1, 'entire',
              '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z'
          );
          INSERT INTO chat_agent_working_folder_grants
              (conversation_id, agent_id, project_id, working_folder_id, sync_key,
-              capability, capability_inherits_profile, is_default, created_at)
+              capability, is_default, created_at)
          VALUES (
              'conversation:review', 'participant:review-agent', 'project:review',
-             'folder:review', 'grant:review', 'execute', 1, 1, '2026-08-04T17:00:00.000Z'
+             'folder:review', 'grant:review', 'execute', 1, '2026-08-04T17:00:00.000Z'
          );
          UPDATE chat_agent_access_state
          SET access_revision = 1, updated_at = '2026-08-04T17:00:00.000Z'
@@ -1322,10 +1320,10 @@ async fn seed_second_review_folder(pool: &SqlitePool) {
          VALUES ('folder:second', 'project:review', 'Second', 'managed', 'projects/second');
          INSERT INTO chat_agent_working_folder_grants
              (conversation_id, agent_id, project_id, working_folder_id, sync_key,
-              capability, capability_inherits_profile, is_default, created_at)
+              capability, is_default, created_at)
          VALUES (
              'conversation:review', 'participant:review-agent', 'project:review',
-             'folder:second', 'grant:second', 'execute', 1, 0, '2026-08-04T17:00:00.000Z'
+             'folder:second', 'grant:second', 'execute', 0, '2026-08-04T17:00:00.000Z'
          );",
     )
     .execute(pool)
@@ -2673,8 +2671,8 @@ async fn freeze_review_reply_context(
     .unwrap();
     sqlx::query(
         "UPDATE chat_agent_channel_memberships
-         SET read_history = ?, read_history_inherits_profile = 0,
-             history_boundary = ?, history_boundary_inherits_profile = 0,
+         SET read_history = ?,
+             history_boundary = ?,
              history_from_order_key = ?
          WHERE agent_id = 'participant:review-agent'",
     )
@@ -2946,10 +2944,10 @@ fn removing_a_agent_from_a_channel_keeps_the_rows_and_hides_them_from_readers() 
              VALUES ('conversation-design', 'participant:design-agent', 'membership:design',
                      'member', '2026-08-14T17:30:00.000Z', '2026-08-14T17:30:00.000Z');
              INSERT INTO chat_agent_channel_memberships
-                 (conversation_id, agent_id, sync_key, access_profile_id, created_at,
+                 (conversation_id, agent_id, sync_key, created_at,
                   updated_at)
              VALUES ('conversation-design', 'participant:design-agent',
-                     'channel-membership:design', 'access-profile:edit-files',
+                     'channel-membership:design',
                      '2026-08-14T17:30:00.000Z', '2026-08-14T17:30:00.000Z');",
         )
         .execute(&pool)
@@ -3023,10 +3021,10 @@ fn agent_access_reads_a_channel_of_a_project_outside_every_group() {
              VALUES ('conversation-loose', 'participant:loose-agent', 'membership:loose',
                      'member', '2026-08-14T17:30:00.000Z', '2026-08-14T17:30:00.000Z');
              INSERT INTO chat_agent_channel_memberships
-                 (conversation_id, agent_id, sync_key, access_profile_id, created_at,
+                 (conversation_id, agent_id, sync_key, created_at,
                   updated_at)
              VALUES ('conversation-loose', 'participant:loose-agent',
-                     'channel-membership:loose', 'access-profile:edit-files',
+                     'channel-membership:loose',
                      '2026-08-14T17:30:00.000Z', '2026-08-14T17:30:00.000Z');",
         )
         .execute(&pool)
@@ -3038,93 +3036,6 @@ fn agent_access_reads_a_channel_of_a_project_outside_every_group() {
         assert_eq!(access.channels.len(), 1);
         assert_eq!(access.channels[0].project_id, "project-loose");
         assert_eq!(access.channels[0].group_id, None);
-    });
-}
-
-/// Runs the save-time profile revision check for one channel draft made against `revision_id`.
-async fn check_draft_profile_revision(
-    pool: &SqlitePool,
-    revision_id: &str,
-) -> Result<(), ChatErrorCode> {
-    let draft = ChatAgentChannelAccessInput {
-        channel_id: ChatChannelId::new("channel:draft").unwrap(),
-        access_profile_id: ChatAccessProfileId::new("access-profile:draft").unwrap(),
-        access_profile_revision_id: ChatAccessProfileRevisionId::new(revision_id).unwrap(),
-        capabilities: ChatChannelCapabilities {
-            read_history: true,
-            participate: true,
-        },
-        history_boundary: ChatHistoryBoundary::Entire,
-        runtime_approval_override: None,
-        scratch_runtime_approval_override: None,
-        folder_grants: Vec::new(),
-    };
-    let mut transaction = pool.begin().await.unwrap();
-    access::require_expected_profile_revisions_in_transaction(&mut transaction, &[draft])
-        .await
-        .map_err(|error| error.code)
-}
-
-#[test]
-fn saved_access_drafts_compare_effective_profile_revision_ids_not_numbers() {
-    tauri::async_runtime::block_on(async {
-        let pool = migrated_pool().await;
-        sqlx::raw_sql(
-            "INSERT INTO chat_access_profiles (id, display_name, created_at, updated_at)
-             VALUES ('access-profile:draft', 'Draft profile', '2026-10-24T09:00:00.000Z',
-                     '2026-10-24T09:00:00.000Z');
-             INSERT INTO chat_access_profile_revisions
-                (id, access_profile_id, default_read_history, default_participate,
-                 default_history_boundary, maximum_folder_capability, created_at)
-             VALUES ('revision:first', 'access-profile:draft', 1, 1, 'entire', 'edit',
-                     '2026-10-24T09:01:00.000Z'),
-                    ('revision:seen', 'access-profile:draft', 1, 1, 'entire', 'publish',
-                     '2026-10-24T09:03:00.000Z');
-             UPDATE chat_access_profiles
-             SET current_revision_id = 'revision:seen',
-                 current_maximum_folder_capability = 'publish'
-             WHERE id = 'access-profile:draft';",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        assert_eq!(
-            check_draft_profile_revision(&pool, "revision:seen").await,
-            Ok(())
-        );
-
-        // A synced revision created between the two shifts the numbers, so the stricter one the
-        // pointer now names carries number 2, the number the draft saw.
-        sqlx::raw_sql(
-            "INSERT INTO chat_access_profile_revisions
-                (id, access_profile_id, default_read_history, default_participate,
-                 default_history_boundary, maximum_folder_capability, created_at)
-             VALUES ('revision:synced', 'access-profile:draft', 1, 1, 'entire', 'read',
-                     '2026-10-24T09:02:00.000Z');
-             UPDATE chat_access_profiles
-             SET current_revision_id = 'revision:synced',
-                 current_maximum_folder_capability = 'read'
-             WHERE id = 'access-profile:draft';",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        let synced_number: i64 = sqlx::query_scalar(
-            "SELECT revision FROM chat_access_profile_effective_revisions
-             WHERE access_profile_id = 'access-profile:draft'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(synced_number, 2);
-        assert_eq!(
-            check_draft_profile_revision(&pool, "revision:seen").await,
-            Err(ChatErrorCode::StaleRevision)
-        );
-        assert_eq!(
-            check_draft_profile_revision(&pool, "revision:synced").await,
-            Ok(())
-        );
     });
 }
 
@@ -3285,7 +3196,7 @@ fn channel_reference_ranges_break_equal_order_keys_at_both_ends() {
         .await;
         sqlx::raw_sql(
             "UPDATE chat_agent_channel_memberships
-             SET history_boundary = 'from_grant', history_boundary_inherits_profile = 0,
+             SET history_boundary = 'from_grant',
                  history_from_order_key = 'a2'
              WHERE agent_id = 'participant:review-agent'",
         )
@@ -4127,16 +4038,16 @@ async fn seed_foreign_project_grants(pool: &SqlitePool) {
               'projects/same-project');
          INSERT INTO chat_agent_working_folder_grants
              (conversation_id, agent_id, project_id, working_folder_id, sync_key,
-              capability, capability_inherits_profile, is_default, created_at)
+              capability, is_default, created_at)
          VALUES
              ('conversation:review', 'participant:review-agent', 'project:review',
-              'folder:a-foreign', 'grant:foreign-folder', 'execute', 1, 1,
+              'folder:a-foreign', 'grant:foreign-folder', 'execute', 1,
               '2026-08-04T17:00:00.000Z'),
              ('conversation:review', 'participant:review-agent', 'project:foreign',
-              'folder:b-foreign', 'grant:foreign-claim', 'execute', 1, 0,
+              'folder:b-foreign', 'grant:foreign-claim', 'execute', 0,
               '2026-08-04T17:00:00.000Z'),
              ('conversation:review', 'participant:review-agent', 'project:foreign',
-              'folder:same-project', 'grant:foreign-label', 'execute', 1, 0,
+              'folder:same-project', 'grant:foreign-label', 'execute', 0,
               '2026-08-04T17:00:00.000Z');
          UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1;",
     )
@@ -4233,7 +4144,6 @@ fn saving_a_grant_over_a_foreign_project_claim_restores_the_channel_project() {
                     runtime_approval_override: None,
                 },
             ],
-            ChatFolderCapability::Execute,
             &UtcTimestamp::new("2026-08-04T18:00:00.000Z").unwrap(),
         )
         .await
@@ -5033,14 +4943,12 @@ async fn seed_other_review_agent(pool: &SqlitePool) {
              '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z'
          );
          INSERT INTO chat_agent_channel_memberships
-             (conversation_id, agent_id, sync_key, access_profile_id,
-              read_history, read_history_inherits_profile,
-              participate, participate_inherits_profile,
-              history_boundary, history_boundary_inherits_profile,
+             (conversation_id, agent_id, sync_key,
+              read_history, participate, history_boundary,
               created_at, updated_at)
          VALUES (
              'conversation:review', 'participant:other-agent', 'channel-membership:other',
-             'access-profile:build-and-test', 1, 1, 1, 1, 'entire', 1,
+             1, 1, 'entire',
              '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z'
          );
          UPDATE chat_agent_access_state

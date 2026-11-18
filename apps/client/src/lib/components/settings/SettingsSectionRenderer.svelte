@@ -100,7 +100,6 @@
     onSubsectionChange={onAgentsSubsectionChange}
     {onRequestNavigation}
     onAgentDraftStateChange={(open: boolean) => onDraftStateChange(open ? "agent" : null)}
-    onAccessProfileDraftStateChange={(open: boolean) => onDraftStateChange(open ? "accessProfile" : null)}
   />
 {:else if activeSection === "data"}
   {#if DataSection}

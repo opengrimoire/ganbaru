@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type {
-  ChatAccessProfileRead,
   ChatAiAgentRead,
-  ChatFolderCapability,
   ChatAgentAccessRead,
   ChatAgentChannelAccess,
   ProviderAuthoritySupport,
@@ -11,39 +9,12 @@ import type {
 import {
   channelAccessWithChannel,
   channelAccessWithoutChannel,
-  conversationAccessProfile,
   defaultChannelAccessInput,
   resolveChannelMemberChanges,
   agentCommandSupport,
   type ChannelAccessDefaults,
   type AgentCommandSupport,
 } from "./channel-membership";
-
-function profile(
-  id: string,
-  builtinKey: ChatAccessProfileRead["builtinKey"],
-  maximumFolderCapability: ChatFolderCapability = "none",
-): ChatAccessProfileRead {
-  return {
-    id,
-    builtinKey,
-    displayName: id,
-    revision: 3,
-    archivedAt: null,
-    latestRevision: {
-      id: `${id}:revision:3`,
-      accessProfileId: id,
-      revision: 3,
-      defaultChannelCapabilities: { readHistory: false, participate: true },
-      defaultHistoryBoundary: { kind: "entire" },
-      maximumFolderCapability,
-      createdAt: "2026-10-01T00:00:00.000Z",
-    },
-  };
-}
-
-const conversation = profile("profile:conversation", "conversationOnly");
-const build = profile("profile:build", "buildAndTest", "execute");
 
 /** Authority a Claude probe reports: commands reach the person instead of being confined. */
 const claudeAuthority: ProviderAuthoritySupport = {
@@ -61,7 +32,7 @@ const claudeAuthority: ProviderAuthoritySupport = {
 const claude: AgentCommandSupport = { authority: claudeAuthority, safetyMode: "ask_for_approval" };
 
 function defaults(overrides: Partial<ChannelAccessDefaults> = {}): ChannelAccessDefaults {
-  return { profiles: [conversation, build], projectWorkingFolderId: "folder:project", ...overrides };
+  return { projectWorkingFolderId: "folder:project", ...overrides };
 }
 
 function channelAccess(
@@ -74,9 +45,6 @@ function channelAccess(
     projectId: "project:1",
     groupId: "group:1",
     channelName: channelId,
-    accessProfileId: "profile:build",
-    accessProfileRevisionId: "profile:build:revision:2",
-    accessProfileRevision: 2,
     capabilities: { readHistory: true, participate: true },
     historyBoundary: { kind: "fromGrant", lowerOrderKey: "c00C" },
     runtimeApprovalOverride: "autoApprove",
@@ -117,20 +85,12 @@ function access(channels: ChatAgentChannelAccess[]): ChatAgentAccessRead {
 }
 
 describe("channel membership", () => {
-  it("prefers the conversation-only profile and falls back to the first profile", () => {
-    expect(conversationAccessProfile([build, conversation])).toBe(conversation);
-    expect(conversationAccessProfile([build])).toBe(build);
-    expect(conversationAccessProfile([])).toBeNull();
-  });
-
-  it("grants the channel project folder at Execute with Ask when the provider keeps commands person-approved", () => {
+  it("reads history, takes assignments, and grants the project folder at Execute with Ask by default", () => {
     const input = defaultChannelAccessInput("channel:a", defaults(), claude);
     expect(input).toEqual({
       channelId: "channel:a",
-      accessProfileId: "profile:build",
-      accessProfileRevisionId: "profile:build:revision:3",
-      capabilities: { readHistory: false, participate: true },
-      historyBoundary: { kind: "entire" },
+      capabilities: { readHistory: true, participate: true },
+      historyBoundary: { kind: "fromGrant" },
       runtimeApprovalOverride: null,
       scratchRuntimeApprovalOverride: null,
       folderGrants: [
@@ -139,26 +99,21 @@ describe("channel membership", () => {
     });
   });
 
-  it("falls back to conversation only when the folder, the Execute profile, or provider enforcement is missing", () => {
-    const conversationOnly = {
-      accessProfileId: "profile:conversation",
-      accessProfileRevisionId: "profile:conversation:revision:3",
+  it("joins without file access when the folder or provider enforcement is missing", () => {
+    const withoutFiles = {
+      capabilities: { readHistory: true, participate: true },
       folderGrants: [],
     };
     expect(defaultChannelAccessInput("channel:a", defaults({ projectWorkingFolderId: null }), claude))
-      .toMatchObject(conversationOnly);
-    expect(defaultChannelAccessInput("channel:a", defaults({ profiles: [conversation] }), claude))
-      .toMatchObject(conversationOnly);
+      .toMatchObject(withoutFiles);
     expect(defaultChannelAccessInput("channel:a", defaults(), { authority: null, safetyMode: "ask_for_approval" }))
-      .toMatchObject(conversationOnly);
+      .toMatchObject(withoutFiles);
     expect(defaultChannelAccessInput("channel:a", defaults(), {
       authority: { ...claudeAuthority, networkBoundary: false },
       safetyMode: "ask_for_approval",
-    })).toMatchObject(conversationOnly);
+    })).toMatchObject(withoutFiles);
     expect(defaultChannelAccessInput("channel:a", defaults(), { authority: claudeAuthority, safetyMode: "custom" }))
-      .toMatchObject(conversationOnly);
-    expect(defaultChannelAccessInput("channel:a", { profiles: [], projectWorkingFolderId: null }, claude).accessProfileId)
-      .toBe("");
+      .toMatchObject(withoutFiles);
   });
 
   it("reads command support from the agent policy and its provider probe", () => {
@@ -182,8 +137,7 @@ describe("channel membership", () => {
     const next = channelAccessWithoutChannel(current, "channel:a");
     expect(next.map((entry) => entry.channelId)).toEqual(["channel:b"]);
     expect(next[0]).toMatchObject({
-      accessProfileId: "profile:build",
-      accessProfileRevisionId: "profile:build:revision:2",
+      capabilities: { readHistory: true, participate: true },
       historyBoundary: { kind: "fromGrant" },
       runtimeApprovalOverride: "autoApprove",
     });
@@ -204,7 +158,7 @@ describe("channel membership", () => {
     const current = access([channelAccess("channel:a")]);
     const added = channelAccessWithChannel(current, "channel:b", defaults(), claude);
     expect(added.map((entry) => entry.channelId)).toEqual(["channel:a", "channel:b"]);
-    expect(added[1].capabilities).toEqual({ readHistory: false, participate: true });
+    expect(added[1].capabilities).toEqual({ readHistory: true, participate: true });
     expect(added[1].folderGrants).toEqual([
       { workingFolderId: "folder:project", capability: "execute", isDefault: true, runtimeApprovalOverride: "ask" },
     ]);

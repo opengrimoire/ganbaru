@@ -31,10 +31,6 @@ pub(crate) async fn verify_scope(
               ON membership.conversation_id = channel_access.conversation_id
              AND membership.participant_id = channel_access.agent_id
              AND membership.removed_at IS NULL
-            JOIN chat_access_profiles profile
-              ON profile.id = channel_access.access_profile_id
-            JOIN chat_access_profile_effective_revisions profile_revision
-              ON profile_revision.access_profile_id = profile.id
             JOIN chat_agent_runs run
               ON run.id = ?
              AND run.assignment_id = authorization.assignment_id
@@ -49,11 +45,7 @@ pub(crate) async fn verify_scope(
               AND authorization.scope_digest = ?
               AND authorization.decision_state = 'allowed'
               AND authorization.revoked_at IS NULL
-              AND CASE
-                    WHEN channel_access.participate_inherits_profile = 1
-                      THEN profile_revision.default_participate
-                    ELSE channel_access.participate AND profile_revision.default_participate
-                  END = 1
+              AND channel_access.participate = 1
         )",
     )
     .bind(scope.run_id.as_str())
@@ -119,10 +111,6 @@ pub(super) async fn verify_channel_source(
               ON membership.conversation_id = channel_access.conversation_id
              AND membership.participant_id = channel_access.agent_id
              AND membership.removed_at IS NULL
-            JOIN chat_access_profiles agent_profile
-              ON agent_profile.id = channel_access.access_profile_id
-            JOIN chat_access_profile_effective_revisions agent_profile_revision
-              ON agent_profile_revision.access_profile_id = agent_profile.id
             JOIN chat_conversation_memberships requester_membership
               ON requester_membership.conversation_id = source.conversation_id
              AND requester_membership.participant_id = authorization.requester_participant_id
@@ -153,21 +141,9 @@ pub(super) async fn verify_channel_source(
               AND source.destination_audience_revision = ?
               AND destination_audience.revision >= source.destination_audience_revision
               AND reference_item.conversation_id = authorization.destination_conversation_id
-              AND CASE
-                    WHEN channel_access.read_history_inherits_profile = 1
-                      THEN agent_profile_revision.default_read_history
-                    ELSE channel_access.read_history
-                         AND agent_profile_revision.default_read_history
-                  END = 1
+              AND channel_access.read_history = 1
               AND (
-                CASE
-                  WHEN channel_access.history_boundary_inherits_profile = 1
-                    THEN agent_profile_revision.default_history_boundary
-                  WHEN channel_access.history_boundary = 'from_grant'
-                    OR agent_profile_revision.default_history_boundary = 'from_grant'
-                    THEN 'from_grant'
-                  ELSE 'entire'
-                END = 'entire'
+                channel_access.history_boundary = 'entire'
                 OR (
                   channel_access.history_from_order_key IS NOT NULL
                   AND channel_access.history_from_order_key <= source.lower_order_key
@@ -178,28 +154,12 @@ pub(super) async fn verify_channel_source(
                 OR EXISTS (
                   SELECT 1
                   FROM chat_agent_channel_memberships requester_source_access
-                  JOIN chat_access_profiles requester_profile
-                    ON requester_profile.id = requester_source_access.access_profile_id
-                  JOIN chat_access_profile_effective_revisions requester_profile_revision
-                    ON requester_profile_revision.access_profile_id = requester_profile.id
                   WHERE requester_source_access.conversation_id = source.conversation_id
                     AND requester_source_access.agent_id = authorization.requester_participant_id
                     AND requester_source_access.removed_at IS NULL
-                    AND CASE
-                          WHEN requester_source_access.read_history_inherits_profile = 1
-                            THEN requester_profile_revision.default_read_history
-                          ELSE requester_source_access.read_history
-                               AND requester_profile_revision.default_read_history
-                        END = 1
+                    AND requester_source_access.read_history = 1
                     AND (
-                      CASE
-                        WHEN requester_source_access.history_boundary_inherits_profile = 1
-                          THEN requester_profile_revision.default_history_boundary
-                        WHEN requester_source_access.history_boundary = 'from_grant'
-                          OR requester_profile_revision.default_history_boundary = 'from_grant'
-                          THEN 'from_grant'
-                        ELSE 'entire'
-                      END = 'entire'
+                      requester_source_access.history_boundary = 'entire'
                       OR (
                         requester_source_access.history_from_order_key IS NOT NULL
                         AND requester_source_access.history_from_order_key <= source.lower_order_key
@@ -219,28 +179,12 @@ pub(super) async fn verify_channel_source(
                     OR EXISTS (
                       SELECT 1
                       FROM chat_agent_channel_memberships destination_ai_access
-                      JOIN chat_access_profiles destination_profile
-                        ON destination_profile.id = destination_ai_access.access_profile_id
-                      JOIN chat_access_profile_effective_revisions destination_profile_revision
-                        ON destination_profile_revision.access_profile_id = destination_profile.id
                       WHERE destination_ai_access.conversation_id = authorization.destination_conversation_id
                         AND destination_ai_access.agent_id = destination_member.participant_id
                         AND destination_ai_access.removed_at IS NULL
-                        AND CASE
-                              WHEN destination_ai_access.read_history_inherits_profile = 1
-                                THEN destination_profile_revision.default_read_history
-                              ELSE destination_ai_access.read_history
-                                   AND destination_profile_revision.default_read_history
-                            END = 1
+                        AND destination_ai_access.read_history = 1
                         AND (
-                          CASE
-                            WHEN destination_ai_access.history_boundary_inherits_profile = 1
-                              THEN destination_profile_revision.default_history_boundary
-                            WHEN destination_ai_access.history_boundary = 'from_grant'
-                              OR destination_profile_revision.default_history_boundary = 'from_grant'
-                              THEN 'from_grant'
-                            ELSE 'entire'
-                          END = 'entire'
+                          destination_ai_access.history_boundary = 'entire'
                           OR (
                             destination_ai_access.history_from_order_key IS NOT NULL
                             AND destination_ai_access.history_from_order_key
@@ -261,28 +205,12 @@ pub(super) async fn verify_channel_source(
                       AND NOT EXISTS (
                         SELECT 1
                         FROM chat_agent_channel_memberships source_ai_access
-                        JOIN chat_access_profiles source_profile
-                          ON source_profile.id = source_ai_access.access_profile_id
-                        JOIN chat_access_profile_effective_revisions source_profile_revision
-                          ON source_profile_revision.access_profile_id = source_profile.id
                         WHERE source_ai_access.conversation_id = source.conversation_id
                           AND source_ai_access.agent_id = destination_member.participant_id
                           AND source_ai_access.removed_at IS NULL
-                          AND CASE
-                                WHEN source_ai_access.read_history_inherits_profile = 1
-                                  THEN source_profile_revision.default_read_history
-                                ELSE source_ai_access.read_history
-                                     AND source_profile_revision.default_read_history
-                              END = 1
+                          AND source_ai_access.read_history = 1
                           AND (
-                            CASE
-                              WHEN source_ai_access.history_boundary_inherits_profile = 1
-                                THEN source_profile_revision.default_history_boundary
-                              WHEN source_ai_access.history_boundary = 'from_grant'
-                                OR source_profile_revision.default_history_boundary = 'from_grant'
-                                THEN 'from_grant'
-                              ELSE 'entire'
-                            END = 'entire'
+                            source_ai_access.history_boundary = 'entire'
                             OR (
                               source_ai_access.history_from_order_key IS NOT NULL
                               AND source_ai_access.history_from_order_key <= source.lower_order_key
@@ -357,10 +285,6 @@ pub(crate) async fn verify_authorized_folder_source(
              AND channel_access.removed_at IS NULL
             JOIN chat_agent_access_state access_state
               ON access_state.agent_id = membership.participant_id
-            JOIN chat_access_profiles profile
-              ON profile.id = channel_access.access_profile_id
-            JOIN chat_access_profile_effective_revisions profile_revision
-              ON profile_revision.access_profile_id = profile.id
             JOIN chat_agent_working_folder_grants live_grant
               ON live_grant.conversation_id = authorization.destination_conversation_id
              AND live_grant.agent_id = assignment.agent_id
@@ -377,22 +301,9 @@ pub(crate) async fn verify_authorized_folder_source(
               AND CASE source.capability
                     WHEN 'read' THEN 1 WHEN 'edit' THEN 2
                     WHEN 'execute' THEN 3 WHEN 'publish' THEN 4 ELSE 5
-                  END <= CASE
-                    WHEN live_grant.capability_inherits_profile = 1 THEN
-                      CASE profile_revision.maximum_folder_capability
-                        WHEN 'none' THEN 0 WHEN 'read' THEN 1 WHEN 'edit' THEN 2
-                        WHEN 'execute' THEN 3 WHEN 'publish' THEN 4 ELSE 0
-                      END
-                    ELSE min(
-                      CASE live_grant.capability
-                        WHEN 'none' THEN 0 WHEN 'read' THEN 1 WHEN 'edit' THEN 2
-                        WHEN 'execute' THEN 3 WHEN 'publish' THEN 4 ELSE 0
-                      END,
-                      CASE profile_revision.maximum_folder_capability
-                        WHEN 'none' THEN 0 WHEN 'read' THEN 1 WHEN 'edit' THEN 2
-                        WHEN 'execute' THEN 3 WHEN 'publish' THEN 4 ELSE 0
-                      END
-                    )
+                  END <= CASE live_grant.capability
+                    WHEN 'none' THEN 0 WHEN 'read' THEN 1 WHEN 'edit' THEN 2
+                    WHEN 'execute' THEN 3 WHEN 'publish' THEN 4 ELSE 0
                   END",
         live_agent_safety_mode_sql("assignment.agent_id"),
     )))
@@ -474,12 +385,12 @@ mod tests {
             "INSERT INTO chat_assignment_authorization_revisions
                 (id, assignment_id, revision, requester_participant_id,
                  agent_policy_revision_id, agent_access_revision,
-                 destination_conversation_id, access_profile_revision_id,
+                 destination_conversation_id,
                  execution_environment_id, working_folder_id,
                  resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
              SELECT 'authorization:auto', assignment_id, 3, requester_participant_id,
                     agent_policy_revision_id, agent_access_revision,
-                    destination_conversation_id, access_profile_revision_id,
+                    destination_conversation_id,
                     execution_environment_id, working_folder_id, 'auto_approve',
                     scope_digest, 'allowed', created_at
              FROM chat_assignment_authorization_revisions

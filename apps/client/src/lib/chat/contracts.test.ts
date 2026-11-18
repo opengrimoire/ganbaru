@@ -1215,16 +1215,13 @@ describe("Chat read and error contracts", () => {
     expect(() => parseChatError({ ...fixture, details: undefined })).toThrow("details is not valid JSON");
   });
 
-  it("keeps the effective profile revision id of agent channel access", () => {
+  it("parses agent channel access and requires its capabilities", () => {
     const channel = {
       channelId: "channel:general",
       conversationId: "conversation:general",
       projectId: "project-1",
       groupId: "group-1",
       channelName: "general",
-      accessProfileId: "access-profile:build",
-      accessProfileRevisionId: "access-profile-revision:build:2",
-      accessProfileRevision: 2,
       capabilities: { readHistory: true, participate: true },
       historyBoundary: { kind: "entire" },
       runtimeApprovalOverride: null,
@@ -1243,8 +1240,8 @@ describe("Chat read and error contracts", () => {
     expect(parseChatAgentAccess(access)).toEqual(access);
     expect(() => parseChatAgentAccess({
       ...access,
-      channels: [{ ...channel, accessProfileRevisionId: undefined }],
-    })).toThrow("accessProfileRevisionId");
+      channels: [{ ...channel, capabilities: undefined }],
+    })).toThrow("capabilities");
 
     const ungrouped = { ...access, channels: [{ ...channel, groupId: null }] };
     expect(parseChatAgentAccess(ungrouped)).toEqual(ungrouped);

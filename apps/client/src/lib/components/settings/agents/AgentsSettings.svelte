@@ -15,21 +15,20 @@
   import type {
     ChatAiAgentRead,
     ChatChannelRead,
-    ChatFolderCapability,
     ChatRuntimeApprovalPolicy,
     ChatAgentChannelAccessInput,
   } from "$lib/chat/contracts";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { modelCompany } from "$lib/chat/composer/model-company";
-  import { preferredProjectWorkingFolder } from "$lib/chat/workspace/working-folder-selection";
   import {
-    applyAccessProfileToScope,
     applyChannelPresetToScope,
-    channelCapabilityPreset,
-    folderCapabilityFits,
+    CHAT_FOLDER_ACCESS_LEVELS,
+    folderAccessToggles,
+    folderCapabilityWithToggle,
     toggleSelectionGroup,
     type ChatAgentAccessConfirmationImpact,
     type ChatChannelCapabilityPreset,
+    type ChatFolderAccessLevel,
   } from "$lib/chat/agents/access";
   import { formatList } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -41,10 +40,6 @@
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import ChatAccessControl from "$lib/components/chat/composer/ChatAccessControl.svelte";
-  import ChatControlMenu, {
-    type ChatControlIcon,
-    type ChatControlOption,
-  } from "$lib/components/chat/composer/ChatControlMenu.svelte";
   import ChatModelAvatar from "$lib/components/chat/identity/ChatModelAvatar.svelte";
   import ChatModelControls from "$lib/components/chat/composer/ChatModelControls.svelte";
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
@@ -211,15 +206,6 @@
       }));
   });
 
-  const accessProfileOptions = $derived<ChatControlOption[]>(editor.accessProfiles.map((profile) => ({
-    value: profile.id,
-    label: profile.builtinKey
-      ? t(`settings.agents.agents.profiles.${profile.builtinKey}`)
-      : profile.displayName,
-    description: profileDescription(profile.latestRevision.maximumFolderCapability),
-    icon: profileIcon(profile.latestRevision.maximumFolderCapability),
-  })));
-
   const historyOptions = $derived([
     { value: "entire", label: t("settings.agents.agents.historyEntire") },
     { value: "fromGrant", label: t("settings.agents.agents.historyFromGrant") },
@@ -285,30 +271,6 @@
   function closeAccessPicker(): void {
     accessPickerOpen = false;
     void tick().then(() => accessPickerTriggerElement?.focus());
-  }
-
-  function profileDescription(capability: ChatFolderCapability): string {
-    if (capability === "read") return t("settings.agents.agents.profileDescriptions.readOnly");
-    if (capability === "edit") return t("settings.agents.agents.profileDescriptions.editFiles");
-    if (capability === "execute") return t("settings.agents.agents.profileDescriptions.buildAndTest");
-    if (capability === "publish") return t("settings.agents.agents.profileDescriptions.publishChanges");
-    return t("settings.agents.agents.profileDescriptions.conversationOnly");
-  }
-
-  function profileIcon(capability: ChatFolderCapability): ChatControlIcon {
-    if (capability === "read") return "folder";
-    if (capability === "edit") return "file-pen";
-    if (capability === "execute") return "pencil-ruler";
-    if (capability === "publish") return "git-pull-request";
-    return "messages-square";
-  }
-
-  function folderCapabilityLabel(capability: ChatFolderCapability): string {
-    if (capability === "read") return t("settings.agents.agents.folderCapabilities.read");
-    if (capability === "edit") return t("settings.agents.agents.folderCapabilities.edit");
-    if (capability === "execute") return t("settings.agents.agents.folderCapabilities.execute");
-    if (capability === "publish") return t("settings.agents.agents.folderCapabilities.publish");
-    return t("settings.agents.agents.folderCapabilities.none");
   }
 
   function channelById(channelId: string): ChatChannelRead | null {
@@ -388,28 +350,12 @@
     setBoundedSelection(channelIds, selectedValue);
   }
 
-  function channelHasAdditionalAccess(channel: ChatAgentChannelAccessInput): boolean {
-    const profile = editor.accessProfiles.find((entry) => entry.id === channel.accessProfileId);
-    return channel.capabilities.readHistory
-      || channelCapabilityPreset(channel.capabilities) === "custom"
-      || (profile?.latestRevision.maximumFolderCapability ?? "none") !== "none"
-      || channel.folderGrants.length > 0;
-  }
-
   function setChannelPreset(
     channelId: string,
     preset: Exclude<ChatChannelCapabilityPreset, "custom">,
   ): void {
     setPresetForChannels([channelId], preset);
     if (preset !== "isolatedResponder") expandedAccessChannelId = channelId;
-  }
-
-  function setChannelAccessProfile(channelId: string, profileId: string): void {
-    setAccessProfileForChannels([channelId], profileId);
-    const profile = editor.accessProfiles.find((entry) => entry.id === profileId);
-    if (profile?.latestRevision.maximumFolderCapability !== "none") {
-      expandedAccessChannelId = channelId;
-    }
   }
 
   function overflowTooltip(node: HTMLElement, label: string): {
@@ -444,55 +390,6 @@
     editor.clearAccessConfirmation();
   }
 
-  function folderCapabilityOptions(ceiling: ChatFolderCapability) {
-    return (["read", "edit", "execute", "publish"] as const)
-      .filter((capability) => folderCapabilityFits(capability, ceiling))
-      .map((capability) => ({ value: capability, label: folderCapabilityLabel(capability) }));
-  }
-
-  function setAccessProfileForChannels(channelIds: readonly string[], accessProfileId: string): void {
-    const profile = editor.accessProfiles.find((entry) => entry.id === accessProfileId);
-    const selectedIds = new Set(channelIds);
-    const capability = profile?.latestRevision.maximumFolderCapability ?? "none";
-    editor.accessDraft = applyAccessProfileToScope(editor.accessDraft, selectedIds, {
-      id: accessProfileId,
-      revisionId: profile?.latestRevision.id ?? "",
-      maximumFolderCapability: capability,
-    });
-    if (capability !== "none") {
-      editor.accessDraft = editor.accessDraft.map((channel) => {
-        if (!selectedIds.has(channel.channelId)) return channel;
-        if (channel.folderGrants.length > 0) {
-          const nativeTarget = capability === "execute" || capability === "publish";
-          const defaultFolderId = channel.folderGrants.find((grant) => grant.isDefault)?.workingFolderId
-            ?? channel.folderGrants[0]?.workingFolderId;
-          return {
-            ...channel,
-            folderGrants: channel.folderGrants.map((grant) => ({
-              ...grant,
-              capability,
-              isDefault: nativeTarget && grant.workingFolderId === defaultFolderId,
-            })),
-          };
-        }
-        const projectId = channelById(channel.channelId)?.projectId;
-        if (!projectId) return channel;
-        const folder = preferredProjectWorkingFolder(chat.workingFolders, projectId, null);
-        if (!folder) return channel;
-        return {
-          ...channel,
-          folderGrants: [{
-            workingFolderId: folder.workingFolder.id,
-            capability,
-            isDefault: capability === "execute" || capability === "publish",
-            runtimeApprovalOverride: null,
-          }],
-        };
-      });
-    }
-    editor.clearAccessConfirmation();
-  }
-
   function foldersForChannel(channelId: string) {
     const projectId = channelById(channelId)?.projectId;
     return chat.workingFolders.filter((folder) => (
@@ -500,15 +397,40 @@
     ));
   }
 
-  function toggleFolderGrant(channelId: string, workingFolderId: string, selectedValue: boolean): void {
+  function folderAccessLabel(level: ChatFolderAccessLevel): string {
+    if (level === "read") return t("settings.agents.agents.folderAccess.read");
+    if (level === "edit") return t("settings.agents.agents.folderAccess.edit");
+    if (level === "execute") return t("settings.agents.agents.folderAccess.execute");
+    return t("settings.agents.agents.folderAccess.publish");
+  }
+
+  /** Turns one cumulative file access toggle on or off, adding the folder grant on demand and removing it when every level is off. */
+  function setFolderAccessLevel(
+    channelId: string,
+    workingFolderId: string,
+    level: ChatFolderAccessLevel,
+    enabled: boolean,
+  ): void {
     updateAccessChannel(channelId, (channel) => {
-      const grants = channel.folderGrants.filter((grant) => grant.workingFolderId !== workingFolderId);
-      if (!selectedValue) return { ...channel, folderGrants: grants };
-      const ceiling = editor.profileCeilings.get(channel.accessProfileId) ?? "none";
-      const capability = ceiling === "none" ? "none" : ceiling;
+      const grant = channel.folderGrants.find((entry) => entry.workingFolderId === workingFolderId);
+      const capability = folderCapabilityWithToggle(grant?.capability ?? "none", level, enabled);
+      if (capability === "none") {
+        return {
+          ...channel,
+          folderGrants: channel.folderGrants.filter((entry) => entry.workingFolderId !== workingFolderId),
+        };
+      }
+      if (grant) {
+        return {
+          ...channel,
+          folderGrants: channel.folderGrants.map((entry) => entry.workingFolderId === workingFolderId
+            ? { ...entry, capability }
+            : entry),
+        };
+      }
       return {
         ...channel,
-        folderGrants: [...grants, {
+        folderGrants: [...channel.folderGrants, {
           workingFolderId,
           capability,
           isDefault: false,
@@ -516,23 +438,6 @@
         }],
       };
     });
-  }
-
-  function setFolderCapability(
-    channelId: string,
-    workingFolderId: string,
-    capability: ChatFolderCapability,
-  ): void {
-    updateAccessChannel(channelId, (channel) => ({
-      ...channel,
-      folderGrants: channel.folderGrants.map((grant) => grant.workingFolderId === workingFolderId
-        ? {
-            ...grant,
-            capability,
-            isDefault: grant.isDefault,
-          }
-        : grant),
-    }));
   }
 
   function setDefaultFolder(channelId: string, workingFolderId: string): void {
@@ -626,31 +531,32 @@
 </script>
 
 {#snippet channelAdditionalDetails(channelAccess: ChatAgentChannelAccessInput)}
-  {@const selectedProfile = editor.accessProfiles.find((profile) => profile.id === channelAccess.accessProfileId) ?? null}
-  {@const preset = channelCapabilityPreset(channelAccess.capabilities)}
+  {@const channelFolders = foldersForChannel(channelAccess.channelId)}
   <div class="access-details">
+    <fieldset class="capability-switches" disabled={editor.archivedMode}>
+      <legend>{t("settings.agents.agents.channelCapabilities")}</legend>
+      <label><Checkbox checked={channelAccess.capabilities.readHistory} label={t("settings.agents.agents.readChannelHistory")} disabled={editor.archivedMode} onChange={(checked) => updateAccessChannel(channelAccess.channelId, (channel) => ({ ...channel, capabilities: { ...channel.capabilities, readHistory: checked }, historyBoundary: { kind: "entire" } }))} /><span><strong>{t("settings.agents.agents.readChannelHistory")}</strong><small>{t("settings.agents.agents.readHistoryDescription")}</small></span></label>
+      <label><Checkbox checked={channelAccess.capabilities.participate} label={t("settings.agents.agents.takeAssignments")} disabled={editor.archivedMode} onChange={(checked) => updateAccessChannel(channelAccess.channelId, (channel) => ({ ...channel, capabilities: { ...channel.capabilities, participate: checked } }))} /><span><strong>{t("settings.agents.agents.takeAssignments")}</strong><small>{t("settings.agents.agents.participateDescription")}</small></span></label>
+    </fieldset>
     {#if channelAccess.capabilities.readHistory}
       <div class="form-field history-field"><span>{t("settings.agents.agents.history")}</span><Select inline class="w-full" value={channelAccess.historyBoundary.kind} options={historyOptions} ariaLabel={t("settings.agents.agents.history")} disabled={editor.archivedMode} onChange={(value) => updateAccessChannel(channelAccess.channelId, (channel) => ({ ...channel, historyBoundary: value === "fromGrant" ? { kind: "fromGrant" } : { kind: "entire" } }))} /></div>
     {/if}
-    {#if preset === "custom"}
-      <fieldset class="capability-switches" disabled={editor.archivedMode}>
-        <legend>{t("settings.agents.agents.channelCapabilities")}</legend>
-        <div><Checkbox checked={channelAccess.capabilities.readHistory} label={t("settings.agents.agents.readHistory")} disabled={editor.archivedMode} onChange={(checked) => updateAccessChannel(channelAccess.channelId, (channel) => ({ ...channel, capabilities: { ...channel.capabilities, readHistory: checked }, historyBoundary: { kind: "entire" } }))} /><span><strong>{t("settings.agents.agents.readHistory")}</strong><small>{t("settings.agents.agents.readHistoryDescription")}</small></span></div>
-        <div><Checkbox checked={channelAccess.capabilities.participate} label={t("settings.agents.agents.participate")} disabled={editor.archivedMode} onChange={(checked) => updateAccessChannel(channelAccess.channelId, (channel) => ({ ...channel, capabilities: { ...channel.capabilities, participate: checked } }))} /><span><strong>{t("settings.agents.agents.participate")}</strong><small>{t("settings.agents.agents.participateDescription")}</small></span></div>
-      </fieldset>
-    {/if}
-    {#if selectedProfile?.latestRevision.maximumFolderCapability !== "none"}
+    {#if channelFolders.length > 0}
       <fieldset class="folder-access" disabled={editor.archivedMode}>
         <legend>{t("settings.agents.agents.foldersForChannel")}</legend>
-        {#each foldersForChannel(channelAccess.channelId) as folderRead (folderRead.workingFolder.id)}
+        {#each channelFolders as folderRead (folderRead.workingFolder.id)}
           {@const grant = channelAccess.folderGrants.find((entry) => entry.workingFolderId === folderRead.workingFolder.id)}
+          {@const toggles = folderAccessToggles(grant?.capability ?? "none")}
           <div class="folder-row">
-            <Checkbox checked={Boolean(grant)} label={t("settings.agents.agents.allowFolder", folderRead.workingFolder.displayName)} disabled={editor.archivedMode} onChange={(checked) => toggleFolderGrant(channelAccess.channelId, folderRead.workingFolder.id, checked)} />
             <Folder size={14} />
             <span class="folder-name"><strong>{folderRead.workingFolder.displayName}</strong><small data-status={folderRead.bindingStatus}>{t(`settings.agents.agents.binding.${folderRead.bindingStatus}`)}</small></span>
             <div class="folder-controls">
+              <div class="folder-toggles">
+                {#each CHAT_FOLDER_ACCESS_LEVELS as level (level)}
+                  <label class="folder-toggle"><Checkbox checked={toggles[level]} label={t("settings.agents.agents.folderAccessFor", folderAccessLabel(level), folderRead.workingFolder.displayName)} disabled={editor.archivedMode} onChange={(checked) => setFolderAccessLevel(channelAccess.channelId, folderRead.workingFolder.id, level, checked)} /><span>{folderAccessLabel(level)}</span></label>
+                {/each}
+              </div>
               {#if grant}
-                <Select inline class="folder-select" value={grant.capability} options={folderCapabilityOptions(selectedProfile?.latestRevision.maximumFolderCapability ?? "none")} ariaLabel={t("settings.agents.agents.folderCapabilityFor", folderRead.workingFolder.displayName)} onChange={(value) => setFolderCapability(channelAccess.channelId, folderRead.workingFolder.id, value as ChatFolderCapability)} />
                 {#if advancedChannelIds.has(channelAccess.channelId)}<Select inline class="approval-select" value={grant.runtimeApprovalOverride ?? "inherit"} options={folderRuntimeOptions} ariaLabel={t("settings.agents.agents.folderRuntimeApprovalFor", folderRead.workingFolder.displayName)} onChange={(value) => setFolderRuntimeApproval(channelAccess.channelId, folderRead.workingFolder.id, value === "inherit" ? null : value as ChatRuntimeApprovalPolicy)} />{/if}
                 <label class="default-target"><input type="radio" name={`default-${channelAccess.channelId}`} checked={grant.isDefault} onchange={() => setDefaultFolder(channelAccess.channelId, folderRead.workingFolder.id)} />{t("settings.agents.agents.defaultTarget")}</label>
               {/if}
@@ -793,7 +699,7 @@
                       aria-label={t("settings.agents.agents.configureChannelAccess")}
                       aria-haspopup="dialog"
                       aria-expanded={accessPickerOpen}
-                      disabled={editor.loadingAccess || editor.archivedMode || editor.accessProfiles.length === 0}
+                      disabled={editor.loadingAccess || editor.archivedMode}
                       onclick={() => { accessPickerOpen = !accessPickerOpen; }}
                     >
                       <span>{t("settings.agents.agents.configureChannelAccessAction")}</span>
@@ -809,42 +715,27 @@
                             <div class="access-summary-project">
                               <h6 use:overflowTooltip={summaryProject.name}>{summaryProject.name}</h6>
                               {#each summaryProject.channels as summaryChannel (summaryChannel.channel.id)}
-                                {@const hasAdditionalAccess = channelHasAdditionalAccess(summaryChannel.access)}
                                 <div class="access-summary-channel">
                                   <div class="access-summary-row">
-                                    {#if hasAdditionalAccess}
-                                      <button
-                                        type="button"
-                                        class="access-channel-toggle"
-                                        aria-label={t("settings.agents.agents.editChannelAccess")}
-                                        aria-expanded={expandedAccessChannelId === summaryChannel.channel.id}
-                                        onclick={() => {
-                                          expandedAccessChannelId = expandedAccessChannelId === summaryChannel.channel.id
-                                            ? null
-                                            : summaryChannel.channel.id;
-                                        }}
-                                      >
-                                        <ChevronRight size={12} class={expandedAccessChannelId === summaryChannel.channel.id ? "expanded" : undefined} />
-                                        <strong use:overflowTooltip={summaryChannel.channel.name}>#{summaryChannel.channel.name}</strong>
-                                      </button>
-                                    {:else}
-                                      <strong class="access-channel-name" use:overflowTooltip={summaryChannel.channel.name}>#{summaryChannel.channel.name}</strong>
-                                    {/if}
+                                    <button
+                                      type="button"
+                                      class="access-channel-toggle"
+                                      aria-label={t("settings.agents.agents.editChannelAccess")}
+                                      aria-expanded={expandedAccessChannelId === summaryChannel.channel.id}
+                                      onclick={() => {
+                                        expandedAccessChannelId = expandedAccessChannelId === summaryChannel.channel.id
+                                          ? null
+                                          : summaryChannel.channel.id;
+                                      }}
+                                    >
+                                      <ChevronRight size={12} class={expandedAccessChannelId === summaryChannel.channel.id ? "expanded" : undefined} />
+                                      <strong use:overflowTooltip={summaryChannel.channel.name}>#{summaryChannel.channel.name}</strong>
+                                    </button>
                                     <div class="channel-primary-control">
                                       <ChatChannelScopeControls channels={[summaryChannel.access]} disabled={editor.archivedMode} onPresetChange={(preset) => setChannelPreset(summaryChannel.channel.id, preset)} />
                                     </div>
-                                    <div class="channel-primary-control work-access-control">
-                                      <ChatControlMenu
-                                        value={summaryChannel.access.accessProfileId}
-                                        options={accessProfileOptions}
-                                        ariaLabel={t("settings.agents.agents.workAccess")}
-                                        onChange={(profileId) => setChannelAccessProfile(summaryChannel.channel.id, profileId)}
-                                        disabled={editor.archivedMode}
-                                        showTooltip={false}
-                                      />
-                                    </div>
                                   </div>
-                                  {#if hasAdditionalAccess && expandedAccessChannelId === summaryChannel.channel.id}
+                                  {#if expandedAccessChannelId === summaryChannel.channel.id}
                                     <div class="access-summary-details">
                                       {@render channelAdditionalDetails(summaryChannel.access)}
                                     </div>
@@ -883,7 +774,7 @@
     anchor={accessPickerTriggerElement}
     channels={activeNavigationChannels}
     {selectedChannelIds}
-    disabled={editor.archivedMode || editor.accessProfiles.length === 0}
+    disabled={editor.archivedMode}
     onSelectionChange={handleChannelSelection}
     onClose={closeAccessPicker}
   />
@@ -982,8 +873,10 @@
   .capability-switches span { display:grid; }
   .capability-switches strong { font-size:calc(0.68rem * var(--type-scale)); }
   .capability-switches small { margin-top:0.12rem; color:var(--muted-foreground); font-size:calc(0.62rem * var(--type-scale)); line-height:0.9rem; }
-  .folder-row { display:grid; min-height:2.65rem; grid-template-columns:auto auto minmax(8rem,1fr) auto; align-items:center; gap:0.5rem; padding:0.35rem 0.2rem; }
+  .folder-row { display:grid; min-height:2.65rem; grid-template-columns:auto minmax(8rem,1fr) auto; align-items:center; gap:0.5rem; padding:0.35rem 0.2rem; }
   .folder-controls { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:0.4rem; }
+  .folder-toggles { display:flex; flex-wrap:wrap; align-items:center; gap:0.2rem 0.6rem; }
+  .folder-toggle { display:flex; align-items:center; gap:0.3rem; color:var(--muted-foreground); font-size:calc(0.62rem * var(--type-scale)); white-space:nowrap; }
   .folder-name { display:grid; min-width:0; }
   .folder-name strong { overflow:hidden; font-size:calc(0.68rem * var(--type-scale)); text-overflow:ellipsis; white-space:nowrap; }
   .folder-name small { color:var(--muted-foreground); font-size:calc(0.6rem * var(--type-scale)); }
@@ -994,7 +887,7 @@
   .editor-footer > div { display:flex; min-width:0; align-items:center; gap:0.5rem; }
   .field-error { color:var(--destructive); font-size:calc(0.65rem * var(--type-scale)); }
   .empty-detail { display:grid; height:100%; place-items:center; align-content:center; gap:0.5rem; color:var(--muted-foreground); font-size:calc(0.73rem * var(--type-scale)); }
-  @media (max-width:900px) { .field-grid.compact { grid-template-columns:repeat(2,minmax(0,1fr)); }.folder-row { grid-template-columns:auto auto minmax(7rem,1fr); }.folder-controls { grid-column:3; justify-content:flex-start; } }
+  @media (max-width:900px) { .field-grid.compact { grid-template-columns:repeat(2,minmax(0,1fr)); }.folder-row { grid-template-columns:auto minmax(7rem,1fr); }.folder-controls { grid-column:2; justify-content:flex-start; } }
   @media (max-width:700px) { .directory-panel { border-right:0; border-bottom:1px solid var(--border); }.directory-list { grid-template-columns:repeat(auto-fill,minmax(11rem,1fr)); }.field-grid,.field-grid.compact,.capability-switches { grid-template-columns:1fr; }.capability-switches legend { grid-column:auto; }.conflict-panel { grid-template-columns:1fr; }.conflict-actions { justify-content:stretch; }.conflict-actions button { flex:1; }.editor-footer { align-items:stretch; flex-direction:column; }.editor-footer > div,.save-area { justify-content:space-between; }.save-area .primary-button { flex:1; } }
   @media (pointer:coarse) { .conflict-actions button { min-height:44px; } }
 
@@ -1033,13 +926,12 @@
   .access-summary-project { display:grid; gap:0.05rem; padding-left:0.55rem; }
   .access-summary-project > h6 { min-width:0; overflow:hidden; margin-bottom:0.18rem; color:var(--foreground); font-size:calc(0.656667rem * var(--type-scale)); font-weight:600; text-overflow:ellipsis; white-space:nowrap; }
   .access-summary-channel { display:grid; min-width:0; }
-  .access-summary-row { display:grid; min-width:0; min-height:1.7rem; grid-template-columns:minmax(6rem,1fr) minmax(0,8.75rem) minmax(0,8.75rem); align-items:center; gap:0.28rem; }
+  .access-summary-row { display:grid; min-width:0; min-height:1.7rem; grid-template-columns:minmax(6rem,1fr) minmax(0,8.75rem); align-items:center; gap:0.28rem; }
   .access-channel-toggle { display:flex; min-width:0; height:1.55rem; align-items:center; gap:0.28rem; overflow:hidden; border-radius:0.35rem; color:var(--muted-foreground); text-align:left; }
   .access-channel-toggle:hover { color:var(--foreground); }
   .access-channel-toggle :global(svg) { flex:0 0 auto; transition:transform 120ms ease; }
   .access-channel-toggle :global(svg.expanded) { transform:rotate(90deg); }
-  .access-channel-toggle strong,.access-channel-name { min-width:0; overflow:hidden; color:inherit; font-size:calc(0.696667rem * var(--type-scale)); font-weight:600; text-overflow:ellipsis; white-space:nowrap; }
-  .access-channel-name { display:block; padding-left:1.03rem; color:var(--muted-foreground); }
+  .access-channel-toggle strong { min-width:0; overflow:hidden; color:inherit; font-size:calc(0.696667rem * var(--type-scale)); font-weight:600; text-overflow:ellipsis; white-space:nowrap; }
   .channel-primary-control { min-width:0; }
   .channel-primary-control :global(.scope-controls) { width:100%; justify-content:stretch; }
   .channel-primary-control :global(.scope-control) { width:100%; }
@@ -1050,8 +942,8 @@
   .access-summary-empty { padding-inline:0.25rem; color:var(--muted-foreground); font-size:calc(0.66rem * var(--type-scale)); }
   .access-details { border:0; }
   .capability-switches { gap:0; }
-  .capability-switches > div { display:grid; grid-template-columns:auto minmax(0,1fr); gap:0.5rem; border:0; border-bottom:1px solid color-mix(in srgb,var(--border) 55%,transparent); border-radius:0; padding:0.55rem 0.15rem; }
-  .folder-row { grid-template-columns:auto auto minmax(7rem,1fr) auto; }
+  .capability-switches > label { display:grid; grid-template-columns:auto minmax(0,1fr); gap:0.5rem; border:0; border-bottom:1px solid color-mix(in srgb,var(--border) 55%,transparent); border-radius:0; padding:0.55rem 0.15rem; }
+  .folder-row { grid-template-columns:auto minmax(7rem,1fr) auto; }
   .disclosure-button { display:inline-flex; width:max-content; align-items:center; gap:0.3rem; color:var(--muted-foreground); font-size:calc(0.68rem * var(--type-scale)); font-weight:600; }
   .disclosure-button:hover { color:var(--foreground); }
   .disclosure-button :global(svg) { transition:transform 120ms ease; }
@@ -1062,5 +954,5 @@
   .primary-button,.secondary-button { white-space:nowrap; }
   .agent-settings input[type="radio"] { appearance:none; width:0.9rem; height:0.9rem; border:1px solid var(--border); border-radius:50%; background:var(--background); }
   .agent-settings input[type="radio"]:checked { border:0.25rem solid var(--primary); }
-  @media (max-width:700px) { .agent-settings { grid-template-rows:auto minmax(0,1fr); }.directory-layout { grid-template-columns:1fr; grid-template-rows:minmax(7rem,28%) minmax(0,1fr); }.directory-panel { border-bottom:1px solid var(--border); padding:0 0 0.75rem; }.detail-panel { border-top:0; border-left:0; padding:0.8rem 0 0; }.directory-list { grid-template-columns:repeat(auto-fill,minmax(11rem,1fr)); }.field-grid,.field-grid.compact,.capability-switches { grid-template-columns:1fr; }.folder-row { grid-template-columns:auto auto minmax(7rem,1fr); }.folder-controls { grid-column:3; justify-content:flex-start; }.editor-footer { padding-right:0; } }
+  @media (max-width:700px) { .agent-settings { grid-template-rows:auto minmax(0,1fr); }.directory-layout { grid-template-columns:1fr; grid-template-rows:minmax(7rem,28%) minmax(0,1fr); }.directory-panel { border-bottom:1px solid var(--border); padding:0 0 0.75rem; }.detail-panel { border-top:0; border-left:0; padding:0.8rem 0 0; }.directory-list { grid-template-columns:repeat(auto-fill,minmax(11rem,1fr)); }.field-grid,.field-grid.compact,.capability-switches { grid-template-columns:1fr; }.folder-row { grid-template-columns:auto minmax(7rem,1fr); }.folder-controls { grid-column:2; justify-content:flex-start; }.editor-footer { padding-right:0; } }
 </style>

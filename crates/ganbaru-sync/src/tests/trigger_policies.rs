@@ -447,19 +447,6 @@ const CLASSIFIED_TRIGGERS: &[(&str, TriggerClass)] = &[
         "calendar_event_archive_import_objects_sync_key_update",
         SYNC_KEY,
     ),
-    (
-        "chat_access_profile_builtin_protected",
-        TriggerClass::Net("a forged change can edit a built-in profile"),
-    ),
-    ("chat_access_profile_builtin_revision_protected", CROSS_ROW),
-    (
-        "chat_access_profile_revision_immutable_delete",
-        IMMUTABLE_ROW,
-    ),
-    (
-        "chat_access_profile_revision_immutable_update",
-        IMMUTABLE_ROW,
-    ),
     ("chat_channels_conversation_kind_insert", CROSS_ROW),
     (
         "chat_communication_message_revision_immutable_update",

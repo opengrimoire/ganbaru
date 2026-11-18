@@ -58,9 +58,9 @@ VALUES ('conversation-general', 'participant:local-owner', 'membership-owner', '
        ('conversation-general', 'participant-agent', 'membership-agent', 'member',
         '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_agent_channel_memberships
-    (conversation_id, agent_id, sync_key, access_profile_id, created_at, updated_at)
-VALUES ('conversation-general', 'participant-agent', 'channel-membership-agent',
-        'access-profile:edit-files', '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
+    (conversation_id, agent_id, sync_key, read_history, participate, created_at, updated_at)
+VALUES ('conversation-general', 'participant-agent', 'channel-membership-agent', 1, 1,
+        '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_agent_working_folder_grants
     (conversation_id, agent_id, project_id, working_folder_id, sync_key, capability, created_at)
 VALUES ('conversation-general', 'participant-agent', 'project-chat', 'folder-managed',
@@ -98,11 +98,11 @@ VALUES ('assignment-1', 'reply-thread', 'participant-agent', 'item-root', 'worki
         '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_assignment_authorization_revisions
     (id, assignment_id, revision, requester_participant_id, agent_policy_revision_id,
-     agent_access_revision, destination_conversation_id, access_profile_revision_id,
+     agent_access_revision, destination_conversation_id,
      execution_environment_id, working_folder_id, resolved_runtime_approval_policy, scope_digest,
      decision_state, created_at)
 VALUES ('authorization-1', 'assignment-1', 1, 'participant:local-owner', 'policy-1', 1,
-        'conversation-general', 'access-profile-revision:edit-files:1',
+        'conversation-general',
         'current-folder:folder-managed', 'folder-managed', 'ask',
         '1111111111111111111111111111111111111111111111111111111111111111', 'allowed',
         '2026-10-23T00:00:00.000Z');
@@ -197,11 +197,11 @@ VALUES ('scheduled-1', 'execution_environment', 'Scratch', 'Scratch',
         9, 12, 'scratch-environment', 2);
 INSERT INTO chat_assignment_authorization_revisions
     (id, assignment_id, revision, requester_participant_id, agent_policy_revision_id,
-     agent_access_revision, destination_conversation_id, access_profile_revision_id,
+     agent_access_revision, destination_conversation_id,
      execution_environment_id, working_folder_id, resolved_runtime_approval_policy, scope_digest,
      decision_state, created_at)
 VALUES ('authorization-scratch', 'assignment-1', 2, 'participant:local-owner', 'policy-1', 1,
-        'conversation-general', 'access-profile-revision:edit-files:1', 'scratch-environment', NULL,
+        'conversation-general', 'scratch-environment', NULL,
         'ask', '2222222222222222222222222222222222222222222222222222222222222222', 'allowed',
         '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_threads

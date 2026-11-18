@@ -1,6 +1,5 @@
 import {
   CHAT_ACCESS_ISSUE_CODES,
-  CHAT_ACCESS_PROFILE_BUILTIN_KEYS,
   CHAT_AGENT_RUN_ATTEMPT_REASONS,
   CHAT_AGENT_RUN_HANDOFF_REASONS,
   CHAT_ASSIGNMENT_INPUT_DELIVERY_STATES,
@@ -26,9 +25,6 @@ import {
   SAFETY_MODES,
   type ChatAgentRunRead,
   type ChatAssignmentInputRead,
-  type ChatAccessProfileRead,
-  type ChatAccessProfileImpactPreviewRead,
-  type ChatAccessProfileRevision,
   type ChatAiAgentRead,
   type ChatAssignmentAcceptanceFolderRead,
   type ChatAssignmentDelegationRead,
@@ -228,17 +224,6 @@ function parseChatChannelRosterAiSummary(
   const record = readRecord(value, label);
   const capabilities = readRecord(record.capabilities, `${label}.capabilities`);
   return {
-    accessProfileId: readIdentifier(record.accessProfileId, `${label}.accessProfileId`),
-    accessProfileRevision: readNonNegativeSafeInteger(
-      record.accessProfileRevision,
-      `${label}.accessProfileRevision`,
-    ),
-    accessProfileBuiltinKey: readNullable(
-      record.accessProfileBuiltinKey,
-      `${label}.accessProfileBuiltinKey`,
-      (entry, entryLabel) => readEnum(entry, CHAT_ACCESS_PROFILE_BUILTIN_KEYS, entryLabel),
-    ),
-    accessProfileName: readString(record.accessProfileName, `${label}.accessProfileName`),
     capabilities: {
       readHistory: readBoolean(capabilities.readHistory, `${label}.capabilities.readHistory`),
       participate: readBoolean(capabilities.participate, `${label}.capabilities.participate`),
@@ -304,15 +289,6 @@ export function parseChatAgentChannelAccess(
     projectId: readIdentifier(record.projectId, `${label}.projectId`),
     groupId: readNullable(record.groupId, `${label}.groupId`, readIdentifier),
     channelName: readString(record.channelName, `${label}.channelName`),
-    accessProfileId: readIdentifier(record.accessProfileId, `${label}.accessProfileId`),
-    accessProfileRevisionId: readIdentifier(
-      record.accessProfileRevisionId,
-      `${label}.accessProfileRevisionId`,
-    ),
-    accessProfileRevision: readNonNegativeSafeInteger(
-      record.accessProfileRevision,
-      `${label}.accessProfileRevision`,
-    ),
     capabilities: {
       readHistory: readBoolean(capabilities.readHistory, `${label}.capabilities.readHistory`),
       participate: readBoolean(capabilities.participate, `${label}.capabilities.participate`),
@@ -354,74 +330,6 @@ export function parseChatAgentAccess(
   };
 }
 
-export function parseChatAccessProfileRevision(
-  value: unknown,
-  label = "Chat access profile revision",
-): ChatAccessProfileRevision {
-  const record = readRecord(value, label);
-  return {
-    id: readIdentifier(record.id, `${label}.id`),
-    accessProfileId: readIdentifier(record.accessProfileId, `${label}.accessProfileId`),
-    revision: readNonNegativeSafeInteger(record.revision, `${label}.revision`),
-    defaultChannelCapabilities: (() => {
-      const capabilities = readRecord(
-        record.defaultChannelCapabilities,
-        `${label}.defaultChannelCapabilities`,
-      );
-      return {
-        readHistory: readBoolean(
-          capabilities.readHistory,
-          `${label}.defaultChannelCapabilities.readHistory`,
-        ),
-        participate: readBoolean(
-          capabilities.participate,
-          `${label}.defaultChannelCapabilities.participate`,
-        ),
-      };
-    })(),
-    defaultHistoryBoundary: parseChatHistoryBoundary(
-      record.defaultHistoryBoundary,
-      `${label}.defaultHistoryBoundary`,
-    ),
-    maximumFolderCapability: readEnum(
-      record.maximumFolderCapability,
-      CHAT_FOLDER_CAPABILITIES,
-      `${label}.maximumFolderCapability`,
-    ),
-    createdAt: readUtcTimestamp(record.createdAt, `${label}.createdAt`),
-  };
-}
-
-export function parseChatAccessProfile(
-  value: unknown,
-  label = "Chat access profile",
-): ChatAccessProfileRead {
-  const record = readRecord(value, label);
-  return {
-    id: readIdentifier(record.id, `${label}.id`),
-    builtinKey: readNullable(
-      record.builtinKey,
-      `${label}.builtinKey`,
-      (entry, entryLabel) => readEnum(
-        entry,
-        CHAT_ACCESS_PROFILE_BUILTIN_KEYS,
-        entryLabel,
-      ),
-    ),
-    displayName: readString(record.displayName, `${label}.displayName`),
-    latestRevision: parseChatAccessProfileRevision(record.latestRevision, `${label}.latestRevision`),
-    revision: readNonNegativeSafeInteger(record.revision, `${label}.revision`),
-    archivedAt: readNullable(record.archivedAt, `${label}.archivedAt`, readUtcTimestamp),
-  };
-}
-
-export function parseChatAccessProfiles(
-  value: unknown,
-  label = "Chat access profiles",
-): ChatAccessProfileRead[] {
-  return readArray(value, label, parseChatAccessProfile);
-}
-
 function parseChatAgentAccessPreviewIssue(
   value: unknown,
   label: string,
@@ -444,34 +352,6 @@ export function parseChatAgentAccessPreview(
     isExpansion: readBoolean(record.isExpansion, `${label}.isExpansion`),
     addedChannelIds: readArray(record.addedChannelIds, `${label}.addedChannelIds`, readIdentifier),
     removedChannelIds: readArray(record.removedChannelIds, `${label}.removedChannelIds`, readIdentifier),
-    issues: readArray(record.issues, `${label}.issues`, parseChatAgentAccessPreviewIssue),
-  };
-}
-
-export function parseChatAccessProfileImpactPreview(
-  value: unknown,
-  label = "Chat access profile impact preview",
-): ChatAccessProfileImpactPreviewRead {
-  const record = readRecord(value, label);
-  return {
-    accessProfileId: readIdentifier(record.accessProfileId, `${label}.accessProfileId`),
-    currentRevision: parseChatAccessProfileRevision(record.currentRevision, `${label}.currentRevision`),
-    isExpansion: readBoolean(record.isExpansion, `${label}.isExpansion`),
-    isReduction: readBoolean(record.isReduction, `${label}.isReduction`),
-    affectedAgentIds: readArray(
-      record.affectedAgentIds,
-      `${label}.affectedAgentIds`,
-      readIdentifier,
-    ),
-    affectedChannelIds: readArray(
-      record.affectedChannelIds,
-      `${label}.affectedChannelIds`,
-      readIdentifier,
-    ),
-    activeAuthorizationCount: readNonNegativeSafeInteger(
-      record.activeAuthorizationCount,
-      `${label}.activeAuthorizationCount`,
-    ),
     issues: readArray(record.issues, `${label}.issues`, parseChatAgentAccessPreviewIssue),
   };
 }

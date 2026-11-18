@@ -292,8 +292,7 @@ async fn require_edit_folder_grant(
     working_folder_id: &ProjectWorkingFolderId,
 ) -> ChatResult<()> {
     let row = sqlx::query(
-        "SELECT grant_row.capability, revision.maximum_folder_capability,
-                grant_row.capability_inherits_profile
+        "SELECT grant_row.capability
          FROM chat_channels channel
          JOIN chat_conversations conversation ON conversation.id = channel.conversation_id
          JOIN chat_conversation_memberships membership
@@ -303,9 +302,6 @@ async fn require_edit_folder_grant(
            ON access.conversation_id = membership.conversation_id
           AND access.agent_id = membership.participant_id
           AND access.removed_at IS NULL
-         JOIN chat_access_profiles profile ON profile.id = access.access_profile_id
-         JOIN chat_access_profile_effective_revisions revision
-           ON revision.access_profile_id = profile.id
          JOIN chat_agent_working_folder_grants grant_row
            ON grant_row.conversation_id = membership.conversation_id
           AND grant_row.agent_id = membership.participant_id
@@ -331,23 +327,10 @@ async fn require_edit_folder_grant(
             false,
         )
     })?;
-    let grant_rank = folder_capability_rank(
+    let effective_rank = folder_capability_rank(
         &row.try_get::<String, _>("capability")
             .map_err(persistence_error)?,
     )?;
-    let profile_rank = folder_capability_rank(
-        &row.try_get::<String, _>("maximum_folder_capability")
-            .map_err(persistence_error)?,
-    )?;
-    let effective_rank = if row
-        .try_get::<i64, _>("capability_inherits_profile")
-        .map_err(persistence_error)?
-        != 0
-    {
-        profile_rank
-    } else {
-        grant_rank.min(profile_rank)
-    };
     if effective_rank < 2 {
         return Err(ChatError::new(
             ChatErrorCode::Permission,
@@ -562,22 +545,19 @@ mod tests {
         AGENT, GENERATION, destination_conversation, pool_with_scratch_assignment,
     };
 
-    /// Gives the scratch agent edit access through the build profile, grants it the project's
-    /// managed folder in the default channel, and stores what only a sync apply can: a channel of
-    /// the same conversation whose replicated project was rewritten to another project, with a
-    /// grant for that project's folder.
+    /// Grants the scratch agent edit access to the project's managed folder in the default
+    /// channel, and stores what only a sync apply can: a channel of the same conversation whose
+    /// replicated project was rewritten to another project, with a grant for that project's
+    /// folder.
     async fn pool_with_foreign_channel_grant() -> SqlitePool {
         let pool = pool_with_scratch_assignment(AGENT).await;
         let conversation = destination_conversation();
         sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "UPDATE chat_agent_channel_memberships
-             SET access_profile_id = 'access-profile:build-and-test'
-             WHERE conversation_id = '{conversation}' AND agent_id = '{AGENT}';
-             INSERT INTO chat_agent_working_folder_grants
+            "INSERT INTO chat_agent_working_folder_grants
                  (conversation_id, agent_id, project_id, working_folder_id, sync_key,
-                  capability, capability_inherits_profile, is_default, created_at)
+                  capability, is_default, created_at)
              VALUES ('{conversation}', '{AGENT}', 'project-chat', 'workspace-1',
-                     'grant:honest', 'edit', 0, 1, '2026-09-18T12:00:00.000Z');
+                     'grant:honest', 'edit', 1, '2026-09-18T12:00:00.000Z');
              UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
              INSERT INTO projects (id, group_id, name, order_key)
              VALUES ('project:foreign', 'group-chat', 'Foreign', 'a2');
@@ -593,9 +573,9 @@ mod tests {
              WHERE id = 'channel:foreign';
              INSERT INTO chat_agent_working_folder_grants
                  (conversation_id, agent_id, project_id, working_folder_id, sync_key,
-                  capability, capability_inherits_profile, is_default, created_at)
+                  capability, is_default, created_at)
              VALUES ('{conversation}', '{AGENT}', 'project:foreign', 'folder:foreign',
-                     'grant:foreign', 'edit', 0, 0, '2026-09-18T12:00:00.000Z');
+                     'grant:foreign', 'edit', 0, '2026-09-18T12:00:00.000Z');
              UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1;"
         )))
         .execute(&pool)

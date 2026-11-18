@@ -792,17 +792,10 @@ pub(super) async fn read_dispatch_row(
            ON channel_access.conversation_id = membership.conversation_id
           AND channel_access.agent_id = membership.participant_id
           AND channel_access.removed_at IS NULL
-         JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
-         JOIN chat_access_profile_effective_revisions profile_revision
-           ON profile_revision.access_profile_id = profile.id
          JOIN chat_assignment_dispatch_jobs job ON job.assignment_id = assignment.id
          WHERE assignment.id = ?
            AND (authorization.execution_environment_id IS NULL OR environment.id IS NOT NULL)
-           AND CASE
-                 WHEN channel_access.participate_inherits_profile = 1
-                   THEN profile_revision.default_participate
-                 ELSE channel_access.participate AND profile_revision.default_participate
-               END = 1",
+           AND channel_access.participate = 1",
     )
     .bind(assignment_id.as_str())
     .fetch_optional(pool)
@@ -1105,31 +1098,15 @@ async fn require_live_folder_target(
              ON channel_access.conversation_id = live.conversation_id
             AND channel_access.agent_id = live.agent_id
             AND channel_access.removed_at IS NULL
-           JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
-           JOIN chat_access_profile_effective_revisions profile_revision
-             ON profile_revision.access_profile_id = profile.id
            WHERE frozen.authorization_revision_id = ?
              AND frozen.working_folder_id = ?
              AND frozen.is_execution_target = 1
              AND CASE frozen.capability
                    WHEN 'read' THEN 1 WHEN 'edit' THEN 2
                    WHEN 'execute' THEN 3 WHEN 'publish' THEN 4 ELSE 5
-                 END <= CASE
-                   WHEN live.capability_inherits_profile = 1 THEN
-                     CASE profile_revision.maximum_folder_capability
-                       WHEN 'none' THEN 0 WHEN 'read' THEN 1 WHEN 'edit' THEN 2
-                       WHEN 'execute' THEN 3 WHEN 'publish' THEN 4 ELSE 0
-                     END
-                   ELSE min(
-                     CASE live.capability
-                       WHEN 'none' THEN 0 WHEN 'read' THEN 1 WHEN 'edit' THEN 2
-                       WHEN 'execute' THEN 3 WHEN 'publish' THEN 4 ELSE 0
-                     END,
-                     CASE profile_revision.maximum_folder_capability
-                       WHEN 'none' THEN 0 WHEN 'read' THEN 1 WHEN 'edit' THEN 2
-                       WHEN 'execute' THEN 3 WHEN 'publish' THEN 4 ELSE 0
-                     END
-                   )
+                 END <= CASE live.capability
+                   WHEN 'none' THEN 0 WHEN 'read' THEN 1 WHEN 'edit' THEN 2
+                   WHEN 'execute' THEN 3 WHEN 'publish' THEN 4 ELSE 0
                  END
          )",
     )
@@ -1327,9 +1304,6 @@ async fn prepare_assignment_input(
            ON channel_access.conversation_id = membership.conversation_id
           AND channel_access.agent_id = membership.participant_id
           AND channel_access.removed_at IS NULL
-         JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
-         JOIN chat_access_profile_effective_revisions profile_revision
-           ON profile_revision.access_profile_id = profile.id
          JOIN chat_work_assignment_inputs input ON input.assignment_id = run.assignment_id
          JOIN chat_communication_messages message ON message.item_id = input.message_item_id
          JOIN chat_communication_message_revisions_numbered revision
@@ -1337,11 +1311,7 @@ async fn prepare_assignment_input(
          WHERE run.assignment_id = ? AND input.message_item_id = ?
            AND run.state = 'working' AND input.delivery_state = 'pending' AND input.held = 0
            AND input.routing_kind = 'steer'
-           AND CASE
-                 WHEN channel_access.participate_inherits_profile = 1
-                   THEN profile_revision.default_participate
-                 ELSE channel_access.participate AND profile_revision.default_participate
-               END = 1
+           AND channel_access.participate = 1
          ORDER BY run.run_ordinal DESC LIMIT 1",
     )
     .bind(assignment_id.as_str())

@@ -1,12 +1,10 @@
 //! Chat adapter: the value checks that mirror the Chat identity and policy table checks, and the
 //! priorities of their coupled groups.
 //!
-//! An agent's current policy and an access profile's current revision are coupled with a copy
-//! of the revision's restrictiveness. Concurrent edits keep the more restrictive one: asking
-//! for approval outranks approving for the user, which outranks full access, which outranks a
-//! custom mode that defers to the provider, and a lower maximum folder capability outranks a
-//! higher one. An edit made after
-//! seeing the other still wins by causality.
+//! An agent's current policy is coupled with a copy of the revision's safety mode. Concurrent
+//! edits keep the more restrictive one: asking for approval outranks approving for the user,
+//! which outranks full access, which outranks a custom mode that defers to the provider. An
+//! edit made after seeing the other still wins by causality.
 //!
 //! Conversation memberships, AI channel memberships, and working folder grants keep the narrower
 //! access among concurrent edits: removal and revocation first, then the stricter approval
@@ -23,7 +21,6 @@
 //! outranks the other active states.
 
 use ganbaru_sync_contracts::bounds::{MAX_DEVICE_ID_BYTES, MAX_ORDER_KEY_BYTES};
-use ganbaru_sync_contracts::builtin_profiles::{BUILTIN_ACCESS_PROFILES, builtin_profile_key};
 use ganbaru_sync_contracts::chat_push_approvals::{
     MAX_PUSH_APPROVAL_BRANCH_BYTES, MAX_PUSH_APPROVAL_URL_BYTES,
 };
@@ -43,14 +40,14 @@ use crate::manifest::vault::chat::{
     CHANNELS_TABLE, CONVERSATION_CURSORS_TABLE, CONVERSATIONS_TABLE, ENVIRONMENT_TARGETS_TABLE,
     FOLDER_GRANTS_TABLE, FOLDER_TARGETS_TABLE, INPUTS_TABLE, ITEMS_TABLE, MEMBERSHIPS_TABLE,
     MESSAGES_TABLE, PARTICIPANT_TARGETS_TABLE, PARTICIPANTS_TABLE, PATH_TARGETS_TABLE,
-    POLICY_REVISIONS_TABLE, PROFILE_REVISIONS_TABLE, PROFILES_TABLE, PUSH_APPROVALS_TABLE,
-    RECURRENCES_TABLE, REFERENCES_TABLE, REPLY_CURSORS_TABLE, REPLY_THREADS_TABLE, REVISIONS_TABLE,
-    SCHEDULED_ATTACHMENT_REFERENCES, SCHEDULED_REFERENCES, SCHEDULED_TABLE, SEMANTIC_UPDATES_TABLE,
-    agent_group, agent_usage_group, assignment_group, channel_group, channel_membership_group,
-    channel_note_group, conversation_group, folder_grant_group, input_group, item_group,
-    membership_group, message_group, participant_group, policy_revision_group, profile_group,
-    profile_revision_group, push_approval_group, read_cursor_group, recurrence_group,
-    reply_thread_group, scheduled_group, semantic_update_group, timeline_group,
+    POLICY_REVISIONS_TABLE, PUSH_APPROVALS_TABLE, RECURRENCES_TABLE, REFERENCES_TABLE,
+    REPLY_CURSORS_TABLE, REPLY_THREADS_TABLE, REVISIONS_TABLE, SCHEDULED_ATTACHMENT_REFERENCES,
+    SCHEDULED_REFERENCES, SCHEDULED_TABLE, SEMANTIC_UPDATES_TABLE, agent_group, agent_usage_group,
+    assignment_group, channel_group, channel_membership_group, channel_note_group,
+    conversation_group, folder_grant_group, input_group, item_group, membership_group,
+    message_group, participant_group, policy_revision_group, push_approval_group,
+    read_cursor_group, recurrence_group, reply_thread_group, scheduled_group,
+    semantic_update_group, timeline_group,
 };
 
 /// Characters of a display name after trimming.
@@ -86,19 +83,9 @@ pub const EFFORTS: [&str; 6] = ["none", "minimal", "low", "medium", "high", "xhi
 pub const SPEEDS: [&str; 2] = ["standard", "fast"];
 /// Interaction modes.
 pub const INTERACTION_MODES: [&str; 1] = ["build"];
-/// Built-in access profile keys.
-pub const BUILTIN_PROFILE_KEYS: [&str; BUILTIN_ACCESS_PROFILES.len()] = {
-    let mut keys = [""; BUILTIN_ACCESS_PROFILES.len()];
-    let mut index = 0;
-    while index < keys.len() {
-        keys[index] = BUILTIN_ACCESS_PROFILES[index].1;
-        index += 1;
-    }
-    keys
-};
-/// History boundaries of an access profile revision.
+/// History boundaries of an AI channel membership.
 pub const HISTORY_BOUNDARIES: [&str; 2] = ["entire", "from_grant"];
-/// Maximum folder capabilities, least restrictive first.
+/// Folder capabilities, least restrictive first.
 pub const FOLDER_CAPABILITIES: [&str; 5] = ["publish", "execute", "edit", "read", "none"];
 /// Characters of a channel name.
 pub const MAX_CHANNEL_NAME_CHARS: usize = 80;
@@ -443,75 +430,6 @@ fn validate_policy_revision(group: GroupId, fields: &[Field]) -> Result<(), Adap
     }
 }
 
-fn validate_profile(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
-    match (group, fields) {
-        (profile_group::CREATED, [builtin, created_at]) => {
-            optional_one_of(builtin, &BUILTIN_PROFILE_KEYS, "chat built-in profile key")?;
-            timestamp(created_at)
-        }
-        (profile_group::NAME, [name]) => {
-            trimmed(name, MAX_DISPLAY_NAME_CHARS, "chat access profile name")
-        }
-        (profile_group::CURRENT, [id, capability]) => current_pair(
-            id,
-            capability,
-            &FOLDER_CAPABILITIES,
-            "chat access profile current revision",
-        ),
-        (profile_group::LIFECYCLE, [archived_at]) => optional_timestamp(archived_at),
-        (profile_group::UPDATED, [at]) => timestamp(at),
-        _ => Err(AdapterError("chat access profile value")),
-    }
-}
-
-/// Refuses a built-in key on any row but the one seeded with it, and a seeded row without its
-/// own key. Custom profiles carry no key.
-fn validate_profile_row(row: &RowKey, groups: &[GroupValue]) -> Result<(), AdapterError> {
-    let claimed = groups
-        .iter()
-        .find(|value| value.group == profile_group::CREATED)
-        .and_then(|value| value.value.fields().first())
-        .and_then(|builtin| match builtin {
-            Field::Text(key) => Some(key.as_str()),
-            _ => None,
-        });
-    if claimed != builtin_profile_key(row.as_str()) {
-        return Err(AdapterError("chat built-in profile identity"));
-    }
-    Ok(())
-}
-
-fn validate_profile_revision(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
-    match (group, fields) {
-        (
-            profile_revision_group::CREATED,
-            [
-                _profile,
-                read_history,
-                participate,
-                boundary,
-                capability,
-                created_at,
-            ],
-        ) => {
-            flag(read_history)?;
-            flag(participate)?;
-            one_of(
-                boundary,
-                &HISTORY_BOUNDARIES,
-                "chat profile history boundary",
-            )?;
-            one_of(
-                capability,
-                &FOLDER_CAPABILITIES,
-                "chat profile folder capability",
-            )?;
-            timestamp(created_at)
-        }
-        _ => Err(AdapterError("chat access profile revision value")),
-    }
-}
-
 fn validate_conversation(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
     match (group, fields) {
         (conversation_group::CREATED, [_project, kind, created_at]) => {
@@ -560,28 +478,17 @@ fn validate_channel_membership(group: GroupId, fields: &[Field]) -> Result<(), A
         (
             channel_membership_group::ACCESS,
             [
-                _profile,
                 read_history,
-                read_history_inherits,
                 participate,
-                participate_inherits,
                 boundary,
-                boundary_inherits,
                 history_from,
                 approval,
                 scratch_approval,
                 removed_at,
             ],
         ) => {
-            for value in [
-                read_history,
-                read_history_inherits,
-                participate,
-                participate_inherits,
-                boundary_inherits,
-            ] {
-                flag(value)?;
-            }
+            flag(read_history)?;
+            flag(participate)?;
             history_pair(boundary, history_from)?;
             optional_one_of(approval, &APPROVAL_POLICIES, "chat approval policy")?;
             optional_one_of(scratch_approval, &APPROVAL_POLICIES, "chat approval policy")?;
@@ -597,13 +504,12 @@ fn validate_channel_membership(group: GroupId, fields: &[Field]) -> Result<(), A
 fn validate_folder_grant(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
     match (group, fields) {
         (folder_grant_group::IDENTITY, [_, _, _]) | (folder_grant_group::EXISTS, []) => Ok(()),
-        (folder_grant_group::GRANT, [capability, inherits, is_default, approval, revoked_at]) => {
+        (folder_grant_group::GRANT, [capability, is_default, approval, revoked_at]) => {
             one_of(
                 capability,
                 &FOLDER_CAPABILITIES,
                 "chat folder grant capability",
             )?;
-            flag(inherits)?;
             flag(is_default)?;
             optional_one_of(approval, &APPROVAL_POLICIES, "chat approval policy")?;
             optional_timestamp(revoked_at)
@@ -1540,11 +1446,6 @@ fn ended(fields: &[Field], index: usize) -> bool {
     !matches!(fields.get(index), None | Some(Field::Null))
 }
 
-/// Whether the inherit flag at `index` is set, so the value beside it comes from the profile.
-fn inherits(fields: &[Field], index: usize) -> bool {
-    matches!(fields.get(index), Some(Field::Integer(1)))
-}
-
 /// A membership removal wins, then demotion to member over promotion to owner.
 fn membership_priority(fields: &[Field]) -> u8 {
     if ended(fields, 1) {
@@ -1556,45 +1457,33 @@ fn membership_priority(fields: &[Field]) -> u8 {
 
 /// A channel removal wins, then the value that clears more of history reading, participation,
 /// and full history, then the stricter channel approval override, then the stricter scratch
-/// approval override.
-///
-/// A capability counts as cleared only when it is set explicitly: an inherited one follows the
-/// profile, which may grant it, and an explicit grant is still capped by the profile, so only
-/// an explicit clear narrows. The access profile itself carries no rank, since its
-/// restrictiveness lives in its revision, so the Chat materialize hook settles concurrent
-/// versions onto the narrowest profile and the strictest resolved parts.
+/// approval override. The Chat materialize hook settles concurrent versions the priority ties
+/// onto the strictest resolved parts.
 fn channel_membership_priority(fields: &[Field]) -> u8 {
-    if ended(fields, 10) {
+    if ended(fields, 6) {
         return ENDED;
     }
     let cleared = [
-        !inherits(fields, 2) && matches!(fields.get(1), Some(Field::Integer(0))),
-        !inherits(fields, 4) && matches!(fields.get(3), Some(Field::Integer(0))),
-        !inherits(fields, 6)
-            && matches!(fields.get(5), Some(Field::Text(text)) if text == "from_grant"),
+        matches!(fields.first(), Some(Field::Integer(0))),
+        matches!(fields.get(1), Some(Field::Integer(0))),
+        matches!(fields.get(2), Some(Field::Text(text)) if text == "from_grant"),
     ]
     .into_iter()
     .filter(|cleared| *cleared)
     .count();
     let cleared = u8::try_from(cleared).unwrap_or(0);
     let approvals =
-        (approval_rank(fields.get(8)) - 1) * APPROVAL_RANKS + (approval_rank(fields.get(9)) - 1);
+        (approval_rank(fields.get(4)) - 1) * APPROVAL_RANKS + (approval_rank(fields.get(5)) - 1);
     1 + cleared * APPROVAL_RANKS * APPROVAL_RANKS + approvals
 }
 
 /// A revocation wins, then the lower folder capability, then the stricter approval override.
-/// An inherited capability follows the profile's maximum, which may be publishing, so it ranks
-/// as the least restrictive capability.
 fn folder_grant_priority(fields: &[Field]) -> u8 {
-    if ended(fields, 4) {
+    if ended(fields, 3) {
         return ENDED;
     }
-    let capability = if inherits(fields, 1) {
-        1
-    } else {
-        restrictiveness(fields.first(), &FOLDER_CAPABILITIES).max(1)
-    };
-    1 + (capability - 1) * APPROVAL_RANKS + (approval_rank(fields.get(3)) - 1)
+    let capability = restrictiveness(fields.first(), &FOLDER_CAPABILITIES).max(1);
+    1 + (capability - 1) * APPROVAL_RANKS + (approval_rank(fields.get(2)) - 1)
 }
 
 /// A revocation wins over a concurrent approval.
@@ -1686,13 +1575,11 @@ impl DomainAdapter for ChatAdapter {
         Ok(Vec::new())
     }
 
-    /// The more restrictive current policy or profile revision wins among concurrent edits.
+    /// The more restrictive current policy wins among concurrent edits.
     fn priority(&self, table: TableId, group: GroupId, value: &Value) -> u8 {
         let copied = value.fields().get(1);
         if table == AGENTS_TABLE && group == agent_group::POLICY {
             restrictiveness(copied, &SAFETY_MODES)
-        } else if table == PROFILES_TABLE && group == profile_group::CURRENT {
-            restrictiveness(copied, &FOLDER_CAPABILITIES)
         } else if table == MEMBERSHIPS_TABLE && group == membership_group::MEMBERSHIP {
             membership_priority(value.fields())
         } else if table == CHANNEL_MEMBERSHIPS_TABLE && group == channel_membership_group::ACCESS {
@@ -1724,8 +1611,6 @@ impl DomainAdapter for ChatAdapter {
     ) -> Result<(), AdapterError> {
         if table == PARTICIPANTS_TABLE {
             validate_participant_row(row, groups)
-        } else if table == PROFILES_TABLE {
-            validate_profile_row(row, groups)
         } else if table == AGENT_USAGE_DAILY_TABLE {
             validate_agent_usage_row(row, groups)
         } else {
@@ -1741,10 +1626,6 @@ impl DomainAdapter for ChatAdapter {
             validate_agent(group, fields)
         } else if table == POLICY_REVISIONS_TABLE {
             validate_policy_revision(group, fields)
-        } else if table == PROFILES_TABLE {
-            validate_profile(group, fields)
-        } else if table == PROFILE_REVISIONS_TABLE {
-            validate_profile_revision(group, fields)
         } else if table == CONVERSATIONS_TABLE {
             validate_conversation(group, fields)
         } else if table == MEMBERSHIPS_TABLE {
@@ -1937,13 +1818,6 @@ mod tests {
         }
     }
 
-    fn current(capability: Option<&str>) -> Value {
-        match capability {
-            Some(capability) => value(vec![t("revision-1"), t(capability)]),
-            None => value(vec![Field::Null, Field::Null]),
-        }
-    }
-
     fn policy_revision(model: &str, safety: &str) -> Value {
         value(vec![
             t("agent-1"),
@@ -1969,17 +1843,9 @@ mod tests {
         assert!(safety(Some("full_access")) > safety(Some("custom")));
         assert!(safety(Some("custom")) > safety(None));
 
-        let capability =
-            |level| adapter.priority(PROFILES_TABLE, profile_group::CURRENT, &current(level));
-        assert!(capability(Some("none")) > capability(Some("read")));
-        assert!(capability(Some("read")) > capability(Some("edit")));
-        assert!(capability(Some("edit")) > capability(Some("execute")));
-        assert!(capability(Some("execute")) > capability(Some("publish")));
-        assert!(capability(Some("publish")) > capability(None));
-
-        let name = value(vec![t("Profile")]);
+        let role = value(vec![t("Reviewer"), t("")]);
         assert_eq!(
-            adapter.priority(PROFILES_TABLE, profile_group::NAME, &name),
+            adapter.priority(AGENTS_TABLE, agent_group::PROFILE, &role),
             0
         );
     }
@@ -2077,58 +1943,6 @@ mod tests {
         assert!(revision("{\"model\":\"gpt\"}", "custom").is_ok());
         assert!(revision("\"gpt\"", "custom").is_err());
         assert!(revision("{}", "reckless").is_err());
-
-        assert!(
-            check(
-                PROFILES_TABLE,
-                profile_group::CREATED,
-                vec![t("read_only"), t(AT)]
-            )
-            .is_ok()
-        );
-        assert!(
-            check(
-                PROFILES_TABLE,
-                profile_group::CREATED,
-                vec![Field::Null, t(AT)]
-            )
-            .is_ok()
-        );
-        assert!(
-            check(
-                PROFILES_TABLE,
-                profile_group::CREATED,
-                vec![t("root"), t(AT)]
-            )
-            .is_err()
-        );
-        assert!(
-            adapter
-                .validate(
-                    PROFILES_TABLE,
-                    profile_group::CURRENT,
-                    &current(Some("edit"))
-                )
-                .is_ok()
-        );
-
-        let profile_revision = |flag_value, capability| {
-            check(
-                PROFILE_REVISIONS_TABLE,
-                profile_revision_group::CREATED,
-                vec![
-                    t("profile-1"),
-                    Field::Integer(flag_value),
-                    Field::Integer(0),
-                    t("from_grant"),
-                    t(capability),
-                    t(AT),
-                ],
-            )
-        };
-        assert!(profile_revision(1, "execute").is_ok());
-        assert!(profile_revision(2, "execute").is_err());
-        assert!(profile_revision(1, "admin").is_err());
     }
 
     fn optional(text: Option<&str>) -> Field {
@@ -2149,13 +1963,9 @@ mod tests {
         removed: bool,
     ) -> Value {
         value(vec![
-            t("profile-1"),
             Field::Integer(i64::from(read_history)),
-            Field::Integer(0),
             Field::Integer(i64::from(participate)),
-            Field::Integer(0),
             t(if from_grant { "from_grant" } else { "entire" }),
-            Field::Integer(0),
             if from_grant { t("c001") } else { Field::Null },
             optional(approval),
             optional(scratch_approval),
@@ -2166,7 +1976,6 @@ mod tests {
     fn grant(capability: &str, approval: Option<&str>, revoked: bool) -> Value {
         value(vec![
             t(capability),
-            Field::Integer(0),
             Field::Integer(1),
             optional(approval),
             optional(revoked.then_some(AT)),
@@ -2262,32 +2071,6 @@ mod tests {
     }
 
     #[test]
-    fn chat_channel_membership_inherited_capabilities_rank_as_granted() {
-        let adapter = ChatAdapter;
-        let priority = |value: &Value| {
-            adapter.priority(
-                CHANNEL_MEMBERSHIPS_TABLE,
-                channel_membership_group::ACCESS,
-                value,
-            )
-        };
-        let explicit = channel_access(false, false, true, None, None, false);
-        let granted = channel_access(true, true, false, None, None, false);
-        for inherit in [2, 4, 6] {
-            let mut fields = explicit.fields().to_vec();
-            fields[inherit] = Field::Integer(1);
-            let inherited = value(fields);
-            assert!(priority(&explicit) > priority(&inherited), "{inherit}");
-            assert!(priority(&inherited) > priority(&granted), "{inherit}");
-        }
-        let mut fields = explicit.fields().to_vec();
-        for inherit in [2, 4, 6] {
-            fields[inherit] = Field::Integer(1);
-        }
-        assert_eq!(priority(&value(fields)), priority(&granted));
-    }
-
-    #[test]
     fn chat_folder_grant_priorities_prefer_revocation_then_lower_capability_then_stricter_approval()
     {
         let adapter = ChatAdapter;
@@ -2317,14 +2100,6 @@ mod tests {
             );
         }
         assert!(priority(&grant("none", Some("ask"), false)) < u8::MAX);
-
-        // An inherited capability follows the profile's maximum, so it ranks as publishing.
-        let mut inherited = grant("none", Some("ask"), false).fields().to_vec();
-        inherited[1] = Field::Integer(1);
-        assert_eq!(
-            priority(&value(inherited)),
-            priority(&grant("publish", Some("ask"), false))
-        );
     }
 
     #[test]
@@ -2825,9 +2600,9 @@ mod tests {
             let mut fields = channel_access(true, true, false, None, None, false)
                 .fields()
                 .to_vec();
-            fields[5] = t(boundary);
-            fields[7] = history_from;
-            fields[8] = t(approval);
+            fields[2] = t(boundary);
+            fields[3] = history_from;
+            fields[4] = t(approval);
             check(
                 CHANNEL_MEMBERSHIPS_TABLE,
                 channel_membership_group::ACCESS,
@@ -3013,58 +2788,28 @@ mod tests {
         );
     }
 
-    /// A create of access profile `id` carrying `builtin_key`.
-    fn profile_create(id: &str, builtin_key: Option<&str>) -> Change {
-        let group = |group, fields| GroupValue::new(PROFILES_TABLE, group, value(fields));
+    /// A create of AI agent participant `id` created at `created_at`.
+    fn participant_create(id: &str, created_at: &str) -> Change {
+        let group = |group, fields| GroupValue::new(PARTICIPANTS_TABLE, group, value(fields));
         Change {
-            table: PROFILES_TABLE,
+            table: PARTICIPANTS_TABLE,
             row: RowKey::new(id).unwrap(),
             action: ChangeAction::Create,
             groups: vec![
-                group(profile_group::CREATED, vec![optional(builtin_key), t(AT)]),
-                group(profile_group::NAME, vec![t("Claim")]),
-                group(profile_group::CURRENT, vec![Field::Null, Field::Null]),
-                group(profile_group::LIFECYCLE, vec![Field::Null]),
-                group(profile_group::UPDATED, vec![t(AT)]),
+                group(
+                    participant_group::CREATED,
+                    vec![t("ai_agent"), t(created_at)],
+                ),
+                group(
+                    participant_group::PROFILE,
+                    vec![t("Reviewer"), Field::Integer(1), t("{}")],
+                ),
+                group(participant_group::LIFECYCLE, vec![Field::Null]),
+                group(participant_group::UPDATED, vec![t(AT)]),
             ],
             replaced_by: None,
             cause: None,
         }
-    }
-
-    #[test]
-    fn custom_profile_claiming_builtin_key_is_held_invalid() {
-        let engine = Engine::vault();
-        for id in ["access-profile:aaa", "access-profile:zzz"] {
-            for key in BUILTIN_PROFILE_KEYS {
-                assert_eq!(
-                    validate::change(&engine, &profile_create(id, Some(key))),
-                    Err("chat built-in profile identity"),
-                    "{id} {key}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn seeded_id_with_wrong_key_is_held_invalid() {
-        let engine = Engine::vault();
-        for key in [Some("edit_files"), None] {
-            assert_eq!(
-                validate::change(&engine, &profile_create("access-profile:read-only", key)),
-                Err("chat built-in profile identity"),
-                "{key:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn custom_profile_with_null_key_stays_valid() {
-        let engine = Engine::vault();
-        assert_eq!(
-            validate::change(&engine, &profile_create("access-profile:reviewers", None)),
-            Ok(())
-        );
     }
 
     /// Text the stored-row readers refuse, each long enough for the table length check.
@@ -3081,17 +2826,12 @@ mod tests {
         let engine = Engine::vault();
         let adapter = ChatAdapter;
         for bad in NOT_UTC_TIMESTAMPS {
-            let mut forged = profile_create("access-profile:reviewers", None);
-            forged.groups[0] = GroupValue::new(
-                PROFILES_TABLE,
-                profile_group::CREATED,
-                value(vec![Field::Null, t(bad)]),
-            );
+            let forged = participant_create("participant:reviewer", bad);
             assert!(validate::change(&engine, &forged).is_err(), "created {bad}");
 
             for (table, group) in [
-                (PROFILES_TABLE, profile_group::UPDATED),
-                (PROFILES_TABLE, profile_group::LIFECYCLE),
+                (PARTICIPANTS_TABLE, participant_group::UPDATED),
+                (PARTICIPANTS_TABLE, participant_group::LIFECYCLE),
                 (CHANNELS_TABLE, channel_group::UPDATED),
                 (CHANNELS_TABLE, channel_group::LIFECYCLE),
                 (CONVERSATIONS_TABLE, conversation_group::ACTIVITY),
@@ -3115,12 +2855,7 @@ mod tests {
         let engine = Engine::vault();
         let adapter = ChatAdapter;
         for good in [AT, "2026-10-24T10:51:41Z", "2026-10-24T10:51:41.000+00:00"] {
-            let mut honest = profile_create("access-profile:reviewers", None);
-            honest.groups[0] = GroupValue::new(
-                PROFILES_TABLE,
-                profile_group::CREATED,
-                value(vec![Field::Null, t(good)]),
-            );
+            let honest = participant_create("participant:reviewer", good);
             assert_eq!(validate::change(&engine, &honest), Ok(()), "created {good}");
             assert!(
                 adapter

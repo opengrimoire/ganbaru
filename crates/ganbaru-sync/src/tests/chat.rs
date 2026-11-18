@@ -1,7 +1,7 @@
-//! Chat identity and policy across replicas: participants, agents, and access profiles
-//! arrive with their revisions, a crash while sealing or applying them leaves nothing partial,
-//! and concurrent edits of an agent's current policy or a profile's current revision keep the
-//! more restrictive one whatever order the replicas exchange in. Conversations, channels,
+//! Chat identity and policy across replicas: participants and agents arrive with their policy
+//! revisions, a crash while sealing or applying them leaves nothing partial, and concurrent edits
+//! of an agent's current policy keep the more restrictive one whatever order the replicas
+//! exchange in. Conversations, channels,
 //! memberships, AI channel access, and working folder grants follow them: a concurrent removal or
 //! revocation wins over a concurrent widening, and a later re-add that saw the removal wins over
 //! it. The timeline follows: messages, revisions, reply threads, and read cursors arrive whole,
@@ -22,8 +22,6 @@ use super::block_on;
 use super::fixture::{
     FixtureHook, LISTS_TABLE, OVERRIDES_TABLE, OverrideHook, TEST_MANIFEST, test_adapters,
 };
-use super::holds::sealed_create;
-use super::refusal::take;
 use super::replica::{Replica, converge, device_id, forge_change, prepared, quoted};
 use super::sim::Rng;
 use crate::domains::chat::LOCAL_OWNER_PARTICIPANT_KEY;
@@ -33,17 +31,15 @@ use crate::manifest::TableSpec;
 use crate::manifest::vault::chat::{
     CHANNEL_MEMBERSHIP_KEY_PREFIX, CHANNELS_TABLE, CONVERSATION_CURSOR_KEY_PREFIX,
     CONVERSATIONS_TABLE, FOLDER_GRANT_KEY_PREFIX, MEMBERSHIP_KEY_PREFIX, MESSAGES_TABLE,
-    PARTICIPANTS_TABLE, PROFILES_TABLE, REPLY_CURSOR_KEY_PREFIX, REPLY_CURSORS_TABLE,
-    REPLY_THREAD_KEY_PREFIX, REPLY_THREADS_TABLE, REVISIONS_TABLE,
+    PARTICIPANTS_TABLE, REPLY_CURSOR_KEY_PREFIX, REPLY_CURSORS_TABLE, REPLY_THREAD_KEY_PREFIX,
+    REPLY_THREADS_TABLE, REVISIONS_TABLE,
 };
 use crate::manifest::vault::projects::PROJECTS_TABLE;
 use crate::provenance::row_creating_devices;
-use crate::validate;
 use crate::{Engine, HoldReason, MAX_UNSEEN_PRESENTATIONS, StoreOutcome, SyncError, SyncResult};
 
 const SALT: u64 = 73;
 const AGENT: &str = "participant:reviewer";
-const PROFILE: &str = "access-profile:reviewers";
 const CREATED: &str = "2026-10-24T09:00:00.000Z";
 
 /// Seeds of the concurrent policy edit scenario.
@@ -84,137 +80,6 @@ async fn replicas(count: usize) -> Vec<Replica> {
         replicas
     })
     .await
-}
-
-/// A write of a built-in profile that the protecting trigger refuses keeps the seeded row and its
-/// revision, and apply goes on.
-#[test]
-fn built_in_profile_write_does_not_stop_apply() {
-    block_on(async {
-        let mut replicas = replicas(2).await;
-        replicas[1]
-            .exec("DROP TRIGGER chat_access_profile_builtin_protected")
-            .await;
-        replicas[1]
-            .exec(
-                "UPDATE chat_access_profiles SET display_name = 'Renamed'
-                 WHERE id = 'access-profile:read-only'",
-            )
-            .await;
-        assert!(replicas[1].seal().await.unwrap().sealed_ops > 0);
-
-        take(&mut replicas, 0, 1).await.unwrap();
-
-        let receiver = &mut replicas[0];
-        assert_eq!(
-            receiver
-                .scalar_text(
-                    "SELECT display_name FROM chat_access_profiles
-                     WHERE id = 'access-profile:read-only'"
-                )
-                .await
-                .as_deref(),
-            Some("Read only")
-        );
-        assert_eq!(
-            receiver
-                .scalar_text(
-                    "SELECT kind FROM sync_refused_rows
-                     WHERE row_key = 'access-profile:read-only'"
-                )
-                .await
-                .as_deref(),
-            Some("kept")
-        );
-        assert_eq!(
-            receiver
-                .count(
-                    "SELECT count(*) FROM chat_access_profile_revisions
-                     WHERE id = 'access-profile-revision:read-only:1'"
-                )
-                .await,
-            1
-        );
-    });
-}
-
-/// Each device seeds the same built-in profiles, every create passes admission, and none is held
-/// on a replica that received them.
-#[test]
-fn every_seed_capture_stays_valid() {
-    block_on(async {
-        let mut replicas = replicas(2).await;
-        let seeded: Vec<(String, String)> = sqlx::query_as(
-            "SELECT id, builtin_key FROM chat_access_profiles WHERE builtin_key IS NOT NULL",
-        )
-        .fetch_all(&mut replicas[0].conn)
-        .await
-        .unwrap();
-        assert_eq!(seeded.len(), 5);
-        for replica in &mut replicas {
-            for (id, _) in &seeded {
-                let create = sealed_create(replica, PROFILES_TABLE, id).await;
-                assert_eq!(validate::change(&replica.engine, &create), Ok(()), "{id}");
-            }
-            assert_eq!(
-                replica
-                    .count("SELECT count(*) FROM sync_ops WHERE state <> 'applied'")
-                    .await,
-                0
-            );
-        }
-    });
-}
-
-/// A claim of a built-in key under a lower row key stays out of merge state, so the seeded row
-/// keeps its place and an honest row that references it materializes.
-#[test]
-fn builtin_key_claim_leaves_referrers_of_the_seeded_row_visible() {
-    const SEEDED: &str = "access-profile:read-only";
-    const CLAIM: &str = "access-profile:aaa";
-    block_on(async {
-        let mut replicas = replicas(3).await;
-        let mut claim = sealed_create(&mut replicas[2], PROFILES_TABLE, SEEDED).await;
-        claim.row = RowKey::new(CLAIM).unwrap();
-        let forged = forge_change(&mut replicas[2], claim).await;
-
-        let conversation = conversation_sql().replace(&quoted(PROFILE), &quoted(SEEDED));
-        replicas[0]
-            .exec(&format!("{}{conversation}", identity_sql()))
-            .await;
-        replicas[0].seal().await.unwrap();
-
-        let outcomes = replicas[1].receive(&[forged]).await;
-        replicas[1].apply_all().await.unwrap();
-        take(&mut replicas, 1, 0).await.unwrap();
-
-        let receiver = &mut replicas[1];
-        assert_eq!(
-            receiver
-                .count(&format!(
-                    "SELECT count(*) FROM chat_agent_channel_memberships
-                     WHERE access_profile_id = {}",
-                    quoted(SEEDED)
-                ))
-                .await,
-            1
-        );
-        assert_eq!(
-            receiver
-                .count(&format!(
-                    "SELECT count(*) FROM chat_access_profiles WHERE id = {}",
-                    quoted(CLAIM)
-                ))
-                .await,
-            0
-        );
-        assert_eq!(
-            outcomes,
-            vec![StoreOutcome::Stored {
-                held: Some(HoldReason::Invalid)
-            }]
-        );
-    });
 }
 
 /// A timestamp `minute` minutes after [`CREATED`], at `second` seconds.
@@ -259,43 +124,12 @@ fn policy_sql(id: &str, safety: &str, created_at: &str) -> String {
     )
 }
 
-/// SQL creating [`PROFILE`] without a revision.
-fn profile_sql() -> String {
-    format!(
-        "INSERT INTO chat_access_profiles (id, display_name, created_at, updated_at)
-         VALUES ({profile}, 'Reviewers', {created}, {created});",
-        profile = quoted(PROFILE),
-        created = quoted(CREATED),
-    )
-}
-
-/// SQL adding revision `id` of [`PROFILE`] with `capability` and making it current.
-fn profile_revision_sql(id: &str, capability: &str, created_at: &str) -> String {
-    format!(
-        "INSERT INTO chat_access_profile_revisions
-            (id, access_profile_id, default_read_history, default_participate,
-             default_history_boundary, maximum_folder_capability, created_at)
-         VALUES ({id}, {profile}, 1, 1, 'entire', {capability}, {created_at});
-         UPDATE chat_access_profiles
-         SET current_revision_id = {id}, current_maximum_folder_capability = {capability},
-             revision = revision + 1, updated_at = {created_at}
-         WHERE id = {profile};",
-        id = quoted(id),
-        profile = quoted(PROFILE),
-        capability = quoted(capability),
-        created_at = quoted(created_at),
-    )
-}
-
-/// The identity rows every scenario starts from: the agent with its first policy and the
-/// profile with its first revision.
+/// The identity rows every scenario starts from: the agent with its first policy.
 fn identity_sql() -> String {
     format!(
-        "{}{}{}{}",
+        "{}{}",
         agent_sql(),
-        policy_sql("policy-0", "approve_for_me", CREATED),
-        profile_sql(),
-        profile_revision_sql("profile-revision-0", "edit", CREATED),
+        policy_sql("policy-0", "approve_for_me", CREATED)
     )
 }
 
@@ -329,27 +163,6 @@ async fn current_policy(replica: &mut Replica) -> (String, String) {
         )
         .await
         .expect("the named policy arrived");
-    (copied, named)
-}
-
-/// The current folder capability of [`PROFILE`] and the capability of the revision it names.
-async fn current_capability(replica: &mut Replica) -> (String, String) {
-    let copied = replica
-        .scalar_text(
-            "SELECT current_maximum_folder_capability FROM chat_access_profiles
-             WHERE id = 'access-profile:reviewers'",
-        )
-        .await
-        .expect("the profile names a revision");
-    let named = replica
-        .scalar_text(
-            "SELECT revision.maximum_folder_capability FROM chat_access_profiles profile
-             JOIN chat_access_profile_revisions revision
-               ON revision.id = profile.current_revision_id
-             WHERE profile.id = 'access-profile:reviewers'",
-        )
-        .await
-        .expect("the named revision arrived");
     (copied, named)
 }
 
@@ -394,10 +207,6 @@ fn chat_identity_rows_round_trip_with_every_replicated_value() {
         assert_eq!(
             current_policy(reader).await,
             ("full_access".to_owned(), "full_access".to_owned())
-        );
-        assert_eq!(
-            current_capability(reader).await,
-            ("edit".to_owned(), "edit".to_owned())
         );
         // Display numbers follow `(created_at, id)` order on every replica.
         assert_eq!(
@@ -449,9 +258,9 @@ fn chat_a_crash_while_sealing_or_applying_identity_rows_leaves_nothing_partial()
             .exec(&format!("{}{}", identity_sql(), conversation_sql()))
             .await;
         let captured = chat_captures(&mut replicas[0]).await;
-        // Five identity rows, then the conversation, two memberships, the AI channel access,
+        // Three identity rows, then the conversation, two memberships, the AI channel access,
         // the grant, and the channel.
-        assert_eq!(captured.len(), 11, "{captured:?}");
+        assert_eq!(captured.len(), 9, "{captured:?}");
         for name in ["seal.reserve", "seal.before_commit"] {
             let report = after_rollback(&mut replicas[0], name, async |r: &mut Replica| {
                 r.seal().await
@@ -500,21 +309,13 @@ fn chat_concurrent_current_revisions_keep_the_more_restrictive_one() {
         replicas[0].exec(&identity_sql()).await;
         converge(&mut replicas).await;
 
-        // Replica 0 relaxes both while replica 1 tightens both; the later edit is the relaxing
-        // one, so restrictiveness, not time, decides.
+        // Replica 0 relaxes while replica 1 tightens; the later edit is the relaxing one, so
+        // restrictiveness, not time, decides.
         replicas[1]
-            .exec(&format!(
-                "{}{}",
-                policy_sql("policy-strict", "ask_for_approval", &at(1, 0)),
-                profile_revision_sql("profile-revision-strict", "read", &at(1, 0)),
-            ))
+            .exec(&policy_sql("policy-strict", "ask_for_approval", &at(1, 0)))
             .await;
         replicas[0]
-            .exec(&format!(
-                "{}{}",
-                policy_sql("policy-open", "full_access", &at(2, 0)),
-                profile_revision_sql("profile-revision-open", "publish", &at(2, 0)),
-            ))
+            .exec(&policy_sql("policy-open", "full_access", &at(2, 0)))
             .await;
         converge(&mut replicas).await;
         assert_converged(&mut replicas).await;
@@ -522,10 +323,6 @@ fn chat_concurrent_current_revisions_keep_the_more_restrictive_one() {
             assert_eq!(
                 current_policy(replica).await,
                 ("ask_for_approval".to_owned(), "ask_for_approval".to_owned())
-            );
-            assert_eq!(
-                current_capability(replica).await,
-                ("read".to_owned(), "read".to_owned())
             );
             // Both revisions arrived and keep their display numbers.
             assert_eq!(
@@ -558,34 +355,21 @@ fn chat_concurrent_policy_edits_of_different_safety_converge_to_the_most_restric
             converge(&mut replicas).await;
             for round in 0..POLICY_ROUNDS {
                 let mut strictest_safety = None;
-                let mut strictest_capability = None;
                 for (index, replica) in replicas.iter_mut().enumerate() {
                     if !rng.chance(70) {
                         continue;
                     }
                     let created_at = at(round + 1, rng.below(60));
                     let id = format!("{round}-{index}");
-                    if rng.chance(60) {
-                        let rank = rng.below(SAFETY_MODES.len());
-                        replica
-                            .exec(&policy_sql(
-                                &format!("policy-{id}"),
-                                SAFETY_MODES[rank],
-                                &created_at,
-                            ))
-                            .await;
-                        strictest_safety = strictest_safety.max(Some(rank));
-                    } else {
-                        let rank = rng.below(CAPABILITIES.len());
-                        replica
-                            .exec(&profile_revision_sql(
-                                &format!("profile-revision-{id}"),
-                                CAPABILITIES[rank],
-                                &created_at,
-                            ))
-                            .await;
-                        strictest_capability = strictest_capability.max(Some(rank));
-                    }
+                    let rank = rng.below(SAFETY_MODES.len());
+                    replica
+                        .exec(&policy_sql(
+                            &format!("policy-{id}"),
+                            SAFETY_MODES[rank],
+                            &created_at,
+                        ))
+                        .await;
+                    strictest_safety = strictest_safety.max(Some(rank));
                     if rng.chance(50) {
                         replica.seal().await.unwrap();
                     }
@@ -597,11 +381,6 @@ fn chat_concurrent_policy_edits_of_different_safety_converge_to_the_most_restric
                     assert_eq!(copied, named, "seed {seed} round {round}");
                     if let Some(rank) = strictest_safety {
                         assert_eq!(copied, SAFETY_MODES[rank], "seed {seed} round {round}");
-                    }
-                    let (copied, named) = current_capability(replica).await;
-                    assert_eq!(copied, named, "seed {seed} round {round}");
-                    if let Some(rank) = strictest_capability {
-                        assert_eq!(copied, CAPABILITIES[rank], "seed {seed} round {round}");
                     }
                 }
             }
@@ -671,7 +450,7 @@ fn optional(text: Option<&str>) -> String {
 }
 
 /// SQL creating [`CONVERSATION`] with its channel, the owner and [`AGENT`] as members,
-/// [`AGENT`]'s AI channel access through [`PROFILE`], and its default `edit` grant on
+/// [`AGENT`]'s AI channel access, and its default `edit` grant on
 /// [`FOLDER`]. It needs the rows of [`identity_sql`].
 fn conversation_sql() -> String {
     conversation_on(PROJECT, FOLDER)
@@ -695,9 +474,9 @@ fn conversation_on(project: &str, folder: &str) -> String {
          VALUES ({conversation}, {owner}, {owner_key}, 'owner', {created}, {created}),
                 ({conversation}, {agent}, {agent_key}, 'member', {created}, {created});
          INSERT INTO chat_agent_channel_memberships
-            (conversation_id, agent_id, sync_key, access_profile_id, read_history,
+            (conversation_id, agent_id, sync_key, read_history,
              participate, created_at, updated_at)
-         VALUES ({conversation}, {agent}, {access_key}, {profile}, 1, 1, {created}, {created});
+         VALUES ({conversation}, {agent}, {access_key}, 1, 1, {created}, {created});
          INSERT INTO chat_agent_working_folder_grants
             (conversation_id, agent_id, working_folder_id, sync_key, project_id, capability,
              is_default, created_at)
@@ -709,7 +488,6 @@ fn conversation_on(project: &str, folder: &str) -> String {
         folder = quoted(folder),
         owner = quoted(OWNER),
         agent = quoted(AGENT),
-        profile = quoted(PROFILE),
         created = quoted(CREATED),
         owner_key = quoted(&key(MEMBERSHIP_KEY_PREFIX, &[CONVERSATION, OWNER])),
         agent_key = quoted(&key(MEMBERSHIP_KEY_PREFIX, &[CONVERSATION, AGENT])),

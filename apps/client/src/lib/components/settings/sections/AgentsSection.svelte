@@ -8,7 +8,6 @@
   import AgentFilesSettings from "$lib/components/settings/agents/AgentFilesSettings.svelte";
   import ProvidersSettings from "$lib/components/settings/agents/ProvidersSettings.svelte";
   import AgentsSettings from "$lib/components/settings/agents/AgentsSettings.svelte";
-  import AccessProfilesSettings from "$lib/components/settings/agents/AccessProfilesSettings.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
 
@@ -21,7 +20,6 @@
     onSubsectionChange = () => {},
     onRequestNavigation = (navigate) => navigate(),
     onAgentDraftStateChange = () => {},
-    onAccessProfileDraftStateChange = () => {},
   }: {
     initialSubsection?: AgentsSettingsSubsection;
     initialAgentId?: string;
@@ -31,7 +29,6 @@
     onSubsectionChange?: (subsection: AgentsSettingsSubsection) => void;
     onRequestNavigation?: (navigate: () => void) => void;
     onAgentDraftStateChange?: (open: boolean) => void;
-    onAccessProfileDraftStateChange?: (open: boolean) => void;
   } = $props();
 
   const { t } = getLocalization();
@@ -46,7 +43,6 @@
     { id: "agents", label: () => t("settings.agents.agents.heading") },
     { id: "providers", label: () => t("settings.agents.providers.heading") },
     { id: "files", label: () => t("settings.agents.files.heading") },
-    { id: "accessProfiles", label: () => t("settings.agents.accessProfiles.heading") },
   ];
 
   $effect.pre(() => {
@@ -86,7 +82,7 @@
 
 <div class="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-6">
   <div
-    class="grid grid-cols-4 gap-1 rounded-md border border-border bg-card p-1 dark:bg-transparent"
+    class="grid grid-cols-3 gap-1 rounded-md border border-border bg-card p-1 dark:bg-transparent"
     role="tablist"
     aria-label={t("settings.agents.tabLabel")}
   >
@@ -117,7 +113,5 @@
     <ProvidersSettings {onOpenProviderSetup} />
   {:else if activeTab === "files"}
     <AgentFilesSettings {onOpenProviderSetup} />
-  {:else}
-    <AccessProfilesSettings {onRequestNavigation} onDraftStateChange={onAccessProfileDraftStateChange} />
   {/if}
 </div>

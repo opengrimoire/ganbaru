@@ -5,7 +5,6 @@ import {
   defaultModelOptions,
 } from "$lib/chat/composer/model";
 import type {
-  ChatAccessProfileRead,
   ChatAiAgentRead,
   ChatChannelRead,
   ChatFolderCapability,
@@ -72,7 +71,6 @@ export function createAgentEditorController(options: AgentEditorOptions) {
   let showArchived = $state(false);
   let archivedAgents = $state<ChatAiAgentRead[]>([]);
   let navigationChannels = $state<ChatChannelRead[]>([]);
-  let accessProfiles = $state<ChatAccessProfileRead[]>([]);
   let loadingDirectory = $state(true);
   let loadingAccess = $state(false);
   let saving = $state(false);
@@ -128,11 +126,7 @@ export function createAgentEditorController(options: AgentEditorOptions) {
     agent.participant.id !== selectedId
       && agent.participant.displayName.trim().toLocaleLowerCase() === normalizedDisplayName
   ))));
-  const profileCeilings = $derived(new Map(accessProfiles.map((profile) => [
-    profile.id,
-    profile.latestRevision.maximumFolderCapability,
-  ])));
-  const accessErrors = $derived(agentAccessDraftErrors(accessDraft, profileCeilings));
+  const accessErrors = $derived(agentAccessDraftErrors(accessDraft));
   const providerResourceBlockers = $derived(accessDraft
     .flatMap(providerResourceIssuesForChannel)
     .filter((issue, index, issues) => issues.indexOf(issue) === index));
@@ -183,18 +177,16 @@ export function createAgentEditorController(options: AgentEditorOptions) {
   async function loadDirectoryData(): Promise<void> {
     loadingDirectory = true;
     error = null;
-    const [archivedResult, channelResult, profileResult] = await Promise.allSettled([
+    const [archivedResult, channelResult] = await Promise.allSettled([
       chatApi.listChatAgents(true),
       chatApi.listChatNavigationChannels(),
-      chatApi.listChatAccessProfiles(false),
     ]);
     if (archivedResult.status === "fulfilled") {
       archivedAgents = archivedResult.value;
       chat.archivedAgents = archivedResult.value;
     }
     if (channelResult.status === "fulfilled") navigationChannels = channelResult.value;
-    if (profileResult.status === "fulfilled") accessProfiles = profileResult.value;
-    const failure = [archivedResult, channelResult, profileResult]
+    const failure = [archivedResult, channelResult]
       .find((result) => result.status === "rejected");
     if (failure?.status === "rejected") {
       error = chatErrorMessage(failure.reason, t("settings.agents.agents.loadFailed"));
@@ -252,8 +244,6 @@ export function createAgentEditorController(options: AgentEditorOptions) {
         .filter((channel) => channel.removedAt === null)
         .map((channel) => ({
           channelId: channel.channelId,
-          accessProfileId: channel.accessProfileId,
-          accessProfileRevisionId: channel.accessProfileRevisionId,
           capabilities: { ...channel.capabilities },
           historyBoundary: channel.historyBoundary.kind === "entire"
             ? { kind: "entire" as const }
@@ -620,7 +610,7 @@ export function createAgentEditorController(options: AgentEditorOptions) {
     const folder = projectId ? preferredProjectWorkingFolder(chat.workingFolders, projectId, null) : null;
     return defaultChannelAccessInput(
       channelId,
-      { profiles: accessProfiles, projectWorkingFolderId: folder?.workingFolder.id ?? null },
+      { projectWorkingFolderId: folder?.workingFolder.id ?? null },
       { authority: providerAuthoritySupport, safetyMode },
     );
   }
@@ -801,8 +791,6 @@ export function createAgentEditorController(options: AgentEditorOptions) {
     set showArchived(value: typeof showArchived) { showArchived = value; },
     get archivedAgents() { return archivedAgents; },
     get navigationChannels() { return navigationChannels; },
-    get accessProfiles() { return accessProfiles; },
-    set accessProfiles(value: typeof accessProfiles) { accessProfiles = value; },
     get loadingDirectory() { return loadingDirectory; },
     get loadingAccess() { return loadingAccess; },
     get saving() { return saving; },
@@ -843,7 +831,6 @@ export function createAgentEditorController(options: AgentEditorOptions) {
     get selectedModel() { return selectedModel; },
     get nameTaken() { return nameTaken; },
     get instructionsTooLong() { return instructionsTooLong; },
-    get profileCeilings() { return profileCeilings; },
     get accessErrors() { return accessErrors; },
     get providerResourceBlockers() { return providerResourceBlockers; },
     get currentDraftSnapshot() { return currentDraftSnapshot; },

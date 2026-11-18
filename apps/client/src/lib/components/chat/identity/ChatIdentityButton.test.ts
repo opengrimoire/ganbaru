@@ -77,10 +77,6 @@ function channel(runtimeApprovalOverride: ChatRuntimeApprovalPolicy): ChatChanne
       conversationId: "conversation:general",
       participant: agentParticipant,
       aiAccess: {
-        accessProfileId: "access-profile:conversation-only",
-        accessProfileRevision: 1,
-        accessProfileBuiltinKey: "conversationOnly",
-        accessProfileName: "Conversation only",
         capabilities: { readHistory: false, participate: true },
         historyBoundary: { kind: "entire" },
         runtimeApprovalOverride,

@@ -12,8 +12,6 @@ function channel(
 ): ChatAgentChannelAccessInput {
   return {
     channelId,
-    accessProfileId: "profile:conversation",
-    accessProfileRevisionId: "profile:conversation:revision:1",
     capabilities: { readHistory: false, participate },
     historyBoundary: { kind: "entire" },
     runtimeApprovalOverride: null,

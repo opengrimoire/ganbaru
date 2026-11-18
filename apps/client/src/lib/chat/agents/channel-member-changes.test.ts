@@ -1,9 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
-  ChatAccessProfileRead,
   ChatAiAgentRead,
   ChatChannelRead,
-  ChatFolderCapability,
   ChatSettingsRead,
   ProjectWorkingFolderRead,
   ProviderAuthoritySupport,
@@ -13,33 +11,11 @@ import type {
 import { applyChannelMemberChanges, channelMemberChangeContext } from "./channel-member-changes";
 
 const api = vi.hoisted(() => ({
-  listChatAccessProfiles: vi.fn<typeof import("$lib/api/chat").listChatAccessProfiles>(),
   readChatAgentAccess: vi.fn<typeof import("$lib/api/chat").readChatAgentAccess>(),
   replaceChatAgentAccess: vi.fn<typeof import("$lib/api/chat").replaceChatAgentAccess>(),
 }));
 
 vi.mock("$lib/api/chat", () => api);
-
-const CREATED_AT = "2026-11-01T00:00:00.000Z";
-
-function profile(id: string, builtinKey: ChatAccessProfileRead["builtinKey"], ceiling: ChatFolderCapability): ChatAccessProfileRead {
-  return {
-    id,
-    builtinKey,
-    displayName: id,
-    revision: 1,
-    archivedAt: null,
-    latestRevision: {
-      id: `${id}:revision:1`,
-      accessProfileId: id,
-      revision: 1,
-      defaultChannelCapabilities: { readHistory: false, participate: true },
-      defaultHistoryBoundary: { kind: "entire" },
-      maximumFolderCapability: ceiling,
-      createdAt: CREATED_AT,
-    },
-  };
-}
 
 const personApproved: ProviderAuthoritySupport = {
   isolatedConversation: true,
@@ -92,10 +68,6 @@ function store(agents: ChatAiAgentRead[]) {
 describe("applyChannelMemberChanges", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    api.listChatAccessProfiles.mockResolvedValue([
-      profile("profile:conversation", "conversationOnly", "none"),
-      profile("profile:build", "buildAndTest", "execute"),
-    ]);
     api.readChatAgentAccess.mockImplementation(async (agentId) => ({
       agentId,
       accessRevision: 4,
@@ -117,7 +89,7 @@ describe("applyChannelMemberChanges", () => {
       expectedAccessRevision: 4,
       channels: [expect.objectContaining({
         channelId: "channel:general",
-        accessProfileId: "profile:build",
+        capabilities: { readHistory: true, participate: true },
         folderGrants: [{
           workingFolderId: "folder:app",
           capability: "execute",
@@ -128,11 +100,11 @@ describe("applyChannelMemberChanges", () => {
     });
   });
 
-  it("adds an agent whose provider cannot enforce commands in conversation only", async () => {
+  it("adds an agent whose provider cannot enforce commands without file access", async () => {
     const chat = store([agent("participant:cursor", "provider:cursor")]);
     await applyChannelMemberChanges(new Set(), new Set(["participant:cursor"]), channelMemberChangeContext(chat, channel));
     expect(api.replaceChatAgentAccess).toHaveBeenCalledWith(expect.objectContaining({
-      channels: [expect.objectContaining({ accessProfileId: "profile:conversation", folderGrants: [] })],
+      channels: [expect.objectContaining({ capabilities: { readHistory: true, participate: true }, folderGrants: [] })],
     }));
   });
 
@@ -140,7 +112,6 @@ describe("applyChannelMemberChanges", () => {
     const chat = store([agent("participant:claude", "provider:claude")]);
     const members = new Set(["participant:claude"]);
     expect(await applyChannelMemberChanges(members, members, channelMemberChangeContext(chat, channel))).toBe(false);
-    expect(api.listChatAccessProfiles).not.toHaveBeenCalled();
     expect(api.replaceChatAgentAccess).not.toHaveBeenCalled();
   });
 });

@@ -44,8 +44,6 @@ export const chatErrors = {
     duplicate_channel: "A channel is listed more than once, so remove the extra entry.",
     duplicate_folder: "A working folder is listed more than once, so remove the extra entry.",
     multiple_default_folders: "Only one working folder can be the default, so keep just one.",
-    profile_ceiling_exceeded: "This access goes beyond what the linked profile allows, so lower it or choose another profile.",
-    profile_not_found: "The linked access profile no longer exists, so choose another one.",
     retained_reference_disclosure: "Earlier messages mention channels this agent cannot read, so start its history from when access is granted.",
     agent_not_found: "This agent no longer exists.",
   } satisfies Record<ChatAccessIssueCode, string>,

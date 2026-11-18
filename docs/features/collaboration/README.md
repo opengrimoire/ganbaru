@@ -6,7 +6,7 @@ This document owns the shared model for human collaboration: identity, contacts,
 
 ## Why
 
-Ganbaru already coordinates work between a person and configured AI agents through explicit memberships and access profiles. Human collaboration adds other people to the same model instead of a second one. One picker, one access step, and one member list serve people and agents alike, so the only visible difference between adding a colleague and adding an AI agent is that the agent also has a configurable brain and execution limits. Users who know chat and planning apps should recognize the flow immediately: pick from contacts, choose a role, done.
+Ganbaru already coordinates work between a person and configured AI agents through explicit per-channel memberships and grants. Human collaboration adds other people to the same model instead of a second one. One picker, one access step, and one member list serve people and agents alike, so the only visible difference between adding a colleague and adding an AI agent is that the agent also has a configurable brain and execution limits. Users who know chat and planning apps should recognize the flow immediately: pick from contacts, choose a role, done.
 
 ## Vocabulary
 
@@ -70,7 +70,7 @@ A role is a preset over one capability set. The capabilities are grouped so a pe
 | Conversation | Read history, participate, assign work to agents |
 | Content | Create and edit Notes, create and edit tasks, edit Calendar events, share pages |
 | Management | Manage channels, manage members, manage agents, edit space settings |
-| Execution (agents only) | Working-folder ceiling and approval policy, as defined by [access profiles](../chat/agents-and-coordination.md) |
+| Execution (agents only) | Working-folder capability and approval policy, as defined by [agent access](../chat/agents-and-coordination.md) |
 
 The built-in roles are:
 
@@ -85,9 +85,9 @@ Roles inherit downward and can only narrow:
 
 - A group role is the default role in every project of the group. A project can restrict a person's inherited role but not widen it.
 - A project role is the default for its channels. A channel membership can further restrict history or participation.
-- An agent acts within the intersection of its owner's role and its own access profile, and never holds management capabilities.
+- An agent acts within the intersection of its owner's role and its own channel access, and never holds management capabilities.
 
-This mirrors the rule in access control that no layer may widen another. Access profiles for agents remain what they are today; the role presets for people reuse the same capability vocabulary so one access step can present both.
+This mirrors the rule in access control that no layer may widen another. Agents keep their per-channel capabilities; the role presets for people reuse the same capability vocabulary so one access step can present both.
 
 ## Agents and people as one model
 

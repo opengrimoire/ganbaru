@@ -58,18 +58,17 @@ async fn create_project_channel(pool: &SqlitePool, vault_root: &std::path::Path)
     default_channel_ids(PROJECT_ID).unwrap().1
 }
 
-/// Creates the agent as the agent editor does, then gives it the conversation-only channel
+/// Creates the agent as the agent editor does, then gives it conversation-only channel
 /// access, responding without history or folders.
 async fn create_channel_agent(pool: &SqlitePool, channel_id: &str) {
-    create_channel_agent_with(pool, channel_id, "conversation_only", Vec::new()).await;
+    create_channel_agent_with(pool, channel_id, Vec::new()).await;
 }
 
-/// Creates the agent as the agent editor does, then gives it channel access under the
-/// built-in profile `profile_key` with `folder_grants`, responding without history.
+/// Creates the agent as the agent editor does, then gives it channel access with
+/// `folder_grants`, responding without history.
 async fn create_channel_agent_with(
     pool: &SqlitePool,
     channel_id: &str,
-    profile_key: &str,
     folder_grants: Vec<ChatFolderGrantInput>,
 ) {
     super::super::create_agent(
@@ -101,17 +100,6 @@ async fn create_channel_agent_with(
     )
     .await
     .unwrap();
-    let (profile_id, profile_revision_id): (String, String) = sqlx::query_as(
-        "SELECT profile.id, revision.id
-         FROM chat_access_profiles profile
-         JOIN chat_access_profile_effective_revisions revision
-           ON revision.access_profile_id = profile.id
-         WHERE profile.builtin_key = ?",
-    )
-    .bind(profile_key)
-    .fetch_one(pool)
-    .await
-    .unwrap();
     let agent_id = ChatParticipantId::new(AGENT_ID).unwrap();
     let access = super::super::access::read_agent_access(pool, &agent_id)
         .await
@@ -123,9 +111,6 @@ async fn create_channel_agent_with(
             expected_access_revision: access.access_revision,
             channels: vec![ChatAgentChannelAccessInput {
                 channel_id: ChatChannelId::new(channel_id).unwrap(),
-                access_profile_id: ChatAccessProfileId::new(profile_id).unwrap(),
-                access_profile_revision_id: ChatAccessProfileRevisionId::new(profile_revision_id)
-                    .unwrap(),
                 capabilities: ChatChannelCapabilities {
                     read_history: false,
                     participate: true,
@@ -265,13 +250,7 @@ async fn authorized_folder_for(
     let project = project_folder(&pool).await;
     let docs = create_external_folder(&pool, "folder:docs").await;
     let site = create_external_folder(&pool, "folder:site").await;
-    create_channel_agent_with(
-        &pool,
-        &channel_id,
-        "build_and_test",
-        grants(project, docs, site),
-    )
-    .await;
+    create_channel_agent_with(&pool, &channel_id, grants(project, docs, site)).await;
     let assignment_id = mention_agent(&pool, &channel_id).await;
     let folder: Option<String> = sqlx::query_scalar(
         "SELECT working_folder_id FROM chat_assignment_authorization_revisions

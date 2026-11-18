@@ -21,7 +21,6 @@ pub struct ChatAuthorityEvaluationInput {
     pub source_read_history: bool,
     pub requested_folder_capability: ChatFolderCapability,
     pub granted_folder_capability: ChatFolderCapability,
-    pub profile_folder_ceiling: ChatFolderCapability,
     pub provider_folder_ceiling: ChatFolderCapability,
 }
 
@@ -36,7 +35,6 @@ pub struct ChatAuthorityEvaluation {
 pub fn evaluate_authority(input: &ChatAuthorityEvaluationInput) -> ChatAuthorityEvaluation {
     let effective_folder_capability = input
         .granted_folder_capability
-        .intersect(input.profile_folder_ceiling)
         .intersect(input.provider_folder_ceiling);
     let mut denials = Vec::new();
     if !input.requester_can_read_source {
@@ -102,7 +100,6 @@ mod tests {
             source_read_history: true,
             requested_folder_capability: ChatFolderCapability::Execute,
             granted_folder_capability: ChatFolderCapability::Publish,
-            profile_folder_ceiling: ChatFolderCapability::Execute,
             provider_folder_ceiling: ChatFolderCapability::Edit,
         });
 
@@ -129,7 +126,6 @@ mod tests {
             source_read_history: true,
             requested_folder_capability: ChatFolderCapability::None,
             granted_folder_capability: ChatFolderCapability::None,
-            profile_folder_ceiling: ChatFolderCapability::None,
             provider_folder_ceiling: ChatFolderCapability::None,
         });
 

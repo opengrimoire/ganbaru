@@ -159,8 +159,6 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_channels",
             "chat_conversation_memberships",
             "chat_agent_working_folder_grants",
-            "chat_access_profiles",
-            "chat_access_profile_revisions",
             "chat_agent_access_state",
             "chat_agent_channel_memberships",
             "chat_conversation_audience_state",
@@ -244,7 +242,6 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_participants_local_user_identity",
             "idx_chat_conversation_memberships_participant",
             "idx_chat_agent_working_folder_grants_folder",
-            "idx_chat_access_profiles_builtin",
             "idx_chat_agent_channel_memberships_agent",
             "idx_chat_assignment_authorization_revisions_active",
             "idx_chat_host_tool_invocations_authorization",
@@ -454,15 +451,10 @@ fn fresh_chat_has_only_the_local_owner_and_unprivileged_profile_recipes() {
         .fetch_one(&pool)
         .await
         .unwrap();
-        let profiles: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_access_profiles")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
 
         assert_eq!(participants, 1);
         assert_eq!(local_owners, 1);
         assert_eq!(ai_agents, 0);
-        assert_eq!(profiles, 5);
     });
 }
 
@@ -536,233 +528,6 @@ fn standalone_agent_identity_is_inert_until_access_is_replaced() {
             stored_runtime_default, 0,
             "the agent default runtime approval derives from its approval behavior"
         );
-    });
-}
-
-#[test]
-fn access_profile_revisions_are_immutable_and_do_not_create_memberships() {
-    super::block_on(async {
-        let pool = migrated_memory_pool().await;
-        let update = sqlx::query(
-            "UPDATE chat_access_profile_revisions
-             SET maximum_folder_capability = 'publish'
-             WHERE id = 'access-profile-revision:conversation-only:1'",
-        )
-        .execute(&pool)
-        .await;
-        let delete = sqlx::query(
-            "DELETE FROM chat_access_profile_revisions
-             WHERE id = 'access-profile-revision:conversation-only:1'",
-        )
-        .execute(&pool)
-        .await;
-        let extend_builtin = sqlx::query(
-            "INSERT INTO chat_access_profile_revisions
-                (id, access_profile_id, default_read_history,
-                 default_participate, default_history_boundary,
-                 maximum_folder_capability, created_at)
-             VALUES ('forbidden-built-in-revision', 'access-profile:conversation-only',
-                     1, 1, 'entire', 'read', ?)",
-        )
-        .bind(NOW)
-        .execute(&pool)
-        .await;
-        let rewrite_builtin = sqlx::query(
-            "UPDATE chat_access_profiles
-             SET current_revision_id = 'forbidden-built-in-revision', revision = 2
-             WHERE id = 'access-profile:conversation-only'",
-        )
-        .execute(&pool)
-        .await;
-        let memberships: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM chat_agent_channel_memberships")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-
-        assert!(update.is_err());
-        assert!(delete.is_err());
-        assert!(extend_builtin.is_err());
-        assert!(rewrite_builtin.is_err());
-        assert_eq!(memberships, 0);
-    });
-}
-
-#[test]
-fn live_profile_expansion_preserves_active_access_revision_and_membership_intent() {
-    super::block_on(async {
-        let pool = migrated_memory_pool().await;
-        let (conversation_id, _) = insert_default_channel(&pool).await;
-        sqlx::query(
-            "INSERT INTO chat_participants
-                (id, participant_kind, display_name, created_at, updated_at)
-             VALUES ('agent:profile-test', 'ai_agent', 'Profile test', ?, ?)",
-        )
-        .bind(NOW)
-        .bind(NOW)
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO chat_agents
-                (participant_id, role, instructions, created_at, updated_at)
-             VALUES ('agent:profile-test', 'Tester', '', ?, ?)",
-        )
-        .bind(NOW)
-        .bind(NOW)
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO chat_access_profiles
-                (id, display_name, created_at, updated_at)
-             VALUES ('access-profile:test', 'Test profile', ?, ?)",
-        )
-        .bind(NOW)
-        .bind(NOW)
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO chat_access_profile_revisions
-                (id, access_profile_id, default_read_history,
-                 default_participate, default_history_boundary,
-                 maximum_folder_capability, created_at)
-             VALUES ('access-profile-revision:test:1', 'access-profile:test',
-                     1, 1, 'entire', 'read', ?)",
-        )
-        .bind(NOW)
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO chat_conversation_memberships
-                (conversation_id, participant_id, sync_key, membership_role, created_at,
-                 updated_at)
-             VALUES (?, 'agent:profile-test', 'membership:profile-test', 'member', ?, ?)",
-        )
-        .bind(&conversation_id)
-        .bind(NOW)
-        .bind(NOW)
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO chat_agent_channel_memberships
-                (conversation_id, agent_id, sync_key, access_profile_id,
-                 read_history, read_history_inherits_profile,
-                 participate, participate_inherits_profile,
-                 history_boundary, history_boundary_inherits_profile,
-                 created_at, updated_at)
-             VALUES (?, 'agent:profile-test', 'channel-membership:profile-test',
-                     'access-profile:test',
-                     1, 1, 1, 1, 'entire', 1, ?, ?)",
-        )
-        .bind(&conversation_id)
-        .bind(NOW)
-        .bind(NOW)
-        .execute(&pool)
-        .await
-        .unwrap();
-        let (project_id, working_folder_id): (String, String) = sqlx::query_as(
-            "SELECT channel.project_id, primary_folder.working_folder_id
-             FROM chat_channels channel
-             JOIN project_primary_working_folders primary_folder
-               ON primary_folder.project_id = channel.project_id
-             WHERE channel.conversation_id = ?",
-        )
-        .bind(&conversation_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO chat_agent_working_folder_grants
-                (conversation_id, agent_id, project_id, working_folder_id, sync_key,
-                 capability, capability_inherits_profile, created_at)
-             VALUES (?, 'agent:profile-test', ?, ?, 'grant:profile-test', 'read', 1, ?)",
-        )
-        .bind(&conversation_id)
-        .bind(project_id)
-        .bind(working_folder_id)
-        .bind(NOW)
-        .execute(&pool)
-        .await
-        .unwrap();
-        let audience_revision_before: i64 = sqlx::query_scalar(
-            "SELECT revision FROM chat_conversation_audience_state
-             WHERE conversation_id = ?",
-        )
-        .bind(&conversation_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO chat_access_profile_revisions
-                (id, access_profile_id, default_read_history,
-                 default_participate, default_history_boundary,
-                 maximum_folder_capability, created_at)
-             VALUES ('access-profile-revision:test:2', 'access-profile:test',
-                     1, 1, 'entire', 'edit', ?)",
-        )
-        .bind("2026-07-20T12:01:00Z")
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let access_revision: i64 = sqlx::query_scalar(
-            "SELECT access_revision FROM chat_agent_access_state
-             WHERE agent_id = 'agent:profile-test'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        let latest_profile_revision: i64 = sqlx::query_scalar(
-            "SELECT revision.revision
-             FROM chat_agent_channel_memberships membership
-             JOIN chat_access_profile_effective_revisions revision
-               ON revision.access_profile_id = membership.access_profile_id
-             WHERE membership.agent_id = 'agent:profile-test'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        let audience_revision_after: i64 = sqlx::query_scalar(
-            "SELECT revision FROM chat_conversation_audience_state
-             WHERE conversation_id = ?",
-        )
-        .bind(&conversation_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        let pinned_column: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM pragma_table_info('chat_agent_channel_memberships')
-             WHERE name = 'access_profile_revision'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        let effective_folder_capability: String = sqlx::query_scalar(
-            "SELECT CASE WHEN grant_row.capability_inherits_profile = 1
-                    THEN revision.maximum_folder_capability
-                    ELSE grant_row.capability END
-             FROM chat_agent_working_folder_grants grant_row
-             JOIN chat_agent_channel_memberships membership
-               ON membership.conversation_id = grant_row.conversation_id
-              AND membership.agent_id = grant_row.agent_id
-             JOIN chat_access_profiles profile ON profile.id = membership.access_profile_id
-             JOIN chat_access_profile_effective_revisions revision
-               ON revision.access_profile_id = profile.id
-             WHERE grant_row.agent_id = 'agent:profile-test'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-
-        assert_eq!(access_revision, 0);
-        assert_eq!(latest_profile_revision, 2);
-        assert!(audience_revision_after > audience_revision_before);
-        assert_eq!(pinned_column, 0);
-        assert_eq!(effective_folder_capability, "edit");
     });
 }
 
@@ -854,11 +619,10 @@ fn authorization_source_snapshots_are_immutable_and_folder_policy_is_required() 
             "INSERT INTO chat_assignment_authorization_revisions
                 (id, assignment_id, revision, requester_participant_id,
                  agent_policy_revision_id, agent_access_revision,
-                 destination_conversation_id, access_profile_revision_id,
+                 destination_conversation_id,
                  resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
              VALUES ('authorization:test', 'assignment:test', 1, 'participant:local-owner',
-                     'policy:test', 1, 'conversation:test',
-                     'access-profile-revision:read-only:1', 'ask', ?, 'allowed', ?)",
+                     'policy:test', 1, 'conversation:test', 'ask', ?, 'allowed', ?)",
         )
         .bind("d".repeat(64))
         .bind(NOW)
@@ -2620,33 +2384,6 @@ async fn push_approval_state(pool: &sqlx::SqlitePool, branch: &str) -> (Option<S
     (row.get("revoked_at"), row.get("revision"))
 }
 
-/// Adds a custom access profile that allows publishing, since built-in profiles are immutable.
-async fn insert_publish_profile(pool: &sqlx::SqlitePool) {
-    sqlx::query(
-        "INSERT INTO chat_access_profiles
-            (id, display_name, current_revision_id, current_maximum_folder_capability,
-             created_at, updated_at)
-         VALUES ('access-profile:custom-publish', 'Release',
-                 'access-profile-revision:custom-publish:1', 'publish', ?, ?)",
-    )
-    .bind(NOW)
-    .bind(NOW)
-    .execute(pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO chat_access_profile_revisions
-            (id, access_profile_id, default_read_history, default_participate,
-             default_history_boundary, maximum_folder_capability, created_at)
-         VALUES ('access-profile-revision:custom-publish:1', 'access-profile:custom-publish',
-                 1, 1, 'entire', 'publish', ?)",
-    )
-    .bind(NOW)
-    .execute(pool)
-    .await
-    .unwrap();
-}
-
 #[test]
 fn push_approvals_are_made_only_by_people_outside_the_sync_applier() {
     super::block_on(async {
@@ -2724,7 +2461,7 @@ fn push_approvals_are_made_only_by_people_outside_the_sync_applier() {
 
 #[test]
 fn push_approvals_are_revoked_when_the_agent_loses_publish_access() {
-    let narrowings: [(&str, &[&str]); 9] = [
+    let narrowings: [(&str, &[&str]); 7] = [
         (
             "grant narrows",
             &["UPDATE chat_agent_working_folder_grants SET capability = 'execute'
@@ -2750,16 +2487,6 @@ fn push_approvals_are_revoked_when_the_agent_loses_publish_access() {
                WHERE sync_key = 'channel-membership-agent'"],
         ),
         (
-            "membership profile changed",
-            &["UPDATE chat_agent_channel_memberships SET access_profile_id = 'access-profile:read-only'
-               WHERE sync_key = 'channel-membership-agent'"],
-        ),
-        (
-            "profile narrows",
-            &["UPDATE chat_access_profiles SET current_maximum_folder_capability = 'edit'
-               WHERE id = 'access-profile:custom-publish'"],
-        ),
-        (
             "agent archived",
             &["UPDATE chat_participants SET archived_at = '2026-07-20T12:05:00.000Z'
                WHERE id = 'participant-agent'"],
@@ -2775,32 +2502,14 @@ fn push_approvals_are_revoked_when_the_agent_loses_publish_access() {
         for (case, statements) in narrowings {
             let pool = migrated_memory_pool().await;
             load_project_chat_graph(&pool).await;
-            insert_publish_profile(&pool).await;
-            sqlx::query(
-                "UPDATE chat_agent_channel_memberships
-                 SET access_profile_id = 'access-profile:custom-publish'
-                 WHERE sync_key = 'channel-membership-agent'",
-            )
-            .execute(&pool)
-            .await
-            .unwrap();
             sqlx::query(
                 "UPDATE chat_agent_working_folder_grants
-                 SET capability = 'publish', capability_inherits_profile = 0
+                 SET capability = 'publish'
                  WHERE sync_key = 'grant-managed'",
             )
             .execute(&pool)
             .await
             .unwrap();
-            if case == "profile narrows" {
-                sqlx::query(
-                    "UPDATE chat_agent_working_folder_grants SET capability_inherits_profile = 1
-                     WHERE sync_key = 'grant-managed'",
-                )
-                .execute(&pool)
-                .await
-                .unwrap();
-            }
             insert_push_approval(&pool, "main", Some("participant:local-owner"))
                 .await
                 .unwrap();
@@ -2822,7 +2531,6 @@ fn push_approvals_survive_unrelated_and_applied_changes() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
         load_project_chat_graph(&pool).await;
-        insert_publish_profile(&pool).await;
         sqlx::query(
             "UPDATE chat_agent_working_folder_grants SET capability = 'publish'
              WHERE sync_key = 'grant-managed'",
@@ -2836,8 +2544,6 @@ fn push_approvals_survive_unrelated_and_applied_changes() {
         for statement in [
             "UPDATE chat_agent_working_folder_grants SET capability = 'none'
              WHERE sync_key = 'grant-archived'",
-            "UPDATE chat_access_profiles SET current_maximum_folder_capability = 'edit'
-             WHERE id = 'access-profile:custom-publish'",
             "UPDATE chat_participants SET display_name = 'Renamed' WHERE id = 'participant-agent'",
         ] {
             sqlx::query(statement).execute(&pool).await.unwrap();

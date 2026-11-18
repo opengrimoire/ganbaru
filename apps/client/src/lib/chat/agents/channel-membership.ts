@@ -1,5 +1,4 @@
 import type {
-  ChatAccessProfileRead,
   ChatAiAgentRead,
   ChatAgentAccessRead,
   ChatAgentChannelAccess,
@@ -13,7 +12,6 @@ import { capabilitiesForPreset } from "$lib/chat/agents/access";
 
 /** Access facts a channel offers an agent that joins it. */
 export interface ChannelAccessDefaults {
-  profiles: readonly ChatAccessProfileRead[];
   /** The channel project's preferred working folder, or null when the project has none. */
   projectWorkingFolderId: string | null;
 }
@@ -22,26 +20,6 @@ export interface ChannelAccessDefaults {
 export interface AgentCommandSupport {
   authority: ProviderAuthoritySupport | null;
   safetyMode: SafetyMode | null;
-}
-
-/** Returns the profile used when an agent joins a channel without explicit access choices. */
-export function conversationAccessProfile(
-  profiles: readonly ChatAccessProfileRead[],
-): ChatAccessProfileRead | null {
-  return profiles.find((profile) => profile.builtinKey === "conversationOnly")
-    ?? profiles[0]
-    ?? null;
-}
-
-/** Returns the built-in profile whose ceiling allows running commands in a folder, or null. */
-export function executeAccessProfile(
-  profiles: readonly ChatAccessProfileRead[],
-): ChatAccessProfileRead | null {
-  return profiles.find((profile) => (
-    profile.builtinKey === "buildAndTest"
-      && profile.archivedAt === null
-      && profile.latestRevision.maximumFolderCapability === "execute"
-  )) ?? null;
 }
 
 /** Reads the command support of an agent from its policy and its provider's last probe. */
@@ -62,33 +40,29 @@ export function agentCommandSupport(
 /**
  * Builds the access an agent gets when it joins a channel.
  *
- * The agent responds in the channel and works in the channel project's folder at Execute with
- * runtime approval Ask, so every command still reaches the person. When the project has no folder,
- * the Execute profile is missing, or the provider cannot keep commands person-approved, the
- * agent joins in conversation only instead of with a grant the send gate would refuse.
+ * The agent reads the channel history from the moment it joins, takes assignments, and works in the channel project's folder at Execute
+ * with runtime approval Ask, so every command still reaches the person. When the project has no folder or the
+ * provider cannot keep commands person-approved, the agent joins without file access instead of with a grant the
+ * send gate would refuse.
  */
 export function defaultChannelAccessInput(
   channelId: string,
   defaults: ChannelAccessDefaults,
   agent: AgentCommandSupport,
 ): ChatAgentChannelAccessInput {
-  const executeProfile = executeAccessProfile(defaults.profiles);
-  const canExecute = defaults.projectWorkingFolderId !== null
-    && executeProfile !== null
+  const projectWorkingFolderId = defaults.projectWorkingFolderId;
+  const canExecute = projectWorkingFolderId !== null
     && agent.authority !== null
     && providerExecutesWithAsk(agent.authority, agent.safetyMode);
-  const profile = canExecute ? executeProfile : conversationAccessProfile(defaults.profiles);
   return {
     channelId,
-    accessProfileId: profile?.id ?? "",
-    accessProfileRevisionId: profile?.latestRevision.id ?? "",
-    capabilities: capabilitiesForPreset("isolatedResponder"),
-    historyBoundary: { kind: "entire" },
+    capabilities: capabilitiesForPreset("collaborator"),
+    historyBoundary: { kind: "fromGrant" },
     runtimeApprovalOverride: null,
     scratchRuntimeApprovalOverride: null,
-    folderGrants: canExecute && defaults.projectWorkingFolderId !== null
+    folderGrants: canExecute
       ? [{
-        workingFolderId: defaults.projectWorkingFolderId,
+        workingFolderId: projectWorkingFolderId,
         capability: "execute",
         isDefault: true,
         runtimeApprovalOverride: "ask",
@@ -103,8 +77,6 @@ export function channelAccessInput(
 ): ChatAgentChannelAccessInput {
   return {
     channelId: access.channelId,
-    accessProfileId: access.accessProfileId,
-    accessProfileRevisionId: access.accessProfileRevisionId,
     capabilities: { ...access.capabilities },
     historyBoundary: access.historyBoundary.kind === "entire"
       ? { kind: "entire" }

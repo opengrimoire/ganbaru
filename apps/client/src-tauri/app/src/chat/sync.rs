@@ -3,14 +3,13 @@
 //! The post-apply hook runs `ganbaru_chat::sync_effects::after_materialize` inside the engine
 //! transaction with only the connection and a change sink, so the headless Android pass runs it
 //! too: it creates the device-local access state of arrived agents and audience state of
-//! arrived conversations, bumps the audience and access counters an arrived effective profile
-//! revision, membership, or folder grant affects, and revokes authorizations a narrowing revision
-//! or a removed or narrowed membership or grant no longer covers. An agent or profile pointer
-//! that copies restrictiveness differing from the revision it names has no effective revision,
-//! so its agents are refused; the hook revokes their authorizations and logs the pointer
-//! rather than failing the apply, which would stop every later apply. It reports each agent
-//! it revoked and each conversation the apply deleted, whose cascade removed the authorizations
-//! and runs that targeted it. On desktop the app host hands those reports to
+//! arrived conversations, bumps the audience and access counters an arrived membership or
+//! folder grant affects, and revokes authorizations a removed or narrowed membership or grant no
+//! longer covers. An agent policy pointer that copies restrictiveness differing from the revision
+//! it names has no effective revision, so the agent is refused; the hook
+//! revokes its authorizations and logs the pointer rather than failing the apply, which would
+//! stop every later apply. It reports each agent it revoked and each conversation the apply
+//! deleted, whose cascade removed the authorizations and runs that targeted it. On desktop the app host hands those reports to
 //! [`on_sync_notices`], which wakes the access revocation drain so the revoked runs and the runs
 //! whose authorization is gone stop. A work assignment that settled on another device ends its
 //! local dispatch job and revokes its authorizations the same way, so the executing device stops
@@ -19,12 +18,11 @@
 //! whose concurrent start merged onto another executing device stops its own run. The hook also
 //! settles concurrent folder grant edits: when one inherits the channel override and that
 //! override is stricter than the explicit override the merge kept, the grant takes it. It settles
-//! concurrent channel membership access edits onto the narrowest of each part, so a narrower
-//! profile or an inherited stricter scratch override survives a concurrent widening the priority
-//! cannot rank. Android
-//! never holds an active authorization, since runs execute only on desktop, so it has no drain to
-//! wake. Dispatch and the readers of agents and profiles read the effective rows
-//! when they run, and views learn about the changed tables from the applied tables event.
+//! concurrent channel membership access edits onto the narrowest of each part, so a cleared
+//! capability or an inherited stricter scratch override survives a concurrent widening the
+//! priority cannot rank. Android never holds an active authorization, since runs execute only on
+//! desktop, so it has no drain to wake. Dispatch and the readers of agents read the effective
+//! rows when they run, and views learn about the changed tables from the applied tables event.
 
 use ganbaru_chat::sync_effects::{self, ChatSyncEffects};
 use ganbaru_sync::assets::AssetRef;
@@ -45,7 +43,7 @@ pub(crate) fn check_synced_attachment(asset: &AssetRef, path: &Path) -> Result<(
     ganbaru_chat::attachment_files::check_received_file(asset.content_type(), path)
 }
 
-/// Change notice topic of an agent whose authorizations an applied profile revision revoked;
+/// Change notice topic of an agent whose authorizations an apply revoked;
 /// the key is the agent participant id.
 pub(crate) const CHAT_ACCESS_REVOKED_TOPIC: &str = "chat-access-revoked";
 
@@ -73,12 +71,10 @@ pub(crate) const CHAT_DELEGATION_SETTLED_TOPIC: &str = "chat-delegation-settled"
 
 /// Replicated tables whose applied rows feed device-local Chat state, each registered with
 /// [`ChatApplyHook`].
-const HOOKED_TABLES: [&TableSpec; 13] = [
+const HOOKED_TABLES: [&TableSpec; 11] = [
     &chat::PARTICIPANTS,
     &chat::AGENTS,
     &chat::POLICY_REVISIONS,
-    &chat::PROFILES,
-    &chat::PROFILE_REVISIONS,
     &chat::CONVERSATIONS,
     &chat::MEMBERSHIPS,
     &chat::CHANNEL_MEMBERSHIPS,
@@ -181,7 +177,7 @@ impl MaterializeHook for ChatApplyHook {
                 } else if table.id == chat::CHANNEL_MEMBERSHIPS.id
                     && group == channel_membership_group::ACCESS
                 {
-                    settle_channel_access(conn, versions).await
+                    Ok(settle_channel_access(versions))
                 } else {
                     Ok(None)
                 };
@@ -197,12 +193,12 @@ const SETTLED_GRANT_GROUPS: [GroupId; 1] = [folder_grant_group::GRANT];
 const SETTLED_CHANNEL_MEMBERSHIP_GROUPS: [GroupId; 1] = [channel_membership_group::ACCESS];
 
 /// Number of fields in a channel membership's access group value, the last being `removed_at`.
-const ACCESS_FIELDS: usize = 11;
+const ACCESS_FIELDS: usize = 7;
 
 /// Decodes a channel membership access group value, `None` when it is removed or malformed.
 fn channel_access(value: &Value) -> Option<sync_effects::ChannelAccess> {
     let fields = value.fields();
-    if fields.len() != ACCESS_FIELDS || !matches!(fields[10], Field::Null) {
+    if fields.len() != ACCESS_FIELDS || !matches!(fields[6], Field::Null) {
         return None;
     }
     let text = |field: &Field| match field {
@@ -220,16 +216,12 @@ fn channel_access(value: &Value) -> Option<sync_effects::ChannelAccess> {
         _ => None,
     };
     Some(sync_effects::ChannelAccess {
-        access_profile_id: text(&fields[0])?,
-        read_history: flag(&fields[1])?,
-        read_history_inherits_profile: flag(&fields[2])?,
-        participate: flag(&fields[3])?,
-        participate_inherits_profile: flag(&fields[4])?,
-        history_boundary: text(&fields[5])?,
-        history_boundary_inherits_profile: flag(&fields[6])?,
-        history_from_order_key: optional_text(&fields[7])?,
-        runtime_approval_policy: optional_text(&fields[8])?,
-        scratch_runtime_approval_policy: optional_text(&fields[9])?,
+        read_history: flag(&fields[0])?,
+        participate: flag(&fields[1])?,
+        history_boundary: text(&fields[2])?,
+        history_from_order_key: optional_text(&fields[3])?,
+        runtime_approval_policy: optional_text(&fields[4])?,
+        scratch_runtime_approval_policy: optional_text(&fields[5])?,
     })
 }
 
@@ -238,13 +230,9 @@ fn channel_access_value(access: sync_effects::ChannelAccess) -> Option<Value> {
     let flag = |value: bool| Field::Integer(i64::from(value));
     let optional_text = |value: Option<String>| value.map_or(Field::Null, Field::Text);
     Value::new(vec![
-        Field::Text(access.access_profile_id),
         flag(access.read_history),
-        flag(access.read_history_inherits_profile),
         flag(access.participate),
-        flag(access.participate_inherits_profile),
         Field::Text(access.history_boundary),
-        flag(access.history_boundary_inherits_profile),
         optional_text(access.history_from_order_key),
         optional_text(access.runtime_approval_policy),
         optional_text(access.scratch_runtime_approval_policy),
@@ -256,36 +244,20 @@ fn channel_access_value(access: sync_effects::ChannelAccess) -> Option<Value> {
 /// Settles the concurrent access group `versions` of one channel membership onto the narrowest
 /// of each part, see [`sync_effects::settled_channel_access`]. A removal stands, since the
 /// priority already ranks it above every live version.
-async fn settle_channel_access(
-    conn: &mut SqliteConnection,
-    versions: &[ConcurrentVersion],
-) -> ganbaru_chat_contracts::models::ChatResult<Option<Value>> {
-    let Some(winner) = versions.iter().position(|version| version.won) else {
-        return Ok(None);
-    };
-    let Some(accesses) = versions
+fn settle_channel_access(versions: &[ConcurrentVersion]) -> Option<Value> {
+    let winner = versions.iter().position(|version| version.won)?;
+    let accesses = versions
         .iter()
         .map(|version| channel_access(&version.value))
-        .collect::<Option<Vec<_>>>()
-    else {
-        return Ok(None);
-    };
-    let profile_ids: Vec<&str> = accesses
-        .iter()
-        .map(|access| access.access_profile_id.as_str())
-        .collect();
-    let profiles = sync_effects::channel_access_profiles(conn, &profile_ids).await?;
-    Ok(
-        sync_effects::settled_channel_access(&accesses, winner, &profiles)
-            .and_then(channel_access_value),
-    )
+        .collect::<Option<Vec<_>>>()?;
+    sync_effects::settled_channel_access(&accesses, winner).and_then(channel_access_value)
 }
 
 /// Position of the runtime approval override in a folder grant's grant group value.
-const GRANT_APPROVAL_FIELD: usize = 3;
+const GRANT_APPROVAL_FIELD: usize = 2;
 
 /// Position of the revocation time in a folder grant's grant group value.
-const GRANT_REVOKED_FIELD: usize = 4;
+const GRANT_REVOKED_FIELD: usize = 3;
 
 /// The approval override a grant group version holds, `None` when it inherits.
 fn grant_approval(value: &Value) -> Option<&str> {

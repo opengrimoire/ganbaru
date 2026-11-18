@@ -896,18 +896,18 @@ pub(crate) mod tests {
              VALUES ('{conversation}', '{AGENT}', 'membership:folders', 'member',
                      '{NOW}', '{NOW}');
              INSERT INTO chat_agent_channel_memberships
-                (conversation_id, agent_id, sync_key, access_profile_id,
+                (conversation_id, agent_id, sync_key,
                  read_history, participate, history_boundary, created_at, updated_at)
              VALUES ('{conversation}', '{AGENT}', 'channel-membership:folders',
-                     'access-profile:build-and-test', 1, 1, 'entire', '{NOW}', '{NOW}');
+                     1, 1, 'entire', '{NOW}', '{NOW}');
              INSERT INTO chat_agent_working_folder_grants
                 (conversation_id, agent_id, project_id, working_folder_id, sync_key,
-                 capability, capability_inherits_profile, is_default, created_at)
+                 capability, is_default, created_at)
              VALUES
                 ('{conversation}', '{AGENT}', 'project-chat', 'workspace-1',
-                 'grant:folders-1', 'execute', 1, 1, '{NOW}'),
+                 'grant:folders-1', 'execute', 1, '{NOW}'),
                 ('{conversation}', '{AGENT}', 'project-chat', 'workspace-2',
-                 'grant:folders-2', 'read', 0, 0, '{NOW}');
+                 'grant:folders-2', 'read', 0, '{NOW}');
              INSERT INTO chat_conversation_items
                 (id, conversation_id, item_kind, order_key, created_at)
              VALUES ('item:folders', '{conversation}', 'message', 'a1', '{NOW}');
@@ -926,17 +926,17 @@ pub(crate) mod tests {
              INSERT INTO chat_assignment_authorization_revisions
                 (id, assignment_id, revision, requester_participant_id,
                  agent_policy_revision_id, agent_access_revision,
-                 destination_conversation_id, access_profile_revision_id,
+                 destination_conversation_id,
                  execution_environment_id, working_folder_id,
                  resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
              VALUES
                 ('authorization:working', 'assignment:folders', 1, 'participant:local-owner',
                  'policy:folders', 1, '{conversation}',
-                 'access-profile-revision:build-and-test:1', (SELECT id FROM chat_execution_environments WHERE working_folder_id = 'workspace-1'),
+                 (SELECT id FROM chat_execution_environments WHERE working_folder_id = 'workspace-1'),
                  'workspace-1', 'ask', printf('%064d', 0), 'allowed', '{NOW}'),
                 ('authorization:queued', 'assignment:folders', 2, 'participant:local-owner',
                  'policy:folders', 1, '{conversation}',
-                 'access-profile-revision:build-and-test:1', (SELECT id FROM chat_execution_environments WHERE working_folder_id = 'workspace-1'),
+                 (SELECT id FROM chat_execution_environments WHERE working_folder_id = 'workspace-1'),
                  'workspace-1', 'ask', printf('%064d', 0), 'allowed', '{NOW}');
              INSERT INTO chat_assignment_authorized_folder_sources
                 (authorization_revision_id, root_handle, working_folder_id, capability,

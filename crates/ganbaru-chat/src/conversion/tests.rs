@@ -6,7 +6,6 @@ const NOW: &str = "2026-10-25T06:00:00.000Z";
 const PROJECT_ID: &str = "project-chat-conversion";
 const AGENT_ID: &str = "participant:conversion-agent";
 const FOLDER_ID: &str = "folder:conversion";
-const PROFILE_ID: &str = "access-profile:conversion";
 const ROOT_ITEM_ID: &str = "item:conversion-root";
 const REPLY_THREAD_ID: &str = "reply-thread:conversion";
 
@@ -59,16 +58,13 @@ async fn seed_placeholders(pool: &SqlitePool) -> String {
          VALUES ('{AGENT_ID}', 'ai_agent', 'Agent', '{NOW}', '{NOW}');
          INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
          VALUES ('{AGENT_ID}', 'Test', '{NOW}', '{NOW}');
-         INSERT INTO chat_access_profiles (id, display_name, created_at, updated_at)
-         VALUES ('{PROFILE_ID}', 'Profile', '{NOW}', '{NOW}');
          INSERT INTO chat_conversation_memberships
             (conversation_id, participant_id, sync_key, membership_role, created_at, updated_at)
          VALUES ('{conversation}', '{AGENT_ID}', 'pending:1', 'member', '{NOW}', '{NOW}');
          INSERT INTO chat_agent_channel_memberships
-            (conversation_id, agent_id, sync_key, access_profile_id, read_history,
-             participate, history_boundary, created_at, updated_at)
-         VALUES ('{conversation}', '{AGENT_ID}', 'pending:1', '{PROFILE_ID}', 1, 1,
-                 'entire', '{NOW}', '{NOW}');
+            (conversation_id, agent_id, sync_key, read_history, participate,
+             history_boundary, created_at, updated_at)
+         VALUES ('{conversation}', '{AGENT_ID}', 'pending:1', 1, 1, 'entire', '{NOW}', '{NOW}');
          INSERT INTO chat_agent_working_folder_grants
             (conversation_id, agent_id, working_folder_id, sync_key, project_id, capability,
              is_default, created_at)

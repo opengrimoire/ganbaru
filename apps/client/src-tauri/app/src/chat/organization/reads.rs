@@ -1,10 +1,9 @@
 //! SQLite read models for organizational Chat state.
 
 use super::common::{
-    ACTIVE_FOLDER_GRANTS_SQL, PageCursor, parse_access_profile_builtin_key, parse_approval_policy,
-    parse_folder_capability, parse_history_boundary, parse_json, parse_participant_kind,
-    parse_review_outcome, parse_runtime_approval_policy, parse_work_state, stored_value_error,
-    u32_value,
+    ACTIVE_FOLDER_GRANTS_SQL, PageCursor, parse_approval_policy, parse_folder_capability,
+    parse_history_boundary, parse_json, parse_participant_kind, parse_review_outcome,
+    parse_runtime_approval_policy, parse_work_state, stored_value_error, u32_value,
 };
 use super::inputs::AWAITING_DELIVERY_SQL;
 use super::workflow::{parse_model_selection, read_message_references};
@@ -14,7 +13,6 @@ use super::{
 };
 use crate::chat::channels::{sync_key, unseen_thread_failure_sql};
 use ganbaru_chat::conversion::reply_cursor_key;
-use ganbaru_chat::coordination::access::history_boundary_is_expansion;
 use ganbaru_chat_contracts::models::*;
 use sqlx::{AssertSqlSafe, Row, SqlitePool};
 
@@ -89,23 +87,11 @@ async fn read_roster_ai_access(
     agent_id: &ChatParticipantId,
 ) -> ChatResult<Option<ChatChannelRosterAiSummary>> {
     let row = sqlx::query(
-        "SELECT membership.access_profile_id, profile_revision.revision AS latest_revision,
-                profile.builtin_key, profile.display_name,
-                profile_revision.default_read_history AS profile_read_history,
-                profile_revision.default_participate AS profile_participate,
-                profile_revision.default_history_boundary AS profile_history_boundary,
-                profile_revision.maximum_folder_capability AS profile_folder_capability,
-                membership.read_history, membership.read_history_inherits_profile,
-                membership.participate, membership.participate_inherits_profile,
-                membership.history_boundary,
-                membership.history_boundary_inherits_profile,
+        "SELECT membership.read_history, membership.participate, membership.history_boundary,
                 membership.history_from_order_key,
                 membership.runtime_approval_policy,
                 membership.scratch_runtime_approval_policy
          FROM chat_agent_channel_memberships membership
-         JOIN chat_access_profiles profile ON profile.id = membership.access_profile_id
-         JOIN chat_access_profile_effective_revisions profile_revision
-           ON profile_revision.access_profile_id = profile.id
          WHERE membership.conversation_id = ? AND membership.agent_id = ?
            AND membership.removed_at IS NULL",
     )
@@ -124,10 +110,6 @@ async fn read_roster_ai_access(
         .await
         .map_err(persistence_error)?;
     let mut folder_grants = Vec::with_capacity(grant_rows.len());
-    let profile_folder_capability = parse_folder_capability(
-        &row.try_get::<String, _>("profile_folder_capability")
-            .map_err(persistence_error)?,
-    )?;
     for grant in grant_rows {
         folder_grants.push(ChatFolderGrantRead {
             working_folder_id: ProjectWorkingFolderId::new(
@@ -137,20 +119,11 @@ async fn read_roster_ai_access(
             )
             .map_err(identifier_error)?,
             display_name: grant.try_get("display_name").map_err(persistence_error)?,
-            capability: if grant
-                .try_get::<i64, _>("capability_inherits_profile")
-                .map_err(persistence_error)?
-                != 0
-            {
-                profile_folder_capability
-            } else {
-                parse_folder_capability(
-                    &grant
-                        .try_get::<String, _>("capability")
-                        .map_err(persistence_error)?,
-                )?
-                .intersect(profile_folder_capability)
-            },
+            capability: parse_folder_capability(
+                &grant
+                    .try_get::<String, _>("capability")
+                    .map_err(persistence_error)?,
+            )?,
             is_default: grant
                 .try_get::<i64, _>("is_default")
                 .map_err(persistence_error)?
@@ -167,96 +140,24 @@ async fn read_roster_ai_access(
             )?,
         });
     }
-    let profile_history_boundary = parse_history_boundary(
-        &row.try_get::<String, _>("profile_history_boundary")
-            .map_err(persistence_error)?,
-        None,
-    )?;
-    let stored_history_boundary = parse_history_boundary(
+    let history_boundary = parse_history_boundary(
         &row.try_get::<String, _>("history_boundary")
             .map_err(persistence_error)?,
         row.try_get("history_from_order_key")
             .map_err(persistence_error)?,
     )?;
-    let history_inherits_profile = row
-        .try_get::<i64, _>("history_boundary_inherits_profile")
-        .map_err(persistence_error)?
-        != 0;
-    let effective_history_boundary = if history_inherits_profile {
-        match profile_history_boundary {
-            ChatHistoryBoundary::Entire => ChatHistoryBoundary::Entire,
-            ChatHistoryBoundary::FromGrant { .. } => ChatHistoryBoundary::FromGrant {
-                lower_order_key: match stored_history_boundary {
-                    ChatHistoryBoundary::FromGrant { lower_order_key } => lower_order_key,
-                    ChatHistoryBoundary::Entire => None,
-                },
-            },
-        }
-    } else if history_boundary_is_expansion(&profile_history_boundary, &stored_history_boundary) {
-        ChatHistoryBoundary::FromGrant {
-            lower_order_key: Some(
-                super::common::from_grant_lower_order_key(
-                    &mut *pool.acquire().await.map_err(persistence_error)?,
-                    conversation_id.as_str(),
-                )
-                .await?,
-            ),
-        }
-    } else {
-        stored_history_boundary
-    };
     Ok(Some(ChatChannelRosterAiSummary {
-        access_profile_id: ChatAccessProfileId::new(
-            row.try_get::<String, _>("access_profile_id")
-                .map_err(persistence_error)?,
-        )
-        .map_err(identifier_error)?,
-        access_profile_revision: u64_value(
-            row.try_get("latest_revision").map_err(persistence_error)?,
-        )?,
-        access_profile_builtin_key: parse_access_profile_builtin_key(
-            row.try_get::<Option<String>, _>("builtin_key")
-                .map_err(persistence_error)?
-                .as_deref(),
-        )?,
-        access_profile_name: row.try_get("display_name").map_err(persistence_error)?,
         capabilities: ChatChannelCapabilities {
-            read_history: if row
-                .try_get::<i64, _>("read_history_inherits_profile")
+            read_history: row
+                .try_get::<i64, _>("read_history")
                 .map_err(persistence_error)?
-                != 0
-            {
-                row.try_get::<i64, _>("profile_read_history")
-                    .map_err(persistence_error)?
-                    != 0
-            } else {
-                row.try_get::<i64, _>("read_history")
-                    .map_err(persistence_error)?
-                    != 0
-                    && row
-                        .try_get::<i64, _>("profile_read_history")
-                        .map_err(persistence_error)?
-                        != 0
-            },
-            participate: if row
-                .try_get::<i64, _>("participate_inherits_profile")
+                != 0,
+            participate: row
+                .try_get::<i64, _>("participate")
                 .map_err(persistence_error)?
-                != 0
-            {
-                row.try_get::<i64, _>("profile_participate")
-                    .map_err(persistence_error)?
-                    != 0
-            } else {
-                row.try_get::<i64, _>("participate")
-                    .map_err(persistence_error)?
-                    != 0
-                    && row
-                        .try_get::<i64, _>("profile_participate")
-                        .map_err(persistence_error)?
-                        != 0
-            },
+                != 0,
         },
-        history_boundary: effective_history_boundary,
+        history_boundary,
         runtime_approval_override: row
             .try_get::<Option<String>, _>("runtime_approval_policy")
             .map_err(persistence_error)?

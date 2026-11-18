@@ -1,14 +1,12 @@
 //! Agent access previews, atomic replacement, and authority-change classification.
 
 mod channels;
-mod profiles;
 mod retained_references;
 mod targets;
 
 // Preserve command paths and generated Tauri wrappers at the access facade.
 pub(super) use channels::read_agent_access;
 use channels::{proposed_access_read, resolve_channel_access};
-pub use profiles::*;
 use retained_references::{retained_reference_issues, retained_reference_issues_in_transaction};
 pub use targets::*;
 
@@ -29,12 +27,6 @@ struct ResolvedChannelAccess {
     group_id: Option<String>,
     conversation_id: ChatConversationId,
     channel_name: String,
-    access_profile_id: ChatAccessProfileId,
-    access_profile_revision_id: ChatAccessProfileRevisionId,
-    access_profile_revision: u64,
-    profile_default_channel_capabilities: ChatChannelCapabilities,
-    profile_default_history_boundary: ChatHistoryBoundary,
-    profile_maximum_folder_capability: ChatFolderCapability,
     capabilities: ChatChannelCapabilities,
     history_boundary: ChatHistoryBoundary,
     runtime_approval_override: Option<ChatRuntimeApprovalPolicy>,
@@ -245,7 +237,7 @@ pub async fn chat_replace_agent_access(
     read_agent_access(&pool, &request.agent_id).await
 }
 
-/// Saves the access draft of `request`, with its profile and policy change when
+/// Saves the access draft of `request`, with its agent profile and policy change when
 /// `validated_configuration` carries one, and returns whether the draft reduced the agent's
 /// access, which revoked its authorizations and queued revocation jobs for the caller to drain.
 pub(super) async fn write_agent_access(
@@ -304,7 +296,6 @@ pub(super) async fn write_agent_access(
             true,
         ));
     }
-    require_expected_profile_revisions_in_transaction(&mut transaction, &request.channels).await?;
 
     if let Some(configuration) = validated_configuration {
         require_unused_agent_name(
@@ -416,29 +407,16 @@ pub(super) async fn write_agent_access(
                 })?)
             }
         };
-        let read_history_inherits_profile = channel.capabilities.read_history
-            == channel.profile_default_channel_capabilities.read_history;
-        let participate_inherits_profile = channel.capabilities.participate
-            == channel.profile_default_channel_capabilities.participate;
-        let history_boundary_inherits_profile = wire_history_boundary(&channel.history_boundary)
-            == wire_history_boundary(&channel.profile_default_history_boundary);
         sqlx::query(
             "INSERT INTO chat_agent_channel_memberships
-                (conversation_id, agent_id, sync_key, access_profile_id,
-                 read_history, read_history_inherits_profile,
-                 participate, participate_inherits_profile,
-                 history_boundary, history_boundary_inherits_profile,
-                 history_from_order_key, runtime_approval_policy,
+                (conversation_id, agent_id, sync_key, read_history, participate,
+                 history_boundary, history_from_order_key, runtime_approval_policy,
                  scratch_runtime_approval_policy, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(conversation_id, agent_id) DO UPDATE SET
-                access_profile_id = excluded.access_profile_id,
                 read_history = excluded.read_history,
-                read_history_inherits_profile = excluded.read_history_inherits_profile,
                 participate = excluded.participate,
-                participate_inherits_profile = excluded.participate_inherits_profile,
                 history_boundary = excluded.history_boundary,
-                history_boundary_inherits_profile = excluded.history_boundary_inherits_profile,
                 history_from_order_key = excluded.history_from_order_key,
                 runtime_approval_policy = excluded.runtime_approval_policy,
                 scratch_runtime_approval_policy = excluded.scratch_runtime_approval_policy,
@@ -450,13 +428,9 @@ pub(super) async fn write_agent_access(
             channel.conversation_id.as_str(),
             request.agent_id.as_str(),
         ))?)
-        .bind(channel.access_profile_id.as_str())
         .bind(channel.capabilities.read_history)
-        .bind(read_history_inherits_profile)
         .bind(channel.capabilities.participate)
-        .bind(participate_inherits_profile)
         .bind(wire_history_boundary(&channel.history_boundary))
-        .bind(history_boundary_inherits_profile)
         .bind(history_from_order_key)
         .bind(
             channel
@@ -480,7 +454,6 @@ pub(super) async fn write_agent_access(
             &request.agent_id,
             &channel.project_id,
             &channel.folder_grants,
-            channel.profile_maximum_folder_capability,
             &now,
         )
         .await?;
@@ -510,7 +483,6 @@ pub(super) async fn replace_folder_grants(
     agent_id: &ChatParticipantId,
     project_id: &str,
     grants: &[ChatFolderGrantInput],
-    profile_maximum_folder_capability: ChatFolderCapability,
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
     sqlx::query(
@@ -528,14 +500,12 @@ pub(super) async fn replace_folder_grants(
         sqlx::query(
             "INSERT INTO chat_agent_working_folder_grants
                 (conversation_id, agent_id, project_id, working_folder_id, sync_key,
-                 capability, capability_inherits_profile,
-                 is_default, runtime_approval_policy,
-                 revision, created_at, revoked_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL)
+                 capability, is_default, runtime_approval_policy, revision, created_at,
+                 revoked_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL)
              ON CONFLICT(conversation_id, agent_id, working_folder_id) DO UPDATE SET
                 project_id = excluded.project_id,
                 capability = excluded.capability,
-                capability_inherits_profile = excluded.capability_inherits_profile,
                 is_default = excluded.is_default,
                 runtime_approval_policy = excluded.runtime_approval_policy,
                 revision = chat_agent_working_folder_grants.revision + 1,
@@ -551,7 +521,6 @@ pub(super) async fn replace_folder_grants(
             grant.working_folder_id.as_str(),
         ))?)
         .bind(wire_folder_capability(grant.capability))
-        .bind(grant.capability == profile_maximum_folder_capability)
         .bind(grant.is_default)
         .bind(
             grant
@@ -614,53 +583,6 @@ async fn preview_agent_access(
         removed_channel_ids,
         issues,
     })
-}
-
-/// Refuses the save unless every channel's profile still has the effective revision the draft
-/// names. Revision ids are compared because display numbers follow creation order, so a synced
-/// revision created earlier can shift the numbers and give another revision the number the draft
-/// saw.
-pub(super) async fn require_expected_profile_revisions_in_transaction(
-    transaction: &mut Transaction<'_, Sqlite>,
-    channels: &[ChatAgentChannelAccessInput],
-) -> ChatResult<()> {
-    let expected = channels
-        .iter()
-        .map(|channel| {
-            (
-                channel.access_profile_id.as_str(),
-                channel.access_profile_revision_id.as_str(),
-            )
-        })
-        .collect::<BTreeSet<_>>();
-    for (access_profile_id, expected_revision_id) in expected {
-        let effective_revision_id = sqlx::query_scalar::<_, String>(
-            "SELECT revision.id
-             FROM chat_access_profiles profile
-             JOIN chat_access_profile_effective_revisions revision
-               ON revision.access_profile_id = profile.id
-             WHERE profile.id = ? AND profile.archived_at IS NULL",
-        )
-        .bind(access_profile_id)
-        .fetch_optional(&mut **transaction)
-        .await
-        .map_err(persistence_error)?;
-        let Some(effective_revision_id) = effective_revision_id else {
-            return Err(ChatError::new(
-                ChatErrorCode::StaleRevision,
-                "An access profile became unavailable before agent access could be saved",
-                true,
-            ));
-        };
-        if effective_revision_id != expected_revision_id {
-            return Err(ChatError::new(
-                ChatErrorCode::StaleRevision,
-                "An access profile changed before agent access could be saved",
-                true,
-            ));
-        }
-    }
-    Ok(())
 }
 
 /// Returns the runtime approval a saved draft leaves as the agent default, which follows the

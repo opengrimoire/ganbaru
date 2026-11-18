@@ -2203,9 +2203,8 @@ fn manifests_are_well_formed() {
             31, 511, 7, 127, 31, 7, 3, 7, 1023, 7, 127, 31, 63, 15, 63, 3, 2047, 15, 31, 31, 15,
             255, 127, 65535, 31, 7, 31, 255, 127, 31, 8191, 31, 15, 7, 31, 15, 15, 1, 15, 15, 31,
             31, 15, 63, 134217727, 65535, 3, 15, 63, 15, 7, 1, 63, 3, 7, 31, 31, 31, 7, 15, 1, 15,
-            1023, 127, 255, 255, 31, 7, 31, 127, 7, 7, 63, 31, 15, 15, 31, 7, 7, 3, 15, 31, 1, 31,
-            1, 15, 31, 31, 15, 7, 15, 31, 3, 31, 15, 3, 1, 1, 1, 1, 1, 1, 15, 15, 15, 63, 31, 127,
-            1, 15
+            1023, 127, 255, 255, 31, 7, 31, 127, 7, 7, 63, 31, 15, 15, 31, 7, 7, 3, 15, 31, 1, 15,
+            31, 31, 15, 7, 15, 31, 3, 31, 15, 3, 1, 1, 1, 1, 1, 1, 15, 15, 15, 63, 31, 127, 1, 15
         ]
     );
 }
@@ -2403,25 +2402,31 @@ fn manifest_refuses_a_never_table_under_a_deletable_cascade_parent() {
         deletion: Deletion::Never,
         ..chat::AGENTS
     };
-    const PROFILE: TableSpec = TableSpec {
-        deletion: Deletion::Ordinary,
-        ..chat::PROFILES
-    };
-    const REFERENCING: TableSpec = TableSpec {
-        deletion: Deletion::Never,
-        ..chat::PROFILE_REVISIONS
-    };
-    const REFUSED: DomainManifest = DomainManifest {
-        tables: &[PARENT, KEY_CHILD, PROFILE, REFERENCING],
+    const KEY_PARENT_REFUSED: DomainManifest = DomainManifest {
+        tables: &[PARENT, KEY_CHILD],
         ..chat::DOMAIN
     };
-    let problems = validation_error(&[&REFUSED]);
-    for problem in [
-        "chat_agents: the key parent of a never-deleted table is never deleted",
-        "chat_access_profile_revisions: access_profile_id cascades from a table that is not never deleted",
-    ] {
-        assert!(problems.contains(problem), "{problems}");
-    }
+    let problems = validation_error(&[&KEY_PARENT_REFUSED]);
+    assert!(
+        problems.contains("chat_agents: the key parent of a never-deleted table is never deleted"),
+        "{problems}"
+    );
+
+    const AGENT: TableSpec = TableSpec {
+        deletion: Deletion::Ordinary,
+        ..chat::AGENTS
+    };
+    const REFERENCE_REFUSED: DomainManifest = DomainManifest {
+        tables: &[chat::PARTICIPANTS, AGENT, chat::POLICY_REVISIONS],
+        ..chat::DOMAIN
+    };
+    let problems = validation_error(&[&REFERENCE_REFUSED]);
+    assert!(
+        problems.contains(
+            "chat_agent_policy_revisions: agent_id cascades from a table that is not never deleted"
+        ),
+        "{problems}"
+    );
 }
 
 #[test]

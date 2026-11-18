@@ -30,8 +30,7 @@ export async function applyChannelMemberChanges(
   const changes = resolveChannelMemberChanges(currentAgentIds, selectedAgentIds);
   if (changes.addedAgentIds.length === 0 && changes.removedAgentIds.length === 0) return false;
   const channelId = context.channel.id;
-  const profiles = changes.addedAgentIds.length > 0 ? await chatApi.listChatAccessProfiles() : [];
-  const defaults = { profiles, projectWorkingFolderId: context.projectWorkingFolderId };
+  const defaults = { projectWorkingFolderId: context.projectWorkingFolderId };
   for (const agentId of changes.addedAgentIds) {
     const access = await chatApi.readChatAgentAccess(agentId);
     await chatApi.replaceChatAgentAccess({

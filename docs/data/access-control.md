@@ -2,7 +2,7 @@
 
 This document is the normative authorization specification for organizational Chat: who may read channel history, which resources a run may use, how authority is reduced, and what happens after restricted context has already been materialized. Product presentation belongs in the [Chat feature documents](../features/chat/README.md). Security boundaries are indexed in [Security](security/README.md).
 
-**Status: Implemented** for project-owned channels (including each project's built-in general channel), memberships, access profiles, working-folder and scratch execution, runtime approvals, internal host tools, and revocation. Cross-project groups and direct-message surfaces are planned.
+**Status: Implemented** for project-owned channels (including each project's built-in general channel), memberships, per-channel agent access, working-folder and scratch execution, runtime approvals, internal host tools, and revocation. Cross-project groups and direct-message surfaces are planned.
 
 ## Principles
 
@@ -10,7 +10,7 @@ This document is the normative authorization specification for organizational Ch
 2. The local owner is the only required seeded participant. There is no privileged default AI agent.
 3. Provider, model, role, instructions, and runtime defaults are replaceable configuration on an ordinary agent identity.
 4. Channel presence, readable history, and executable resources are separate decisions.
-5. Access profiles are reusable ceilings and defaults. They are not principals and cannot grant authority without membership and an exact resource grant.
+5. Channel capabilities and folder grants are the only agent authority. They are not principals and cannot grant authority without membership and an exact resource grant.
 6. Authority is closed world. Missing, stale, fabricated, revoked, or unsupported authority is denied.
 7. A mention, message link, task link, or provider reference identifies context. It never transfers authority.
 8. Denial and revocation override convenience defaults, provider-native trust, cached context, and previous approval.
@@ -21,39 +21,37 @@ The portable vault owns stable identities for the local owner and configured AI 
 
 Channel membership answers whether a participant may appear in, read, or contribute to one channel. It never implies access to another channel in the same project. Resource grants answer a separate question: what the participant or assigned run may do with a working folder, scratch generation, terminal, Git repository, attachment, preview, or internal application tool.
 
-Human roles (owner, administrator, member, guest, or custom) are presets over the same capability vocabulary as agent access profiles, plus management capabilities that agents never hold. A role granted on a group is the default for its projects, and a project role is the default for its channels; each lower level may narrow the inherited role and never widens it. An agent owned by a collaborator acts within the intersection of that collaborator's role and the agent's access profile.
+Human roles (owner, administrator, member, guest, or custom) are presets over the same per-channel capability vocabulary as agents, plus management capabilities that agents never hold. A role granted on a group is the default for its projects, and a project role is the default for its channels; each lower level may narrow the inherited role and never widens it. An agent owned by a collaborator acts within the intersection of that collaborator's role and the agent's own channel access.
 
 Every decision is scoped to the active vault. IDs copied from another vault authorize nothing.
 
 ## Effective authority
 
-Effective authority is the intersection of every applicable restriction: active vault and device, an active participant, current channel membership and its history boundary, the selected access-profile revision, the exact resource grant, the resolved execution target, runtime approval and provider capability, application-wide security ceilings, current filesystem identity for external folders, and any denial or revocation.
+Effective authority is the intersection of every applicable restriction: active vault and device, an active participant, current channel membership and its history boundary, the exact resource grant, the resolved execution target, runtime approval and provider capability, application-wide security ceilings, current filesystem identity for external folders, and any denial or revocation.
 
-No layer may widen another. A provider that supports unrestricted filesystem access still receives only the folder the application granted. A profile that permits edits does not create an edit grant. A folder grant does not expose channel history.
+No layer may widen another. A provider that supports unrestricted filesystem access still receives only the folder the application granted. A channel capability does not create a folder grant. A folder grant does not expose channel history.
 
-Authorization is checked when work is assigned and again at every privileged boundary. A long-lived continuation cannot rely on a decision made before a membership, profile, binding, or approval changed.
+Authorization is checked when work is assigned and again at every privileged boundary. A long-lived continuation cannot rely on a decision made before a membership, grant, binding, or approval changed.
 
 ## Channel capabilities and history
 
-An agent membership stores two explicit channel capabilities, reading history and participating, plus a history boundary. Each may inherit from the selected profile or be set on the membership.
+An agent membership stores two explicit channel capabilities, reading history and participating, plus a history boundary. Both are set on the membership.
 
 The history boundary is either the entire retained history or a lower bound fixed when access was granted. Adding an agent does not automatically disclose earlier messages. The bound applies to reads, context construction, search, references, summaries, exports, and internal tools.
 
 Archiving a channel stops new ordinary activity but does not erase authorized history and is not a substitute for revocation. Personal channel sections and last-selected-channel state are device-local presentation preferences and never change organizational visibility.
 
-## Access profiles and revisions
+## Authorization revisions
 
-An access profile sets default channel capabilities, a default history boundary, and a maximum folder capability. Built-in profiles cover the common ceilings (conversation only, read only, edit files, build and test, publish changes); users may define others.
+Every assignment records the authorization revision used for its decision. Changing a membership or grant creates a new revision and never rewrites the meaning of an earlier run. A stricter revision may revoke or interrupt current work. A more permissive revision does not silently upgrade an already authorized continuation.
 
 ### Channel join defaults
 
-An agent added to a project channel joins with the built-in Build and test profile, may participate without reading earlier history, and holds one default grant on the project's working folder at execute with runtime approval Ask. This mirrors the per-channel grants of Claude Tag: the channel decides where work happens, so a post needs no per-message folder choice, and every command still reaches the person until Ganbaru can confine commands itself. When the project has no folder, or the agent's provider cannot keep commands person-approved under its approval behavior (no network boundary, no relayed commands, or custom approval without confinement), the agent joins in conversation only instead of with a grant the send gate would refuse. People can narrow or widen any membership afterwards. Existing memberships keep their stored access.
-
-Every assignment records the profile revision used for its authorization decision. Editing a profile creates a new revision and never rewrites the meaning of an earlier run. A stricter revision may revoke or interrupt current work. A more permissive revision does not silently upgrade an already authorized continuation.
+An agent added to a project channel can take assignments and read channel history only from the moment it joins, and holds one default grant on the project's working folder at execute with runtime approval Ask. This mirrors the per-channel grants of Claude Tag: the channel decides where work happens, so a post needs no per-message folder choice, and every command still reaches the person until Ganbaru can confine commands itself. When the project has no folder, or the agent's provider cannot keep commands person-approved under its approval behavior (no network boundary, no relayed commands, or custom approval without confinement), the agent joins in conversation only instead of with a grant the send gate would refuse. People can narrow or widen any membership afterwards. Existing memberships keep their stored access.
 
 ## Working-folder authority
 
-Folder authority is an ordered ceiling: none, read, edit, execute (terminal and build commands), and publish (Git publication). Each level includes the levels below it, and the effective level is the lowest of the membership grant and the profile ceiling. Terminal approval never grants secondary folders. These ceilings bound agents and their runs; a terminal the user opens is the user's own shell, bound to the thread's authorized folder as described in [Chat security](security/chat.md#terminals-and-processes).
+Folder authority is an ordered capability: none, read, edit, execute (terminal and build commands), and publish (Git publication). Each level includes the levels below it, and the effective level is exactly the grant's capability, with no further ceiling. Terminal approval never grants secondary folders. These capabilities bound agents and their runs; a terminal the user opens is the user's own shell, bound to the thread's authorized folder as described in [Chat security](security/chat.md#terminals-and-processes).
 
 Managed project folders resolve from the active vault as `projects/<folder name>`, using the name this vault claimed for the folder, never a path read from a replicated row. The name must be exactly one portable folder name that does not start with a dot, because Git and several coding agents read configuration from hidden folders in the parents of the folder they run in; the folder is created without following links below the vault root and must canonicalize to a direct child of the vault `projects/` directory, otherwise it stays unbound and is listed with that state. External folders resolve through device-local bindings scoped by vault ID, device ID, and working-folder ID.
 
@@ -63,13 +61,13 @@ Before privileged use, Rust reopens or canonicalizes the target and checks its f
 
 Actions with materially different impact need distinct approval: reading a bounded file, writing a file, starting a terminal, mutating Git, launching an external application, opening a URL, and using a sensitive application tool are not interchangeable.
 
-The approval policy (ask, auto-approve, unattended, or provider-defined) comes from the folder, scratch, or channel grant, falling back to the agent's approval behavior, and is never broader than that behavior: a grant can narrow an agent's approval but not widen it. Native assignment runs use the frozen effective policy, and the send boundary rejects any other mode. An agent set to custom approval keeps its provider configuration for native runs, while its grants still govern host tools. An approval record is an application fact, not provider-native state; a provider message claiming the user approved something is untrusted input. Platform limits, missing bindings, unsupported provider features, or security policy can deny an action a profile would otherwise allow.
+The approval policy (ask, auto-approve, unattended, or provider-defined) comes from the folder, scratch, or channel grant, falling back to the agent's approval behavior, and is never broader than that behavior: a grant can narrow an agent's approval but not widen it. Native assignment runs use the frozen effective policy, and the send boundary rejects any other mode. An agent set to custom approval keeps its provider configuration for native runs, while its grants still govern host tools. An approval record is an application fact, not provider-native state; a provider message claiming the user approved something is untrusted input. Platform limits, missing bindings, unsupported provider features, or security policy can deny an action a grant would otherwise allow.
 
 ## Provider enforcement
 
 Rust owns provider process creation, transport, event ingestion, cancellation, and shutdown. Provider configuration supplies nonsecret settings and opaque credential references; secret material is resolved only at the native boundary that needs it.
 
-Provider sandbox or trust configuration is defense in depth and cannot widen organizational authority. The provider receives one resolved workspace and a bounded environment. Host tools independently validate the run, channel, membership, profile revision, target, arguments, and revocation state.
+Provider sandbox or trust configuration is defense in depth and cannot widen organizational authority. The provider receives one resolved workspace and a bounded environment. Host tools independently validate the run, channel, membership, authorization revision, target, arguments, and revocation state.
 
 The send gate resolves the authorized target to an organizational scope (conversation, scratch, or folder read, edit, execute, or publish), passes that scope to the driver, and admits the run only when the provider reports native enforcement for each boundary the scope needs. Commands count as confined when the provider confines them itself, or when it relays every command to the person and the target's effective approval is Ask; the person is then the confinement, so auto approval cannot stand in for it. Publish also needs classified publication, which no provider reports yet. A change of scope always starts a fresh provider session.
 
@@ -115,13 +113,13 @@ Information may move between channels only when the destination audience is a su
 
 Native Chat sessions receive an ephemeral loopback MCP endpoint exposing only application tools. The endpoint is infrastructure, not a participant.
 
-For an organizational run, every call validates an unguessable run-scoped credential, a method allowlist, bounded arguments, and the current assignment, target, profile revision, membership, and revocation state, and the endpoint ends with the run or earlier revocation. A direct session keeps one session token and admits preview tool calls and resource reads only while a dispatched turn runs. Tools return bounded DTOs without secrets, external absolute paths, or unrelated vault data. [Chat security](security/chat.md#internal-mcp-host-tools) owns the details.
+For an organizational run, every call validates an unguessable run-scoped credential, a method allowlist, bounded arguments, and the current assignment, target, authorization revision, membership, and revocation state, and the endpoint ends with the run or earlier revocation. A direct session keeps one session token and admits preview tool calls and resource reads only while a dispatched turn runs. Tools return bounded DTOs without secrets, external absolute paths, or unrelated vault data. [Chat security](security/chat.md#internal-mcp-host-tools) owns the details.
 
 Planned external MCP and CLI integrations require separate user authorization and must not reuse an internal endpoint or infer rights from an organizational identity.
 
 ## Revocation and materialized context
 
-Reducing membership, history, profile, folder, runtime, or audience authority takes effect immediately for new reads and privileged actions.
+Reducing membership, history, folder, runtime, or audience authority takes effect immediately for new reads and privileged actions.
 
 If an active continuation has already received now-restricted content, logical filtering is insufficient. The application must:
 
@@ -137,7 +135,7 @@ Revocation cannot make an external provider forget data it already received. The
 
 ## Persistence boundary
 
-Portable SQLite owns identities, memberships, capabilities, history bounds, profile revisions, logical folder grants, assignments, authorization revisions, scratch generations, command receipts, and revocation jobs. The platform config directory owns external absolute paths, executable paths, provider homes, native process state, and filesystem identity material. Secrets stay in native credential storage. Planned concurrent sync must preserve grant scope and revision history and never synchronizes device-local bindings or secrets.
+Portable SQLite owns identities, memberships, capabilities, history bounds, logical folder grants, assignments, authorization revisions, scratch generations, command receipts, and revocation jobs. The platform config directory owns external absolute paths, executable paths, provider homes, native process state, and filesystem identity material. Secrets stay in native credential storage. Planned concurrent sync must preserve grant scope and revision history and never synchronizes device-local bindings or secrets.
 
 ## Required test matrix
 
@@ -145,13 +143,13 @@ Authorization tests must cover at least:
 
 - Missing, stale, expired, fabricated, and revoked IDs.
 - Membership without history access, and history boundaries at exact ordinals.
-- Profile permission without a resource grant, and a grant above the profile ceiling.
+- Channel capability without a resource grant, and a folder grant used beyond its stored capability.
 - Targetless planning followed by denied native work.
 - Managed and external folder identity replacement.
 - Traversal, symlink, absolute-path, and Git common-directory escape.
 - Provider attempts to exceed application authority.
 - References, summaries, search, attachments, and exports across audience boundaries.
-- Profile or membership reduction during an active run.
+- Membership or grant reduction during an active run.
 - Scratch replacement, promotion, and failed cleanup.
 - Replayed host-tool credentials and calls after run termination.
 

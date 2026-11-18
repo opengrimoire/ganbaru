@@ -1,7 +1,5 @@
 import type {
   ChatAgentRunId,
-  ChatAccessProfileId,
-  ChatAccessProfileRevisionId,
   ChatAssignmentInputId,
   ChatAttachmentId,
   ChatChannelId,
@@ -104,15 +102,6 @@ export type ChatHistoryBoundary =
   | { kind: "entire" }
   | { kind: "fromGrant"; lowerOrderKey?: string };
 
-export const CHAT_ACCESS_PROFILE_BUILTIN_KEYS = [
-  "conversationOnly",
-  "readOnly",
-  "editFiles",
-  "buildAndTest",
-  "publishChanges",
-] as const;
-export type ChatAccessProfileBuiltinKey = (typeof CHAT_ACCESS_PROFILE_BUILTIN_KEYS)[number];
-
 export const CHAT_ACCESS_ISSUE_CODES = [
   "archived_channel",
   "archived_folder",
@@ -120,37 +109,10 @@ export const CHAT_ACCESS_ISSUE_CODES = [
   "duplicate_channel",
   "duplicate_folder",
   "multiple_default_folders",
-  "profile_ceiling_exceeded",
-  "profile_not_found",
   "retained_reference_disclosure",
   "agent_not_found",
 ] as const;
 export type ChatAccessIssueCode = (typeof CHAT_ACCESS_ISSUE_CODES)[number];
-
-export interface ChatAccessProfileRevisionInput {
-  defaultChannelCapabilities: ChatChannelCapabilities;
-  defaultHistoryBoundary: ChatHistoryBoundary;
-  maximumFolderCapability: ChatFolderCapability;
-}
-
-export interface ChatAccessProfileRevision {
-  id: ChatAccessProfileRevisionId;
-  accessProfileId: ChatAccessProfileId;
-  revision: number;
-  defaultChannelCapabilities: ChatChannelCapabilities;
-  defaultHistoryBoundary: ChatHistoryBoundary;
-  maximumFolderCapability: ChatFolderCapability;
-  createdAt: UtcTimestamp;
-}
-
-export interface ChatAccessProfileRead {
-  id: ChatAccessProfileId;
-  builtinKey: ChatAccessProfileBuiltinKey | null;
-  displayName: string;
-  latestRevision: ChatAccessProfileRevision;
-  revision: number;
-  archivedAt: UtcTimestamp | null;
-}
 
 /** One local day of an agent's usage, summed across the devices that ran it. */
 export interface ChatAgentUsageDayRead {
@@ -160,30 +122,6 @@ export interface ChatAgentUsageDayRead {
   workingSeconds: number;
   runCount: number;
   deviceIds: string[];
-}
-
-export interface CreateChatAccessProfileRequest {
-  accessProfileId: ChatAccessProfileId;
-  displayName: string;
-  revision: ChatAccessProfileRevisionInput;
-}
-
-export interface DuplicateChatAccessProfileRequest {
-  sourceAccessProfileId: ChatAccessProfileId;
-  accessProfileId: ChatAccessProfileId;
-  displayName: string;
-}
-
-export interface PublishChatAccessProfileRevisionRequest {
-  accessProfileId: ChatAccessProfileId;
-  expectedRevision: number;
-  revision: ChatAccessProfileRevisionInput;
-}
-
-export interface ArchiveChatAccessProfileRequest {
-  accessProfileId: ChatAccessProfileId;
-  expectedRevision: number;
-  archived: boolean;
 }
 
 export interface ChatFolderGrant {
@@ -203,9 +141,6 @@ export interface ChatAgentChannelAccess {
   /** Group of the channel's project, `null` when the project is outside every group. */
   groupId: string | null;
   channelName: string;
-  accessProfileId: ChatAccessProfileId;
-  accessProfileRevisionId: ChatAccessProfileRevisionId;
-  accessProfileRevision: number;
   capabilities: ChatChannelCapabilities;
   historyBoundary: ChatHistoryBoundary;
   runtimeApprovalOverride: ChatRuntimeApprovalPolicy | null;
@@ -224,9 +159,6 @@ export interface ChatAgentAccessRead {
 
 export interface ChatAgentChannelAccessInput {
   channelId: ChatChannelId;
-  accessProfileId: ChatAccessProfileId;
-  /** Effective profile revision the draft was made against; saving refuses any other. */
-  accessProfileRevisionId: ChatAccessProfileRevisionId;
   capabilities: ChatChannelCapabilities;
   historyBoundary: ChatHistoryBoundary;
   runtimeApprovalOverride: ChatRuntimeApprovalPolicy | null;
@@ -258,17 +190,6 @@ export interface ChatAgentAccessPreviewRead {
   isExpansion: boolean;
   addedChannelIds: ChatChannelId[];
   removedChannelIds: ChatChannelId[];
-  issues: ChatAgentAccessPreviewIssue[];
-}
-
-export interface ChatAccessProfileImpactPreviewRead {
-  accessProfileId: ChatAccessProfileId;
-  currentRevision: ChatAccessProfileRevision;
-  isExpansion: boolean;
-  isReduction: boolean;
-  affectedAgentIds: ChatParticipantId[];
-  affectedChannelIds: ChatChannelId[];
-  activeAuthorizationCount: number;
   issues: ChatAgentAccessPreviewIssue[];
 }
 
@@ -596,10 +517,6 @@ export interface ChatConversationMembershipRead {
 }
 
 export interface ChatChannelRosterAiSummary {
-  accessProfileId: ChatAccessProfileId;
-  accessProfileRevision: number;
-  accessProfileBuiltinKey: ChatAccessProfileBuiltinKey | null;
-  accessProfileName: string;
   capabilities: ChatChannelCapabilities;
   historyBoundary: ChatHistoryBoundary;
   runtimeApprovalOverride: ChatRuntimeApprovalPolicy | null;

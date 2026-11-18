@@ -33,20 +33,20 @@ async fn pool_with_helper() -> SqlitePool {
              updated_at)
          VALUES ('{conversation}', '{HELPER}', 'membership:helper', 'member', '{NOW}', '{NOW}');
          INSERT INTO chat_agent_channel_memberships
-            (conversation_id, agent_id, sync_key, access_profile_id,
+            (conversation_id, agent_id, sync_key,
              read_history, participate, history_boundary, created_at, updated_at)
          VALUES ('{conversation}', '{HELPER}', 'channel-membership:helper',
-                 'access-profile:build-and-test', 1, 1, 'entire', '{NOW}', '{NOW}');
+                 1, 1, 'entire', '{NOW}', '{NOW}');
          INSERT INTO chat_agent_working_folder_grants
             (conversation_id, agent_id, project_id, working_folder_id, sync_key,
-             capability, capability_inherits_profile, is_default, created_at)
+             capability, is_default, created_at)
          VALUES
             ('{conversation}', '{HELPER}', 'project-chat', 'workspace-1',
-             'grant:helper-1', 'execute', 1, 1, '{NOW}'),
+             'grant:helper-1', 'execute', 1, '{NOW}'),
             ('{conversation}', '{HELPER}', 'project-chat', 'workspace-2',
-             'grant:helper-2', 'edit', 0, 0, '{NOW}'),
+             'grant:helper-2', 'edit', 0, '{NOW}'),
             ('{conversation}', '{HELPER}', 'project-chat', 'workspace-3',
-             'grant:helper-3', 'edit', 0, 0, '{NOW}');
+             'grant:helper-3', 'edit', 0, '{NOW}');
          INSERT INTO chat_assignment_authorized_folder_sources
             (authorization_revision_id, root_handle, working_folder_id, capability,
              is_execution_target, created_at, resolved_runtime_approval_policy)

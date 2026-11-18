@@ -710,19 +710,12 @@ pub(super) async fn require_live_authorization(
            ON channel_access.conversation_id = membership.conversation_id
           AND channel_access.agent_id = membership.participant_id
           AND channel_access.removed_at IS NULL
-         JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
-         JOIN chat_access_profile_effective_revisions profile_revision
-           ON profile_revision.access_profile_id = profile.id
          WHERE run.provider_thread_id = ?
            AND (? IS NULL OR run.provider_turn_id = ?)
            AND run.state IN ('starting', 'working', 'waiting')
            AND authorization.decision_state = 'allowed'
            AND authorization.revoked_at IS NULL
-           AND CASE
-                 WHEN channel_access.participate_inherits_profile = 1
-                   THEN profile_revision.default_participate
-                 ELSE channel_access.participate AND profile_revision.default_participate
-               END = 1
+           AND channel_access.participate = 1
          ORDER BY run.created_at DESC, run.id DESC
          LIMIT 1",
     )

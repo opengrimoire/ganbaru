@@ -2,13 +2,10 @@ use super::*;
 use crate::models::UtcTimestamp;
 use crate::project_defaults::{default_channel_ids, ensure_project_chat_defaults};
 use sqlx::SqlitePool;
-use std::collections::BTreeMap;
 
 const NOW: &str = "2026-10-24T09:00:00.000Z";
 const PROJECT_ID: &str = "project-sync-effects";
 const AGENT_ID: &str = "participant:sync-effects-agent";
-const PROFILE_ID: &str = "access-profile:sync-effects";
-const FIRST_PROFILE_REVISION_ID: &str = "profile-revision:sync-effects:1";
 
 type AccessStateRow = (String, i64, String);
 type SearchRow = (String, String, Option<String>, String, String);
@@ -41,8 +38,8 @@ fn conversation_id() -> String {
     default_channel_ids(PROJECT_ID).unwrap().0
 }
 
-/// Seeds a project channel with one agent using a custom profile (revision 1 allows
-/// editing), two messages, and one active assignment authorization of that agent.
+// Seeds a project channel with one agent that reads history and participates, two messages,
+/// and one active assignment authorization of that agent.
 async fn seed_organization(pool: &SqlitePool) {
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "INSERT INTO project_groups (id, name, order_key) VALUES ('group-sync', 'Sync', 'a0');
@@ -70,22 +67,15 @@ async fn seed_organization(pool: &SqlitePool) {
          INSERT INTO chat_agent_policy_revisions
             (id, agent_id, provider_instance_id, model_selection_data, created_at)
          VALUES ('policy:sync-effects', '{AGENT_ID}', 'codex-personal', '{{}}', '{NOW}');
-         INSERT INTO chat_access_profiles (id, display_name, created_at, updated_at)
-         VALUES ('{PROFILE_ID}', 'Sync profile', '{NOW}', '{NOW}');
-         INSERT INTO chat_access_profile_revisions
-            (id, access_profile_id, default_read_history, default_participate,
-             default_history_boundary, maximum_folder_capability, created_at)
-         VALUES ('profile-revision:sync-effects:1', '{PROFILE_ID}', 1, 1, 'entire', 'edit',
-                 '{NOW}');
          INSERT INTO chat_conversation_memberships
             (conversation_id, participant_id, sync_key, membership_role, created_at, updated_at)
          VALUES ('{conversation}', '{AGENT_ID}', 'membership:sync-effects', 'member', '{NOW}',
                  '{NOW}');
          INSERT INTO chat_agent_channel_memberships
-            (conversation_id, agent_id, sync_key, access_profile_id,
-             read_history, participate, history_boundary, created_at, updated_at)
-         VALUES ('{conversation}', '{AGENT_ID}', 'channel-membership:sync-effects',
-                 '{PROFILE_ID}', 1, 1, 'entire', '{NOW}', '{NOW}');
+            (conversation_id, agent_id, sync_key, read_history, participate,
+             history_boundary, created_at, updated_at)
+         VALUES ('{conversation}', '{AGENT_ID}', 'channel-membership:sync-effects', 1, 1,
+                 'entire', '{NOW}', '{NOW}');
          INSERT INTO chat_conversation_items (id, conversation_id, item_kind, order_key, created_at)
          VALUES ('item:first', '{conversation}', 'message', 'c000', '{NOW}'),
                 ('item:second', '{conversation}', 'message', 'c001', '{NOW}');
@@ -110,53 +100,27 @@ async fn seed_organization(pool: &SqlitePool) {
     .execute(pool)
     .await
     .unwrap();
-    insert_authorization(pool, "authorization:first", 1, FIRST_PROFILE_REVISION_ID).await;
+    insert_authorization(pool, "authorization:first", 1).await;
 }
 
-/// Inserts an allowed authorization of the seeded assignment granted under
-/// `profile_revision_id`.
-async fn insert_authorization(
-    pool: &SqlitePool,
-    id: &str,
-    revision: i64,
-    profile_revision_id: &str,
-) {
+/// Inserts an allowed authorization of the seeded assignment.
+async fn insert_authorization(pool: &SqlitePool, id: &str, revision: i64) {
     sqlx::query(
         "INSERT INTO chat_assignment_authorization_revisions
             (id, assignment_id, revision, requester_participant_id,
              agent_policy_revision_id, agent_access_revision,
-             destination_conversation_id, access_profile_revision_id,
-             resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
+             destination_conversation_id, resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
          VALUES (?, 'assignment:sync-effects', ?, 'participant:local-owner',
-                 'policy:sync-effects', 1, ?, ?,
+                 'policy:sync-effects', 1, ?,
                  'ask', printf('%064d', 0), 'allowed', ?)",
     )
     .bind(id)
     .bind(revision)
     .bind(conversation_id())
-    .bind(profile_revision_id)
     .bind(NOW)
     .execute(pool)
     .await
     .unwrap();
-}
-
-async fn insert_profile_revision(pool: &SqlitePool, revision: i64, capability: &str) -> String {
-    let id = format!("profile-revision:sync-effects:{revision}");
-    sqlx::query(
-        "INSERT INTO chat_access_profile_revisions
-            (id, access_profile_id, default_read_history, default_participate,
-             default_history_boundary, maximum_folder_capability, created_at)
-         VALUES (?, ?, 1, 1, 'entire', ?, ?)",
-    )
-    .bind(&id)
-    .bind(PROFILE_ID)
-    .bind(capability)
-    .bind(format!("2026-10-24T09:0{revision}:00.000Z"))
-    .execute(pool)
-    .await
-    .unwrap();
-    id
 }
 
 async fn run_hook(pool: &SqlitePool, table: &str, keys: &[&str]) -> ChatSyncEffects {
@@ -175,13 +139,6 @@ async fn run_hook_for_seeded_rows(pool: &SqlitePool) -> ChatSyncEffects {
     effects
         .audience_revised
         .extend(conversations.audience_revised);
-    let profiles = run_hook(
-        pool,
-        ACCESS_PROFILE_REVISIONS_TABLE,
-        &["profile-revision:sync-effects:1"],
-    )
-    .await;
-    effects.audience_revised.extend(profiles.audience_revised);
     let messages = run_hook(pool, MESSAGES_TABLE, &["item:first", "item:second"]).await;
     effects.search_rebuilt.extend(messages.search_rebuilt);
     effects
@@ -287,136 +244,6 @@ async fn hook_derives_the_state_the_gated_triggers_derive_for_commands() {
     );
 }
 
-#[tokio::test]
-async fn narrowed_profile_revisions_revoke_once_and_widened_ones_keep_authority() {
-    let pool = migrated_pool().await;
-    seed_organization(&pool).await;
-    let access_before = access_state(&pool).await[0].1;
-    let audience_before = audience_revision(&pool).await.unwrap();
-
-    set_applying(&pool, true).await;
-    let narrowed = insert_profile_revision(&pool, 2, "read").await;
-    assert_eq!(audience_revision(&pool).await, Some(audience_before));
-    let effects = run_hook(&pool, ACCESS_PROFILE_REVISIONS_TABLE, &[&narrowed]).await;
-
-    assert_eq!(
-        effects.revoked_agents,
-        BTreeSet::from([AGENT_ID.to_string()])
-    );
-    assert_eq!(
-        effects.access_revised,
-        BTreeSet::from([AGENT_ID.to_string()])
-    );
-    assert_eq!(
-        authorization_states(&pool).await,
-        vec![(
-            "authorization:first".to_string(),
-            "revoked".to_string(),
-            PROFILE_REDUCTION_REASON.to_string()
-        )]
-    );
-    assert_eq!(
-        queued_jobs(&pool).await,
-        vec![(
-            AGENT_ID.to_string(),
-            Some("authorization:first".to_string())
-        )]
-    );
-    assert_eq!(access_state(&pool).await[0].1, access_before + 1);
-    assert_eq!(audience_revision(&pool).await, Some(audience_before + 1));
-
-    let replayed = run_hook(&pool, ACCESS_PROFILE_REVISIONS_TABLE, &[&narrowed]).await;
-    assert!(replayed.revoked_agents.is_empty());
-    assert_eq!(queued_jobs(&pool).await.len(), 1);
-
-    set_applying(&pool, false).await;
-    insert_authorization(&pool, "authorization:second", 2, FIRST_PROFILE_REVISION_ID).await;
-    set_applying(&pool, true).await;
-    let access_after_narrowing = access_state(&pool).await[0].1;
-    let widened = insert_profile_revision(&pool, 3, "publish").await;
-    let effects = run_hook(&pool, ACCESS_PROFILE_REVISIONS_TABLE, &[&widened]).await;
-
-    assert!(effects.revoked_agents.is_empty());
-    assert!(effects.access_revised.is_empty());
-    assert_eq!(
-        effects.audience_revised,
-        BTreeSet::from([conversation_id()])
-    );
-    assert_eq!(access_state(&pool).await[0].1, access_after_narrowing);
-    assert_eq!(authorization_states(&pool).await[1].1, "allowed");
-    assert_eq!(queued_jobs(&pool).await.len(), 1);
-}
-
-#[tokio::test]
-async fn a_pointer_naming_an_older_stricter_revision_revokes_what_the_wider_one_allowed() {
-    let pool = migrated_pool().await;
-    seed_organization(&pool).await;
-
-    set_applying(&pool, true).await;
-    let stricter = insert_profile_revision(&pool, 2, "edit").await;
-    let wider = insert_profile_revision(&pool, 3, "publish").await;
-    point_profile_at(&pool, &wider, "publish").await;
-    let widened = run_hook(&pool, ACCESS_PROFILES_TABLE, &[PROFILE_ID]).await;
-    assert!(widened.revoked_agents.is_empty());
-    assert!(widened.access_revised.is_empty());
-
-    set_applying(&pool, false).await;
-    insert_authorization(&pool, "authorization:wider", 2, &wider).await;
-    set_applying(&pool, true).await;
-    let access_before = access_state(&pool).await[0].1;
-
-    // The stricter revision is older than the wider one and as wide as the revision before it,
-    // so only the comparison with later revisions can find the narrowing.
-    point_profile_at(&pool, &stricter, "edit").await;
-    let effects = run_hook(&pool, ACCESS_PROFILES_TABLE, &[PROFILE_ID]).await;
-
-    assert_eq!(
-        effects.revoked_agents,
-        BTreeSet::from([AGENT_ID.to_string()])
-    );
-    assert_eq!(
-        effects.access_revised,
-        BTreeSet::from([AGENT_ID.to_string()])
-    );
-    assert_eq!(access_state(&pool).await[0].1, access_before + 1);
-    let states = authorization_states(&pool).await;
-    assert!(
-        states
-            .iter()
-            .all(|(_, state, reason)| state == "revoked" && reason == PROFILE_REDUCTION_REASON),
-        "{states:?}"
-    );
-    assert_eq!(
-        queued_jobs(&pool).await,
-        vec![
-            (
-                AGENT_ID.to_string(),
-                Some("authorization:first".to_string())
-            ),
-            (
-                AGENT_ID.to_string(),
-                Some("authorization:wider".to_string())
-            ),
-        ]
-    );
-}
-
-/// Points the seeded profile at `revision_id`, copying its folder capability the way commands
-/// and the coupled sync group do.
-async fn point_profile_at(pool: &SqlitePool, revision_id: &str, capability: &str) {
-    sqlx::query(
-        "UPDATE chat_access_profiles
-         SET current_revision_id = ?, current_maximum_folder_capability = ?
-         WHERE id = ?",
-    )
-    .bind(revision_id)
-    .bind(capability)
-    .bind(PROFILE_ID)
-    .execute(pool)
-    .await
-    .unwrap();
-}
-
 /// Runs the hook for `keys` of `table` and returns the pointers it found mismatched.
 async fn mismatched(pool: &SqlitePool, table: &str, keys: &[&str]) -> Vec<String> {
     run_hook(pool, table, keys)
@@ -458,9 +285,7 @@ async fn pointers_whose_copied_restrictiveness_differs_from_their_revision_are_c
     let access_before = access_state(&pool).await[0].1;
     set_applying(&pool, true).await;
     let agent = vec![AGENT_ID.to_string()];
-    let profile = vec![PROFILE_ID.to_string()];
     let policies = "chat_agent_effective_policies";
-    let profiles = "chat_access_profile_effective_revisions";
 
     point_agent_policy_at(&pool, "full_access").await;
     assert_eq!(mismatched(&pool, AGENTS_TABLE, &[AGENT_ID]).await, agent);
@@ -500,49 +325,6 @@ async fn pointers_whose_copied_restrictiveness_differs_from_their_revision_are_c
         effective_rows(&pool, policies, "agent_id", AGENT_ID).await,
         1
     );
-
-    point_profile_at(&pool, FIRST_PROFILE_REVISION_ID, "publish").await;
-    assert_eq!(
-        mismatched(&pool, ACCESS_PROFILES_TABLE, &[PROFILE_ID]).await,
-        profile
-    );
-    assert_eq!(
-        mismatched(
-            &pool,
-            ACCESS_PROFILE_REVISIONS_TABLE,
-            &[FIRST_PROFILE_REVISION_ID]
-        )
-        .await,
-        profile
-    );
-    assert_eq!(
-        effective_rows(&pool, profiles, "access_profile_id", PROFILE_ID).await,
-        0
-    );
-
-    // A pointer that arrives before its revision applies, and the revision is checked on arrival.
-    let pending = "profile-revision:sync-effects:2";
-    point_profile_at(&pool, pending, "read").await;
-    assert!(
-        mismatched(&pool, ACCESS_PROFILES_TABLE, &[PROFILE_ID])
-            .await
-            .is_empty()
-    );
-    insert_profile_revision(&pool, 2, "publish").await;
-    assert_eq!(
-        mismatched(&pool, ACCESS_PROFILE_REVISIONS_TABLE, &[pending]).await,
-        profile
-    );
-    point_profile_at(&pool, pending, "publish").await;
-    assert!(
-        mismatched(&pool, ACCESS_PROFILE_REVISIONS_TABLE, &[pending])
-            .await
-            .is_empty()
-    );
-    assert_eq!(
-        effective_rows(&pool, profiles, "access_profile_id", PROFILE_ID).await,
-        1
-    );
 }
 
 /// Inserts an allowed authorization of the seeded assignment that froze the `approval` policy.
@@ -551,14 +333,12 @@ async fn insert_authorization_with_approval(pool: &SqlitePool, id: &str, approva
         "INSERT INTO chat_assignment_authorization_revisions
             (id, assignment_id, revision, requester_participant_id,
              agent_policy_revision_id, agent_access_revision,
-             destination_conversation_id, access_profile_revision_id,
-             resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
+             destination_conversation_id, resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
          VALUES (?, 'assignment:sync-effects', 2, 'participant:local-owner',
-                 'policy:sync-effects', 1, ?, ?, ?, printf('%064d', 0), 'allowed', ?)",
+                 'policy:sync-effects', 1, ?, ?, printf('%064d', 0), 'allowed', ?)",
     )
     .bind(id)
     .bind(conversation_id())
-    .bind(FIRST_PROFILE_REVISION_ID)
     .bind(approval)
     .bind(NOW)
     .execute(pool)
@@ -1129,14 +909,13 @@ async fn a_stricter_scratch_override_revokes_and_an_equal_one_keeps_authority() 
         "INSERT INTO chat_assignment_authorization_revisions
             (id, assignment_id, revision, requester_participant_id,
              agent_policy_revision_id, agent_access_revision,
-             destination_conversation_id, access_profile_revision_id, execution_environment_id,
+             destination_conversation_id, execution_environment_id,
              resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
          VALUES ('authorization:scratch', 'assignment:sync-effects', 2,
-                 'participant:local-owner', 'policy:sync-effects', 1, ?, ?,
+                 'participant:local-owner', 'policy:sync-effects', 1, ?,
                  'environment:scratch', 'auto_approve', printf('%064d', 0), 'allowed', ?)",
     )
     .bind(conversation_id())
-    .bind(FIRST_PROFILE_REVISION_ID)
     .bind(NOW)
     .execute(&pool)
     .await
@@ -1217,15 +996,14 @@ async fn seed_folder_authorization(pool: &SqlitePool, grant_override: &str, auth
         "INSERT INTO chat_assignment_authorization_revisions
             (id, assignment_id, revision, requester_participant_id,
              agent_policy_revision_id, agent_access_revision,
-             destination_conversation_id, access_profile_revision_id, execution_environment_id,
+             destination_conversation_id, execution_environment_id,
              working_folder_id, resolved_runtime_approval_policy, scope_digest, decision_state,
              created_at)
          VALUES ('authorization:folder', 'assignment:sync-effects', 2,
-                 'participant:local-owner', 'policy:sync-effects', 1, ?, ?,
+                 'participant:local-owner', 'policy:sync-effects', 1, ?,
                  'environment:folder', 'folder:sync-effects', ?, printf('%064d', 0), 'allowed', ?)",
     )
     .bind(conversation_id())
-    .bind(FIRST_PROFILE_REVISION_ID)
     .bind(authorized)
     .bind(NOW)
     .execute(pool)
@@ -1337,14 +1115,13 @@ async fn a_looser_scratch_override_keeps_scratch_work_under_a_stricter_channel_o
         "INSERT INTO chat_assignment_authorization_revisions
             (id, assignment_id, revision, requester_participant_id,
              agent_policy_revision_id, agent_access_revision,
-             destination_conversation_id, access_profile_revision_id, execution_environment_id,
+             destination_conversation_id, execution_environment_id,
              resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
          VALUES ('authorization:scratch', 'assignment:sync-effects', 2,
-                 'participant:local-owner', 'policy:sync-effects', 1, ?, ?,
+                 'participant:local-owner', 'policy:sync-effects', 1, ?,
                  'environment:scratch', 'unattended', printf('%064d', 0), 'allowed', ?)",
     )
     .bind(conversation_id())
-    .bind(FIRST_PROFILE_REVISION_ID)
     .bind(NOW)
     .execute(&pool)
     .await
@@ -1850,35 +1627,6 @@ async fn an_inheriting_grant_edit_settles_onto_a_stricter_channel_override() {
     .await
     .unwrap();
     assert_eq!(settled(&pool, Some("unattended"), &concurrent).await, None);
-}
-
-/// The channel access settle reads each named profile's effective revision and its folder
-/// capability rank, leaving out a profile without one.
-#[tokio::test]
-async fn channel_access_profiles_read_effective_revisions_with_their_capability_rank() {
-    let pool = migrated_pool().await;
-    seed_organization(&pool).await;
-    let mut connection = pool.acquire().await.unwrap();
-
-    let profiles = channel_access_profiles(
-        &mut connection,
-        &[PROFILE_ID, "access-profile:unknown", PROFILE_ID],
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(
-        profiles,
-        BTreeMap::from([(
-            PROFILE_ID.to_string(),
-            ProfileDefaults {
-                read_history: true,
-                participate: true,
-                history_boundary: "entire".to_string(),
-                folder_capability_rank: 2,
-            },
-        )])
-    );
 }
 
 #[tokio::test]

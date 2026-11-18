@@ -34,54 +34,6 @@ pub struct CreateChatAgentCommand {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChatAccessProfileRevisionInput {
-    pub default_channel_capabilities: ChatChannelCapabilities,
-    pub default_history_boundary: ChatHistoryBoundary,
-    pub maximum_folder_capability: ChatFolderCapability,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateChatAccessProfileCommand {
-    pub access_profile_id: ChatAccessProfileId,
-    pub display_name: String,
-    pub revision: ChatAccessProfileRevisionInput,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DuplicateChatAccessProfileCommand {
-    pub source_access_profile_id: ChatAccessProfileId,
-    pub access_profile_id: ChatAccessProfileId,
-    pub display_name: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PublishChatAccessProfileRevisionCommand {
-    pub access_profile_id: ChatAccessProfileId,
-    pub expected_revision: u64,
-    pub revision: ChatAccessProfileRevisionInput,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PreviewChatAccessProfileRevisionCommand {
-    pub access_profile_id: ChatAccessProfileId,
-    pub expected_revision: u64,
-    pub revision: ChatAccessProfileRevisionInput,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ArchiveChatAccessProfileCommand {
-    pub access_profile_id: ChatAccessProfileId,
-    pub expected_revision: u64,
-    pub archived: bool,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ChatFolderGrantInput {
     pub working_folder_id: ProjectWorkingFolderId,
     pub capability: ChatFolderCapability,
@@ -94,11 +46,6 @@ pub struct ChatFolderGrantInput {
 #[serde(rename_all = "camelCase")]
 pub struct ChatAgentChannelAccessInput {
     pub channel_id: ChatChannelId,
-    pub access_profile_id: ChatAccessProfileId,
-    /// Effective profile revision the draft was made against. Saving refuses a draft whose
-    /// profile now has another effective revision, which a synced pointer can name even when it
-    /// is older than the one the draft saw.
-    pub access_profile_revision_id: ChatAccessProfileRevisionId,
     pub capabilities: ChatChannelCapabilities,
     pub history_boundary: ChatHistoryBoundary,
     pub runtime_approval_override: Option<ChatRuntimeApprovalPolicy>,

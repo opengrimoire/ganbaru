@@ -8,9 +8,7 @@
 
 mod channel_access;
 
-pub use channel_access::{
-    ChannelAccess, ProfileDefaults, channel_access_profiles, settled_channel_access,
-};
+pub use channel_access::{ChannelAccess, settled_channel_access};
 
 use crate::attachment_files;
 use crate::coordination::reductions::{agent_policy_covers, live_agent_safety_mode_sql};
@@ -31,10 +29,6 @@ pub const AGENTS_TABLE: &str = "chat_agents";
 pub const POLICY_REVISIONS_TABLE: &str = "chat_agent_policy_revisions";
 /// Replicated table of conversations, keyed by id.
 pub const CONVERSATIONS_TABLE: &str = "chat_conversations";
-/// Replicated table of access profiles, keyed by id.
-pub const ACCESS_PROFILES_TABLE: &str = "chat_access_profiles";
-/// Replicated table of access profile revisions, keyed by id.
-pub const ACCESS_PROFILE_REVISIONS_TABLE: &str = "chat_access_profile_revisions";
 /// Replicated table of conversation memberships, keyed by sync key.
 pub const MEMBERSHIPS_TABLE: &str = "chat_conversation_memberships";
 /// Replicated table of AI channel memberships, keyed by sync key.
@@ -52,15 +46,12 @@ pub const ASSIGNMENT_INPUTS_TABLE: &str = "chat_work_assignment_inputs";
 
 /// Reason recorded on authorizations revoked because their assignment settled on another device.
 pub const ASSIGNMENT_SETTLED_REASON: &str = "The work assignment settled on another device";
-/// Reason recorded on authorizations revoked because an applied profile revision narrowed it.
-pub const PROFILE_REDUCTION_REASON: &str = "Access profile authority was reduced";
 /// Reason recorded on authorizations revoked because an applied membership or folder grant no
 /// longer covers them, matching the command that saves a reduction.
 pub const ACCESS_REDUCTION_REASON: &str = "Agent access was reduced";
-/// Reason recorded on authorizations revoked because a synced agent or profile pointer
-/// disagrees with the revision it names.
-pub const MISMATCHED_POINTER_REASON: &str =
-    "Synced agent policy or access profile disagrees with its revision";
+/// Reason recorded on authorizations revoked because a synced agent policy pointer disagrees
+/// with the revision it names.
+pub const MISMATCHED_POINTER_REASON: &str = "Synced agent policy disagrees with its revision";
 /// Reason recorded on authorizations revoked because the agent's applied effective policy no
 /// longer covers the approval they froze.
 pub const AGENT_POLICY_REDUCED_REASON: &str = "Agent approval behavior was reduced";
@@ -81,8 +72,8 @@ pub struct ChatSyncEffects {
     pub revoked_agents: BTreeSet<String>,
     /// Messages whose search row was rebuilt or removed.
     pub search_rebuilt: BTreeSet<String>,
-    /// Agents and access profiles whose current pointer copies restrictiveness that
-    /// disagrees with the revision it names, so they have no effective revision.
+    /// Agents whose current policy pointer copies restrictiveness that disagrees with the
+    /// revision it names, so they have no effective revision.
     pub mismatched_pointers: BTreeSet<String>,
     /// Conversations the apply deleted. The delete cascades away the authorizations that
     /// target them, with their runs, so no revocation job can name those runs; the caller stops
@@ -134,29 +125,25 @@ impl ChatSyncEffects {
 /// `changed_keys`, after sync inserted, updated, or deleted them.
 ///
 /// It mirrors the gated command triggers: an agent gets its access state and a conversation
-/// its audience state, a profile whose effective revision arrived or changed bumps the audience
-/// of the conversations whose agents use that profile, and a message or revision rebuilds the
-/// message's search row (a deleted message loses it). A revision also creates the attachment and
-/// resource rows of the attachments it names in a working folder this device has, and a changed
-/// revision, message, or deleted conversation removes such rows once nothing on this device
-/// references them. An effective profile revision that narrows
-/// authority also bumps the access revision of those agents and revokes the active
-/// authorizations granted under a wider revision, as the command that saves a reduction does.
+/// its audience state, and a message or revision rebuilds the message's search row (a deleted
+/// message loses it). A revision also creates the attachment and resource rows of the
+/// attachments it names in a working folder this device has, and a changed revision, message, or
+/// deleted conversation removes such rows once nothing on this device references them.
 /// A conversation membership, AI channel membership, or folder grant bumps the audience (for
 /// memberships) and the AI agent's access revision, and revokes the agent's authorizations
 /// once one of them is no longer covered by the rows sync kept. A deleted conversation is
 /// reported, and deleted rows sweep every agent with an active authorization. Timestamps
 /// come from the changed rows, except revocations, which happen now on this device.
-/// Running it again for the same keys leaves the same rows, apart from the counters a profile
-/// revision bumps again. A queued work assignment is reported for its executing device to start,
+/// Running it again for the same keys leaves the same rows, apart from the change counters it
+/// bumps again. A queued work assignment is reported for its executing device to start,
 /// a settled one ends its local dispatch job and revokes its active authorizations, and an input
 /// still pending names its assignment for delivery. Tables without derived state return no
 /// effects.
 ///
-/// When an agent or profile pointer copies a safety mode or maximum folder capability that
-/// differs from the revision it names, once both rows are present, it revokes the affected
-/// agents' authorizations and reports the pointer instead of failing the apply. The effective
-/// revision views already give that pointer no effective revision.
+/// When an agent pointer copies a safety mode that differs from the revision it names, once
+/// both rows are present, it revokes the agent's authorizations and reports the pointer
+/// instead of failing the apply. The effective revision views already give that pointer no
+/// effective revision.
 ///
 /// An agent or policy revision row revokes the agent's authorizations once its effective
 /// policy no longer covers an approval they froze, and an archived agent loses its
@@ -183,7 +170,6 @@ pub async fn after_materialize(
                 contain_mismatched_pointer(
                     connection,
                     POLICY_COPY_MISMATCH_BY_AGENT,
-                    PointerOwner::Agent,
                     key,
                     &mut effects,
                 )
@@ -196,7 +182,6 @@ pub async fn after_materialize(
                 contain_mismatched_pointer(
                     connection,
                     POLICY_COPY_MISMATCH_BY_REVISION,
-                    PointerOwner::Agent,
                     key,
                     &mut effects,
                 )
@@ -222,47 +207,6 @@ pub async fn after_materialize(
             if !effects.removed_conversations.is_empty() {
                 sweep_uncovered_authorizations(connection, &mut effects).await?;
                 reclaim_applied_attachments(connection, &mut effects).await?;
-            }
-        }
-        ACCESS_PROFILES_TABLE => {
-            for key in keys {
-                contain_mismatched_pointer(
-                    connection,
-                    PROFILE_COPY_MISMATCH_BY_PROFILE,
-                    PointerOwner::Profile,
-                    key,
-                    &mut effects,
-                )
-                .await?;
-                apply_effective_profile_revision(connection, key, &mut effects).await?;
-            }
-        }
-        ACCESS_PROFILE_REVISIONS_TABLE => {
-            let mut profile_ids = BTreeSet::new();
-            for key in keys {
-                contain_mismatched_pointer(
-                    connection,
-                    PROFILE_COPY_MISMATCH_BY_REVISION,
-                    PointerOwner::Profile,
-                    key,
-                    &mut effects,
-                )
-                .await?;
-                let profile_id: Option<String> = sqlx::query_scalar(
-                    "SELECT revision.access_profile_id
-                     FROM chat_access_profile_revisions revision
-                     JOIN chat_access_profile_effective_revisions effective
-                       ON effective.id = revision.id
-                     WHERE revision.id = ?",
-                )
-                .bind(key)
-                .fetch_optional(&mut *connection)
-                .await
-                .map_err(persistence_error)?;
-                profile_ids.extend(profile_id);
-            }
-            for profile_id in profile_ids {
-                apply_effective_profile_revision(connection, &profile_id, &mut effects).await?;
             }
         }
         MEMBERSHIPS_TABLE => {
@@ -874,30 +818,17 @@ const APPROVAL_RANKS: &str = "approval_rank(policy, rank) AS (
     VALUES ('provider_custom', 1), ('unattended', 2), ('auto_approve', 3), ('ask', 4)
 )";
 
-/// SQL condition that holds when the channel membership `access`, with its profile's effective
-/// revision joined as `profile_revision`, lets the agent post, as assignment context requires.
-const PARTICIPATES: &str = "CASE
-    WHEN access.participate_inherits_profile = 1 THEN profile_revision.default_participate
-    ELSE access.participate AND profile_revision.default_participate
-END = 1";
+/// SQL condition that holds when the channel membership `access` lets the agent post, as
+/// assignment context requires.
+const PARTICIPATES: &str = "access.participate = 1";
 
-/// SQL condition that holds when the channel membership `access`, with its profile's effective
-/// revision joined as `profile_revision`, lets the agent read history from the lower bound
-/// of the disclosed channel `source`, as the context checks of channel disclosure do.
+/// SQL condition that holds when the channel membership `access` lets the agent read history
+/// from the lower bound of the disclosed channel `source`, as the context checks of channel
+/// disclosure do.
 const READS_HISTORY_FROM: &str = "(
-    CASE
-        WHEN access.read_history_inherits_profile = 1 THEN profile_revision.default_read_history
-        ELSE access.read_history AND profile_revision.default_read_history
-    END = 1
+    access.read_history = 1
     AND (
-        CASE
-            WHEN access.history_boundary_inherits_profile = 1
-                THEN profile_revision.default_history_boundary
-            WHEN access.history_boundary = 'from_grant'
-                OR profile_revision.default_history_boundary = 'from_grant'
-                THEN 'from_grant'
-            ELSE 'entire'
-        END = 'entire'
+        access.history_boundary = 'entire'
         OR (
             access.history_from_order_key IS NOT NULL
             AND access.history_from_order_key <= source.lower_order_key
@@ -1048,8 +979,6 @@ async fn holds_uncovered_access(
                          ON access.conversation_id = membership.conversation_id
                         AND access.agent_id = membership.participant_id
                         AND access.removed_at IS NULL
-                       JOIN chat_access_profile_effective_revisions profile_revision
-                         ON profile_revision.access_profile_id = access.access_profile_id
                        WHERE membership.conversation_id = authorization.destination_conversation_id
                          AND membership.participant_id = ?1
                          AND membership.removed_at IS NULL
@@ -1072,8 +1001,6 @@ async fn holds_uncovered_access(
                                ON access.conversation_id = membership.conversation_id
                               AND access.agent_id = membership.participant_id
                               AND access.removed_at IS NULL
-                             JOIN chat_access_profile_effective_revisions profile_revision
-                               ON profile_revision.access_profile_id = access.access_profile_id
                              WHERE membership.conversation_id = source.conversation_id
                                AND membership.participant_id = ?1
                                AND membership.removed_at IS NULL
@@ -1091,10 +1018,6 @@ async fn holds_uncovered_access(
                              JOIN chat_agent_channel_memberships access
                                ON access.conversation_id = folder_grant.conversation_id
                               AND access.agent_id = folder_grant.agent_id
-                             JOIN chat_access_profile_effective_revisions profile_revision
-                               ON profile_revision.access_profile_id = access.access_profile_id
-                             JOIN capability_rank profile_rank
-                               ON profile_rank.capability = profile_revision.maximum_folder_capability
                              JOIN capability_rank grant_rank
                                ON grant_rank.capability = folder_grant.capability
                              JOIN chat_conversations conversation
@@ -1108,11 +1031,7 @@ async fn holds_uncovered_access(
                                AND folder_grant.revoked_at IS NULL
                                AND folder_grant.project_id = conversation.project_id
                                AND folder.project_id = conversation.project_id
-                               AND CASE
-                                       WHEN folder_grant.capability_inherits_profile = 1
-                                           THEN profile_rank.rank
-                                       ELSE min(grant_rank.rank, profile_rank.rank)
-                                   END >= authorized_rank.rank
+                               AND grant_rank.rank >= authorized_rank.rank
                          )
                    )
                )
@@ -1125,169 +1044,10 @@ async fn holds_uncovered_access(
         .map_err(persistence_error)
 }
 
-/// Bumps the audiences of the conversations whose agents use the profile and, when the
-/// profile's effective revision narrows authority, the access of those agents.
-///
-/// The effective revision is the one the profile's current pointer names, or the newest arrived
-/// revision while that one is missing. It narrows authority when it is narrower than the revision
-/// before it or than any later revision, since a pointer that names an older revision chose it as
-/// the more restrictive one. Agents are revoked only while one of their active authorizations
-/// was granted under a wider revision of the profile, so applying the same effective revision
-/// again never revokes authorizations granted under it. The audience and access revisions are
-/// change counters, so an extra bump only makes readers refresh.
-async fn apply_effective_profile_revision(
-    connection: &mut SqliteConnection,
-    profile_id: &str,
-    effects: &mut ChatSyncEffects,
-) -> ChatResult<()> {
-    let effective: Option<(String, String)> = sqlx::query_as(
-        "SELECT id, created_at FROM chat_access_profile_effective_revisions
-         WHERE access_profile_id = ?",
-    )
-    .bind(profile_id)
-    .fetch_optional(&mut *connection)
-    .await
-    .map_err(persistence_error)?;
-    let Some((revision_id, created_at)) = effective else {
-        return Ok(());
-    };
-    let audiences: Vec<String> = sqlx::query_scalar(
-        "UPDATE chat_conversation_audience_state
-         SET revision = revision + 1, updated_at = ?
-         WHERE conversation_id IN (
-             SELECT membership.conversation_id
-             FROM chat_agent_channel_memberships membership
-             WHERE membership.access_profile_id = ? AND membership.removed_at IS NULL
-         )
-         RETURNING conversation_id",
-    )
-    .bind(&created_at)
-    .bind(profile_id)
-    .fetch_all(&mut *connection)
-    .await
-    .map_err(persistence_error)?;
-    effects.audience_revised.extend(audiences);
-    if !effective_revision_narrows(connection, &revision_id).await? {
-        return Ok(());
-    }
-    let agents: Vec<String> = sqlx::query_scalar(
-        "UPDATE chat_agent_access_state
-         SET access_revision = access_revision + 1, updated_at = ?
-         WHERE agent_id IN (
-             SELECT agent_id FROM chat_agent_channel_memberships
-             WHERE access_profile_id = ? AND removed_at IS NULL
-         )
-         RETURNING agent_id",
-    )
-    .bind(&created_at)
-    .bind(profile_id)
-    .fetch_all(&mut *connection)
-    .await
-    .map_err(persistence_error)?;
-    let now: DateTime<Utc> = SystemTime::now().into();
-    let now = now.to_rfc3339_opts(SecondsFormat::Millis, true);
-    for agent_id in agents {
-        if holds_wider_authorization(connection, &agent_id, &revision_id).await? {
-            let revoked =
-                revoke_agent_authorizations(connection, &agent_id, &now, PROFILE_REDUCTION_REASON)
-                    .await?;
-            if revoked > 0 {
-                effects.revoked_agents.insert(agent_id.clone());
-            }
-        }
-        effects.access_revised.insert(agent_id);
-    }
-    Ok(())
-}
-
 /// SQL ranks of folder capabilities, from no access to publishing.
 const CAPABILITY_RANKS: &str = "capability_rank(capability, rank) AS (
     VALUES ('none', 0), ('read', 1), ('edit', 2), ('execute', 3), ('publish', 4)
 )";
-
-/// SQL condition that holds when revision `next` removes a default capability, narrows the
-/// default history boundary, or lowers the folder capability ceiling of revision `previous`,
-/// with their ranks joined as `next_rank` and `previous_rank`.
-const NARROWER_THAN_PREVIOUS: &str = "(
-    (previous.default_read_history = 1 AND next.default_read_history = 0)
-    OR (previous.default_participate = 1 AND next.default_participate = 0)
-    OR (previous.default_history_boundary = 'entire'
-        AND next.default_history_boundary = 'from_grant')
-    OR next_rank.rank < previous_rank.rank
-)";
-
-/// Returns whether the effective revision is narrower than the revision before it or than any
-/// later revision of its profile, in `(created_at, id)` order.
-async fn effective_revision_narrows(
-    connection: &mut SqliteConnection,
-    revision_id: &str,
-) -> ChatResult<bool> {
-    let sql = format!(
-        "WITH {CAPABILITY_RANKS}
-         SELECT EXISTS (
-             SELECT 1
-             FROM chat_access_profile_revisions next
-             JOIN chat_access_profile_revisions previous
-               ON previous.access_profile_id = next.access_profile_id
-              AND previous.id <> next.id
-              AND (
-                  (previous.created_at, previous.id) > (next.created_at, next.id)
-                  OR previous.id = (
-                      SELECT earlier.id FROM chat_access_profile_revisions earlier
-                      WHERE earlier.access_profile_id = next.access_profile_id
-                        AND (earlier.created_at, earlier.id) < (next.created_at, next.id)
-                      ORDER BY earlier.created_at DESC, earlier.id DESC
-                      LIMIT 1
-                  )
-              )
-             JOIN capability_rank next_rank ON next_rank.capability = next.maximum_folder_capability
-             JOIN capability_rank previous_rank
-               ON previous_rank.capability = previous.maximum_folder_capability
-             WHERE next.id = ? AND {NARROWER_THAN_PREVIOUS}
-         )"
-    );
-    sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
-        .bind(revision_id)
-        .fetch_one(&mut *connection)
-        .await
-        .map_err(persistence_error)
-}
-
-/// Returns whether the agent holds an active authorization granted under a revision of the
-/// same profile that is wider than the effective revision.
-async fn holds_wider_authorization(
-    connection: &mut SqliteConnection,
-    agent_id: &str,
-    revision_id: &str,
-) -> ChatResult<bool> {
-    let sql = format!(
-        "WITH {CAPABILITY_RANKS}
-         SELECT EXISTS (
-             SELECT 1
-             FROM chat_assignment_authorization_revisions authorization
-             JOIN chat_work_assignments assignment
-               ON assignment.id = authorization.assignment_id
-             JOIN chat_access_profile_revisions next ON next.id = ?
-             JOIN chat_access_profile_revisions previous
-               ON previous.id = authorization.access_profile_revision_id
-              AND previous.access_profile_id = next.access_profile_id
-              AND previous.id <> next.id
-             JOIN capability_rank next_rank ON next_rank.capability = next.maximum_folder_capability
-             JOIN capability_rank previous_rank
-               ON previous_rank.capability = previous.maximum_folder_capability
-             WHERE assignment.agent_id = ?
-               AND authorization.decision_state = 'allowed'
-               AND authorization.revoked_at IS NULL
-               AND {NARROWER_THAN_PREVIOUS}
-         )"
-    );
-    sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
-        .bind(revision_id)
-        .bind(agent_id)
-        .fetch_one(&mut *connection)
-        .await
-        .map_err(persistence_error)
-}
 
 /// Replaces the search row of a message with its current revision, or removes it when the
 /// message is gone or has no current revision yet.
@@ -1348,52 +1108,22 @@ const POLICY_COPY_MISMATCH_BY_REVISION: &str = "SELECT agent.participant_id
        AND (policy.agent_id IS NOT agent.participant_id
             OR policy.safety_mode IS NOT agent.current_policy_safety_mode)";
 
-/// Profiles with key `?` whose copied maximum folder capability or owner disagrees with the
-/// revision their pointer names.
-const PROFILE_COPY_MISMATCH_BY_PROFILE: &str = "SELECT profile.id
-     FROM chat_access_profiles profile
-     JOIN chat_access_profile_revisions revision ON revision.id = profile.current_revision_id
-     WHERE profile.id = ?
-       AND (revision.access_profile_id IS NOT profile.id
-            OR revision.maximum_folder_capability
-               IS NOT profile.current_maximum_folder_capability)";
-
-/// Profiles whose pointer names revision `?` and whose copied maximum folder capability or owner
-/// disagrees with it.
-const PROFILE_COPY_MISMATCH_BY_REVISION: &str = "SELECT profile.id
-     FROM chat_access_profiles profile
-     JOIN chat_access_profile_revisions revision ON revision.id = profile.current_revision_id
-     WHERE revision.id = ?
-       AND (revision.access_profile_id IS NOT profile.id
-            OR revision.maximum_folder_capability
-               IS NOT profile.current_maximum_folder_capability)";
-
-/// Which pointer a mismatch query finds.
-#[derive(Clone, Copy)]
-enum PointerOwner {
-    /// An agent's current policy pointer.
-    Agent,
-    /// An access profile's current revision pointer.
-    Profile,
-}
-
-/// Contains a pointer for `key` that `mismatch` finds copying restrictiveness that disagrees
+/// Contains an agent policy pointer for `key` that `mismatch` finds copying restrictiveness that disagrees
 /// with the revision it names, without failing the apply.
 ///
 /// The copy exists only so the sync merge can rank concurrent pointers by restrictiveness.
 /// Commands write the pointer and its copy together and the merge keeps them in one coupled
 /// group, so a disagreement can only come from a corrupt or dishonest operation that would let
 /// a wider revision outrank a stricter one. The effective revision views give such a pointer no
-/// effective revision, so dispatch, context, and tool checks refuse the agent (or every
-/// agent on the profile) until an honest edit replaces the pointer. This hook records the
-/// pointer and revokes the active authorizations of the affected agents, which were granted
-/// before the mismatch arrived. Failing the apply instead would stop every later apply on this
-/// device. The check runs here rather than in a trigger because a pointer row may apply before
-/// the revision it names; this hook runs again when the revision arrives.
+/// effective revision, so dispatch, context, and tool checks refuse the agent until an
+/// honest edit replaces the pointer. This hook records the pointer and revokes the agent's
+/// active authorizations, which were granted before the mismatch arrived. Failing the apply
+/// instead would stop every later apply on this device. The check runs here rather than in a
+/// trigger because a pointer row may apply before the revision it names; this hook runs again
+/// when the revision arrives.
 async fn contain_mismatched_pointer(
     connection: &mut SqliteConnection,
     mismatch: &'static str,
-    owner: PointerOwner,
     key: &str,
     effects: &mut ChatSyncEffects,
 ) -> ChatResult<()> {
@@ -1403,29 +1133,16 @@ async fn contain_mismatched_pointer(
         .await
         .map_err(persistence_error)?;
     let now = now();
-    for owner_id in mismatched {
-        let agents = match owner {
-            PointerOwner::Agent => vec![owner_id.clone()],
-            PointerOwner::Profile => sqlx::query_scalar(
-                "SELECT DISTINCT agent_id FROM chat_agent_channel_memberships
-                 WHERE access_profile_id = ? AND removed_at IS NULL ORDER BY agent_id",
-            )
-            .bind(&owner_id)
-            .fetch_all(&mut *connection)
-            .await
-            .map_err(persistence_error)?,
-        };
-        for agent_id in agents {
-            revoke(
-                connection,
-                &agent_id,
-                &now,
-                MISMATCHED_POINTER_REASON,
-                effects,
-            )
-            .await?;
-        }
-        effects.mismatched_pointers.insert(owner_id);
+    for agent_id in mismatched {
+        revoke(
+            connection,
+            &agent_id,
+            &now,
+            MISMATCHED_POINTER_REASON,
+            effects,
+        )
+        .await?;
+        effects.mismatched_pointers.insert(agent_id);
     }
     Ok(())
 }

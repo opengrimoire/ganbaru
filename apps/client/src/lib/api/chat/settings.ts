@@ -268,7 +268,9 @@ const CHAT_PROVIDER_ACTIVITY_EVENT = "chat://provider-activity";
  * listens for nothing and keeps the Tauri event module out of its bundle.
  */
 export async function listenForProviderActivity(onActivity: () => void): Promise<() => void> {
-  if (__GANBARU_BUILD_PLATFORM__ === "android") return () => undefined;
+  if (typeof __GANBARU_BUILD_PLATFORM__ !== "undefined" && __GANBARU_BUILD_PLATFORM__ === "android") {
+    return () => undefined;
+  }
   const { listen } = await import("@tauri-apps/api/event");
   return listen(CHAT_PROVIDER_ACTIVITY_EVENT, () => onActivity());
 }

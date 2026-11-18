@@ -44,7 +44,7 @@ Provider probe tests must configure their own temporary provider homes and expli
 
 ## Authorization and security
 
-Authorization tests exercise intersections, not isolated positive flags. For Chat this includes participant capability, history boundary, destination audience, folder tier, execution target, scratch generation, immutable authorization revision, provider enforcement, host-tool scope, continuation, revocation, and result publication.
+Authorization tests exercise intersections, not isolated positive flags. For Chat this includes participant capability, the effective access level with its provider downgrade, destination audience, folder capability, execution target, scratch generation, immutable authorization revision, provider enforcement, host-tool scope, continuation, revocation, and result publication.
 
 Cross-channel tests must prove that references, summaries, schedules, and retained context do not widen the destination audience. Filesystem tests cover traversal, symbolic links, absolute paths, worktrees, secondary folders, and cleanup.
 

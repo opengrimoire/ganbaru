@@ -1,10 +1,10 @@
 # Channel-centered agent configuration
 
-Status: Planned. This document is the intended end state that replaces user-made agents and per-agent channel access. Until it ships, [Agents and coordination](agents-and-coordination.md) and [Chat access control](../../data/access-control.md) describe current behavior.
+Status: Implemented. A second account of the same provider and generic ACP agents are deferred. [Agents and coordination](agents-and-coordination.md) covers assignments and review, and [Chat access control](../../data/access-control.md) is the normative authorization rule.
 
 ## Why
 
-Agent setup today is agent-centered: each agent carries a name, role, instructions, model, and approval mode, and Settings > Agents edits its access channel by channel through about a dozen controls (presets, history switches, a history range, four folder toggles, a default target, and approval overrides at three levels). People cannot predict what an agent will do in a channel from any one screen.
+When each agent carries its own name, role, instructions, model, and approval mode, and its access is edited channel by channel through history switches, folder toggles, default targets, and approval overrides, people cannot predict what an agent will do in a channel from any one screen.
 
 Ganbaru Chat follows Claude Tag, which configures the place, not the agent: one Claude, and each channel decides how it participates, what instructions it reads, which model it starts on, and which repositories it may use. Ganbaru keeps that model and adapts it to two local facts: several providers can be installed, and work runs on the person's own machine instead of a throwaway cloud sandbox.
 
@@ -20,9 +20,9 @@ Ganbaru Chat follows Claude Tag, which configures the place, not the agent: one 
 
 An agent is created the first time any device detects a supported provider (Claude, Codex, Cursor, Grok, OpenCode); nothing is seeded, so a vault with no provider has no agents. Its name, handle, and avatar come from the provider (`@Claude`, `@Codex`), and nothing renames them. The agent record is part of the vault and syncs; its ID is derived from the provider kind, so two devices that detect the same provider converge on one agent instead of creating duplicates.
 
-A second account of the same provider, or a generic ACP agent, is added by hand in Settings > Agents with a short label. Its ID is random, and the label becomes its name and handle (`Claude (work)`, `@claude-work`), so mentions are never ambiguous. The label syncs; each device binds the agent to one of its own provider installations in Settings > Agents, and until it does, the agent counts as not installed there.
+Deferred: a second account of the same provider, or a generic ACP agent, will be added by hand in Settings > Agents with a short label. Its ID will be random, and the label will become its name and handle (`Claude (work)`, `@claude-work`), so mentions are never ambiguous. The label will sync; each device will bind the agent to one of its own provider installations, and until it does, the agent will count as not installed there.
 
-Settings > Agents becomes provider setup: for each agent, whether its provider is installed and signed in on this device, its default model and effort, and a test. The default model and effort sync with the agent; installation, executables, and credentials stay device-local, as today. When a device's provider does not offer the chosen model, the run uses the provider's default and the thread shows which model ran.
+Settings > Agents is provider setup: for each agent, whether its provider is installed and signed in on this device, its default model and effort, and a test. The default model and effort sync with the agent; installation, executables, and credentials stay device-local, as today. When a device's provider does not offer the chosen model, the run uses the provider's default and the thread shows which model ran.
 
 On a device where a provider is not installed, its agent still appears in channels and history, can still be mentioned, and its work waits in the thread for Start here on a device that has it. Because no device creates a provider agent, the agent has no home device: work runs on the desktop where the mention was posted when the provider is ready there, and otherwise waits for Start here. Android never executes agent work; it shows the agents, their work, and reviews.
 
@@ -59,19 +59,21 @@ Access is one setting per channel, inherited from the project and the app. It ap
 | Ask before commands (default) | Agents edit files and ask you before running each command. |
 | Work on their own | Agents edit files and run commands without asking, confined to the project's folders. |
 
+Editing files inside the project's folders never asks under Ask before commands or Work on their own, but an edit to a hidden path such as `.git` or a provider's settings folder goes to a person, or is refused where the provider's sandbox keeps it read-only.
+
 Work on their own is offered only on a device that can confine commands, either through the provider's own sandbox or through Ganbaru's sandbox; elsewhere it is shown disabled with the reason.
 
 Pushing to a Git remote is never part of a level. Agents under Ask before commands or Work on their own may request a push, and every push needs a person's decision, Work on their own included: the confirmation card names the branch, remote, and commit, checked as in [Chat security](../../data/security/chat.md). Push and don't ask again records that decision for that channel, agent, folder, push URL, and destination branch, so later matching requests push when their turn ends; the channel's Agents section lists these approvals, and lowering the channel's effective access below Ask before commands, removing the agent from the channel, or revoking the approval there ends it.
 
 Private scratch follows the same level: Talk only and Read only offer no scratch, Ask before commands asks before each command there, and Work on their own runs commands there without asking under the same confinement rule. Promoting scratch files into a folder needs a level that edits files.
 
-The channel lists each agent with one line describing what it will actually do under the current access on this device, for example "Asks before every command" or "Read only here: Cursor cannot ask before commands". When a provider cannot honor the level, the agent works at the closest narrower level it supports and that line says so; it never widens and never hides the difference.
+The channel lists each agent with one line describing what it will actually do under the current access on this device, for example "Asks before every command" or "Read only here: Cursor cannot ask before commands". When a provider cannot honor the level, the agent works at the closest narrower level it supports and that line says so; it never widens and never hides the difference. A provider that cannot ask before commands but can keep edits inside the folder works under Ask before commands by editing files without running commands.
 
-A channel uses every folder of its project. A run uses the folder its thread already works in, else a folder the request names, else the project's primary folder; under Talk only it has no folder. The reply names the folder when the project has more than one. Private scratch stays a target a request can name, unchanged.
+A channel uses every folder of its project. A run uses a target chosen explicitly when the work starts, else the folder its thread already works in, else a folder the message names, else the project's primary folder; under Talk only it has no folder. The reply names the folder when the project has more than one. Private scratch stays a target a request can name.
 
 ## Model and effort
 
-Each agent's default model, with its effort and other model options, is set in Settings > Agents. A channel may override the model for an agent in its Agents section; the row shows "Default (model)" until it does. A thread switches its own model with `/model` in the message that starts the work, and work that continues in that thread keeps it. The channel composer has no other model control, so a post never carries hidden model choices. Direct provider threads outside channels keep their own model controls. Every agent reply names the model that produced it, so a switch, a channel override, or a device falling back to the provider default is visible where it happened.
+Each agent's default model, with its effort and other model options, is set in Settings > Agents. A channel may override the model for an agent in its Agents section; the row shows "Default (model)" until it does. A thread switches its own model with `/model` in a message that starts or continues the work, and later work in that thread keeps the model it last chose. The channel composer has no other model control, so a post never carries hidden model choices. Direct provider threads outside channels keep their own model controls. Every agent reply names the model that produced it, so a switch, a channel override, or a device falling back to the provider default is visible where it happened.
 
 ## Common journeys
 
@@ -82,11 +84,14 @@ Each agent's default model, with its effort and other model options, is set in S
 
 ## Data consequences
 
-The membership keeps only presence. Read history, take assignments, the history boundary, per-folder grants, the default target, and the runtime approval overrides at channel, folder, and scratch level are removed. Access, instructions, and model overrides become values on the app settings, the project, and the channel, synced with the rest of Chat. Agent identity rows lose name, role, instructions, and avatar, which come from the provider. There are no users yet, so this is a schema replacement with a development vault reset, not a migration.
+An agent channel membership holds only presence and an optional model override. Access and instructions are values on the app settings, the project, and the channel, synced with the rest of Chat; concurrent access edits keep the narrower level. An agent record holds its provider family and default model; its name and avatar come from the provider. Each assignment freezes its model and composed instructions when it is created, and records the model that ran. [Chat schema](../../data/schema/chat.md) owns the tables.
+
+## Decisions
+
+- Agents are added to a channel explicitly instead of joining every channel of a project, so a channel can stay human-only, as in Slack.
+- A channel uses every folder of its project; narrower folder sets wait for human collaborators, since one person's channels rarely need different folders.
+- Delegation names the helper agent and the task, and the helper works under the same channel access, capped by the delegating work.
 
 ## Open questions
 
-- Should every agent be in every channel of a project by default, removing the Add step? Recommendation: no, keep explicit adding, because it lets a channel stay human-only and matches Slack.
-- Should a channel be able to use fewer folders than its project? Recommendation: not until human collaborators ship, since one person's channels rarely need different folders.
-- How does delegation pick a helper without roles? Recommendation: the delegating agent names the agent and the task, and the helper works under the same channel access.
 - How do planned human collaborators combine with channel access? Recommendation: a collaborator's agent works under the channel's access capped by that collaborator's role.

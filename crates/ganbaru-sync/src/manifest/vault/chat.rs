@@ -17,7 +17,7 @@
 //! The timeline replicates as well (tables 370 to 381): reply threads, conversation items,
 //! communication messages, their immutable revisions, message references and their five target
 //! tables, and both read cursors. Items order by `(order_key, id)` within their conversation root
-//! or reply thread, and history boundaries, channel reference ranges, and read cursors hold
+//! or reply thread, and channel reference ranges and read cursors hold
 //! `(order_key, item_id)` points of that order. Reply thread ids derive from their root item and
 //! cursors use a derived `sync_key`. Revisions are bounded so one fits an operation.
 //!

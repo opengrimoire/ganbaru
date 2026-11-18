@@ -12,7 +12,7 @@ Chat is Ganbaru's project communication and coding-work surface. It combines dur
 | Messages, reply threads, mentions, drafts, attachments, scheduled sends, and combined timeline | Implemented |
 | Codex, Claude, Cursor, Grok, OpenCode, and generic ACP agent execution | Implemented |
 | Interactive requests, cancellation, inspector, file browser and editor, review, terminals, browser previews, and Git checkpoints | Implemented |
-| AI agents with per-channel agent access, folder grants, and frozen context packages | Implemented |
+| AI agents configured per channel, with access and instructions inherited from the app and project, and frozen context packages | Implemented |
 | Private scratch execution with explicit promotion and cleanup | Partial; the native target exists, but no composer surface starts scratch work |
 | Structured delegation | Implemented |
 | Repeating schedules and quiet periods | Implemented |
@@ -28,7 +28,7 @@ Provider runtimes own execution details: provider sessions and continuation, too
 
 A channel can link many sequential or parallel provider runs and never depends on one provider's continuation model. Rationale: providers differ and change; the organizational record must outlive any of them.
 
-See [Conversations](conversations.md), [Agents and coordination](agents-and-coordination.md), [Channel-centered agent configuration](channel-configuration.md) (planned), and [Execution and workspace](execution-and-workspace.md).
+See [Conversations](conversations.md), [Agents and coordination](agents-and-coordination.md), [Channel-centered agent configuration](channel-configuration.md), and [Execution and workspace](execution-and-workspace.md).
 
 ## First use
 
@@ -44,6 +44,6 @@ Archive is reversible. Permanent deletion first records cleanup work for provide
 
 ## Safety and accessibility
 
-Chat never grants the frontend a generic shell or arbitrary filesystem access. Untrusted provider events and file content are validated and bounded before display. Approval prompts show what the tool acts on, such as the command and its folder or the path. For Claude, Codex, and OpenCode, "Allow for session" lists what it grants for the rest of the session (rules, folders, or accepting edits) and is withheld when that grant cannot be shown in full. For OpenCode, Ganbaru keeps that grant itself and answers each later matching request once. Cursor, Grok, and generic ACP agents offer only the options the agent sends, under the agent's own labels, except that a confined Grok agent's command waits for Ganbaru's own "Run once" or "Decline" in every safety mode except full access.
+Chat never grants the frontend a generic shell or arbitrary filesystem access. Untrusted provider events and file content are validated and bounded before display. Approval prompts show what the tool acts on, such as the command and its folder or the path. For Claude, Codex, and OpenCode, "Allow for session" lists what it grants for the rest of the session (rules, folders, or accepting edits) and is withheld when that grant cannot be shown in full. For OpenCode, Ganbaru keeps that grant itself and answers each later matching request once. Cursor, Grok, and generic ACP agents offer only the options the agent sends, under the agent's own labels, except that a confined Grok agent's command waits for Ganbaru's own "Run once" or "Decline" under Ask before commands and runs without asking under Work on their own.
 
 All conversation, navigation, composer, request, file, review, and terminal controls are keyboard reachable. Responsive layouts render the same canonical conversation; there is no divergent mobile copy.

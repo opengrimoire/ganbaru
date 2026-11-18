@@ -89,13 +89,13 @@ A provider continuation may fail, be replaced, fork, or disappear while the chan
 
 ## 13. Permission leaks through derived data
 
-Search, summaries, unread state, suggestions, exports, cached prompts, and sync envelopes can reveal restricted content even when direct reads are correct. Every derivative declares its authorization inputs and invalidates when membership, history boundary, profile revision, folder grant, or audience changes.
+Search, summaries, unread state, suggestions, exports, cached prompts, and sync envelopes can reveal restricted content even when direct reads are correct. Every derivative declares its authorization inputs and invalidates when membership, agent access level, profile revision, or audience changes.
 
 **Governed by:** [Chat access control](access-control.md) and invariant 12.
 
 ## 14. AI identity used as an authority bridge
 
-Mentioning an agent, giving it a role label, or selecting a capable provider can suggest broad project access. None of these grants membership, history, folder, terminal, Git, or tool authority. Assignment review shows unresolved targets and denied capabilities instead of inferring them from instructions.
+Mentioning an agent, writing channel instructions, or selecting a capable provider can suggest broad project access. None of these grants membership, folder, terminal, Git, or tool authority beyond the channel's access level. Assignment review shows unresolved targets and denied capabilities instead of inferring them from instructions.
 
 **Governed by:** [Chat access control](access-control.md) and invariant 13.
 

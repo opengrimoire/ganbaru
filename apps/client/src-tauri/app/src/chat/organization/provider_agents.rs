@@ -221,24 +221,28 @@ pub(crate) fn catalog_agents_of(
 }
 
 /// The name a model is tagged by, from the `display_name` its catalog gives it: hyphens become
-/// spaces, and an OpenAI name such as `GPT-6-Luna` puts its line first, as `Luna 6`, since
-/// every OpenAI model is a GPT.
+/// spaces, a name puts its line before its version, and an OpenAI name drops `GPT`, since every
+/// OpenAI model is a GPT, so `GPT-6-Luna` and `6 Luna` are tagged `Luna 6`. A bare `GPT-5` keeps
+/// `GPT` so it still names a model.
 pub(crate) fn agent_model_name(display_name: &str) -> String {
     let spaced = display_name
         .replace('-', " ")
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    let mut words = spaced.split(' ');
-    let (Some(first), Some(version)) = (words.next(), words.next()) else {
+    let words: Vec<&str> = spaced.split(' ').collect();
+    let named = match words.as_slice() {
+        [first, rest @ ..] if first.eq_ignore_ascii_case("gpt") && rest.len() > 1 => rest,
+        all => all,
+    };
+    let [version, rest @ ..] = named else {
         return spaced;
     };
-    let rest: Vec<&str> = words.collect();
     let is_version = version.starts_with(|character: char| character.is_ascii_digit())
         && version
             .chars()
             .all(|character| character.is_ascii_digit() || character == '.');
-    if first.eq_ignore_ascii_case("gpt") && is_version && !rest.is_empty() {
+    if is_version && !rest.is_empty() {
         format!("{} {version}", rest.join(" "))
     } else {
         spaced
@@ -656,6 +660,8 @@ mod tests {
         assert_eq!(agent_model_name("GPT-5"), "GPT 5");
         assert_eq!(agent_model_name("  Opus   5.5 "), "Opus 5.5");
         assert_eq!(agent_model_name("Fable-5"), "Fable 5");
+        assert_eq!(agent_model_name("5.6 Sol"), "Sol 5.6");
+        assert_eq!(agent_model_name("GPT Image 1"), "GPT Image 1");
     }
 
     #[test]

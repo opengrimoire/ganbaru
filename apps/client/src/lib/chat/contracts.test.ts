@@ -1237,7 +1237,6 @@ describe("Chat read and error contracts", () => {
         { agentId: "participant:cursor", requested: "ask", effective: "read", downgradeReason: "cannot_ask_before_commands", installed: true, ownOffered: false },
         { agentId: "participant:claude", requested: "ask", effective: null, downgradeReason: null, installed: false, ownOffered: false },
       ],
-      modelOverrides: [{ agentId: "participant:codex", model: { providerManagedModel: false, modelId: "gpt-5.6-sol", modelOptions: [] } }],
       pushApprovals: [],
       revision: 4,
     };
@@ -1254,22 +1253,6 @@ describe("Chat read and error contracts", () => {
       ...settings,
       agents: [{ ...settings.agents[1], downgradeReason: "unknown" }],
     })).toThrow("downgradeReason");
-  });
-
-  it("fills an absent override model with the provider default", () => {
-    const parsed = parseChatChannelAgentSettings({
-      channelId: "channel:general",
-      conversationId: "conversation:general",
-      access: "ask",
-      instructions: "",
-      effective: { access: "ask", source: "channel" },
-      agents: [],
-      modelOverrides: [{ agentId: "participant:codex", model: {} }],
-      pushApprovals: [],
-      revision: 0,
-    });
-
-    expect(parsed.modelOverrides[0]?.model).toEqual({ providerManagedModel: false, modelId: null, modelOptions: [] });
   });
 
   it("requires a project's effective access and an app scope's own access", () => {

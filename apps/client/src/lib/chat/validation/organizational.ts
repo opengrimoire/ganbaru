@@ -320,13 +320,6 @@ export function parseChatChannelAgentSettings(
     instructions: readString(record.instructions, `${label}.instructions`),
     effective: parseEffectiveChannelAccess(record.effective, `${label}.effective`),
     agents: readArray(record.agents, `${label}.agents`, parseAgentResolvedAccess),
-    modelOverrides: readArray(record.modelOverrides, `${label}.modelOverrides`, (entry, entryLabel) => {
-      const override = readRecord(entry, entryLabel);
-      return {
-        agentId: readIdentifier(override.agentId, `${entryLabel}.agentId`),
-        model: parseChatModelSelection(override.model, `${entryLabel}.model`),
-      };
-    }),
     pushApprovals: parseChatPushApprovals(record.pushApprovals, `${label}.pushApprovals`),
     revision: readNonNegativeSafeInteger(record.revision, `${label}.revision`),
   };

@@ -8,10 +8,15 @@
   import Search from "@lucide/svelte/icons/search";
   import Star from "@lucide/svelte/icons/star";
   import Trash2 from "@lucide/svelte/icons/trash";
+  import * as chatApi from "$lib/api/chat";
+  import { newestModelOfLine } from "$lib/chat/agents/agent-names";
+  import { familyAgentRoster, listedCatalogModels, selectedEffortLabel } from "$lib/chat/agents/agent-roster";
   import type {
+    ChatAiAgentRead,
     JsonValue,
     ProviderFamilyMetadataRead,
     ProviderInstanceRead,
+    ProviderModel,
     ProviderRefreshResult,
     ProviderUpdateRead,
   } from "$lib/chat/contracts";
@@ -26,8 +31,7 @@
   } from "$lib/chat/composer/model-company";
   import { familiesInPickerOrder, providersInPickerOrder } from "$lib/chat/composer/model-picker-model";
   import ChatModelAvatar from "$lib/components/chat/identity/ChatModelAvatar.svelte";
-  import AgentDefaultModel from "./AgentDefaultModel.svelte";
-  import AgentRoster from "./AgentRoster.svelte";
+  import NamedAgentForm from "./NamedAgentForm.svelte";
   import ProviderInstallSteps from "./ProviderInstallSteps.svelte";
   import ProviderPlanLimitRings from "./ProviderPlanLimitRings.svelte";
   import UnconfiguredProviderFamily from "./UnconfiguredProviderFamily.svelte";
@@ -36,6 +40,7 @@
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { getChat } from "$lib/stores/chat.svelte";
   import { getProviderUpdates } from "$lib/stores/chat/provider-updates.svelte";
   import { SETTINGS_SECONDARY_BUTTON_CLASS } from "$lib/components/settings/action-buttons";
@@ -67,6 +72,7 @@
   let customId = $state("");
   let customLabel = $state("");
   let customError = $state<string | null>(null);
+  let addingAgent = $state(false);
   let operationError = $state<string | null>(null);
   let updateFailure = $state<{ instanceId: string; output: string | null } | null>(null);
   let removeId = $state<string | null>(null);
@@ -99,7 +105,7 @@
     const favorites = new Set(selectedProvider?.configuration.favoriteModelIds ?? []);
     const collator = new Intl.Collator(localization.locale);
     const familyId = selectedProvider?.configuration.familyId ?? "";
-    return [...(selectedProvider?.modelCatalog?.models ?? [])]
+    return listedCatalogModels(familyId, selectedProvider?.modelCatalog?.models ?? [])
       .filter((model) => !query
         || formatModelDisplayName(model.displayName).toLocaleLowerCase(localization.locale).includes(query)
         || model.id.toLocaleLowerCase(localization.locale).includes(query))
@@ -112,6 +118,20 @@
           || (leftCompany.id === rightCompany.id ? compareCompanyModels(leftCompany.id, left, right) : 0)
           || collator.compare(left.displayName, right.displayName);
       });
+  });
+  /** Named agents are created where providers run, so only a device with local execution offers the form. */
+  const canCreateAgents = platformHasCapability(BUILD_PLATFORM_PROFILE, "chat.local-execution");
+  const roster = $derived(familyAgentRoster(
+    selectedProvider?.configuration.familyId ?? "",
+    chat.agentIdentities,
+    new Intl.Collator(localization.locale).compare,
+  ));
+  /** The line and named agents whose name holds the search, listed above the catalog models. */
+  const listedAgents = $derived.by(() => {
+    const query = search.trim().toLocaleLowerCase(localization.locale);
+    return [...roster.lineAgents, ...roster.namedAgents].filter((agent) => (
+      !query || agent.participant.displayName.toLocaleLowerCase(localization.locale).includes(query)
+    ));
   });
   const acceptsCustomModels = $derived(
     selectedProvider?.configuration.familyId === "codex" && providerConfigBoolean("allowCustomModels"),
@@ -245,21 +265,12 @@
     });
   }
 
-  async function setVisible(modelId: string, shouldBeVisible: boolean): Promise<void> {
-    if (!selectedProvider) return;
-    const allIds = selectedProvider.modelCatalog?.models.map((model) => model.id) ?? [];
-    const configured = selectedProvider.configuration.visibleModelIds;
+  /** The visible models of `provider` once `modelId` is shown or hidden; an empty list shows every model. */
+  function visibleModelIdsWith(provider: ProviderInstanceRead, modelId: string, visible: boolean): string[] {
+    const allIds = provider.modelCatalog?.models.map((model) => model.id) ?? [];
+    const configured = provider.configuration.visibleModelIds;
     const current = configured.length === 0 ? allIds : configured;
-    const visible = shouldBeVisible
-      ? [...new Set([...current, modelId])]
-      : current.filter((id) => id !== modelId);
-    await perform(selectedProvider.configuration.instanceId, () => (
-      chat.updateModels(
-        selectedProvider.configuration.instanceId,
-        visible,
-        selectedProvider.configuration.favoriteModelIds,
-      )
-    ));
+    return visible ? [...new Set([...current, modelId])] : current.filter((id) => id !== modelId);
   }
 
   async function toggleFavorite(modelId: string): Promise<void> {
@@ -274,6 +285,60 @@
         favorites,
       )
     ));
+  }
+
+  /** Turns an agent on or off for channels and mentions. */
+  async function setAgentEnabled(agent: ChatAiAgentRead, enabled: boolean): Promise<void> {
+    if (!selectedProvider) return;
+    await perform(selectedProvider.configuration.instanceId, async () => {
+      await chatApi.archiveChatAgent(agent.participant.id, agent.participant.revision, !enabled);
+      await chat.refreshAgents();
+    });
+  }
+
+  /** Turns a catalog model on or off: its agent for channels and mentions, and the model in pickers. */
+  async function setModelEnabled(modelId: string, enabled: boolean): Promise<void> {
+    if (!selectedProvider) return;
+    const provider = selectedProvider;
+    const agent = roster.modelAgents.get(modelId);
+    await perform(provider.configuration.instanceId, async () => {
+      if (agent && (agent.participant.archivedAt === null) !== enabled) {
+        await chatApi.archiveChatAgent(agent.participant.id, agent.participant.revision, !enabled);
+        await chat.refreshAgents();
+      }
+      if (isVisible(modelId) !== enabled) {
+        await chat.updateModels(
+          provider.configuration.instanceId,
+          visibleModelIdsWith(provider, modelId, enabled),
+          provider.configuration.favoriteModelIds,
+        );
+      }
+    });
+  }
+
+  function modelEnabled(modelId: string): boolean {
+    const agent = roster.modelAgents.get(modelId);
+    return agent ? agent.participant.archivedAt === null : isVisible(modelId);
+  }
+
+  /** What an agent above the catalog runs: a line agent its newest model, a named agent its model and effort. */
+  function agentRunsLabel(agent: ChatAiAgentRead): string {
+    if (agent.agentKind === "line") return t("chat.agentAccess.newestOfLine", agent.participant.displayName);
+    const modelId = agent.latestPolicy?.modelId ?? null;
+    const model = selectedProvider?.modelCatalog?.models.find((entry) => entry.id === modelId) ?? null;
+    const modelName = model ? formatModelDisplayName(model.displayName) : modelId ?? t("chat.agentAccess.providerDefault");
+    const effort = model ? selectedEffortLabel(agent.latestPolicy?.modelOptions ?? [], model.options) : null;
+    return effort ? t("chat.agentAccess.fixedModelEffort", modelName, effort) : t("chat.agentAccess.fixedModel", modelName);
+  }
+
+  /** The catalog model whose company icon an agent above the catalog shows. */
+  function agentAvatarModel(agent: ChatAiAgentRead): ProviderModel | null {
+    if (!selectedProvider) return null;
+    const models = selectedProvider.modelCatalog?.models ?? [];
+    if (agent.agentKind === "line") {
+      return newestModelOfLine(selectedProvider.configuration.familyId, agent.participant.displayName.trim().toLowerCase(), models);
+    }
+    return models.find((model) => model.id === agent.latestPolicy?.modelId) ?? null;
   }
 
   function isVisible(modelId: string): boolean {
@@ -719,19 +784,22 @@
                     </section>
                   {/if}
 
-                  <AgentDefaultModel {instanceId} />
-                  <AgentRoster familyId={selectedProvider.configuration.familyId} {instanceId} />
-
-
                   <section class="editor-section catalog-section">
-                    {#if acceptsCustomModels}
-                      <div class="catalog-actions">
+                    <div class="catalog-actions">
+                      <p class="catalog-hint">{t("settings.agents.roster.hint")}</p>
+                      {#if canCreateAgents}
+                        <button type="button" class="compact-action" disabled={selectedBusy || addingAgent} onclick={() => { addingAgent = true; }}>
+                          <Plus size={13} />
+                          {t("settings.agents.roster.add")}
+                        </button>
+                      {/if}
+                      {#if acceptsCustomModels}
                         <button type="button" class="compact-action" disabled={selectedBusy} onclick={() => { customOpen = !customOpen; }}>
                           <Plus size={13} />
                           {t("settings.agents.models.addCustom")}
                         </button>
-                      </div>
-                    {/if}
+                      {/if}
+                    </div>
 
                     <label class="model-search">
                       <Search size={14} />
@@ -764,26 +832,58 @@
                       </section>
                     {/if}
 
-                    {#if models.length === 0}
+                    {#if addingAgent}
+                      <NamedAgentForm
+                        familyId={selectedProvider.configuration.familyId}
+                        {instanceId}
+                        onClose={() => { addingAgent = false; }}
+                      />
+                    {/if}
+
+                    {#if models.length === 0 && listedAgents.length === 0}
                       <p class="models-empty">
                         {search.trim() ? t("settings.agents.models.noSearchResults") : t("settings.agents.models.empty")}
                       </p>
                     {:else}
                       <div class="model-list">
+                        {#each listedAgents as agent (agent.participant.id)}
+                          {@const agentCompany = modelCompany(selectedProvider.configuration.familyId, agentAvatarModel(agent))}
+                          <div class="model-row">
+                            <ChatModelAvatar familyId={agentCompany.iconFamilyId} label={agentCompany.name} size={25} />
+                            <div class="model-identity">
+                              <span class="model-name">@{agent.participant.displayName}</span>
+                              <div class="model-meta"><span>{agentRunsLabel(agent)}</span></div>
+                            </div>
+                            <div class="model-actions">
+                              <Switch
+                                checked={agent.participant.archivedAt === null}
+                                ariaLabel={`@${agent.participant.displayName}`}
+                                disabled={selectedBusy}
+                                onChange={(enabled) => void setAgentEnabled(agent, enabled)}
+                              />
+                              <span class="action-spacer" aria-hidden="true"></span>
+                            </div>
+                          </div>
+                        {/each}
                         {#each models as model (model.id)}
+                          {@const modelAgent = roster.modelAgents.get(model.id)}
+                          {@const modelName = modelAgent?.participant.displayName ?? formatModelDisplayName(model.displayName)}
+                          {@const effort = modelAgent ? selectedEffortLabel(modelAgent.latestPolicy?.modelOptions ?? [], model.options) : null}
                           {@const company = modelCompany(selectedProvider.configuration.familyId, model)}
                           {@const showModelId = shouldShowModelId(model)}
                           {@const showModelMetadata = showModelId
+                            || Boolean(effort)
                             || Boolean(model.contextLimit)
                             || model.availability !== "available"
                             || model.custom}
                           <div class="model-row">
                             <ChatModelAvatar familyId={company.iconFamilyId} label={company.name} size={25} />
                             <div class="model-identity">
-                              <span class="model-name">{formatModelDisplayName(model.displayName)}</span>
+                              <span class="model-name">@{modelName}</span>
                               {#if showModelMetadata}
                                 <div class="model-meta">
                                   {#if showModelId}<span class="model-id">{model.id}</span>{/if}
+                                  {#if effort}<span>{t("settings.agents.models.effort", effort)}</span>{/if}
                                   {#if model.contextLimit}
                                     <span>{t("settings.agents.models.context", formatNumber(localization.locale, model.contextLimit))}</span>
                                   {/if}
@@ -802,10 +902,10 @@
                             </div>
                             <div class="model-actions">
                               <Switch
-                                checked={isVisible(model.id)}
-                                ariaLabel={isVisible(model.id) ? t("settings.agents.models.hide") : t("settings.agents.models.show")}
+                                checked={modelEnabled(model.id)}
+                                ariaLabel={`@${modelName}`}
                                 disabled={selectedBusy}
-                                onChange={(visible) => void setVisible(model.id, visible)}
+                                onChange={(enabled) => void setModelEnabled(model.id, enabled)}
                               />
                               <button
                                 type="button"
@@ -933,7 +1033,7 @@
   .runtime-review button { justify-self:start; }
   .editor-section { display:grid; min-width:0; gap:0.65rem; }
   .catalog-section { gap:0; }
-  .catalog-actions { display:flex; justify-content:flex-end; padding:0 0.25rem 0.65rem; }
+  .catalog-actions { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:0.45rem; padding:0 0.25rem 0.65rem; }
   .icon-action,.favorite-action { display:inline-grid; width:1.75rem; height:1.75rem; place-items:center; border:1px solid var(--border); border-radius:0.375rem; background:var(--background); color:var(--muted-foreground); }
   .icon-action:hover:not(:disabled),.favorite-action:hover { background:var(--accent); color:var(--foreground); }
   .icon-action.destructive { color:var(--destructive); }
@@ -954,6 +1054,8 @@
   .model-id { overflow:hidden; max-width:22rem; font-family:var(--font-mono,monospace); text-overflow:ellipsis; white-space:nowrap; }
   .model-actions { display:flex; flex-shrink:0; align-items:center; gap:0.45rem; }
   .favorite-action[aria-pressed="true"] { color:var(--status-tentative); }
+  .action-spacer { width:1.75rem; }
+  .catalog-hint { flex:1; min-width:0; color:var(--muted-foreground); font-size:calc(0.68rem * var(--type-scale)); }
   .models-empty { padding:0.9rem 0.25rem; color:var(--muted-foreground); font-size:calc(0.75rem * var(--type-scale)); }
   .add-configuration-text { min-width:0; padding-inline:0.25rem; color:var(--muted-foreground); font-size:calc(0.7rem * var(--type-scale)); font-weight:600; text-align:left; }
   .add-configuration-text:hover { color:var(--foreground); text-decoration:underline; text-underline-offset:0.18rem; }

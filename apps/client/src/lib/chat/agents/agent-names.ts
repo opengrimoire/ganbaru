@@ -76,9 +76,9 @@ export function newestModelOfLine(
   return ranked[0]?.model ?? null;
 }
 
-/** The model line a built-in model agent runs, read from its fixed name, or `null` for any other agent. */
+/** The model line a built-in line agent runs, read from its fixed name, or `null` for any other agent. */
 export function agentModelLine(agent: Pick<ChatAiAgentRead, "agentKind" | "providerFamilyId" | "participant">): string | null {
-  if (agent.agentKind !== "model") return null;
+  if (agent.agentKind !== "line") return null;
   const line = agent.participant.displayName.trim().toLowerCase();
   return familyModelLines(agent.providerFamilyId).includes(line) ? line : null;
 }

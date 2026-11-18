@@ -58,13 +58,7 @@ export const agentsSettings = {
     browseFailed: "No se pudo leer este directorio privado.",
     close: "Cerrar almacenamiento privado",
   },
-  defaultModel: {
-    heading: "Modelo predeterminado",
-    hint: (agent: string) => `El modelo que usa ${agent} salvo que un canal elija otro`,
-    saveFailed: "No se pudo guardar el modelo predeterminado.",
-  },
   roster: {
-    heading: "Agentes",
     hint: "Activa los agentes que quieras agregar a canales y mencionar con @",
     add: "Agregar agente",
     nameLabel: "Nombre",
@@ -73,7 +67,6 @@ export const agentsSettings = {
     create: "Agregar",
     cancel: "Cancelar",
     createFailed: "No se pudo agregar el agente.",
-    toggleFailed: "No se pudo cambiar el agente.",
     nameProblems: {
       empty: "Ponle nombre al agente.",
       tooLong: (limit: string) => `Usa como máximo ${limit} caracteres.`,
@@ -177,8 +170,7 @@ export const agentsSettings = {
     favorite: "Favorito",
     visible: "Visible",
     hidden: "Oculto",
-    hide: "Ocultar modelo",
-    show: "Mostrar modelo",
+    effort: (effort: string) => `Esfuerzo ${effort}`,
     unavailable: "No disponible",
     stale: "Desactualizado",
     custom: "Modelo personalizado sin verificar",

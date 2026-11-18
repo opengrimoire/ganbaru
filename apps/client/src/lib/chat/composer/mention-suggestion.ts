@@ -4,11 +4,6 @@ import type { ChatMessageReference, ChatParticipantId } from "$lib/chat/contract
 export interface MentionSuggestionCandidate {
   id: ChatParticipantId;
   displayName: string;
-  /**
-   * Whether the name only matches with its exact case. Model and named agents carry everyday words such as "Sol" or
-   * "Opus", so a lowercase word in a sentence is not read as their name.
-   */
-  matchCase?: boolean;
 }
 
 /** An agent named in the draft without a mention, and where the name is. */
@@ -26,8 +21,9 @@ const WORD_CHARACTER = /[\p{L}\p{N}\p{M}_]/u;
 /**
  * Finds a channel agent the draft names in plain words but does not mention.
  *
- * A name matches as a whole word, ignoring case unless the candidate asks to match case, and never inside an existing reference or right
- * after `@`, which the reference picker owns. An agent already mentioned is never suggested.
+ * A name matches as a whole word with its exact case, since agent names carry everyday words such as "Sol" or "Opus",
+ * and never inside an existing reference or right after `@`, which the reference picker owns. A name that ends in a
+ * digit does not match the start of a longer version, so "Opus 5" is not found in "Opus 5.5". An agent already mentioned is never suggested.
  * The earliest name in the text wins; at the same position the longer name wins, and then roster
  * order. The suggestion is local: it never posts and never calls a provider.
  *
@@ -44,14 +40,11 @@ export function suggestAgentMention(
   const mentioned = new Set(references.flatMap((reference) => (
     reference.kind === "participant" ? [reference.participantId] : []
   )));
-  const haystack = text.toLocaleLowerCase();
   let best: MentionSuggestion | null = null;
   for (const candidate of roster) {
     const name = candidate.displayName.trim();
     if (!name || mentioned.has(candidate.id)) continue;
-    const start = candidate.matchCase
-      ? firstWholeWordMatch(text, text, name, references)
-      : firstWholeWordMatch(text, haystack, name.toLocaleLowerCase(), references);
+    const start = firstWholeWordMatch(text, name, references);
     if (start === null) continue;
     const end = start + name.length;
     if (!best || start < best.start || (start === best.start && end > best.end)) {
@@ -63,19 +56,23 @@ export function suggestAgentMention(
 
 function firstWholeWordMatch(
   text: string,
-  haystack: string,
   needle: string,
   references: readonly ChatMessageReference[],
 ): number | null {
-  if (haystack.length !== text.length) return null;
-  for (let start = haystack.indexOf(needle); start >= 0; start = haystack.indexOf(needle, start + 1)) {
+  for (let start = text.indexOf(needle); start >= 0; start = text.indexOf(needle, start + 1)) {
     const end = start + needle.length;
     if (isWordCharacter(text, start - 1) || isWordCharacter(text, end)) continue;
+    if (continuesVersion(text, end)) continue;
     if (text[start - 1] === "@") continue;
     if (references.some((reference) => start < reference.metadata.endOffset && end > reference.metadata.startOffset)) continue;
     return start;
   }
   return null;
+}
+
+/** Whether a version number goes on at `end`, such as the `.5` after `Opus 5` in `Opus 5.5`. */
+function continuesVersion(text: string, end: number): boolean {
+  return /\d/u.test(text[end - 1] ?? "") && text[end] === "." && /\d/u.test(text[end + 1] ?? "");
 }
 
 function isWordCharacter(text: string, index: number): boolean {

@@ -19,7 +19,6 @@ import type {
   ChatProjectAgentSettingsRead,
   CreateChatAgentRequest,
   SetChatAgentPolicyRequest,
-  SetChatChannelModelOverrideRequest,
   UpdateChatAppAgentSettingsRequest,
   UpdateChatChannelAgentSettingsRequest,
   UpdateChatProjectAgentSettingsRequest,
@@ -263,15 +262,6 @@ export async function removeChatChannelAgent(
   request: ChatChannelAgentRequest,
 ): Promise<ChatChannelAgentSettingsRead> {
   return parseChatChannelAgentSettings(await invoke<unknown>("chat_remove_channel_agent", {
-    dbUrl: await ensureDbUrl(), request,
-  }));
-}
-
-/** Sets or clears the model an agent starts on in a channel. */
-export async function setChatChannelModelOverride(
-  request: SetChatChannelModelOverrideRequest,
-): Promise<ChatChannelAgentSettingsRead> {
-  return parseChatChannelAgentSettings(await invoke<unknown>("chat_set_channel_model_override", {
     dbUrl: await ensureDbUrl(), request,
   }));
 }

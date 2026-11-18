@@ -401,7 +401,6 @@
       ? [{
         id: membership.participant.id,
         displayName: membership.participant.displayName,
-        matchCase: chat.agents.find((agent) => agent.participant.id === membership.participant.id)?.agentKind !== "provider",
       }]
       : []
   )));

@@ -5,6 +5,7 @@ import {
   familiesInPickerOrder,
   firstPickerChoice,
   providersInPickerOrder,
+  resolveAgentSelection,
   resolveRecommendedSelection,
 } from "./model-picker-model";
 
@@ -211,5 +212,37 @@ describe("models without a provider default", () => {
     claude.configuration.visibleModelIds = ["sonnet", "fable"];
     const managed = { modelId: null, providerManaged: true, options: [] };
     expect(resolveRecommendedSelection(claude, managed).modelId).toBe("fable");
+  });
+});
+
+describe("resolveAgentSelection", () => {
+  const effort = (values: string[]) => [{
+    kind: "choice" as const,
+    key: "effort",
+    label: "Effort",
+    description: null,
+    options: values.map((value) => ({ value, label: value, description: null })),
+    defaultValue: null,
+  }];
+
+  it("freezes the recommendation and starts the effort on medium, else the highest", () => {
+    const claude = provider("claude-main", "claude", {
+      models: [model("opus", { options: effort(["low", "medium", "high"]) }), model("haiku", { options: effort(["low", "high"]) }), model("plain")],
+      recommendedModelId: "opus",
+    });
+    expect(resolveAgentSelection(claude, { modelId: null, providerManaged: true, options: [] })).toEqual({
+      modelId: "opus",
+      providerManaged: false,
+      options: [{ key: "effort", value: { kind: "choice", value: "medium" } }],
+    });
+    expect(resolveAgentSelection(claude, { modelId: "haiku", providerManaged: false, options: [] }).options)
+      .toEqual([{ key: "effort", value: { kind: "choice", value: "high" } }]);
+    expect(resolveAgentSelection(claude, { modelId: "plain", providerManaged: false, options: [] }).options).toEqual([]);
+  });
+
+  it("keeps options a person chose", () => {
+    const claude = provider("claude-main", "claude", { models: [model("opus", { options: effort(["low", "medium"]) })] });
+    const chosen = { modelId: "opus", providerManaged: false, options: [{ key: "effort", value: { kind: "choice" as const, value: "low" } }] };
+    expect(resolveAgentSelection(claude, chosen)).toBe(chosen);
   });
 });

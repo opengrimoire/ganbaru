@@ -5,6 +5,7 @@ import type {
   ProjectWorkingFolderPathRead,
   InteractionMode,
   JsonValue,
+  ModelChoiceOption,
   ModelOptionDefinition,
   ModelOptionSelection,
   ProviderCapabilities,
@@ -93,7 +94,10 @@ export function recommendedProviderModel(
   ))[0] ?? first;
 }
 
-/** Resolves default model options, preferring Medium for reasoning when supported. */
+/**
+ * Resolves default model options. The effort is `medium` when the model offers it, else its highest effort, and every
+ * other option keeps the provider default.
+ */
 export function defaultModelOptions(
   definitions: readonly ModelOptionDefinition[],
 ): ModelOptionSelection[] {
@@ -106,10 +110,9 @@ export function defaultModelOptions(
         }
         break;
       case "choice": {
-        const medium = modelOptionRole(definition) === "effort"
-          ? definition.options.find((option) => option.value.toLowerCase() === "medium")?.value ?? null
-          : null;
-        const value = medium ?? definition.defaultValue;
+        const value = modelOptionRole(definition) === "effort"
+          ? defaultEffortValue(definition.options) ?? definition.defaultValue
+          : definition.defaultValue;
         if (value !== null) options.push({ key: definition.key, value: { kind: "choice", value } });
         break;
       }
@@ -131,6 +134,11 @@ export function defaultModelOptions(
     }
   }
   return options;
+}
+
+/** The effort a model starts on: `medium` when offered, else the last and highest choice, or `null` without choices. */
+export function defaultEffortValue(choices: readonly ModelChoiceOption[]): string | null {
+  return choices.find((choice) => choice.value.toLowerCase() === "medium")?.value ?? choices.at(-1)?.value ?? null;
 }
 
 /** Copies model options without retaining reactive collection proxies. */

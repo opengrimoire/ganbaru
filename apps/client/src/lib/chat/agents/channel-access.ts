@@ -3,7 +3,6 @@ import type {
   ChatAgentAccessSource,
   ChatAgentPolicyRead,
   ChatAgentResolvedAccessRead,
-  ChatChannelModelOverrideRead,
   ChatEffectiveAgentAccess,
   ChatParticipantId,
   ModelId,
@@ -117,9 +116,9 @@ export interface ChatAgentModelCatalog {
 }
 
 /**
- * The model an agent starts on when a channel does not override it, as dispatch resolves it: its
- * own model while the catalog offers it, else the catalog's recommended model. Without a catalog
- * on this device the agent's own model runs as named, or `null` when the provider picks.
+ * The model an agent runs, as dispatch resolves it: its own model while the catalog offers it, else the
+ * catalog's recommended model. Without a catalog on this device the agent's own model runs as named, or `null`
+ * when the provider picks.
  */
 export function chatAgentDefaultModelId(
   policy: Pick<ChatAgentPolicyRead, "providerManagedModel" | "modelId"> | null,
@@ -131,7 +130,7 @@ export function chatAgentDefaultModelId(
   return catalog.recommendedModelId;
 }
 
-/** The model an agent starts on when a channel does not override it, by display name. */
+/** The model an agent runs, by display name. */
 export function chatAgentDefaultModelName(
   t: Translate,
   policy: Pick<ChatAgentPolicyRead, "providerManagedModel" | "modelId"> | null,
@@ -142,11 +141,3 @@ export function chatAgentDefaultModelName(
   return catalog?.models.find((model) => model.id === modelId)?.displayName ?? modelId;
 }
 
-/** The model a channel overrides for an agent, or null when the agent starts on its default. */
-export function channelModelOverride(
-  overrides: readonly ChatChannelModelOverrideRead[],
-  agentId: ChatParticipantId,
-): ModelId | null {
-  const override = overrides.find((entry) => entry.agentId === agentId)?.model ?? null;
-  return override && !override.providerManagedModel ? override.modelId : null;
-}

@@ -21,8 +21,8 @@ function mention(participantId: string, startOffset: number, label: string): Cha
 }
 
 describe("suggestAgentMention", () => {
-  it("suggests an agent named as a whole word in any case with the range of the name", () => {
-    expect(suggestAgentMention("could ada check this?", [], [ada])).toEqual({
+  it("suggests an agent named as a whole word with the range of the name", () => {
+    expect(suggestAgentMention("could Ada check this?", [], [ada])).toEqual({
       participantId: "participant:ada",
       displayName: "Ada",
       start: 6,
@@ -30,8 +30,8 @@ describe("suggestAgentMention", () => {
     });
   });
 
-  it("matches a case-sensitive agent only when the name keeps its case", () => {
-    const sol = { id: "participant:sol", displayName: "Sol", matchCase: true };
+  it("matches a name only when it keeps its case", () => {
+    const sol = { id: "participant:sol", displayName: "Sol" };
     expect(suggestAgentMention("el sol sale", [], [sol])).toBeNull();
     expect(suggestAgentMention("ask Sol about it", [], [sol])).toEqual({
       participantId: "participant:sol",
@@ -60,7 +60,7 @@ describe("suggestAgentMention", () => {
   });
 
   it("matches a name with spaces and accented neighbors only on word boundaries", () => {
-    expect(suggestAgentMention("thanks grace hopper.", [], [grace])?.start).toBe(7);
+    expect(suggestAgentMention("thanks Grace Hopper.", [], [grace])?.start).toBe(7);
     expect(suggestAgentMention("\u{E9}Ada", [], [ada])).toBeNull();
   });
 
@@ -68,6 +68,14 @@ describe("suggestAgentMention", () => {
     const text = "Grace Hopper should review what Ada wrote";
     expect(suggestAgentMention(text, [], [ada, grace])?.participantId).toBe("participant:grace");
     expect(suggestAgentMention("Ada then Grace Hopper", [], [grace, ada])?.participantId).toBe("participant:ada");
+  });
+
+  it("does not read a shorter version inside a longer one and prefers the longest name", () => {
+    const opus5 = { id: "participant:opus-5", displayName: "Opus 5" };
+    const opus55 = { id: "participant:opus-5-5", displayName: "Opus 5.5" };
+    expect(suggestAgentMention("ask Opus 5.5 now", [], [opus5])).toBeNull();
+    expect(suggestAgentMention("ask Opus 5.5 now", [], [opus5, opus55])?.participantId).toBe("participant:opus-5-5");
+    expect(suggestAgentMention("Opus 5. Then rest", [], [opus5])?.end).toBe(6);
   });
 
   it("suggests the second agent once the first is mentioned", () => {

@@ -39,7 +39,7 @@ export const CHAT_FOLLOWUP_ROUTINGS = ["steer", "queue"] as const;
 export type ChatFollowupRouting = (typeof CHAT_FOLLOWUP_ROUTINGS)[number];
 
 /** What an agent stands for: a provider family, a built-in model line such as Opus, or a named agent. */
-export const CHAT_AGENT_KINDS = ["provider", "model", "custom"] as const;
+export const CHAT_AGENT_KINDS = ["line", "model", "custom"] as const;
 export type ChatAgentKind = (typeof CHAT_AGENT_KINDS)[number];
 
 export const CHAT_AGENT_CONFIGURATION_STATES = [
@@ -162,12 +162,6 @@ export interface ChatProjectAgentSettingsRead {
   revision: number;
 }
 
-/** One agent's model override in one channel. */
-export interface ChatChannelModelOverrideRead {
-  agentId: ChatParticipantId;
-  model: ChatModelSelection;
-}
-
 /** One standing push approval of an agent in a channel. */
 export interface ChatChannelPushApprovalRead {
   approvalId: string;
@@ -189,7 +183,6 @@ export interface ChatChannelAgentSettingsRead {
   instructions: string;
   effective: ChatEffectiveChannelAccessRead;
   agents: ChatAgentResolvedAccessRead[];
-  modelOverrides: ChatChannelModelOverrideRead[];
   pushApprovals: ChatChannelPushApprovalRead[];
   revision: number;
 }
@@ -218,13 +211,6 @@ export interface UpdateChatChannelAgentSettingsRequest {
 export interface ChatChannelAgentRequest {
   channelId: ChatChannelId;
   agentId: ChatParticipantId;
-}
-
-/** A null `model` clears the override. */
-export interface SetChatChannelModelOverrideRequest {
-  channelId: ChatChannelId;
-  agentId: ChatParticipantId;
-  model: ChatModelSelection | null;
 }
 
 /** One local day of an agent's usage, summed across the devices that ran it. */
@@ -540,7 +526,7 @@ export interface ChatAgentPolicyRead {
   createdAt: UtcTimestamp;
 }
 
-/** An agent of a provider family: the family's own, a built-in model line, or one a person named. */
+/** An agent of a provider family: a built-in model line such as `@Opus`, a catalog model such as `@Opus 5.5`, or one a person named. */
 export interface ChatAiAgentRead {
   participant: ChatParticipantRead;
   providerFamilyId: ProviderFamilyId;

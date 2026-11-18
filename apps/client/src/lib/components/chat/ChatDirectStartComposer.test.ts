@@ -958,7 +958,7 @@ describe("ChatDirectStartComposer model controls", () => {
     const { target } = setup(false);
     const trigger = target.querySelector<HTMLButtonElement>("[data-chat-model-trigger]");
     expect(trigger?.querySelector(".provider-icon")).toBeNull();
-    expect(trigger?.textContent).toContain("5.6 Sol");
+    expect(trigger?.textContent).toContain("Sol 5.6");
     expect(trigger?.textContent).toContain("Medium");
     trigger?.click();
     await tick();
@@ -967,7 +967,7 @@ describe("ChatDirectStartComposer model controls", () => {
     expect(trigger?.querySelector(".model-chevron")?.classList.contains("open")).toBe(true);
     const effortChoices = [...target.querySelectorAll<HTMLButtonElement>(".effort-options button")];
     expect(effortChoices).toHaveLength(7);
-    expect(effortChoices[0]?.getAttribute("aria-label")).toBe("5.6 Terra Light");
+    expect(effortChoices[0]?.getAttribute("aria-label")).toBe("Terra 5.6 Light");
     expect(effortChoices[2]?.getAttribute("aria-pressed")).toBe("true");
     expect(effortChoices.every((choice) => !choice.hasAttribute("title"))).toBe(true);
     expect(effortChoices.every((choice) => choice.dataset.appTooltipDisabled === "true")).toBe(true);
@@ -1014,7 +1014,7 @@ describe("ChatDirectStartComposer model controls", () => {
     expect(effortKnob?.style.left).toContain("100% - 0.875rem");
     effortChoices[0]?.click();
     await tick();
-    expect(trigger?.textContent).toContain("5.6 Terra");
+    expect(trigger?.textContent).toContain("Terra 5.6");
     expect(trigger?.textContent).toContain("Light");
     expect(target.querySelectorAll<HTMLButtonElement>(".effort-options button")[0]?.getAttribute("aria-pressed")).toBe("true");
     expect(effortKnob?.style.left).toContain("0% + 0.875rem");
@@ -1108,7 +1108,7 @@ describe("ChatDirectStartComposer model controls", () => {
     const chat = getChat();
     const settings = modelSettings();
     const sol = settings.providerInstances[0]?.modelCatalog?.models.find((model) => model.id === "gpt-5.6-sol");
-    if (!sol) throw new Error("Model settings require 5.6 Sol");
+    if (!sol) throw new Error("Model settings require Sol 5.6");
     sol.options = [...sol.options, {
       kind: "choice",
       key: "context_window",
@@ -1211,17 +1211,17 @@ describe("ChatDirectStartComposer model controls", () => {
     await tick();
 
     const providerModelRow = [...document.querySelectorAll<HTMLElement>('[data-model-company="openai"] .model-row')]
-      .find((row) => row.textContent?.includes("5.6 Sol"));
+      .find((row) => row.textContent?.includes("Sol 5.6"));
     expect(providerModelRow?.querySelector(".model-provider-caption")).toBeNull();
     const favoriteText = document.querySelector(".favorite-company-section")?.textContent ?? "";
-    expect(favoriteText).toContain("5.6 Sol");
+    expect(favoriteText).toContain("Sol 5.6");
     expect(favoriteText).toContain("Opus 4.8");
     expect(favoriteText).not.toContain("gpt-5.6-sol");
     expect(document.querySelectorAll(".model-provider-caption")).toHaveLength(0);
     expect(document.querySelectorAll(".favorite-source-section")).toHaveLength(0);
     expect(document.querySelectorAll(".favorite-model-label")).toHaveLength(2);
 
-    document.querySelector<HTMLButtonElement>('.favorite-company-section .model-favorite[aria-label="Favorite: 5.6 Sol"]')?.click();
+    document.querySelector<HTMLButtonElement>('.favorite-company-section .model-favorite[aria-label="Favorite: Sol 5.6"]')?.click();
     await tick();
     expect(updateModels).toHaveBeenCalledWith("codex-local", [], []);
   });
@@ -1347,7 +1347,7 @@ describe("ChatDirectStartComposer model controls", () => {
     expect(chat.composer.safetyMode).toBe("ask_for_approval");
     expect(chat.composer.interactionMode).toBe("build");
     expect(target.querySelector('[data-chat-field="safety"]')?.textContent).toContain("Ask for approval");
-    expect(target.querySelector("[data-chat-model-trigger]")?.textContent).toContain("5.6 Sol");
+    expect(target.querySelector("[data-chat-model-trigger]")?.textContent).toContain("Sol 5.6");
   });
 
   it("previews disabled model controls when no provider is configured", async () => {

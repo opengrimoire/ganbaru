@@ -55,13 +55,7 @@ export const agentsSettings = {
     browseFailed: "This private scratch directory could not be read.",
     close: "Close scratch storage",
   },
-  defaultModel: {
-    heading: "Default model",
-    hint: (agent: string) => `The model ${agent} uses unless a channel picks another`,
-    saveFailed: "Could not save the default model.",
-  },
   roster: {
-    heading: "Agents",
     hint: "Turn on the agents you want to add to channels and mention with @",
     add: "Add agent",
     nameLabel: "Name",
@@ -70,7 +64,6 @@ export const agentsSettings = {
     create: "Add",
     cancel: "Cancel",
     createFailed: "Could not add the agent.",
-    toggleFailed: "Could not change the agent.",
     nameProblems: {
       empty: "Name the agent.",
       tooLong: (limit: string) => `Use at most ${limit} characters.`,
@@ -174,8 +167,7 @@ export const agentsSettings = {
     favorite: "Favorite",
     visible: "Visible",
     hidden: "Hidden",
-    hide: "Hide model",
-    show: "Show model",
+    effort: (effort: string) => `${effort} effort`,
     unavailable: "Unavailable",
     stale: "Stale",
     custom: "Unverified custom model",

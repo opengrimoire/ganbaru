@@ -10,6 +10,7 @@ import {
   contextMeter,
   copyModelOptionSelections,
   copyVersionedJson,
+  defaultEffortValue,
   defaultModelOptions,
   filterPromptCatalog,
   filterWorkspacePaths,
@@ -176,6 +177,30 @@ describe("Chat composer model", () => {
       capabilities: [], options: [], custom: false,
     }));
     expect(rankedModels(models, ["favorite"], ["recent"], "").map((model) => model.id)).toEqual(["favorite", "recent", "z-model"]);
+  });
+
+  it("starts effort on medium, else the highest choice, and keeps other provider defaults", () => {
+    const choice = (key: string, label: string, values: string[], defaultValue: string | null) => ({
+      kind: "choice" as const,
+      key,
+      label,
+      description: null,
+      options: values.map((value) => ({ value, label: value, description: null })),
+      defaultValue,
+    });
+    expect(defaultEffortValue(choice("effort", "Effort", ["low", "Medium", "high"], null).options)).toBe("Medium");
+    expect(defaultEffortValue(choice("effort", "Effort", ["low", "high", "max"], null).options)).toBe("max");
+    expect(defaultEffortValue([])).toBeNull();
+    expect(defaultModelOptions([
+      choice("thinking", "Reasoning", ["low", "high"], "low"),
+      choice("tier", "Service tier", ["default", "fast"], "default"),
+    ])).toEqual([
+      { key: "thinking", value: { kind: "choice", value: "high" } },
+      { key: "tier", value: { kind: "choice", value: "default" } },
+    ]);
+    expect(defaultModelOptions([choice("effort", "Effort", [], "auto")])).toEqual([
+      { key: "effort", value: { kind: "choice", value: "auto" } },
+    ]);
   });
 
   it("defaults to the strongest OpenAI model at Medium effort when OpenAI is connected", () => {

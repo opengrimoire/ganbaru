@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { ChatAgentResolvedAccessRead, ChatChannelModelOverrideRead } from "$lib/chat/contracts";
+import type { ChatAgentResolvedAccessRead } from "$lib/chat/contracts";
 import { en } from "$lib/i18n/messages/en";
 import { es } from "$lib/i18n/messages/es";
 import { translateFromPartialCatalog, type Translate } from "$lib/i18n/translator.svelte";
 import {
-  channelModelOverride,
   chatAccessOptions,
   chatAccessSourceLabel,
   chatAgentBehaviorLine,
@@ -161,18 +160,5 @@ describe("chatAgentDefaultModelName", () => {
     expect(chatAgentDefaultModelName(tEn, null, claude)).toBe("Opus 9");
     expect(chatAgentDefaultModelName(tEn, { providerManagedModel: true, modelId: null }, claude)).toBe("Opus 9");
     expect(chatAgentDefaultModelName(tEn, { providerManagedModel: false, modelId: "fable" }, claude)).toBe("Fable 9");
-  });
-});
-
-describe("channelModelOverride", () => {
-  const overrides: ChatChannelModelOverrideRead[] = [
-    { agentId: "agent-1", model: { providerManagedModel: false, modelId: "gpt-5", modelOptions: [] } },
-    { agentId: "agent-2", model: { providerManagedModel: true, modelId: null, modelOptions: [] } },
-  ];
-
-  it("returns the overriding model for an agent and null otherwise", () => {
-    expect(channelModelOverride(overrides, "agent-1")).toBe("gpt-5");
-    expect(channelModelOverride(overrides, "agent-2")).toBeNull();
-    expect(channelModelOverride(overrides, "agent-3")).toBeNull();
   });
 });

@@ -83,10 +83,10 @@ describe("newestModelOfLine", () => {
 });
 
 describe("agentModelLine", () => {
-  it("reads the line only from a built-in model agent of its family", () => {
-    expect(agentModelLine(agent("Opus", "model"))).toBe("opus");
-    expect(agentModelLine(agent("Opus", "model", "codex"))).toBeNull();
+  it("reads the line only from a built-in line agent of its family", () => {
+    expect(agentModelLine(agent("Opus", "line"))).toBe("opus");
+    expect(agentModelLine(agent("Opus", "line", "codex"))).toBeNull();
     expect(agentModelLine(agent("Reviewer", "custom"))).toBeNull();
-    expect(agentModelLine(agent("Claude", "provider"))).toBeNull();
+    expect(agentModelLine(agent("Opus 5.5", "model"))).toBeNull();
   });
 });

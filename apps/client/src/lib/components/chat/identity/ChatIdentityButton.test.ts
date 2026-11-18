@@ -44,7 +44,7 @@ const agentParticipant: ChatParticipantRead = {
 const agent: ChatAiAgentRead = {
   participant: agentParticipant,
   providerFamilyId: "codex",
-  agentKind: "provider",
+  agentKind: "model",
   localProviderInstanceId: "codex-local",
   configurationState: "healthy",
   latestPolicy: {
@@ -178,7 +178,7 @@ describe("ChatIdentityButton", () => {
     expect(card?.querySelector(".identity-heading small")).toBeNull();
     expect(card?.querySelector(".identity-status-dot")?.getAttribute("aria-label")).toBe("Available");
     expect(card?.querySelector(".identity-settings-label")?.textContent).toBe("Default settings");
-    expect(card?.querySelector(".identity-model-name")?.textContent).toBe("5.6 Terra");
+    expect(card?.querySelector(".identity-model-name")?.textContent).toBe("Terra 5.6");
     expect(card?.querySelector(".identity-effort-name")?.textContent).toBe("Light");
     expect(card?.querySelector(".identity-model-row .provider-icon")).toBeNull();
     expect(card?.querySelector(".identity-fast-indicator svg")).not.toBeNull();

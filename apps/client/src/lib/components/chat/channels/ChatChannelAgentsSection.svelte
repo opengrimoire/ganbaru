@@ -8,21 +8,16 @@
     ChatChannelMembershipRemovalPreview,
     ChatChannelRead,
     ChatParticipantId,
-    ProviderModel,
+    ProviderModelCatalog,
   } from "$lib/chat/contracts";
-  import {
-    channelModelOverride,
-    chatAgentBehaviorLine,
-    chatAgentDefaultModelName,
-    ownAccessAvailable,
-  } from "$lib/chat/agents/channel-access";
+  import { selectedEffortLabel } from "$lib/chat/agents/agent-roster";
+  import { chatAgentBehaviorLine, chatAgentDefaultModelName, ownAccessAvailable } from "$lib/chat/agents/channel-access";
   import { formatModelDisplayName } from "$lib/chat/composer/model-company";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
   import ChatAgentScopeSettings, { type ChatAgentScopeValue } from "$lib/components/chat/agents/ChatAgentScopeSettings.svelte";
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
-  import Select from "$lib/components/ui/Select.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChat } from "$lib/stores/chat.svelte";
   import { portal } from "$lib/utils/portal";
@@ -30,7 +25,7 @@
 
   /**
    * The Agents section of a channel's details: the access and instructions every agent in the channel works
-   * under, each agent with what it does on this device and its model, and the channel's push approvals. It is
+   * under, each agent with what it does on this device and the model it runs, and the channel's push approvals. It is
    * the one place that edits per-channel agent behavior.
    */
   let { channel }: { channel: ChatChannelRead } = $props();
@@ -40,8 +35,7 @@
     agent: ChatAiAgentRead;
     resolved: ChatAgentResolvedAccessRead;
     behavior: string;
-    modelOptions: { value: string; label: string }[];
-    modelValue: string;
+    modelLabel: string;
   }
 
   const AVATAR_SIZE = 26;
@@ -65,30 +59,18 @@
         provider.configuration.instanceId === agent.localProviderInstanceId
       ))?.modelCatalog ?? null;
       const behavior = chatAgentBehaviorLine(t, resolved, agent.participant.displayName);
-      if (agent.agentKind !== "provider") {
-        /* Model line and named agents keep their own model, so a channel cannot override it. */
-        const fixedLabel = agent.agentKind === "model"
-          ? t("chat.agentAccess.newestOfLine", agent.participant.displayName)
-          : t("chat.agentAccess.fixedModel", formatModelDisplayName(chatAgentDefaultModelName(t, agent.latestPolicy, catalog)));
-        return [{ agent, resolved, behavior, modelOptions: [{ value: "", label: fixedLabel }], modelValue: "" }];
-      }
-      const override = channelModelOverride(current.modelOverrides, agent.participant.id);
-      const defaultName = chatAgentDefaultModelName(t, agent.latestPolicy, catalog);
-      const models: readonly Pick<ProviderModel, "id" | "displayName">[] = catalog?.models ?? [];
-      const modelOptions = [
-        { value: "", label: t("chat.agentAccess.defaultModel", formatModelDisplayName(defaultName)) },
-        ...models.map((model) => ({ value: model.id, label: formatModelDisplayName(model.displayName) })),
-      ];
-      if (override && !models.some((model) => model.id === override)) modelOptions.push({ value: override, label: override });
-      return [{
-        agent,
-        resolved,
-        behavior,
-        modelOptions,
-        modelValue: override ?? "",
-      }];
+      return [{ agent, resolved, behavior, modelLabel: modelLabel(agent, catalog) }];
     });
   });
+
+  /** What an agent runs: a line agent the newest model of its line, any other agent its own model and effort. */
+  function modelLabel(agent: ChatAiAgentRead, catalog: ProviderModelCatalog | null): string {
+    if (agent.agentKind === "line") return t("chat.agentAccess.newestOfLine", agent.participant.displayName);
+    const modelName = formatModelDisplayName(chatAgentDefaultModelName(t, agent.latestPolicy, catalog));
+    const model = catalog?.models.find((entry) => entry.id === agent.latestPolicy?.modelId);
+    const effort = model ? selectedEffortLabel(agent.latestPolicy?.modelOptions ?? [], model.options) : null;
+    return effort ? t("chat.agentAccess.fixedModelEffort", modelName, effort) : t("chat.agentAccess.fixedModel", modelName);
+  }
 
   async function load(channelId: string): Promise<void> {
     const current = ++request;
@@ -137,16 +119,6 @@
     } finally {
       busyAgentId = null;
     }
-  }
-
-  function chooseModel(agentId: ChatParticipantId, value: string): void {
-    void runForAgent(agentId, async () => {
-      accept(await chatApi.setChatChannelModelOverride({
-        channelId: channel.id,
-        agentId,
-        model: value ? { providerManagedModel: false, modelId: value, modelOptions: [] } : null,
-      }));
-    });
   }
 
   function requestRemoval(agent: ChatAiAgentRead): void {
@@ -211,19 +183,7 @@
                 ><X size={14} /></button>
               </div>
               <p class="section-detail">{row.behavior}</p>
-              {#if row.modelOptions.length > 1}
-                <Select
-                  inline
-                  class="w-full"
-                  value={row.modelValue}
-                  options={row.modelOptions}
-                  ariaLabel={t("chat.agentAccess.modelFor", row.agent.participant.displayName)}
-                  disabled={busyAgentId !== null}
-                  onChange={(value) => chooseModel(row.agent.participant.id, value)}
-                />
-              {:else}
-                <p class="section-detail">{row.modelOptions[0]?.label}</p>
-              {/if}
+              <p class="section-detail">{row.modelLabel}</p>
             </div>
           </li>
         {/each}

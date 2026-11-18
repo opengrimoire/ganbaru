@@ -1,5 +1,6 @@
 import type {
   ModelOptionDefinition,
+  ModelOptionSelection,
   ProviderFamilyId,
   ProviderFamilyMetadataRead,
   ProviderInstanceRead,
@@ -7,7 +8,7 @@ import type {
   RememberedComposerSelection,
 } from "$lib/chat/contracts";
 import { compareProviderReadiness } from "$lib/chat/usage/provider-readiness";
-import { isProviderAvailable, modelOptionRole, providerHasCatalogModels, rankedModels, recommendedProviderModel } from "./model";
+import { defaultModelOptions, isProviderAvailable, modelOptionRole, providerHasCatalogModels, rankedModels, recommendedProviderModel } from "./model";
 import {
   compareCompanyModels,
   integrationCompany,
@@ -61,6 +62,20 @@ export function resolveRecommendedSelection<Selection extends { modelId: string 
   if (!selection.providerManaged || !provider) return selection;
   const recommended = recommendedProviderModel(provider);
   return recommended ? { ...selection, modelId: recommended.id, providerManaged: false } : selection;
+}
+
+/**
+ * The model and options an agent is made with: a selection left on the recommendation becomes the model recommended
+ * now, and a model chosen without options starts on its default options, so its effort is `medium`, else its highest.
+ */
+export function resolveAgentSelection<Selection extends { modelId: string | null; providerManaged: boolean; options: ModelOptionSelection[] }>(
+  provider: ProviderInstanceRead | null,
+  selection: Selection,
+): Selection {
+  const resolved = resolveRecommendedSelection(provider, selection);
+  if (resolved.options.length > 0) return resolved;
+  const model = provider?.modelCatalog?.models.find((entry) => entry.id === resolved.modelId);
+  return model ? { ...resolved, options: defaultModelOptions(model.options) } : resolved;
 }
 
 /** Formats an option label for the compact Chat model control. */

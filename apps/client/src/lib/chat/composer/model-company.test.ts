@@ -64,10 +64,13 @@ describe("Chat model companies", () => {
     expect(shouldShowModelId({ ...model("team-model-id", "Team model"), custom: true })).toBe(true);
   });
 
-  it("formats provider display names without identifier-style hyphens or a GPT prefix before a version", () => {
-    expect(formatModelDisplayName("GPT-5.6-Sol")).toBe("5.6 Sol");
-    expect(formatModelDisplayName("GPT-5 mini")).toBe("5 mini");
-    expect(formatModelDisplayName("GPT-5")).toBe("5");
+  it("formats provider display names without hyphens and with an OpenAI line before its version", () => {
+    expect(formatModelDisplayName("GPT-5.6-Sol")).toBe("Sol 5.6");
+    expect(formatModelDisplayName("GPT-6-Luna")).toBe("Luna 6");
+    expect(formatModelDisplayName("GPT-5 mini")).toBe("mini 5");
+    expect(formatModelDisplayName("GPT-5")).toBe("GPT 5");
+    expect(formatModelDisplayName("5.6 Sol")).toBe("Sol 5.6");
+    expect(formatModelDisplayName("GPT Image 1")).toBe("GPT Image 1");
     expect(formatModelDisplayName("gpt-oss-120b")).toBe("gpt oss 120b");
     expect(formatModelDisplayName("Claude-Sonnet-4.5")).toBe("Claude Sonnet 4.5");
   });

@@ -382,6 +382,11 @@ fn the_default_route_is_listed_only_as_the_model_it_runs() {
     let shared = provider_models(input("claude-opus-9"), &[], &BTreeMap::new()).unwrap();
     assert_eq!(ids(shared), [("opus".to_string(), "Opus 9".to_string())]);
 
+    for long_context in ["claude-opus-9[1m]", "claude-opus-10[1m]"] {
+        let models = provider_models(input(long_context), &[], &BTreeMap::new()).unwrap();
+        assert_eq!(ids(models), [("opus".to_string(), "Opus 9".to_string())]);
+    }
+
     let distinct = provider_models(input("claude-opus-10"), &[], &BTreeMap::new()).unwrap();
     assert_eq!(distinct[0].options.len(), 1);
     assert_eq!(

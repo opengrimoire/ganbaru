@@ -981,10 +981,13 @@ const CLAUDE_DEFAULT_MODEL_ROUTE: &str = "default";
 /// whatever the account default becomes. The resolved model is kept only when no other entry
 /// already runs it, such as the `opus` alias.
 fn without_default_route(models: Vec<ClaudeModel>) -> Vec<ClaudeModel> {
+    let without_context = |id: &str| id.strip_suffix("[1m]").unwrap_or(id).to_string();
     let resolved_elsewhere: BTreeSet<String> = models
         .iter()
         .filter(|model| model.value != CLAUDE_DEFAULT_MODEL_ROUTE)
-        .filter_map(|model| model.resolved_model.clone())
+        .flat_map(|model| [Some(model.value.as_str()), model.resolved_model.as_deref()])
+        .flatten()
+        .map(without_context)
         .collect();
     models
         .into_iter()
@@ -993,8 +996,12 @@ fn without_default_route(models: Vec<ClaudeModel>) -> Vec<ClaudeModel> {
                 return Some(model);
             }
             let resolved = model.resolved_model.clone()?;
+            // A context-window suffix is a launch setting, not a model id the picker can name.
+            if resolved.contains('[') || resolved_elsewhere.contains(&without_context(&resolved)) {
+                return None;
+            }
             let label = resolved_claude_model_label(&resolved)?;
-            (!resolved_elsewhere.contains(&resolved)).then(|| ClaudeModel {
+            Some(ClaudeModel {
                 value: resolved.clone(),
                 resolved_model: Some(resolved),
                 display_name: label,

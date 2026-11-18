@@ -117,15 +117,18 @@ export interface ChatAgentModelCatalog {
 }
 
 /**
- * The model an agent starts on when a channel does not override it: its own model, else the
- * catalog's recommended model, else `null` when the provider has no catalog on this device.
+ * The model an agent starts on when a channel does not override it, as dispatch resolves it: its
+ * own model while the catalog offers it, else the catalog's recommended model. Without a catalog
+ * on this device the agent's own model runs as named, or `null` when the provider picks.
  */
 export function chatAgentDefaultModelId(
   policy: Pick<ChatAgentPolicyRead, "providerManagedModel" | "modelId"> | null,
   catalog: ChatAgentModelCatalog | null,
 ): ModelId | null {
   const modelId = policy && !policy.providerManagedModel ? policy.modelId : null;
-  return modelId ?? catalog?.recommendedModelId ?? null;
+  if (!catalog) return modelId;
+  if (modelId && catalog.models.some((model) => model.id === modelId)) return modelId;
+  return catalog.recommendedModelId;
 }
 
 /** The model an agent starts on when a channel does not override it, by display name. */

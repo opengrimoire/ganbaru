@@ -144,9 +144,10 @@ describe("chatAgentBehaviorLine", () => {
 describe("chatAgentDefaultModelName", () => {
   const catalog = { models: [{ id: "gpt-5", displayName: "GPT-5" }], recommendedModelId: null };
 
-  it("uses the catalog name of the agent's default model, or its id when the catalog lacks it", () => {
+  it("uses the catalog name of the agent's model, or the recommended one when the catalog lacks it", () => {
     expect(chatAgentDefaultModelName(tEn, { providerManagedModel: false, modelId: "gpt-5" }, catalog)).toBe("GPT-5");
-    expect(chatAgentDefaultModelName(tEn, { providerManagedModel: false, modelId: "o9" }, catalog)).toBe("o9");
+    expect(chatAgentDefaultModelName(tEn, { providerManagedModel: false, modelId: "o9" }, catalog)).toBe("the model set in the provider");
+    expect(chatAgentDefaultModelName(tEn, { providerManagedModel: false, modelId: "o9" }, { ...catalog, recommendedModelId: "gpt-5" })).toBe("GPT-5");
     expect(chatAgentDefaultModelName(tEn, { providerManagedModel: false, modelId: "gpt-5" }, null)).toBe("gpt-5");
   });
 

@@ -547,14 +547,14 @@ describe("Chat provider contracts", () => {
     expect(parsed.recommendedModelId).toBeNull();
   });
 
-  it.each([false, true])("preserves native Claude routes and capabilities with stale=%s", (stale) => {
+  it.each([false, true])("preserves native Claude aliases and capabilities with stale=%s", (stale) => {
     const catalog = {
       instanceId: "claude",
       models: [
         {
-          id: "default",
-          displayName: "Default (Opus 4.8)",
-          description: "Use the default model (currently Opus 4.8)",
+          id: "opus",
+          displayName: "Opus 4.8",
+          description: "Opus 4.8 · Most capable for complex work",
           contextLimit: null,
           availability: "available",
           capabilities: [],
@@ -598,7 +598,7 @@ describe("Chat provider contracts", () => {
           custom: true,
         },
       ],
-      recommendedModelId: "default",
+      recommendedModelId: "opus",
       source: "provider",
       discoveredAt: timestamp,
       stale,

@@ -77,6 +77,9 @@ export function availableProvidersInDefaultOrder(
     .map(({ provider }) => provider);
 }
 
+/** Model ids that route to whatever the provider decides instead of naming a model. */
+const PROVIDER_ROUTE_MODEL_IDS: ReadonlySet<string> = new Set(["auto", "default"]);
+
 /**
  * Selects the catalog's recommended model when it is visible, otherwise the strongest visible
  * built-in model of the first listed company.
@@ -86,7 +89,8 @@ export function recommendedProviderModel(
   candidates: readonly ProviderModel[] = configuredVisibleModels(provider),
 ): ProviderModel | null {
   const selectable = candidates.filter((model) => (
-    model.availability === "available" || model.availability === "stale"
+    (model.availability === "available" || model.availability === "stale")
+    && !PROVIDER_ROUTE_MODEL_IDS.has(model.id.toLowerCase())
   ));
   const builtIn = selectable.filter((model) => !model.custom);
   const pool = builtIn.length > 0 ? builtIn : selectable;

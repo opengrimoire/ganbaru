@@ -380,15 +380,22 @@ pub fn parse_xai_question(params: &Value) -> ChatResult<(ParsedQuestion, Vec<Xai
     ))
 }
 
+/// The option Ganbaru picks for a permission request without asking, if any. An edit that
+/// stays inside the workspace and names neither repository metadata nor credentials is
+/// allowed once under AskForApproval and ApproveForMe; FullAccess allows every request.
 pub fn auto_permission_option(
     parsed: &ParsedPermission,
     safety_mode: SafetyMode,
 ) -> Option<&AcpPermissionOption> {
     match safety_mode {
-        SafetyMode::AskForApproval if parsed.safely_in_workspace_edit => parsed
-            .options
-            .iter()
-            .find(|option| option.kind == "allow_once"),
+        SafetyMode::AskForApproval | SafetyMode::ApproveForMe
+            if parsed.safely_in_workspace_edit =>
+        {
+            parsed
+                .options
+                .iter()
+                .find(|option| option.kind == "allow_once")
+        }
         SafetyMode::AskForApproval | SafetyMode::ApproveForMe | SafetyMode::Custom => None,
         SafetyMode::FullAccess => parsed
             .options

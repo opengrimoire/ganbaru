@@ -158,13 +158,19 @@ fn read_scopes_deny_the_shell_edits_network_and_outside_paths_over_permissive_co
 }
 
 #[test]
-fn edit_scope_asks_for_workspace_edits_and_denies_metadata_and_the_shell() {
+fn edit_scope_allows_workspace_edits_asks_for_hidden_paths_and_denies_metadata_and_the_shell() {
     let edit_rules = with_configuration(rules(EDIT, build()));
+    for pattern in ["src/main.rs", "notes.md", "nested/dir/file.txt"] {
+        assert_eq!(
+            decide(&edit_rules, "edit", pattern),
+            OpenCodePermissionAction::Allow,
+            "{pattern}"
+        );
+    }
     for pattern in [
-        "src/main.rs",
-        "notes.md",
-        "nested/dir/file.txt",
         ".github/workflows/ci.yml",
+        ".opencode/agent.md",
+        "nested/.env",
     ] {
         assert_eq!(
             decide(&edit_rules, "edit", pattern),
@@ -495,7 +501,7 @@ fn the_configured_environment_cannot_name_the_sandbox_policy_file() {
 }
 
 #[test]
-fn confined_commands_run_unattended_only_in_full_access() {
+fn confined_commands_run_unattended_in_self_approving_modes() {
     for scope in [
         EXECUTE,
         ProviderOrganizationalScope::Folder {
@@ -519,7 +525,7 @@ fn confined_commands_run_unattended_only_in_full_access() {
         );
         assert_eq!(
             decide_shell(SafetyMode::ApproveForMe).unwrap(),
-            OpenCodePermissionAction::Ask
+            OpenCodePermissionAction::Allow
         );
         assert_eq!(
             decide_shell(SafetyMode::FullAccess).unwrap(),
@@ -540,9 +546,9 @@ fn confined_commands_run_unattended_only_in_full_access() {
             .unwrap(),
         );
         assert_eq!(
-            decide(&full, "edit", "src/main.rs"),
+            decide(&full, "edit", ".opencode/agent.md"),
             OpenCodePermissionAction::Ask,
-            "edits keep asking"
+            "hidden edits keep asking"
         );
         for permission in ["external_directory", "webfetch", "task"] {
             assert_eq!(

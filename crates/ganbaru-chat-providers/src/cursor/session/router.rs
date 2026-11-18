@@ -417,8 +417,9 @@ async fn handle_permission(
     )
 }
 
-/// Whether a confined terminal command waits for the person: in every safety mode but full
-/// access, so the approval does not depend on the agent asking first.
+/// Whether a confined terminal command waits for the person: under AskForApproval and
+/// Custom, so the approval does not depend on the agent asking first. ApproveForMe, which the
+/// Work on their own access level runs, and FullAccess run confined commands without asking.
 fn holds_terminals_for_the_person(resources: &CursorRouterResources) -> ChatResult<bool> {
     if resources.terminal_callbacks.confinement.is_none() {
         return Ok(false);
@@ -429,7 +430,10 @@ fn holds_terminals_for_the_person(resources: &CursorRouterResources) -> ChatResu
         .map_err(|_| driver_state_error())?
         .modes
         .safety_mode;
-    Ok(safety_mode != SafetyMode::FullAccess)
+    Ok(!matches!(
+        safety_mode,
+        SafetyMode::ApproveForMe | SafetyMode::FullAccess
+    ))
 }
 
 /// Opens an approval for a confined terminal command and holds the request until the person

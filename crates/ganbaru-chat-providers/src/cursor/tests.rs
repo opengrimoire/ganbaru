@@ -829,6 +829,17 @@ fn ask_permissions_accept_only_verified_workspace_edits() {
     )
     .unwrap();
     assert!(auto_permission_option(&command, SafetyMode::AskForApproval).is_none());
+    assert_eq!(
+        auto_permission_option(&edit, SafetyMode::ApproveForMe)
+            .unwrap()
+            .option_id,
+        "allow-this",
+        "self-approving work edits the workspace without asking"
+    );
+    assert!(
+        auto_permission_option(&command, SafetyMode::ApproveForMe).is_none(),
+        "a command request still reaches the person"
+    );
     let external = parse_permission(
         &permission("edit", "/tmp/cursor-external-file"),
         workspace.path(),

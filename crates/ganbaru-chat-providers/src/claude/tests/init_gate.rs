@@ -179,7 +179,7 @@ fn can_use_tool(request_id: &str) -> Value {
         "request": {
             "subtype": "can_use_tool",
             "tool_name": "Edit",
-            "input": { "file_path": "notes.txt" },
+            "input": { "file_path": ".claude/settings.json" },
             "tool_use_id": "tool-edit",
         },
     })

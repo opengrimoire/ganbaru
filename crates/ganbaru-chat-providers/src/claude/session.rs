@@ -536,7 +536,8 @@ pub fn route_control_request(
 
 /// Routes one control request of a turn running with `modes`. Under an organizational policy,
 /// a request outside the scope is denied without reaching the person, a confined command the
-/// turn's modes run unattended is allowed without reaching the person, and no approval offers
+/// turn's modes run unattended and an edit of an ordinary file inside the root are allowed
+/// without reaching the person, and no approval offers
 /// a session-wide grant, because shell rules, extra directories, and accepting edits would all
 /// widen the boundary.
 pub fn route_scoped_control_request(
@@ -586,12 +587,27 @@ pub fn route_scoped_control_request(
             )?),
         });
     }
-    if organizational.is_some_and(|policy| policy.runs_unattended(tool_name, modes)) {
+    let unattended = organizational.and_then(|policy| {
+        if policy.runs_unattended(tool_name, modes) {
+            Some((
+                "claude/organizational/confined_command",
+                "Ganbaru ran an agent command in the sandbox without asking",
+            ))
+        } else if policy.edits_unattended(tool_name, &tool_input, modes) {
+            Some((
+                "claude/organizational/folder_edit",
+                "Ganbaru allowed an agent edit inside the folder without asking",
+            ))
+        } else {
+            None
+        }
+    });
+    if let Some((source_type, summary)) = unattended {
         return Ok(RoutedClaudeRequest {
             pending: None,
             event: CanonicalEvent::Unknown(UnknownEvent {
-                source_type: "claude/organizational/confined_command".to_string(),
-                summary: "Ganbaru ran an agent command in the sandbox without asking".to_string(),
+                source_type: source_type.to_string(),
+                summary: summary.to_string(),
                 safe_payload: None,
             }),
             immediate_response: Some(control_success(

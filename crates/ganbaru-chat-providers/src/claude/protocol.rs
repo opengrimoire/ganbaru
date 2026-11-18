@@ -672,9 +672,10 @@ pub fn internal_mcp_config_argument(name: &str, url: &str) -> ChatResult<String>
 /// A scope that loads the shell admits AskForApproval, where the person approving each command
 /// confines it, and, when the sandbox confines its commands, ApproveForMe and FullAccess. The
 /// mode asks before edits in Build and stays read-only in Plan for every safety mode; Ganbaru
-/// answers each command request itself (see `organizational_runs_unattended`), so the CLI
-/// never bypasses permissions. A scope without the shell maps every safety mode to the same
-/// asking modes, since its tool surface, not the safety mode, bounds what the run can reach.
+/// answers command and edit requests it can settle itself (see `organizational_runs_unattended`
+/// and `organizational_edits_unattended`), so the CLI never bypasses permissions. A scope
+/// without the shell maps every safety mode to the same asking modes, since its tool surface,
+/// not the safety mode, bounds what the run can reach.
 pub fn organizational_permission_mode(
     modes: TurnModeSnapshot,
     scope: ProviderOrganizationalScope,
@@ -694,9 +695,10 @@ pub fn organizational_permission_mode(
 }
 
 /// Whether Ganbaru allows a shell command of an organizational run without asking: only when
-/// the sandbox confines the session's commands and the turn runs in Build with FullAccess,
-/// the one safety mode that already runs commands unattended. The decision follows the
-/// current turn, so a later asking turn of the same session asks again.
+/// the sandbox confines the session's commands and the turn runs in Build with a safety mode
+/// that approves on its own (ApproveForMe, which the Work on their own access level runs, or
+/// FullAccess). The decision follows the current turn, so a later asking turn of the same
+/// session asks again.
 pub fn organizational_runs_unattended(
     tool_name: &str,
     modes: TurnModeSnapshot,
@@ -704,8 +706,21 @@ pub fn organizational_runs_unattended(
 ) -> bool {
     tool_name == "Bash"
         && commands_confined
-        && modes.safety_mode == SafetyMode::FullAccess
+        && matches!(
+            modes.safety_mode,
+            SafetyMode::ApproveForMe | SafetyMode::FullAccess
+        )
         && modes.interaction_mode == InteractionMode::Build
+}
+
+/// Whether a file edit tool of an organizational run may run without asking once its request
+/// passed the scope and path checks: in Build under every proven safety mode, since every
+/// access level that loads an edit tool lets agents edit the folder. The path rule that keeps
+/// hidden files and folders with the person lives with the policy that knows the root.
+pub fn organizational_edits_unattended(tool_name: &str, modes: TurnModeSnapshot) -> bool {
+    matches!(tool_name, "Edit" | "Write" | "NotebookEdit")
+        && modes.interaction_mode == InteractionMode::Build
+        && modes.safety_mode != SafetyMode::Custom
 }
 
 /// The error of an organizational Claude run whose boundary cannot be proven.

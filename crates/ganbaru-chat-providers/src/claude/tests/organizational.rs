@@ -978,7 +978,7 @@ fn organizational_routing_offers_no_session_grant() {
         (
             EDIT_SCOPE,
             "Edit",
-            serde_json::json!({ "file_path": "a.md" }),
+            serde_json::json!({ "file_path": ".github/a.md" }),
         ),
     ] {
         let policy = policy(scope, root.path());
@@ -1126,29 +1126,28 @@ fn route_command(
 }
 
 #[test]
-fn confined_commands_run_unattended_only_in_full_access_build_turns() {
+fn confined_commands_run_unattended_in_self_approving_build_turns() {
     let root = TestDirectory::new("scope-route-confined");
     for scope in COMMAND_SCOPES {
         let confined = policy(scope, root.path()).with_confined_commands(true);
-        let routed = route_command(
-            &confined,
-            modes(SafetyMode::FullAccess, InteractionMode::Build),
-        );
-        assert!(routed.pending.is_none(), "{scope:?}");
-        let crate::events::CanonicalEvent::Unknown(event) = routed.event else {
-            panic!("an unattended command opens no request");
-        };
-        assert_eq!(event.source_type, "claude/organizational/confined_command");
-        let response = routed.immediate_response.unwrap();
-        assert_eq!(response["response"]["request_id"], "ctrl-3");
-        assert_eq!(response["response"]["response"]["behavior"], "allow");
-        assert_eq!(
-            response["response"]["response"]["updatedInput"]["command"],
-            "ls"
-        );
+        for safety_mode in [SafetyMode::ApproveForMe, SafetyMode::FullAccess] {
+            let routed = route_command(&confined, modes(safety_mode, InteractionMode::Build));
+            assert!(routed.pending.is_none(), "{scope:?} {safety_mode:?}");
+            let crate::events::CanonicalEvent::Unknown(event) = routed.event else {
+                panic!("an unattended command opens no request");
+            };
+            assert_eq!(event.source_type, "claude/organizational/confined_command");
+            let response = routed.immediate_response.unwrap();
+            assert_eq!(response["response"]["request_id"], "ctrl-3");
+            assert_eq!(response["response"]["response"]["behavior"], "allow");
+            assert_eq!(
+                response["response"]["response"]["updatedInput"]["command"],
+                "ls"
+            );
+        }
         for turn in [
             ask(InteractionMode::Build),
-            modes(SafetyMode::ApproveForMe, InteractionMode::Build),
+            modes(SafetyMode::ApproveForMe, InteractionMode::Plan),
             modes(SafetyMode::FullAccess, InteractionMode::Plan),
         ] {
             let routed = route_command(&confined, turn);
@@ -1161,16 +1160,110 @@ fn confined_commands_run_unattended_only_in_full_access_build_turns() {
                 "{scope:?} {turn:?}"
             );
         }
-        let unconfined = route_command(
-            &policy(scope, root.path()),
-            modes(SafetyMode::FullAccess, InteractionMode::Build),
-        );
-        assert!(
-            matches!(
-                unconfined.event,
-                crate::events::CanonicalEvent::RequestOpened(_)
-            ),
-            "an unconfined command always reaches the person"
-        );
+        for safety_mode in [SafetyMode::ApproveForMe, SafetyMode::FullAccess] {
+            let unconfined = route_command(
+                &policy(scope, root.path()),
+                modes(safety_mode, InteractionMode::Build),
+            );
+            assert!(
+                matches!(
+                    unconfined.event,
+                    crate::events::CanonicalEvent::RequestOpened(_)
+                ),
+                "an unconfined command always reaches the person"
+            );
+        }
     }
+}
+
+#[test]
+fn ordinary_folder_edits_run_without_asking_and_hidden_paths_reach_the_person() {
+    let root = TestDirectory::new("scope-route-edits");
+    std::fs::create_dir_all(root.path().join("src")).unwrap();
+    let policy = policy(EDIT_SCOPE, root.path());
+    let canonical = std::fs::canonicalize(root.path()).unwrap();
+    let absolute = canonical.join("src/main.rs").display().to_string();
+    let route = |tool: &str, input: serde_json::Value, turn: TurnModeSnapshot| {
+        let request = can_use_tool(tool, input);
+        crate::claude::session::route_scoped_control_request(
+            "ctrl-4",
+            request.as_object().unwrap(),
+            Some(&policy),
+            turn,
+        )
+        .unwrap()
+    };
+    for safety_mode in [SafetyMode::AskForApproval, SafetyMode::ApproveForMe] {
+        let turn = modes(safety_mode, InteractionMode::Build);
+        for (tool, input) in [
+            ("Edit", serde_json::json!({ "file_path": "src/main.rs" })),
+            ("Write", serde_json::json!({ "file_path": absolute })),
+            (
+                "NotebookEdit",
+                serde_json::json!({ "notebook_path": "./src/a.ipynb" }),
+            ),
+        ] {
+            let routed = route(tool, input, turn);
+            let crate::events::CanonicalEvent::Unknown(event) = routed.event else {
+                panic!("{tool} edits an ordinary file without asking");
+            };
+            assert_eq!(event.source_type, "claude/organizational/folder_edit");
+            assert_eq!(
+                routed.immediate_response.unwrap()["response"]["response"]["behavior"],
+                "allow"
+            );
+        }
+        for path in [
+            ".git/config",
+            "src/.git/hooks/pre-commit",
+            ".claude/settings.json",
+            ".",
+        ] {
+            let routed = route("Edit", serde_json::json!({ "file_path": path }), turn);
+            assert!(
+                matches!(
+                    routed.event,
+                    crate::events::CanonicalEvent::RequestOpened(_)
+                ),
+                "{path} reaches the person"
+            );
+        }
+    }
+    #[cfg(unix)]
+    {
+        std::fs::create_dir_all(root.path().join(".git/hooks")).unwrap();
+        std::os::unix::fs::symlink(root.path().join(".git"), root.path().join("src/meta")).unwrap();
+        for path in ["src/meta", "src/meta/hooks/pre-commit"] {
+            let routed = route(
+                "Edit",
+                serde_json::json!({ "file_path": path }),
+                modes(SafetyMode::ApproveForMe, InteractionMode::Build),
+            );
+            assert!(
+                matches!(
+                    routed.event,
+                    crate::events::CanonicalEvent::RequestOpened(_)
+                ),
+                "an edit through the symbolic link at {path} reaches the person"
+            );
+        }
+    }
+    let plan = route(
+        "Edit",
+        serde_json::json!({ "file_path": "src/main.rs" }),
+        modes(SafetyMode::AskForApproval, InteractionMode::Plan),
+    );
+    assert!(
+        plan.immediate_response.is_none(),
+        "Plan turns never edit unasked"
+    );
+    let custom = route(
+        "Edit",
+        serde_json::json!({ "file_path": "src/main.rs" }),
+        modes(SafetyMode::Custom, InteractionMode::Build),
+    );
+    assert!(
+        custom.immediate_response.is_none(),
+        "a Custom mode is never proven"
+    );
 }

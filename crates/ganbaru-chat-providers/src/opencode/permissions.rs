@@ -12,6 +12,10 @@ use std::collections::VecDeque;
 /// separators, and matching folds case on Windows. Edits to repository
 /// metadata can make later Git runs execute programs, so they stay reviewed.
 pub const REPOSITORY_METADATA_EDIT_PATTERNS: &[&str] = &[".git", ".git/*", "*/.git", "*/.git/*"];
+/// Edit paths that name a hidden file or folder at any depth. Organizational edits there ask,
+/// because hidden paths hold provider and tool configuration that can change what later runs
+/// execute.
+const HIDDEN_EDIT_PATTERNS: &[&str] = &[".*", "*/.*"];
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,10 +59,12 @@ const ORGANIZATIONAL_DENIED_PERMISSIONS: &[&str] = &[
 /// The session rules of an organizational run, which OpenCode evaluates after the agent and
 /// configuration rules so the last match here decides.
 ///
-/// Every permission starts denied. Reads stay inside the working directory, edits ask inside
-/// it in Build in a scope that edits, repository metadata edits are denied, and the shell acts
-/// as [`organizational_shell_action`] decides in a scope that runs commands. Internal host tools
-/// ask unless the launch pre-approves them; OpenCode names an MCP tool `<server>_<tool>`.
+/// Every permission starts denied. Reads stay inside the working directory. In Build in a
+/// scope that edits, edits inside it run without asking, edits of hidden files and folders
+/// (provider configuration and the like) ask, repository metadata edits are denied, and the
+/// shell acts as [`organizational_shell_action`] decides in a scope that runs commands.
+/// Internal host tools ask unless the launch pre-approves them; OpenCode names an MCP tool
+/// `<server>_<tool>`.
 pub fn organizational_rules(
     scope: ProviderOrganizationalScope,
     modes: TurnModeSnapshot,
@@ -81,7 +87,16 @@ pub fn organizational_rules(
             .map(|permission| rule(permission, OpenCodePermissionAction::Allow)),
     );
     if organizational_edits(scope, modes) {
-        rules.push(rule("edit", OpenCodePermissionAction::Ask));
+        rules.push(rule("edit", OpenCodePermissionAction::Allow));
+        rules.extend(
+            HIDDEN_EDIT_PATTERNS
+                .iter()
+                .map(|pattern| OpenCodePermissionRule {
+                    permission: "edit".to_string(),
+                    pattern: (*pattern).to_string(),
+                    action: OpenCodePermissionAction::Ask,
+                }),
+        );
         rules.extend(REPOSITORY_METADATA_EDIT_PATTERNS.iter().map(|pattern| {
             OpenCodePermissionRule {
                 permission: "edit".to_string(),
@@ -118,19 +133,19 @@ pub fn organizational_rules(
 
 /// How the shell of a scope that runs commands acts under `safety_mode`.
 ///
-/// Every command asks the person in AskForApproval and ApproveForMe. When the sandbox helper
-/// confines every command, FullAccess runs them without asking, since that mode already lets
-/// an agent run unattended. Unconfined commands need AskForApproval, where each approval is
-/// the boundary, and a Custom mode is never proven.
+/// Every command asks the person in AskForApproval. When the sandbox helper confines every
+/// command, ApproveForMe (which the Work on their own access level runs) and FullAccess run
+/// them without asking. Unconfined commands need AskForApproval, where each approval is the
+/// boundary, and a Custom mode is never proven.
 pub fn organizational_shell_action(
     safety_mode: SafetyMode,
     commands_confined: bool,
 ) -> ChatResult<OpenCodePermissionAction> {
     match (safety_mode, commands_confined) {
-        (SafetyMode::AskForApproval, _) | (SafetyMode::ApproveForMe, true) => {
-            Ok(OpenCodePermissionAction::Ask)
+        (SafetyMode::AskForApproval, _) => Ok(OpenCodePermissionAction::Ask),
+        (SafetyMode::ApproveForMe | SafetyMode::FullAccess, true) => {
+            Ok(OpenCodePermissionAction::Allow)
         }
-        (SafetyMode::FullAccess, true) => Ok(OpenCodePermissionAction::Allow),
         _ => Err(organizational_permission_error()),
     }
 }

@@ -7,8 +7,8 @@
 //! deadline armed by the first user message bounds the wait. Any failure stops the process.
 
 use super::protocol::{
-    control_error, control_success, organizational_permission_error,
-    organizational_runs_unattended, organizational_tools,
+    control_error, control_success, organizational_edits_unattended,
+    organizational_permission_error, organizational_runs_unattended, organizational_tools,
 };
 use super::transport::{ClaudeConnectionKill, ClaudeJsonlClient, ClaudeTransportFailure};
 use crate::DriverOperationContext;
@@ -386,9 +386,30 @@ impl ClaudeOrganizationalPermissions {
         self
     }
 
-    /// Whether a request for `tool_name` in a turn with `modes` is allowed without asking.
+    /// Whether a shell request for `tool_name` in a turn with `modes` is allowed without asking.
     pub fn runs_unattended(&self, tool_name: &str, modes: TurnModeSnapshot) -> bool {
         organizational_runs_unattended(tool_name, modes, self.commands_confined)
+    }
+
+    /// Whether an edit request that passed [`Self::denial`] is allowed without asking. An edit
+    /// whose path names a hidden file or folder under the root, such as `.git` or provider
+    /// configuration, reaches the person, because it can change what later runs execute.
+    pub fn edits_unattended(
+        &self,
+        tool_name: &str,
+        input: &Value,
+        modes: TurnModeSnapshot,
+    ) -> bool {
+        let field = if tool_name == "NotebookEdit" {
+            "notebook_path"
+        } else {
+            "file_path"
+        };
+        organizational_edits_unattended(tool_name, modes)
+            && input
+                .get(field)
+                .and_then(Value::as_str)
+                .is_some_and(|raw| ordinary_path_under(&self.root, raw))
     }
 
     /// The denial message for a permission request outside the scope, or none when the
@@ -419,6 +440,52 @@ impl ClaudeOrganizationalPermissions {
                 .is_some_and(|pattern| pattern_stays_inside(&self.root, pattern));
         (!path_inside || !pattern_inside).then_some(OUTSIDE_SCOPE_DENIAL)
     }
+}
+
+/// Whether `raw` names a path under `root` whose components below the root are all plain,
+/// visible names. An absolute path outside the root as written, a climbing component, or a
+/// name that starts with a dot does not count, and neither does a path through an existing
+/// symbolic link, which could lead the edit outside the root.
+fn ordinary_path_under(root: &Path, raw: &str) -> bool {
+    let path = Path::new(raw);
+    let relative = if path.is_absolute() {
+        match path.strip_prefix(root) {
+            Ok(relative) => relative,
+            Err(_) => return false,
+        }
+    } else {
+        path
+    };
+    let mut names = 0usize;
+    for component in relative.components() {
+        match component {
+            std::path::Component::Normal(name) if !name.to_string_lossy().starts_with('.') => {
+                names += 1;
+            }
+            std::path::Component::CurDir => {}
+            _ => return false,
+        }
+    }
+    names > 0 && !passes_a_symlink(root, relative)
+}
+
+/// Whether any existing component of `relative` below `root` is a symbolic link. A component
+/// that cannot be inspected counts as one, and the walk stops at the first missing component.
+fn passes_a_symlink(root: &Path, relative: &Path) -> bool {
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            continue;
+        };
+        current.push(name);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => return true,
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+            Err(_) => return true,
+        }
+    }
+    false
 }
 
 /// Whether a Glob pattern stays under `root`: it never climbs with `..` or starts from the

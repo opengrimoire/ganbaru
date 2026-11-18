@@ -292,9 +292,11 @@ export function parseProviderModelCatalog(value: unknown, label = "provider mode
   const record = readRecord(value, label);
   const models = readArray(record.models, `${label}.models`, parseProviderModel)
     .filter((model) => model.availability !== "deprecated");
+  const defaultModelId = readNullable(record.defaultModelId, `${label}.defaultModelId`, readIdentifier);
   return {
     instanceId: readIdentifier(record.instanceId, `${label}.instanceId`),
     models,
+    defaultModelId: models.some((model) => model.id === defaultModelId) ? defaultModelId : null,
     source: readEnum(record.source, MODEL_CATALOG_SOURCES, `${label}.source`),
     discoveredAt: readUtcTimestamp(record.discoveredAt, `${label}.discoveredAt`),
     stale: readBoolean(record.stale, `${label}.stale`),

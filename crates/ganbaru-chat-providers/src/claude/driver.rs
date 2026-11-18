@@ -458,6 +458,7 @@ impl ClaudeProviderDriver {
         self.cached_commands = initialize.commands.clone();
         self.cached_models = Some(ProviderModelCatalog {
             instance_id: self.configuration.instance_id.clone(),
+            default_model_id: default_model_route(&models),
             models,
             source: ModelCatalogSource::Provider,
             discovered_at: now_utc()?,

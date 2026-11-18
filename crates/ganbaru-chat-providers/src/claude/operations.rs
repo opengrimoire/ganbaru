@@ -124,6 +124,7 @@ impl ProviderDriver for ClaudeProviderDriver {
                             .contains_key("ANTHROPIC_API_KEY");
                     self.cached_models = Some(ProviderModelCatalog {
                         instance_id: self.configuration.instance_id.clone(),
+                        default_model_id: default_model_route(&snapshot.models),
                         models: snapshot.models,
                         source: ModelCatalogSource::Provider,
                         discovered_at: checked_at.clone(),
@@ -200,6 +201,7 @@ impl ProviderDriver for ClaudeProviderDriver {
             self.cached_commands = snapshot.initialize.commands.clone();
             let catalog = ProviderModelCatalog {
                 instance_id: self.configuration.instance_id.clone(),
+                default_model_id: default_model_route(&snapshot.models),
                 models: snapshot.models,
                 source: ModelCatalogSource::Provider,
                 discovered_at: now_utc()?,

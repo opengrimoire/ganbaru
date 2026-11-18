@@ -85,6 +85,7 @@ function provider(
     modelCatalog: {
       instanceId,
       models,
+      defaultModelId: null,
       source: "provider",
       discoveredAt: "2026-08-01T00:00:00Z",
       stale: false,

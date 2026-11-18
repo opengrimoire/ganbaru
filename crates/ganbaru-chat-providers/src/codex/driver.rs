@@ -511,6 +511,7 @@ impl ProviderDriver for CodexProviderDriver {
                     self.cached_models = Some(ProviderModelCatalog {
                         instance_id: self.configuration.instance_id.clone(),
                         models: snapshot.models,
+                        default_model_id: None,
                         source: ModelCatalogSource::Provider,
                         discovered_at: checked_at.clone(),
                         stale: false,
@@ -571,6 +572,7 @@ impl ProviderDriver for CodexProviderDriver {
             let catalog = ProviderModelCatalog {
                 instance_id: self.configuration.instance_id.clone(),
                 models: snapshot.models,
+                default_model_id: None,
                 source: ModelCatalogSource::Provider,
                 discovered_at: now_utc()?,
                 stale: false,

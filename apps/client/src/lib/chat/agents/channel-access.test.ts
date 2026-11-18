@@ -142,7 +142,7 @@ describe("chatAgentBehaviorLine", () => {
 });
 
 describe("chatAgentDefaultModelName", () => {
-  const catalog = { models: [{ id: "gpt-5", displayName: "GPT-5" }] };
+  const catalog = { models: [{ id: "gpt-5", displayName: "GPT-5" }], defaultModelId: null };
 
   it("uses the catalog name of the agent's default model, or its id when the catalog lacks it", () => {
     expect(chatAgentDefaultModelName(tEn, { providerManagedModel: false, modelId: "gpt-5" }, catalog)).toBe("GPT-5");
@@ -153,6 +153,13 @@ describe("chatAgentDefaultModelName", () => {
   it("names the provider default when the agent has no model of its own", () => {
     expect(chatAgentDefaultModelName(tEn, null, null)).toBe("the provider's default");
     expect(chatAgentDefaultModelName(tEn, { providerManagedModel: true, modelId: null }, null)).toBe("the provider's default");
+  });
+
+  it("names the provider default by the catalog entry that follows it", () => {
+    const claude = { models: [{ id: "default", displayName: "Default (Opus 9)" }, { id: "opus", displayName: "Opus 9" }], defaultModelId: "default" };
+    expect(chatAgentDefaultModelName(tEn, null, claude)).toBe("Default (Opus 9)");
+    expect(chatAgentDefaultModelName(tEn, { providerManagedModel: true, modelId: null }, claude)).toBe("Default (Opus 9)");
+    expect(chatAgentDefaultModelName(tEn, { providerManagedModel: false, modelId: "opus" }, claude)).toBe("Opus 9");
   });
 });
 

@@ -110,13 +110,31 @@ export function chatAgentBehaviorLine(
   return t(`chat.agentAccess.behavior.${agent.effective}`);
 }
 
+/** The models of a provider catalog that name an agent's default model. */
+export interface ChatAgentModelCatalog {
+  models: readonly Pick<ProviderModel, "id" | "displayName">[];
+  defaultModelId: ModelId | null;
+}
+
+/**
+ * The model an agent starts on when a channel does not override it: its own model, else the
+ * catalog entry that follows the provider default, else `null` when the provider picks.
+ */
+export function chatAgentDefaultModelId(
+  policy: Pick<ChatAgentPolicyRead, "providerManagedModel" | "modelId"> | null,
+  catalog: ChatAgentModelCatalog | null,
+): ModelId | null {
+  const modelId = policy && !policy.providerManagedModel ? policy.modelId : null;
+  return modelId ?? catalog?.defaultModelId ?? null;
+}
+
 /** The model an agent starts on when a channel does not override it, by display name. */
 export function chatAgentDefaultModelName(
   t: Translate,
   policy: Pick<ChatAgentPolicyRead, "providerManagedModel" | "modelId"> | null,
-  catalog: { models: readonly Pick<ProviderModel, "id" | "displayName">[] } | null,
+  catalog: ChatAgentModelCatalog | null,
 ): string {
-  const modelId = policy && !policy.providerManagedModel ? policy.modelId : null;
+  const modelId = chatAgentDefaultModelId(policy, catalog);
   if (!modelId) return t("chat.agentAccess.providerDefault");
   return catalog?.models.find((model) => model.id === modelId)?.displayName ?? modelId;
 }

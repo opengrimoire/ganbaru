@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { ProbeState, ProviderInstanceRead, ProviderModel } from "$lib/chat/contracts";
-import { familiesInPickerOrder, firstPickerChoice, providersInPickerOrder } from "./model-picker-model";
+import {
+  buildModelCompanySections,
+  familiesInPickerOrder,
+  firstPickerChoice,
+  providersInPickerOrder,
+  resolveProviderDefaultSelection,
+} from "./model-picker-model";
 
 const NOW_MS = Date.parse("2026-11-17T12:00:00Z");
 
@@ -24,6 +30,7 @@ function provider(
   options: {
     state?: ProbeState;
     models?: ProviderModel[];
+    defaultModelId?: string | null;
     favoriteModelIds?: string[];
     lastUsedAt?: string | null;
   } = {},
@@ -72,7 +79,7 @@ function provider(
     },
     lastSuccessfulProbeAt: state === "healthy" ? "2026-11-17T11:00:00Z" : null,
     modelCatalog: options.models
-      ? { instanceId, models: options.models, source: "provider", discoveredAt: "2026-11-17T11:00:00Z", stale: false }
+      ? { instanceId, models: options.models, defaultModelId: options.defaultModelId ?? null, source: "provider", discoveredAt: "2026-11-17T11:00:00Z", stale: false }
       : null,
     usageLimits: null,
     lastUsedAt: options.lastUsedAt ?? null,
@@ -147,5 +154,40 @@ describe("first picker choice", () => {
   it("returns nothing when no provider can take work", () => {
     const signedOut = provider("codex-main", "codex", { state: "authentication_required", models: [model("gpt-5.5")] });
     expect(firstPickerChoice([signedOut], [], NOW_MS)).toBeNull();
+  });
+});
+
+describe("provider default choice", () => {
+  const unselected = { providerInstanceId: null, modelId: null, providerManaged: false };
+
+  function defaultRows(providers: ProviderInstanceRead[]): string[] {
+    return buildModelCompanySections(providers, [], unselected, "", "Default", "en", NOW_MS)
+      .flatMap((section) => section.managedProviders.map((entry) => entry.configuration.instanceId));
+  }
+
+  it("offers Default for every provider whose catalog lists no default entry, selected or not", () => {
+    const codex = provider("codex-main", "codex", { models: [model("gpt-5.5")] });
+    const cursor = provider("cursor-main", "cursor");
+    expect(defaultRows([codex, cursor]).sort()).toEqual(["codex-main", "cursor-main"]);
+  });
+
+  it("leaves the provider's own default entry as the only Default choice", () => {
+    const claude = provider("claude-main", "claude", {
+      models: [model("default", { displayName: "Default (Opus 9)" }), model("opus")],
+      defaultModelId: "default",
+    });
+    expect(defaultRows([claude])).toEqual([]);
+  });
+
+  it("shows a provider default selection as the catalog default entry", () => {
+    const claude = provider("claude-main", "claude", {
+      models: [model("default"), model("opus")],
+      defaultModelId: "default",
+    });
+    const managed = { modelId: null, providerManaged: true, options: [] };
+    expect(resolveProviderDefaultSelection(claude, managed)).toEqual({ modelId: "default", providerManaged: false, options: [] });
+    expect(resolveProviderDefaultSelection(provider("cursor-main", "cursor"), managed)).toBe(managed);
+    const named = { modelId: "opus", providerManaged: false };
+    expect(resolveProviderDefaultSelection(claude, named)).toBe(named);
   });
 });

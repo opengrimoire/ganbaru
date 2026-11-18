@@ -16,6 +16,7 @@
   import AtSign from "@lucide/svelte/icons/at-sign";
   import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
+  import { chatAgentDefaultModelId } from "$lib/chat/agents/channel-access";
   import { isActiveChannelMember } from "$lib/chat/agents/channel-members";
   import type {
     ChatAiAgentRead,
@@ -1076,15 +1077,12 @@
 
   /** What the status panel shows about the provider session of the thread's latest run. */
   function agentComposerStatus(): ComposerStatusRead {
-    const policy = targetAgent?.latestPolicy ?? null;
-    const modelId = policy?.modelId ?? null;
+    const defaultModelId = chatAgentDefaultModelId(targetAgent?.latestPolicy ?? null, targetProvider?.modelCatalog ?? null);
     return {
       providerLabel: targetProvider?.configuration.label ?? null,
       sessionId: interactionState?.sessionId ?? null,
       sessionState: interactionState?.sessionState ?? "stopped",
-      modelLabel: policy?.providerManagedModel
-        ? null
-        : targetProvider?.modelCatalog?.models.find((entry) => entry.id === modelId)?.displayName ?? null,
+      modelLabel: targetProvider?.modelCatalog?.models.find((entry) => entry.id === defaultModelId)?.displayName ?? null,
       accountLabel: interactionState?.accountStatus?.accountLabel ?? null,
       planLabel: interactionState?.accountStatus?.planLabel ?? null,
       usage: meterRead,

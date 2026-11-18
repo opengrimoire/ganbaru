@@ -77,7 +77,14 @@ export function availableProvidersInDefaultOrder(
     .map(({ provider }) => provider);
 }
 
-/** Selects the provider's `default` model, otherwise its strongest visible built-in model. */
+/** The catalog entry that follows the provider's own default model, or `null` when it lists none. */
+export function providerDefaultModel(provider: ProviderInstanceRead | null): ProviderModel | null {
+  const catalog = provider?.modelCatalog;
+  if (!catalog?.defaultModelId) return null;
+  return catalog.models.find((model) => model.id === catalog.defaultModelId) ?? null;
+}
+
+/** Selects the provider's default entry, otherwise its strongest visible built-in model. */
 export function recommendedProviderModel(
   provider: ProviderInstanceRead,
   candidates: readonly ProviderModel[] = configuredVisibleModels(provider),
@@ -87,7 +94,8 @@ export function recommendedProviderModel(
   ));
   const builtIn = selectable.filter((model) => !model.custom);
   const pool = builtIn.length > 0 ? builtIn : selectable;
-  const providerDefault = pool.find((model) => model.id === "default");
+  const defaultModelId = provider.modelCatalog?.defaultModelId ?? null;
+  const providerDefault = pool.find((model) => model.id === defaultModelId);
   if (providerDefault) return providerDefault;
   const first = pool[0];
   if (!first) return null;

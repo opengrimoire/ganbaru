@@ -13,6 +13,7 @@
   import {
     channelModelOverride,
     chatAgentBehaviorLine,
+    chatAgentDefaultModelId,
     chatAgentDefaultModelName,
     ownAccessAvailable,
   } from "$lib/chat/agents/channel-access";
@@ -64,9 +65,14 @@
         provider.configuration.instanceId === agent.localProviderInstanceId
       ))?.modelCatalog ?? null;
       const override = channelModelOverride(current.modelOverrides, agent.participant.id);
-      const models: readonly Pick<ProviderModel, "id" | "displayName">[] = catalog?.models ?? [];
+      const defaultModelId = chatAgentDefaultModelId(agent.latestPolicy, catalog);
+      const defaultName = chatAgentDefaultModelName(t, agent.latestPolicy, catalog);
+      // The provider's own default entry already says Default, so it names the first option as is.
+      const defaultIsProviderRoute = defaultModelId !== null && defaultModelId === catalog?.defaultModelId;
+      const models: readonly Pick<ProviderModel, "id" | "displayName">[] = (catalog?.models ?? [])
+        .filter((model) => !defaultIsProviderRoute || model.id !== defaultModelId);
       const modelOptions = [
-        { value: "", label: t("chat.agentAccess.defaultModel", chatAgentDefaultModelName(t, agent.latestPolicy, catalog)) },
+        { value: "", label: defaultIsProviderRoute ? defaultName : t("chat.agentAccess.defaultModel", defaultName) },
         ...models.map((model) => ({ value: model.id, label: model.displayName })),
       ];
       if (override && !models.some((model) => model.id === override)) modelOptions.push({ value: override, label: override });

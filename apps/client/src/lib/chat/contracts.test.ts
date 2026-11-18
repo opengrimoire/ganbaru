@@ -515,6 +515,7 @@ describe("Chat provider contracts", () => {
         }],
         custom: false,
       }],
+      defaultModelId: null,
       source: "provider",
       discoveredAt: timestamp,
       stale: false,
@@ -536,12 +537,14 @@ describe("Chat provider contracts", () => {
         options: [],
         custom: false,
       }],
+      defaultModelId: "gpt-old",
       source: "provider",
       discoveredAt: timestamp,
       stale: false,
     });
 
     expect(parsed.models).toEqual([]);
+    expect(parsed.defaultModelId).toBeNull();
   });
 
   it.each([false, true])("preserves native Claude routes and capabilities with stale=%s", (stale) => {
@@ -595,6 +598,7 @@ describe("Chat provider contracts", () => {
           custom: true,
         },
       ],
+      defaultModelId: "default",
       source: "provider",
       discoveredAt: timestamp,
       stale,
@@ -744,6 +748,7 @@ describe("Chat provider contracts", () => {
         options: [],
         custom: false,
       }],
+      defaultModelId: null,
       source: "provider",
       discoveredAt: timestamp,
       stale: false,

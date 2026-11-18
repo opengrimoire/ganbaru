@@ -974,6 +974,17 @@ pub fn resume_cursor(cursor: &ClaudeResumeCursor) -> VersionedJson {
     }
 }
 
+/// The Claude model value that follows the account's default model instead of naming one.
+pub const CLAUDE_DEFAULT_MODEL_ROUTE: &str = "default";
+
+/// The catalog entry that follows Claude's default model, when the listed `models` include it.
+pub fn default_model_route(models: &[ProviderModel]) -> Option<ModelId> {
+    models
+        .iter()
+        .find(|model| model.id.as_str() == CLAUDE_DEFAULT_MODEL_ROUTE)
+        .map(|model| model.id.clone())
+}
+
 pub fn provider_models(
     models: Vec<ClaudeModel>,
     custom_ids: &[String],
@@ -1051,7 +1062,7 @@ fn claude_model_display_name(model: &ClaudeModel) -> String {
     }
     // The default route can resolve to the same model as a pinned alias such as
     // `opus`, so its label keeps the word Default to stay distinguishable.
-    if model.value == "default" {
+    if model.value == CLAUDE_DEFAULT_MODEL_ROUTE {
         if let Some(resolved) = model
             .resolved_model
             .as_deref()

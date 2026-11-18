@@ -7,7 +7,7 @@ import type {
   RememberedComposerSelection,
 } from "$lib/chat/contracts";
 import { compareProviderReadiness } from "$lib/chat/usage/provider-readiness";
-import { isProviderAvailable, modelOptionRole, rankedModels } from "./model";
+import { isProviderAvailable, modelOptionRole, providerDefaultModel, rankedModels } from "./model";
 import {
   compareCompanyModels,
   formatModelDisplayName,
@@ -49,6 +49,19 @@ export interface ModelCatalogSelection {
   providerInstanceId: string | null;
   modelId: string | null;
   providerManaged: boolean;
+}
+
+/**
+ * Shows and runs a selection that leaves the model to `provider` as the catalog entry that follows
+ * the provider default, when the catalog lists one, so it carries that entry's name and options.
+ */
+export function resolveProviderDefaultSelection<Selection extends { modelId: string | null; providerManaged: boolean }>(
+  provider: ProviderInstanceRead | null,
+  selection: Selection,
+): Selection {
+  if (!selection.providerManaged) return selection;
+  const defaultModel = providerDefaultModel(provider);
+  return defaultModel ? { ...selection, modelId: defaultModel.id, providerManaged: false } : selection;
 }
 
 /** Formats a model name for the compact Chat model control. */
@@ -131,9 +144,10 @@ function compareSectionReadiness(left: ModelCompanySection, right: ModelCompanyS
 }
 
 /**
- * Groups every visible model, provider-managed choice, and setup offer by model company. Sections
- * served by a ready provider come first, then limited ones, then those that need setup; ties keep
- * the most recently used provider first and then the company order.
+ * Groups every visible model and setup offer by model company, with a Default choice for each
+ * provider whose catalog lists no default entry. Sections served by a ready provider come first,
+ * then limited ones, then those that need setup; ties keep the most recently used provider first
+ * and then the company order.
  */
 export function buildModelCompanySections(
   providers: readonly ProviderInstanceRead[],
@@ -158,9 +172,7 @@ export function buildModelCompanySections(
     for (const model of rankedModels(visible, [], [], query)) {
       sectionFor(modelCompany(provider.configuration.familyId, model)).models.push({ provider, model });
     }
-    const providerManaged = (provider.modelCatalog?.models.length ?? 0) === 0
-      || (provider.configuration.instanceId === selection.providerInstanceId && selection.providerManaged);
-    if (providerManaged && (!query || providerManagedLabel.toLocaleLowerCase(locale).includes(query.toLocaleLowerCase(locale)))) {
+    if (providerDefaultModel(provider) === null && (!query || providerManagedLabel.toLocaleLowerCase(locale).includes(query.toLocaleLowerCase(locale)))) {
       sectionFor(integrationCompany(provider.configuration.familyId)).managedProviders.push(provider);
     }
   }
@@ -294,10 +306,10 @@ export function firstPickerChoice(
   if (favorite) return { ...favorite, providerManaged: false };
   // With no query, the provider-managed label and locale only matter for filtering, so they stay empty.
   for (const section of buildModelCompanySections(providers, [], selection, "", "", "en", nowMs)) {
-    const managed = section.managedProviders.find(isProviderAvailable);
-    if (managed) return { provider: managed, model: null, providerManaged: true };
     const entry = section.models.find(usable);
     if (entry) return { ...entry, providerManaged: false };
+    const managed = section.managedProviders.find(isProviderAvailable);
+    if (managed) return { provider: managed, model: null, providerManaged: true };
   }
   return null;
 }

@@ -312,6 +312,7 @@ export function modelSettings(): ChatSettingsRead {
       lastUsedAt: null, duplicateOf: null,
       modelCatalog: {
         instanceId: "codex-local",
+        defaultModelId: null,
         source: "provider",
         discoveredAt: "2026-07-22T12:00:00.000Z",
         stale: false,
@@ -400,6 +401,7 @@ export function claudeModelSettings(): ChatSettingsRead {
   provider.lastProbe = provider.lastProbe ? { ...provider.lastProbe, instanceId: "claude" } : null;
   provider.modelCatalog = {
     instanceId: "claude",
+    defaultModelId: "default",
     source: "provider",
     discoveredAt: "2026-07-23T12:00:00.000Z",
     stale: false,

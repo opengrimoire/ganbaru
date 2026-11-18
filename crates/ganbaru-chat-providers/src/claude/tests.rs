@@ -271,6 +271,11 @@ fn native_model_metadata_resolves_names_and_supported_effort_levels() {
     let models = provider_models(models, &[], &BTreeMap::new()).unwrap();
 
     assert_eq!(models[0].display_name, "Default (Opus 4.8)");
+    assert_eq!(
+        default_model_route(&models).as_ref().map(ModelId::as_str),
+        Some(CLAUDE_DEFAULT_MODEL_ROUTE)
+    );
+    assert_eq!(default_model_route(&models[1..]), None);
     assert_eq!(models[1].display_name, "Sonnet 5");
     assert_eq!(models[2].display_name, "Haiku 4.5");
     let ModelOptionDefinition::Choice {

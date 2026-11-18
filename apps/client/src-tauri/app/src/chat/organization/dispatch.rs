@@ -1475,8 +1475,8 @@ pub(super) async fn deliver_assignment_input(
 }
 
 /// The model a dispatch runs and the label its assignment shows. The label is `None` when the
-/// provider chooses the model, so every device shows its own localized provider default name
-/// instead of replicated text.
+/// provider default runs without a named catalog entry, so every device shows its own localized
+/// default name instead of replicated text.
 #[derive(Debug, PartialEq)]
 struct DispatchModel {
     selection: ChatModelSelection,
@@ -1484,18 +1484,16 @@ struct DispatchModel {
 }
 
 /// Chooses the model a dispatch runs from the `frozen` selection of its assignment and the
-/// `catalog` this device last discovered for the provider. A named model the catalog does not
-/// offer runs on the provider default instead, with no label; without a catalog the
-/// named model runs as frozen, since the provider is the only authority on what it offers.
+/// `catalog` this device last discovered for the provider. The provider default runs as the
+/// catalog's default entry when it lists one, with that entry's name. A named model the catalog
+/// does not offer runs on the provider default instead; without a catalog the named model runs
+/// as frozen, since the provider is the only authority on what it offers.
 fn dispatch_model(
     frozen: &ChatModelSelection,
     catalog: Option<&ProviderModelCatalog>,
 ) -> DispatchModel {
     let Some(model_id) = frozen.model_id.as_ref() else {
-        return DispatchModel {
-            selection: frozen.clone(),
-            label: None,
-        };
+        return provider_default_model(frozen.model_options.clone(), catalog);
     };
     let Some(catalog) = catalog else {
         return DispatchModel {
@@ -1508,8 +1506,34 @@ fn dispatch_model(
             selection: frozen.clone(),
             label: Some(model.display_name.clone()),
         },
+        None => provider_default_model(Vec::new(), Some(catalog)),
+    }
+}
+
+/// The provider default with `model_options`: the `catalog` entry that follows it when the
+/// catalog lists one, otherwise no model at all so the provider picks.
+fn provider_default_model(
+    model_options: Vec<ModelOptionSelection>,
+    catalog: Option<&ProviderModelCatalog>,
+) -> DispatchModel {
+    let route = catalog.and_then(|catalog| {
+        let id = catalog.default_model_id.as_ref()?;
+        catalog.models.iter().find(|model| &model.id == id)
+    });
+    match route {
+        Some(model) => DispatchModel {
+            selection: ChatModelSelection {
+                provider_managed_model: false,
+                model_id: Some(model.id.clone()),
+                model_options,
+            },
+            label: Some(model.display_name.clone()),
+        },
         None => DispatchModel {
-            selection: ChatModelSelection::provider_default(),
+            selection: ChatModelSelection {
+                model_options,
+                ..ChatModelSelection::provider_default()
+            },
             label: None,
         },
     }
@@ -1585,6 +1609,7 @@ mod tests {
                     custom: false,
                 })
                 .collect(),
+            default_model_id: None,
             source: ModelCatalogSource::Provider,
             discovered_at: UtcTimestamp::new("2026-11-18T00:00:00.000Z").unwrap(),
             stale: false,
@@ -1628,6 +1653,21 @@ mod tests {
         let model = dispatch_model(&default, Some(&catalog(&[])));
         assert_eq!(model.selection, default);
         assert_eq!(model.label, None);
+    }
+
+    #[test]
+    fn the_provider_default_runs_as_the_catalog_default_entry() {
+        let mut catalog = catalog(&[("default", "Default (Opus 9)"), ("opus", "Opus 9")]);
+        catalog.default_model_id = Some(ModelId::new("default").unwrap());
+        let expected = DispatchModel {
+            selection: named("default"),
+            label: Some("Default (Opus 9)".to_string()),
+        };
+        assert_eq!(
+            dispatch_model(&ChatModelSelection::provider_default(), Some(&catalog)),
+            expected
+        );
+        assert_eq!(dispatch_model(&named("gpt-9"), Some(&catalog)), expected);
     }
 
     /// Which earlier run a later assignment of the fixture's reply thread could continue.

@@ -669,7 +669,7 @@ export const chat = {
     exitCommandMode: (command: string) => `Salir del modo ${command}`,
     commandContextUnsupported: "Los comandos no pueden incluir archivos adjuntos ni menciones. Elimínalos antes de ejecutar este comando.",
     modelSearch: "Buscar modelos...",
-    providerManagedModel: "Permitir que el proveedor elija el modelo",
+    providerManagedModel: "Predeterminado",
     detectingProviders: "Detectando modelos",
     light: "Ligero",
     extraHigh: "Muy alto",

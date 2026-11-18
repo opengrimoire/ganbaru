@@ -263,6 +263,7 @@ impl ProviderDriver for CursorProviderDriver {
             let catalog = ProviderModelCatalog {
                 instance_id: self.configuration.instance_id.clone(),
                 models: started.models,
+                default_model_id: None,
                 source: ModelCatalogSource::Provider,
                 discovered_at: now_utc()?,
                 stale: false,

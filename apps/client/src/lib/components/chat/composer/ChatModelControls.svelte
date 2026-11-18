@@ -31,6 +31,7 @@
     isKnownModelOption,
     modelEffortStopPosition,
     modelOptionRole,
+    resolveProviderDefaultSelection,
     visibleProviderModels,
     type KnownModelOption,
     type QuickEffortChoice,
@@ -142,13 +143,13 @@
     : allProviders);
   const provider = $derived(providers.find((entry) => entry.configuration.instanceId === providerInstanceId) ?? null);
   const unconfiguredFamilies = $derived(lockProvider ? [] : (chat.settings?.providerFamilies ?? []).filter((family) => !providers.some((entry) => entry.configuration.familyId === family.familyId)));
-  const selection = $derived(value === undefined
+  const selection = $derived(resolveProviderDefaultSelection(provider, value === undefined
     ? readComposerModelSelection(chat.composer.modelSelection)
     : {
         modelId: value.modelId,
         providerManaged: value.providerManaged,
         options: value.options,
-      });
+      }));
   const catalogSelection = $derived({
     providerInstanceId: provider?.configuration.instanceId ?? null,
     modelId: selection.modelId,
@@ -796,7 +797,7 @@
   <button bind:this={pickerTrigger} type="button" class="model-trigger" data-chat-model-trigger aria-expanded={pickerOpen} disabled={disabled || (value === undefined && chat.composer.loading)} onclick={togglePicker}>
     <span class="model-trigger-content">
       <span class="fast-indicator" class:active={isFastSelected()} aria-hidden="true">{#if chat.providerDiscoveryLoading && !provider}<LoaderCircle size={13} class="animate-spin" />{:else}<Zap size={13} fill="currentColor" />{/if}</span>
-      <span class="model-name">{chat.providerDiscoveryLoading && !provider ? t("chat.composer.detectingProviders") : selection.providerManaged ? provider?.configuration.label ?? t("chat.composer.providerManagedModel") : displayModelName(selectedModel)}</span>
+      <span class="model-name">{chat.providerDiscoveryLoading && !provider ? t("chat.composer.detectingProviders") : selection.providerManaged ? t("chat.composer.providerManagedModel") : displayModelName(selectedModel)}</span>
       {#if selectedOptionLabel(effortDefinition)}<span class="effort-name" class:ultra={isUltraSelected()}>{selectedOptionLabel(effortDefinition)}</span>{/if}
       <ChevronDown size={13} class={pickerOpen ? "model-chevron open" : "model-chevron"} />
     </span>

@@ -28,10 +28,10 @@ const CREATED: &str = "'2027-01-01T00:00:00.000Z'";
 const AGENT: &str = "participant:forged-agent";
 /// The policy revision a hostile writer creates again.
 const REVISION: &str = "revision-custom";
-/// The safety mode of the revision its first writer saves.
-const FIRST_SAFETY: &str = "ask_for_approval";
-/// The safety mode of the hostile Create of that revision.
-const FORGED_SAFETY: &str = "full_access";
+/// The model selection of the revision its first writer saves.
+const FIRST_MODEL: &str = r#"{"modelId":"first"}"#;
+/// The model selection of the hostile Create of that revision.
+const FORGED_MODEL: &str = r#"{"modelId":"forged"}"#;
 /// The replica of the immutable revision scenarios that writes the hostile Create.
 const FORGER: usize = 2;
 /// Replicas of the immutable revision scenarios.
@@ -508,9 +508,8 @@ fn agent_sql(id: &str) -> String {
     format!(
         "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
          VALUES ({id}, 'ai_agent', 'Agent', {CREATED}, {CREATED});
-         INSERT INTO chat_agents (participant_id, role, instructions, home_device_id, created_at,
-                                  updated_at)
-         VALUES ({id}, 'Reviews', '', 'device-0', {CREATED}, {CREATED});",
+         INSERT INTO chat_agents (participant_id, provider_family_id, created_at, updated_at)
+         VALUES ({id}, 'codex', {CREATED}, {CREATED});",
         id = quoted(id),
     )
 }
@@ -525,18 +524,18 @@ async fn replicas_with_revision(salt: u64) -> Vec<Replica> {
         &mut replicas[0],
         &format!(
             "INSERT INTO chat_agent_policy_revisions
-                (id, agent_id, provider_instance_id, model_selection_data, safety_mode, created_at)
-             VALUES ({}, {}, 'codex-personal', '{{}}', {}, {CREATED});",
+                (id, agent_id, model_selection_data, created_at)
+             VALUES ({}, {}, {}, {CREATED});",
             quoted(REVISION),
             quoted(AGENT),
-            quoted(FIRST_SAFETY),
+            quoted(FIRST_MODEL),
         ),
     )
     .await;
     replicas
 }
 
-/// The Create of [`REVISION`] again, with [`FORGED_SAFETY`].
+/// The Create of [`REVISION`] again, with [`FORGED_MODEL`].
 async fn forged_revision_create(creator: &mut Replica) -> Change {
     let create = sealed_create(creator, POLICY_REVISIONS_TABLE, REVISION).await;
     let mut fields = create
@@ -547,9 +546,10 @@ async fn forged_revision_create(creator: &mut Replica) -> Change {
         .value
         .fields()
         .to_vec();
+    // The fields follow the group's columns: agent, selection version, then selection data.
     *fields
-        .last_mut()
-        .expect("the safety mode is the last field") = text_field(FORGED_SAFETY);
+        .get_mut(2)
+        .expect("the model selection is the third field") = text_field(FORGED_MODEL);
     with_group(create, policy_revision_group::CREATED, fields)
 }
 
@@ -566,11 +566,11 @@ async fn forge_at(replica: &mut Replica, change: Change, clock: Hlc) -> Vec<u8> 
     )
 }
 
-/// The safety mode `replica` shows for [`REVISION`].
-async fn revision_safety(replica: &mut Replica) -> Option<String> {
+/// The model selection `replica` shows for [`REVISION`].
+async fn revision_model(replica: &mut Replica) -> Option<String> {
     replica
         .scalar_text(&format!(
-            "SELECT safety_mode FROM chat_agent_policy_revisions WHERE id = {}",
+            "SELECT model_selection_data FROM chat_agent_policy_revisions WHERE id = {}",
             quoted(REVISION)
         ))
         .await
@@ -599,8 +599,8 @@ fn forged_immutable_create_converges() {
         for index in [0, HOLDER, LATE] {
             let replica = &mut replicas[index];
             assert_eq!(
-                revision_safety(replica).await.as_deref(),
-                Some(FIRST_SAFETY),
+                revision_model(replica).await.as_deref(),
+                Some(FIRST_MODEL),
                 "replica {index} keeps the first value"
             );
             assert_eq!(
@@ -632,9 +632,7 @@ async fn assert_loser_stays_kept(
             "merge state agrees {pass}"
         );
         assert_eq!(
-            revision_safety(&mut replicas[loser_holder])
-                .await
-                .as_deref(),
+            revision_model(&mut replicas[loser_holder]).await.as_deref(),
             Some(loser),
             "the row of replica {loser_holder} stays {pass}"
         );
@@ -644,7 +642,7 @@ async fn assert_loser_stays_kept(
             "replica {loser_holder} lists the row {pass}"
         );
         assert_eq!(
-            revision_safety(&mut replicas[winner_holder])
+            revision_model(&mut replicas[winner_holder])
                 .await
                 .as_deref(),
             Some(winner),
@@ -693,8 +691,8 @@ fn a_create_winning_an_immutable_minimum_it_did_not_see_leaves_the_kept_row_diff
         let (honest_first, forged_first) = deliver_in_both_orders(&mut replicas, &forged).await;
         assert_loser_stays_kept(
             &mut replicas,
-            (honest_first, FIRST_SAFETY),
-            (forged_first, FORGED_SAFETY),
+            (honest_first, FIRST_MODEL),
+            (forged_first, FORGED_MODEL),
         )
         .await;
     });
@@ -710,8 +708,8 @@ fn a_create_losing_an_immutable_minimum_it_did_not_see_leaves_the_kept_row_diffe
         let (honest_first, forged_first) = deliver_in_both_orders(&mut replicas, &forged).await;
         assert_loser_stays_kept(
             &mut replicas,
-            (forged_first, FORGED_SAFETY),
-            (honest_first, FIRST_SAFETY),
+            (forged_first, FORGED_MODEL),
+            (honest_first, FIRST_MODEL),
         )
         .await;
     });

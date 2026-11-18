@@ -50,10 +50,10 @@ const NON_CASCADING_FOREIGN_KEYS: [(&str, &str); 3] = [
 const GATED_TRIGGERS: [&str; 14] = [
     "chat_reply_threads_root_item_insert",
     "chat_communication_message_current_revision_update",
-    "chat_agent_folder_grant_identity_insert",
+    "chat_agent_channel_membership_push_approvals_update",
     "chat_channels_default_name_insert",
     "chat_channels_default_protected_update",
-    "chat_agent_create_access_state",
+    "chat_agent_channel_membership_push_approvals_delete",
     "chat_conversation_create_audience_state",
     "chat_generic_membership_audience_insert",
     "chat_generic_membership_audience_update",
@@ -67,14 +67,16 @@ const GATED_TRIGGERS: [&str; 14] = [
 const APPLY_GATE: &str = "(SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0";
 
 /// Chat tables that replicate; every other Chat table is device-local.
-const REPLICATED_CHAT_TABLES: [&str; 27] = [
+const REPLICATED_CHAT_TABLES: [&str; 29] = [
     "chat_participants",
+    "chat_agent_app_settings",
+    "chat_project_agent_settings",
     "chat_agents",
     "chat_agent_policy_revisions",
     "chat_conversations",
     "chat_conversation_memberships",
     "chat_agent_channel_memberships",
-    "chat_agent_working_folder_grants",
+    "chat_push_approvals",
     "chat_channels",
     "chat_reply_threads",
     "chat_conversation_items",
@@ -318,22 +320,21 @@ fn derived_state_triggers_run_for_commands_and_stand_down_while_sync_applies() {
         assert_eq!(
             count_where(
                 &pool,
-                "chat_agent_access_state",
-                "agent_id = 'participant-agent'"
+                "chat_conversation_audience_state",
+                "conversation_id = 'conversation-general'"
             )
             .await,
             1,
-            "an agent created by a command gets its access state"
+            "a conversation created by a command gets its audience state"
         );
 
         set_applying(&pool, true).await;
         sqlx::raw_sql(
-            "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
-             VALUES ('participant-synced', 'ai_agent', 'Synced',
-                     '2026-10-24T00:00:00.000Z', '2026-10-24T00:00:00.000Z');
-             INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
-             VALUES ('participant-synced', 'Arrived by sync',
-                     '2026-10-24T00:00:00.000Z', '2026-10-24T00:00:00.000Z');",
+            "INSERT INTO chat_conversations
+                (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
+             VALUES ('conversation-synced', 'project-chat', 'direct_message',
+                     '2026-10-24T00:00:00.000Z', '2026-10-24T00:00:00.000Z',
+                     '2026-10-24T00:00:00.000Z');",
         )
         .execute(&pool)
         .await
@@ -341,8 +342,8 @@ fn derived_state_triggers_run_for_commands_and_stand_down_while_sync_applies() {
         assert_eq!(
             count_where(
                 &pool,
-                "chat_agent_access_state",
-                "agent_id = 'participant-synced'"
+                "chat_conversation_audience_state",
+                "conversation_id = 'conversation-synced'"
             )
             .await,
             0,
@@ -351,12 +352,11 @@ fn derived_state_triggers_run_for_commands_and_stand_down_while_sync_applies() {
         set_applying(&pool, false).await;
 
         sqlx::raw_sql(
-            "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
-             VALUES ('participant-local', 'ai_agent', 'Local',
-                     '2026-10-24T00:00:00.000Z', '2026-10-24T00:00:00.000Z');
-             INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
-             VALUES ('participant-local', 'Made here',
-                     '2026-10-24T00:00:00.000Z', '2026-10-24T00:00:00.000Z');",
+            "INSERT INTO chat_conversations
+                (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
+             VALUES ('conversation-local', 'project-chat', 'direct_message',
+                     '2026-10-24T00:00:00.000Z', '2026-10-24T00:00:00.000Z',
+                     '2026-10-24T00:00:00.000Z');",
         )
         .execute(&pool)
         .await
@@ -364,8 +364,8 @@ fn derived_state_triggers_run_for_commands_and_stand_down_while_sync_applies() {
         assert_eq!(
             count_where(
                 &pool,
-                "chat_agent_access_state",
-                "agent_id = 'participant-local'"
+                "chat_conversation_audience_state",
+                "conversation_id = 'conversation-local'"
             )
             .await,
             1

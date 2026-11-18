@@ -1,16 +1,18 @@
 //! Chat: table ids 352 to 447.
 //!
 //! The identity and policy tables replicate: participants, AI agents, and agent policy revisions
-//! (tables 352 to 354; 355 and 356 are retired). Agents point at their effective revision through
-//! a silent coupled register that carries a copy of the revision's safety mode, so concurrent
-//! policy edits settle on the stricter one. Revisions are immutable rows; display numbers come
-//! from `(created_at, id)` order.
+//! (tables 352 to 354; 355 and 356 are retired). An agent is a provider: it names its provider
+//! family and points at its default model revision through a plain register. Revisions are
+//! immutable rows; display numbers come from `(created_at, id)` order.
 //!
-//! Conversations, their memberships, AI channel memberships, working folder grants, and
-//! channels replicate too (tables 360 to 364). The three tables keyed by several columns use a
-//! `sync_key` derived from their key columns. Concurrent edits of one membership or grant keep
-//! the narrower access: removal and revocation win, then the lower folder capability or more
-//! cleared channel capabilities, then the stricter approval override.
+//! Agent configuration replicates at three scopes: the vault settings singleton (table 357), the
+//! settings of each project (table 358), and the columns each channel carries. Each holds an
+//! access level and instructions, and concurrent access edits keep the narrower level.
+//!
+//! Conversations, their memberships, AI channel memberships, and channels replicate too (tables
+//! 360 to 362 and 364; 363 is retired). The two membership tables use a `sync_key` derived from
+//! their key columns. Concurrent edits of one membership keep the removal, and an AI channel
+//! membership carries only its presence and an optional model for the channel.
 //!
 //! The timeline replicates as well (tables 370 to 381): reply threads, conversation items,
 //! communication messages, their immutable revisions, message references and their five target
@@ -29,11 +31,12 @@
 //! updates replicate (tables 390, 401, and 395 to 397). A scheduled message owns its attachment
 //! and mention references and names the device that sends it, and a repeating one keeps its rule
 //! and progress in a recurrence row deleted with it. An assignment names the device that
-//! executes it. Input ids derive from their message, so concurrent routing of one message
-//! converges, and a settled assignment state wins over a concurrent active one.
+//! executes it and fixes the model and instructions it starts with. Input ids derive from their
+//! message, so concurrent routing of one message converges, and a settled assignment state wins
+//! over a concurrent active one.
 //!
-//! Standing push approvals replicate (table 365) with a key derived from the agent, folder,
-//! push URL, and destination branch. Only people approve, and a revocation wins over a
+//! Standing push approvals replicate (table 365) with a key derived from the channel, agent,
+//! folder, push URL, and destination branch. Only people approve, and a revocation wins over a
 //! concurrent approval.
 //!
 //! Channel notes replicate (table 400). People write them, an agent only proposes one, and a
@@ -43,9 +46,9 @@
 //! day that only the device it names writes and whose counts only grow.
 //!
 //! Execution, drafts, review history, provider state, receipts, dispatch claims, cleanup jobs,
-//! and the access and audience counters stay on the device as `Local` tables, and message search
-//! is `Derived`. Replicas write Chat like the owner; device-local state never leaves the device.
-//! Ids 357 to 359, 366 to 369, 382 to 389, 391 to 394, 398, and 402 to 447 are reserved.
+//! and the audience counters stay on the device as `Local` tables, and message search is
+//! `Derived`. Replicas write Chat like the owner; device-local state never leaves the device.
+//! Ids 359, 366 to 369, 382 to 389, 391 to 394, 398, and 402 to 447 are reserved.
 
 use ganbaru_sync_contracts::bounds::MAX_DEVICE_ID_BYTES;
 use ganbaru_sync_contracts::chat_push_approvals::{
@@ -67,10 +70,10 @@ use crate::domains::chat::{
     MAX_CHANNEL_TOPIC_CHARS, MAX_DELEGATION_DEPTH, MAX_DELEGATION_EXPECTED_RESULT_CHARS,
     MAX_DELEGATION_OBJECTIVE_CHARS, MAX_DISPLAY_NAME_CHARS, MAX_ENUM_CHARS,
     MAX_ENVIRONMENT_ID_CHARS, MAX_ID_CHARS, MAX_INSTRUCTIONS_CHARS, MAX_JSON_CHARS,
-    MAX_LABEL_CHARS, MAX_MESSAGE_ATTACHMENTS, MAX_MESSAGE_MARKDOWN_BYTES,
-    MAX_PROVIDER_INSTANCE_CHARS, MAX_REASON_CHARS, MAX_RELATIVE_PATH_CHARS, MAX_RICH_CONTENT_BYTES,
-    MAX_ROLE_CHARS, MAX_SCHEDULED_REFERENCES, MAX_SCHEDULED_REQUEST_BYTES,
-    MAX_SEMANTIC_PAYLOAD_BYTES, SHA256_HEX_CHARS,
+    MAX_LABEL_CHARS, MAX_MESSAGE_ATTACHMENTS, MAX_MESSAGE_MARKDOWN_BYTES, MAX_MODEL_LABEL_CHARS,
+    MAX_PROVIDER_INSTANCE_CHARS, MAX_REASON_CHARS, MAX_RELATIVE_PATH_CHARS,
+    MAX_RESOLVED_INSTRUCTIONS_CHARS, MAX_RICH_CONTENT_BYTES, MAX_SCHEDULED_REFERENCES,
+    MAX_SCHEDULED_REQUEST_BYTES, MAX_SEMANTIC_PAYLOAD_BYTES, SHA256_HEX_CHARS,
 };
 use crate::manifest::vault::projects::{FOLDERS_TABLE, PROJECTS_TABLE};
 use crate::manifest::{
@@ -92,14 +95,16 @@ pub const PARTICIPANTS_TABLE: TableId = TableId(352);
 pub const AGENTS_TABLE: TableId = TableId(353);
 /// `chat_agent_policy_revisions`.
 pub const POLICY_REVISIONS_TABLE: TableId = TableId(354);
+/// `chat_agent_app_settings`.
+pub const APP_SETTINGS_TABLE: TableId = TableId(357);
+/// `chat_project_agent_settings`.
+pub const PROJECT_SETTINGS_TABLE: TableId = TableId(358);
 /// `chat_conversations`.
 pub const CONVERSATIONS_TABLE: TableId = TableId(360);
 /// `chat_conversation_memberships`.
 pub const MEMBERSHIPS_TABLE: TableId = TableId(361);
 /// `chat_agent_channel_memberships`.
 pub const CHANNEL_MEMBERSHIPS_TABLE: TableId = TableId(362);
-/// `chat_agent_working_folder_grants`.
-pub const FOLDER_GRANTS_TABLE: TableId = TableId(363);
 /// `chat_channels`.
 pub const CHANNELS_TABLE: TableId = TableId(364);
 /// `chat_push_approvals`.
@@ -147,8 +152,8 @@ pub const AGENT_USAGE_DAILY_TABLE: TableId = TableId(399);
 pub const MEMBERSHIP_KEY_PREFIX: &str = "conversation-membership";
 /// Prefix of AI channel membership keys, over the conversation and agent.
 pub const CHANNEL_MEMBERSHIP_KEY_PREFIX: &str = "ai-channel-membership";
-/// Prefix of working folder grant keys, over the conversation, agent, and working folder.
-pub const FOLDER_GRANT_KEY_PREFIX: &str = "folder-grant";
+/// Key of the vault's single agent settings row.
+pub const APP_SETTINGS_KEY: &str = "vault";
 /// Prefix of reply thread ids, over the root item.
 pub const REPLY_THREAD_KEY_PREFIX: &str = "reply-thread";
 /// Prefix of conversation read cursor keys, over the conversation and participant.
@@ -178,16 +183,38 @@ pub mod participant_group {
 pub mod agent_group {
     use super::{GroupId, group_id};
 
+    /// `provider_family_id` and `created_at`.
+    pub const CREATED: GroupId = group_id(0);
+    /// `current_policy_revision_id`, the default model.
+    pub const POLICY: GroupId = group_id(1);
+    /// `updated_at`.
+    pub const UPDATED: GroupId = group_id(2);
+}
+
+/// Vault agent settings field groups.
+pub mod app_settings_group {
+    use super::{GroupId, group_id};
+
+    /// `agent_access`.
+    pub const ACCESS: GroupId = group_id(0);
+    /// `agent_instructions`.
+    pub const INSTRUCTIONS: GroupId = group_id(1);
+    /// `updated_at`.
+    pub const UPDATED: GroupId = group_id(2);
+}
+
+/// Project agent settings field groups.
+pub mod project_settings_group {
+    use super::{GroupId, group_id};
+
     /// `created_at`.
     pub const CREATED: GroupId = group_id(0);
-    /// `role` and `instructions`.
-    pub const PROFILE: GroupId = group_id(1);
-    /// `current_policy_revision_id` and the copied `current_policy_safety_mode`.
-    pub const POLICY: GroupId = group_id(2);
-    /// `home_device_id`.
-    pub const HOME: GroupId = group_id(3);
+    /// `agent_access`, null when the project inherits the vault's.
+    pub const ACCESS: GroupId = group_id(1);
+    /// `agent_instructions`.
+    pub const INSTRUCTIONS: GroupId = group_id(2);
     /// `updated_at`.
-    pub const UPDATED: GroupId = group_id(4);
+    pub const UPDATED: GroupId = group_id(3);
 }
 
 /// Agent policy revision field groups.
@@ -234,41 +261,30 @@ pub mod channel_membership_group {
 
     /// `conversation_id` and `agent_id`.
     pub const IDENTITY: GroupId = group_id(0);
-    /// Channel capabilities, history boundary, approval overrides, and `removed_at`.
-    pub const ACCESS: GroupId = group_id(1);
+    /// `removed_at`.
+    pub const PRESENCE: GroupId = group_id(1);
     /// `created_at`.
     pub const CREATED: GroupId = group_id(2);
     /// `updated_at`.
     pub const UPDATED: GroupId = group_id(3);
     /// Whether the row exists.
     pub const EXISTS: GroupId = group_id(4);
+    /// `model_selection_schema_version` and `model_selection_data`, the channel's model for the
+    /// agent, or neither for the agent's default.
+    pub const MODEL: GroupId = group_id(5);
 }
 
 /// Push approval field groups.
 pub mod push_approval_group {
     use super::{GroupId, group_id};
 
-    /// `agent_id`, `working_folder_id`, `push_url`, and `destination_branch`.
+    /// `conversation_id`, `agent_id`, `working_folder_id`, `push_url`, and
+    /// `destination_branch`.
     pub const IDENTITY: GroupId = group_id(0);
-    /// `runtime_approval_policy`, `safety_mode`, `approved_by_participant_id`, `approved_at`,
-    /// and `revoked_at`.
+    /// `approved_by_participant_id`, `approved_at`, and `revoked_at`.
     pub const APPROVAL: GroupId = group_id(1);
     /// Whether the row exists.
     pub const EXISTS: GroupId = group_id(2);
-}
-
-/// Working folder grant field groups.
-pub mod folder_grant_group {
-    use super::{GroupId, group_id};
-
-    /// `conversation_id`, `agent_id`, and `working_folder_id`.
-    pub const IDENTITY: GroupId = group_id(0);
-    /// `capability`, `is_default`, `runtime_approval_policy`, and `revoked_at`.
-    pub const GRANT: GroupId = group_id(1);
-    /// `project_id` and `created_at`.
-    pub const CREATED: GroupId = group_id(2);
-    /// Whether the row exists.
-    pub const EXISTS: GroupId = group_id(3);
 }
 
 /// Channel field groups.
@@ -283,6 +299,10 @@ pub mod channel_group {
     pub const LIFECYCLE: GroupId = group_id(2);
     /// `updated_at`.
     pub const UPDATED: GroupId = group_id(3);
+    /// `agent_access`, null when the channel inherits its project's.
+    pub const AGENT_ACCESS: GroupId = group_id(4);
+    /// `agent_instructions`.
+    pub const AGENT_INSTRUCTIONS: GroupId = group_id(5);
 }
 
 /// Channel note field groups.
@@ -409,8 +429,8 @@ pub mod assignment_group {
     use super::{GroupId, group_id};
 
     /// `reply_thread_id`, `agent_id`, `triggering_message_item_id`, `executing_device_id`,
-    /// `created_at`, `override_model_selection_schema_version`, and
-    /// `override_model_selection_data`, so the model asked for is fixed with the request.
+    /// `created_at`, `model_selection_schema_version`, `model_selection_data`, and
+    /// `instructions`, so the model and instructions are fixed with the request.
     pub const CREATED: GroupId = group_id(0);
     /// `previous_assignment_id`.
     pub const PREVIOUS: GroupId = group_id(1);
@@ -423,6 +443,8 @@ pub mod assignment_group {
     /// `delegation_expected_result`, and `delegation_folder_ceiling`, fixed when an agent
     /// delegates the assignment and null with depth 0 otherwise.
     pub const DELEGATION: GroupId = group_id(4);
+    /// `model_label`, the model that ran, written by the executing device.
+    pub const MODEL_LABEL: GroupId = group_id(5);
 }
 
 /// Assignment input field groups.
@@ -776,51 +798,93 @@ pub const PARTICIPANTS: TableSpec = TableSpec {
     ..BASE
 };
 
-/// `chat_agents`, keyed by the participant id. Concurrent policy edits keep the stricter
-/// safety mode, and the home device names where its assignments run.
+/// `chat_agents`, keyed by the participant id. An agent for a provider takes an id derived from
+/// the provider family, so devices that detect one provider concurrently create one agent. The
+/// default model is a plain register over the revision id: reads use the named revision while
+/// it belongs to the agent, else the agent's newest.
 pub const AGENTS: TableSpec = TableSpec {
     id: AGENTS_TABLE,
     name: "chat_agents",
     key_column: "participant_id",
     key_parent: Some(PARTICIPANTS_TABLE),
     groups: &[
-        immutable(agent_group::CREATED, &[timestamp("created_at")], &[]),
-        surfaced(register(
-            agent_group::PROFILE,
-            "profile",
+        immutable(
+            agent_group::CREATED,
             &[
-                trimmed("role", MAX_ROLE_CHARS),
-                text("instructions", MAX_INSTRUCTIONS_CHARS),
+                trimmed("provider_family_id", MAX_PROVIDER_INSTANCE_CHARS),
+                timestamp("created_at"),
             ],
-        )),
-        coupled(
-            agent_group::POLICY,
-            "policy",
-            &[
-                optional_row_key("current_policy_revision_id"),
-                optional_text("current_policy_safety_mode", MAX_ENUM_CHARS),
-            ],
+            &[],
         ),
         register(
-            agent_group::HOME,
-            "home",
-            &[optional_text("home_device_id", MAX_DEVICE_ID_BYTES)],
+            agent_group::POLICY,
+            "policy",
+            &[optional_row_key("current_policy_revision_id")],
         ),
         updated(agent_group::UPDATED),
-    ],
-    resolutions: &[within(
-        &["current_policy_revision_id", "current_policy_safety_mode"],
-        agent_group::POLICY,
-    )],
-    triggers: &[
-        gated("chat_agent_create_access_state"),
-        gated("chat_agent_push_approvals_safety_mode"),
     ],
     deletion: Deletion::Never,
     ..BASE
 };
 
-/// `chat_agent_policy_revisions`, immutable and never deleted.
+/// `chat_agent_app_settings`, the single row of vault-wide agent access and instructions that
+/// every project and channel inherits. Concurrent access edits keep the narrower level.
+pub const APP_SETTINGS: TableSpec = TableSpec {
+    id: APP_SETTINGS_TABLE,
+    name: "chat_agent_app_settings",
+    groups: &[
+        bumps(coupled(
+            app_settings_group::ACCESS,
+            "access",
+            &[text("agent_access", MAX_ENUM_CHARS)],
+        )),
+        surfaced(bumps(register(
+            app_settings_group::INSTRUCTIONS,
+            "instructions",
+            &[text("agent_instructions", MAX_INSTRUCTIONS_CHARS)],
+        ))),
+        updated(app_settings_group::UPDATED),
+    ],
+    local_columns: &[REVISION],
+    revision_column: Some("revision"),
+    key_rule: RowKeyRule::Fixed(APP_SETTINGS_KEY),
+    deletion: Deletion::Never,
+    ..BASE
+};
+
+/// `chat_project_agent_settings`, keyed by its project and leaving with it. A null access
+/// inherits the vault's, and concurrent access edits keep the narrower level, with an inherited
+/// level counting as the widest.
+pub const PROJECT_SETTINGS: TableSpec = TableSpec {
+    id: PROJECT_SETTINGS_TABLE,
+    name: "chat_project_agent_settings",
+    key_column: "project_id",
+    key_parent: Some(PROJECTS_TABLE),
+    groups: &[
+        immutable(
+            project_settings_group::CREATED,
+            &[timestamp("created_at")],
+            &[],
+        ),
+        bumps(coupled(
+            project_settings_group::ACCESS,
+            "access",
+            &[optional_text("agent_access", MAX_ENUM_CHARS)],
+        )),
+        surfaced(bumps(register(
+            project_settings_group::INSTRUCTIONS,
+            "instructions",
+            &[text("agent_instructions", MAX_INSTRUCTIONS_CHARS)],
+        ))),
+        updated(project_settings_group::UPDATED),
+    ],
+    local_columns: &[REVISION],
+    revision_column: Some("revision"),
+    ..BASE
+};
+
+/// `chat_agent_policy_revisions`, an agent's default model and options, immutable and never
+/// deleted.
 pub const POLICY_REVISIONS: TableSpec = TableSpec {
     id: POLICY_REVISIONS_TABLE,
     name: "chat_agent_policy_revisions",
@@ -828,16 +892,12 @@ pub const POLICY_REVISIONS: TableSpec = TableSpec {
         policy_revision_group::CREATED,
         &[
             row_key("agent_id"),
-            text("provider_instance_id", MAX_PROVIDER_INSTANCE_CHARS),
             version("model_selection_schema_version"),
             text("model_selection_data", MAX_JSON_CHARS),
-            optional_text("effort", MAX_ENUM_CHARS),
-            optional_text("speed", MAX_ENUM_CHARS),
             version("provider_options_schema_version"),
             text("provider_options_data", MAX_JSON_CHARS),
             text("interaction_mode", MAX_ENUM_CHARS),
             timestamp("created_at"),
-            text("safety_mode", MAX_ENUM_CHARS),
         ],
         &[cascade("agent_id", AGENTS_TABLE)],
     )],
@@ -930,11 +990,9 @@ pub const MEMBERSHIPS: TableSpec = TableSpec {
     ..BASE
 };
 
-/// `chat_agent_channel_memberships`, removed by `removed_at`. The channel capabilities, history
-/// boundary, and approval overrides form one coupled value, so concurrent edits keep one whole
-/// setting: a removal first, then the one that clears more capabilities, then the stricter
-/// approval overrides, with no override counting as the least strict. The Chat materialize hook
-/// settles the access group onto the strictest resolved parts the priority cannot rank.
+/// `chat_agent_channel_memberships`, an agent's presence in a channel, removed by `removed_at`.
+/// A concurrent removal wins over a re-add. The channel's model for the agent is a register
+/// whose two columns travel together.
 pub const CHANNEL_MEMBERSHIPS: TableSpec = TableSpec {
     id: CHANNEL_MEMBERSHIPS_TABLE,
     name: "chat_agent_channel_memberships",
@@ -949,17 +1007,9 @@ pub const CHANNEL_MEMBERSHIPS: TableSpec = TableSpec {
             ],
         ),
         coupled(
-            channel_membership_group::ACCESS,
-            "access",
-            &[
-                flag("read_history"),
-                flag("participate"),
-                text("history_boundary", MAX_ENUM_CHARS),
-                optional_text("history_from_order_key", MAX_ORDER_KEY_BYTES),
-                optional_text("runtime_approval_policy", MAX_ENUM_CHARS),
-                optional_text("scratch_runtime_approval_policy", MAX_ENUM_CHARS),
-                optional_timestamp("removed_at"),
-            ],
+            channel_membership_group::PRESENCE,
+            "presence",
+            &[optional_timestamp("removed_at")],
         ),
         register(
             channel_membership_group::CREATED,
@@ -968,10 +1018,18 @@ pub const CHANNEL_MEMBERSHIPS: TableSpec = TableSpec {
         ),
         updated(channel_membership_group::UPDATED),
         exists(channel_membership_group::EXISTS),
+        register(
+            channel_membership_group::MODEL,
+            "model",
+            &[
+                optional_version("model_selection_schema_version"),
+                optional_text("model_selection_data", MAX_JSON_CHARS),
+            ],
+        ),
     ],
     resolutions: &[within(
-        &["history_boundary", "history_from_order_key"],
-        channel_membership_group::ACCESS,
+        &["model_selection_schema_version", "model_selection_data"],
+        channel_membership_group::MODEL,
     )],
     triggers: &[
         gated("chat_agent_channel_membership_audience_delete"),
@@ -990,69 +1048,10 @@ pub const CHANNEL_MEMBERSHIPS: TableSpec = TableSpec {
     ..BASE
 };
 
-/// `chat_agent_working_folder_grants`, revoked by `revoked_at`. Concurrent edits keep a
-/// revocation first, then the lower capability, then the stricter approval override, with no override counting as the least strict. Commands
-/// never rewrite the creation time, and rewrite the project only to the conversation's when a
-/// save reactivates a grant. The group stays a register because a derived key table admits only
-/// key columns in immutable groups, so concurrent creations converge.
-pub const FOLDER_GRANTS: TableSpec = TableSpec {
-    id: FOLDER_GRANTS_TABLE,
-    name: "chat_agent_working_folder_grants",
-    key_column: SYNC_KEY_COLUMN,
-    groups: &[
-        identity(
-            folder_grant_group::IDENTITY,
-            &[
-                row_key("conversation_id"),
-                row_key("agent_id"),
-                row_key("working_folder_id"),
-            ],
-            &[
-                cascade("conversation_id", CONVERSATIONS_TABLE),
-                cascade("agent_id", AGENTS_TABLE),
-                cascade("working_folder_id", FOLDERS_TABLE),
-            ],
-        ),
-        bumps(coupled(
-            folder_grant_group::GRANT,
-            "grant",
-            &[
-                text("capability", MAX_ENUM_CHARS),
-                flag("is_default"),
-                optional_text("runtime_approval_policy", MAX_ENUM_CHARS),
-                optional_timestamp("revoked_at"),
-            ],
-        )),
-        register(
-            folder_grant_group::CREATED,
-            "created",
-            &[row_key("project_id"), timestamp("created_at")],
-        ),
-        exists(folder_grant_group::EXISTS),
-    ],
-    local_columns: &[REVISION],
-    revision_column: Some("revision"),
-    triggers: &[
-        gated("chat_agent_folder_grant_identity_insert"),
-        gated("chat_agent_folder_grant_project_insert"),
-        gated("chat_agent_folder_grant_project_update"),
-        gated("chat_agent_folder_grant_push_approvals_delete"),
-        gated("chat_agent_folder_grant_push_approvals_update"),
-        gated("chat_agent_folder_grant_single_default_insert"),
-        gated("chat_agent_folder_grant_single_default_update"),
-    ],
-    derived_key: Some(DerivedKey {
-        exists_group: folder_grant_group::EXISTS,
-        prefix: Some(FOLDER_GRANT_KEY_PREFIX),
-        key_inputs: &["conversation_id", "agent_id", "working_folder_id"],
-    }),
-    ..BASE
-};
-
 /// `chat_push_approvals`, revoked by `revoked_at`. Only a person approves, which local triggers
-/// check, and the triggers of the grants, channel memberships, participants, and agents that let
-/// an agent publish revoke its approvals when that access narrows. A revocation wins over a
-/// concurrent approval.
+/// check. Removing the agent from the channel or archiving it revokes its approvals through
+/// local triggers, and the Chat services revoke them when the channel's effective access falls
+/// below Ask before commands. A revocation wins over a concurrent approval.
 pub const PUSH_APPROVALS: TableSpec = TableSpec {
     id: PUSH_APPROVALS_TABLE,
     name: "chat_push_approvals",
@@ -1061,12 +1060,14 @@ pub const PUSH_APPROVALS: TableSpec = TableSpec {
         identity(
             push_approval_group::IDENTITY,
             &[
+                row_key("conversation_id"),
                 row_key("agent_id"),
                 row_key("working_folder_id"),
                 text("push_url", MAX_PUSH_APPROVAL_URL_BYTES),
                 text("destination_branch", MAX_PUSH_APPROVAL_BRANCH_BYTES),
             ],
             &[
+                cascade("conversation_id", CONVERSATIONS_TABLE),
                 cascade("agent_id", AGENTS_TABLE),
                 cascade("working_folder_id", FOLDERS_TABLE),
             ],
@@ -1076,8 +1077,6 @@ pub const PUSH_APPROVALS: TableSpec = TableSpec {
                 push_approval_group::APPROVAL,
                 "approval",
                 &[
-                    text("runtime_approval_policy", MAX_ENUM_CHARS),
-                    text("safety_mode", MAX_ENUM_CHARS),
                     optional_row_key("approved_by_participant_id"),
                     timestamp("approved_at"),
                     optional_timestamp("revoked_at"),
@@ -1097,6 +1096,7 @@ pub const PUSH_APPROVALS: TableSpec = TableSpec {
         exists_group: push_approval_group::EXISTS,
         prefix: Some(PUSH_APPROVAL_KEY_PREFIX),
         key_inputs: &[
+            "conversation_id",
             "agent_id",
             "working_folder_id",
             "push_url",
@@ -1109,7 +1109,8 @@ pub const PUSH_APPROVALS: TableSpec = TableSpec {
 /// `chat_channels`, archive-only. A default channel's ids derive from its project, so devices
 /// that create it concurrently create one row, and every other channel creates its own
 /// conversation, so one channel per conversation needs only a local insert trigger. An archive
-/// wins over a concurrent unarchive.
+/// wins over a concurrent unarchive. The channel's agent access is null while it inherits its
+/// project's, and concurrent access edits keep the narrower level.
 pub const CHANNELS: TableSpec = TableSpec {
     id: CHANNELS_TABLE,
     name: "chat_channels",
@@ -1141,6 +1142,16 @@ pub const CHANNELS: TableSpec = TableSpec {
             &[optional_timestamp("archived_at")],
         )),
         updated(channel_group::UPDATED),
+        bumps(coupled(
+            channel_group::AGENT_ACCESS,
+            "agent_access",
+            &[optional_text("agent_access", MAX_ENUM_CHARS)],
+        )),
+        surfaced(bumps(register(
+            channel_group::AGENT_INSTRUCTIONS,
+            "agent_instructions",
+            &[text("agent_instructions", MAX_INSTRUCTIONS_CHARS)],
+        ))),
     ],
     local_columns: &[REVISION],
     revision_column: Some("revision"),
@@ -1474,27 +1485,14 @@ pub const ENVIRONMENT_TARGETS: TableSpec = TableSpec {
     ..TARGET
 };
 
-/// `chat_participant_reference_targets`. A mention of the agent a post invokes carries the
-/// model override the post asked for, so a later Start of a mention that recorded no work
-/// runs with it.
+/// `chat_participant_reference_targets`.
 pub const PARTICIPANT_TARGETS: TableSpec = TableSpec {
     id: PARTICIPANT_TARGETS_TABLE,
     name: "chat_participant_reference_targets",
     groups: &[immutable(
         timeline_group::CREATED,
-        &[
-            row_key("participant_id"),
-            optional_version("override_model_selection_schema_version"),
-            optional_text("override_model_selection_data", MAX_JSON_CHARS),
-        ],
+        &[row_key("participant_id")],
         &[],
-    )],
-    resolutions: &[within(
-        &[
-            "override_model_selection_schema_version",
-            "override_model_selection_data",
-        ],
-        timeline_group::CREATED,
     )],
     ..TARGET
 };
@@ -1788,8 +1786,9 @@ pub const ASSIGNMENTS: TableSpec = TableSpec {
                 row_key("triggering_message_item_id"),
                 optional_text("executing_device_id", MAX_DEVICE_ID_BYTES),
                 timestamp("created_at"),
-                optional_version("override_model_selection_schema_version"),
-                optional_text("override_model_selection_data", MAX_JSON_CHARS),
+                version("model_selection_schema_version"),
+                text("model_selection_data", MAX_JSON_CHARS),
+                text("instructions", MAX_RESOLVED_INSTRUCTIONS_CHARS),
             ],
             &[
                 cascade("reply_thread_id", REPLY_THREADS_TABLE),
@@ -1842,6 +1841,11 @@ pub const ASSIGNMENTS: TableSpec = TableSpec {
                 ],
             )
         },
+        register(
+            assignment_group::MODEL_LABEL,
+            "model_label",
+            &[optional_text("model_label", MAX_MODEL_LABEL_CHARS)],
+        ),
     ],
     triggers: &[
         applier_visible("chat_work_assignment_delegation_insert"),
@@ -1849,24 +1853,15 @@ pub const ASSIGNMENTS: TableSpec = TableSpec {
     ],
     local_columns: &[REVISION],
     revision_column: Some("revision"),
-    resolutions: &[
-        within(
-            &[
-                "override_model_selection_schema_version",
-                "override_model_selection_data",
-            ],
-            assignment_group::CREATED,
-        ),
-        within(
-            &[
-                "state",
-                "review_outcome",
-                "reviewed_at",
-                "reviewed_by_participant_id",
-            ],
-            assignment_group::STATE,
-        ),
-    ],
+    resolutions: &[within(
+        &[
+            "state",
+            "review_outcome",
+            "reviewed_at",
+            "reviewed_by_participant_id",
+        ],
+        assignment_group::STATE,
+    )],
     ..BASE
 };
 
@@ -2012,10 +2007,11 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         PARTICIPANTS,
         AGENTS,
         POLICY_REVISIONS,
+        APP_SETTINGS,
+        PROJECT_SETTINGS,
         CONVERSATIONS,
         MEMBERSHIPS,
         CHANNEL_MEMBERSHIPS,
-        FOLDER_GRANTS,
         PUSH_APPROVALS,
         CHANNELS,
         REPLY_THREADS,
@@ -2194,10 +2190,6 @@ pub const DOMAIN: DomainManifest = DomainManifest {
             ],
         ),
         device("chat_secret_requests", &[]),
-        device(
-            "chat_agent_access_state",
-            &[applier_visible("chat_agent_access_revision_monotonic")],
-        ),
         device("chat_terminal_attachment_contexts", &[]),
         device("chat_terminal_layouts", &[]),
         device("chat_thread_relations", &[]),

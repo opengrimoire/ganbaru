@@ -2855,9 +2855,11 @@ fn recovery_root_tables_follow_cascades_and_leave_out_derived_keys() {
             // the anchors and derived-key reactions that cascade from them.
             crate::manifest::vault::notes::THREADS_TABLE,
             crate::manifest::vault::notes::COMMENTS_TABLE,
-            // Participants and agents carry recoverable names and roles.
+            // Participants carry recoverable names, and the vault and project agent settings
+            // carry recoverable instructions.
             crate::manifest::vault::chat::PARTICIPANTS_TABLE,
-            crate::manifest::vault::chat::AGENTS_TABLE,
+            crate::manifest::vault::chat::APP_SETTINGS_TABLE,
+            crate::manifest::vault::chat::PROJECT_SETTINGS_TABLE,
             // Channels carry recoverable names, and their conversations, like those of the
             // derived-key memberships and grants, root the offers that cascade into them.
             crate::manifest::vault::chat::CONVERSATIONS_TABLE,

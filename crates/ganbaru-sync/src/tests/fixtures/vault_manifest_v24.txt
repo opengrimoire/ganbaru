@@ -643,14 +643,21 @@ table 352 chat_participants replicated key id rule any never_deleted
   group 3 max updated_at:timestamp
 table 353 chat_agents replicated key participant_id rule any never_deleted
   key parent 352
-  group 0 immutable created_at:timestamp
-  group 1 register surfaced recoverable role:trimmed_text(1..=1000) instructions:text(..=65536)
-  group 2 coupled current_policy_revision_id:optional_row_key current_policy_safety_mode:optional_text(..=32)
-  group 3 register home_device_id:optional_text(..=160)
-  group 4 max updated_at:timestamp
-  check current_policy_revision_id,current_policy_safety_mode within 2
+  group 0 immutable provider_family_id:trimmed_text(1..=1024) created_at:timestamp
+  group 1 register current_policy_revision_id:optional_row_key
+  group 2 max updated_at:timestamp
 table 354 chat_agent_policy_revisions replicated key id rule any never_deleted
-  group 0 immutable agent_id:row_key->353:cascade provider_instance_id:text(..=1024) model_selection_schema_version:integer(1..=9223372036854775807) model_selection_data:text(..=16384) effort:optional_text(..=32) speed:optional_text(..=32) provider_options_schema_version:integer(1..=9223372036854775807) provider_options_data:text(..=16384) interaction_mode:text(..=32) created_at:timestamp safety_mode:text(..=32)
+  group 0 immutable agent_id:row_key->353:cascade model_selection_schema_version:integer(1..=9223372036854775807) model_selection_data:text(..=16384) provider_options_schema_version:integer(1..=9223372036854775807) provider_options_data:text(..=16384) interaction_mode:text(..=32) created_at:timestamp
+table 357 chat_agent_app_settings replicated key id rule fixed(vault) never_deleted
+  group 0 coupled agent_access:text(..=32)
+  group 1 register surfaced recoverable agent_instructions:text(..=16384)
+  group 2 max updated_at:timestamp
+table 358 chat_project_agent_settings replicated key project_id rule any
+  key parent 97
+  group 0 immutable created_at:timestamp
+  group 1 coupled agent_access:optional_text(..=32)
+  group 2 register surfaced recoverable agent_instructions:text(..=16384)
+  group 3 max updated_at:timestamp
 table 360 chat_conversations replicated key id rule any
   group 0 immutable project_id:row_key->97:cascade conversation_kind:text(..=32) created_at:timestamp
   group 1 max last_activity_at:timestamp
@@ -666,27 +673,24 @@ table 361 chat_conversation_memberships replicated key sync_key rule any
 table 362 chat_agent_channel_memberships replicated key sync_key rule any
   derived key exists 4 inputs conversation_id,agent_id prefix ai-channel-membership
   group 0 immutable conversation_id:row_key->360:cascade agent_id:row_key->353:cascade
-  group 1 coupled read_history:flag participate:flag history_boundary:text(..=32) history_from_order_key:optional_text(..=128) runtime_approval_policy:optional_text(..=32) scratch_runtime_approval_policy:optional_text(..=32) removed_at:optional_timestamp
+  group 1 coupled removed_at:optional_timestamp
   group 2 register created_at:timestamp
   group 3 max updated_at:timestamp
   group 4 register
-  check history_boundary,history_from_order_key within 1
-table 363 chat_agent_working_folder_grants replicated key sync_key rule any
-  derived key exists 3 inputs conversation_id,agent_id,working_folder_id prefix folder-grant
-  group 0 immutable conversation_id:row_key->360:cascade agent_id:row_key->353:cascade working_folder_id:row_key->98:cascade
-  group 1 coupled capability:text(..=32) is_default:flag runtime_approval_policy:optional_text(..=32) revoked_at:optional_timestamp
-  group 2 register project_id:row_key created_at:timestamp
-  group 3 register
+  group 5 register model_selection_schema_version:optional_integer(1..=9223372036854775807) model_selection_data:optional_text(..=16384)
+  check model_selection_schema_version,model_selection_data within 5
 table 365 chat_push_approvals replicated key sync_key rule any
-  derived key exists 2 inputs agent_id,working_folder_id,push_url,destination_branch prefix push-approval
-  group 0 immutable agent_id:row_key->353:cascade working_folder_id:row_key->98:cascade push_url:text(..=2048) destination_branch:text(..=1024)
-  group 1 coupled runtime_approval_policy:text(..=32) safety_mode:text(..=32) approved_by_participant_id:optional_row_key->352:set_null approved_at:timestamp revoked_at:optional_timestamp
+  derived key exists 2 inputs conversation_id,agent_id,working_folder_id,push_url,destination_branch prefix push-approval
+  group 0 immutable conversation_id:row_key->360:cascade agent_id:row_key->353:cascade working_folder_id:row_key->98:cascade push_url:text(..=2048) destination_branch:text(..=1024)
+  group 1 coupled approved_by_participant_id:optional_row_key->352:set_null approved_at:timestamp revoked_at:optional_timestamp
   group 2 register
 table 364 chat_channels replicated key id rule any
   group 0 immutable project_id:row_key->97:cascade conversation_id:row_key->360:cascade is_default:flag created_at:timestamp
   group 1 register surfaced recoverable name:text(..=80) topic:text(..=250)
   group 2 coupled archived_at:optional_timestamp
   group 3 max updated_at:timestamp
+  group 4 coupled agent_access:optional_text(..=32)
+  group 5 register surfaced recoverable agent_instructions:text(..=16384)
 table 370 chat_reply_threads replicated key id rule any
   derived key exists 4 inputs root_item_id prefix reply-thread
   group 0 immutable root_item_id:row_key
@@ -725,8 +729,7 @@ table 376 chat_execution_environment_reference_targets replicated key reference_
   group 0 immutable execution_environment_id:text(..=2048)
 table 377 chat_participant_reference_targets replicated key reference_id rule any
   key parent 374
-  group 0 immutable participant_id:row_key override_model_selection_schema_version:optional_integer(1..=9223372036854775807) override_model_selection_data:optional_text(..=16384)
-  check override_model_selection_schema_version,override_model_selection_data within 0
+  group 0 immutable participant_id:row_key
 table 378 chat_working_folder_reference_targets replicated key reference_id rule any
   key parent 374
   group 0 immutable working_folder_id:row_key
@@ -764,12 +767,12 @@ table 401 chat_scheduled_message_recurrences replicated key id rule any
   check rule_kind,interval_minutes within 2
   check rule_kind,local_minute,weekdays_mask within 2
 table 395 chat_work_assignments replicated key id rule any
-  group 0 immutable reply_thread_id:row_key->370:cascade agent_id:row_key->353:cascade triggering_message_item_id:row_key->372:cascade executing_device_id:optional_text(..=160) created_at:timestamp override_model_selection_schema_version:optional_integer(1..=9223372036854775807) override_model_selection_data:optional_text(..=16384)
+  group 0 immutable reply_thread_id:row_key->370:cascade agent_id:row_key->353:cascade triggering_message_item_id:row_key->372:cascade executing_device_id:optional_text(..=160) created_at:timestamp model_selection_schema_version:integer(1..=9223372036854775807) model_selection_data:text(..=16384) instructions:text(..=50176)
   group 1 register previous_assignment_id:optional_row_key->395:set_null
   group 2 coupled state:text(..=32) state_reason:optional_text(..=4000) settled_at:optional_timestamp review_outcome:optional_text(..=32) reviewed_at:optional_timestamp reviewed_by_participant_id:optional_row_key
   group 3 max updated_at:timestamp
   group 4 immutable parent_assignment_id:optional_row_key->395:cascade delegation_depth:integer(0..=2) delegation_objective:optional_text(..=4000) delegation_expected_result:optional_text(..=2000) delegation_folder_ceiling:optional_text(..=16384)
-  check override_model_selection_schema_version,override_model_selection_data within 0
+  group 5 register model_label:optional_text(..=256)
   check state,review_outcome,reviewed_at,reviewed_by_participant_id within 2
 table 396 chat_work_assignment_inputs replicated key id rule any
   derived key exists 4 inputs message_item_id prefix assignment-input

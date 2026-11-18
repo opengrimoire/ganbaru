@@ -4,10 +4,12 @@
 //! write captures nothing, concurrent creates of one derived assignment merge, a settle on any
 //! device outranks progress the executing device reports concurrently, a review travels
 //! whole with the completion it judges while a concurrent cancel outranks it, a delivery of an
-//! input outranks a concurrent cancel of it, concurrent creates with model overrides keep
-//! one whole override, a concurrent narrowing of a parent grant cancels a child delegated
-//! against the old authority, and a cancel of a repeating scheduled message ends its series
-//! over any progress the executing device records concurrently.
+//! input outranks a concurrent cancel of it, every assignment carries the model and
+//! instructions frozen at its create and concurrent creates keep one whole pair, the model
+//! label is a register a later write fills, a concurrent narrowing of the channel's agent
+//! access cancels a child delegated against the old authority, and a cancel of a repeating
+//! scheduled message ends its series over any progress the executing device records
+//! concurrently.
 
 use super::*;
 use crate::manifest::vault::chat::{
@@ -22,6 +24,12 @@ pub(super) const MENTION: &str = "item:mention";
 const UPDATE: &str = "item:update";
 const SCHEDULED: &str = "scheduled:reminder";
 const EXECUTOR: &str = "device-0";
+
+/// The model the creating device resolves and freezes into every assignment it starts.
+const FROZEN_MODEL: &str = "model-frozen";
+
+/// The joined instructions the creating device freezes into every assignment it starts.
+const FROZEN_INSTRUCTIONS: &str = "Keep replies short.\n\nRun the tests first.";
 
 /// Seeds of the cancel against progress scenario.
 const PROGRESS_SEEDS: u64 = 8;
@@ -49,22 +57,31 @@ fn assignment_sql(id: &str, previous: Option<&str>) -> String {
 }
 
 /// SQL creating the assignment `id` of [`AGENT`] triggered by [`MENTION`] in the reply
-/// thread under [`ROOT`], executed by `executor`.
+/// thread under [`ROOT`], executed by `executor`, with the frozen [`FROZEN_MODEL`] and
+/// [`FROZEN_INSTRUCTIONS`].
 fn assignment_on_sql(id: &str, previous: Option<&str>, executor: &str) -> String {
     format!(
         "INSERT INTO chat_work_assignments
             (id, reply_thread_id, agent_id, triggering_message_item_id, executing_device_id,
+             model_selection_schema_version, model_selection_data, instructions,
              previous_assignment_id, state, created_at, updated_at)
-         VALUES ({id}, {thread}, {agent}, {mention}, {executor}, {previous}, 'queued',
-                 {created}, {created});",
+         VALUES ({id}, {thread}, {agent}, {mention}, {executor}, 1, {model}, {instructions},
+                 {previous}, 'queued', {created}, {created});",
         id = quoted(id),
         thread = quoted(&thread()),
         agent = quoted(AGENT),
         mention = quoted(MENTION),
         executor = quoted(executor),
+        model = quoted(&model_data(FROZEN_MODEL)),
+        instructions = quoted(FROZEN_INSTRUCTIONS),
         previous = optional(previous),
         created = quoted(CREATED),
     )
+}
+
+/// The model selection naming `model`.
+fn model_data(model: &str) -> String {
+    format!("{{\"providerManagedModel\":false,\"modelId\":\"{model}\",\"modelOptions\":[]}}")
 }
 
 /// SQL routing `message` to `assignment` as input `ordinal` of `kind`.
@@ -203,6 +220,18 @@ fn chat_coordination_rows_round_trip_with_their_derived_keys() {
                 "{EXECUTOR} queued {} trigger plan",
                 input_id(MENTION)
             ))
+        );
+        assert_eq!(
+            reader
+                .scalar_text(
+                    "SELECT model_selection_schema_version || ' '
+                            || json_extract(model_selection_data, '$.modelId') || ' '
+                            || instructions || ' ' || coalesce(model_label, '-')
+                     FROM chat_work_assignments",
+                )
+                .await,
+            Some(format!("1 {FROZEN_MODEL} {FROZEN_INSTRUCTIONS} -")),
+            "the frozen model and instructions travel with the assignment"
         );
         assert_eq!(
             reader
@@ -638,7 +667,7 @@ fn chat_simulated_accept_against_follow_up_completion_converges_completed() {
 /// The child [`ASSIGNMENT`] delegates in the delegation scenario.
 const CHILD: &str = "assignment:delegated";
 
-/// Seeds of the delegation against a narrowed parent grant scenario.
+/// Seeds of the delegation against a narrowed channel access scenario.
 const DELEGATION_SEEDS: u64 = 8;
 
 /// State reason of a child cancelled because its parent's authority narrowed.
@@ -649,15 +678,19 @@ fn delegated_sql() -> String {
     format!(
         "INSERT INTO chat_work_assignments
             (id, reply_thread_id, agent_id, triggering_message_item_id, executing_device_id,
+             model_selection_schema_version, model_selection_data, instructions,
              state, parent_assignment_id, delegation_depth, delegation_objective,
              delegation_expected_result, delegation_folder_ceiling, created_at, updated_at)
-         VALUES ({child}, {thread}, {agent}, {mention}, {executor}, 'queued', {parent}, 1,
+         VALUES ({child}, {thread}, {agent}, {mention}, {executor}, 1, {model}, {instructions},
+                 'queued', {parent}, 1,
                  'Read the failing tests', 'The causes', {ceiling}, {created}, {created});",
         child = quoted(CHILD),
         thread = quoted(&thread()),
         agent = quoted(AGENT),
         mention = quoted(MENTION),
         executor = quoted(EXECUTOR),
+        model = quoted(&model_data(FROZEN_MODEL)),
+        instructions = quoted(FROZEN_INSTRUCTIONS),
         parent = quoted(ASSIGNMENT),
         ceiling = quoted(&format!(
             r#"[{{"workingFolderId":"{FOLDER}","capability":"edit"}}]"#
@@ -686,12 +719,12 @@ fn child_state_sql(state: &str, reason: Option<&str>, updated_at: &str) -> Strin
     )
 }
 
-/// Whether `replica` holds [`CHILD`] and the narrowed `read` grant, so it would refuse to run
-/// the child.
+/// Whether `replica` holds [`CHILD`] and the channel access narrowed to `read`, so it would
+/// refuse to run the child.
 async fn sees_narrowed_parent(replica: &mut Replica) -> bool {
     replica
         .scalar_text(
-            "SELECT grant_row.capability FROM chat_agent_working_folder_grants grant_row
+            "SELECT channel.agent_access FROM chat_channels channel
              WHERE EXISTS (SELECT 1 FROM chat_work_assignments WHERE id = 'assignment:delegated')",
         )
         .await
@@ -710,22 +743,25 @@ async fn child_summary(replica: &mut Replica) -> String {
         .expect("the delegated assignment arrived")
 }
 
-/// One device delegates a child under the parent's `edit` grant while another narrows that
-/// grant to `read`. The executing device reports progress until it sees the narrowing, and any
-/// device that holds both rows cancels the child with `parent_authority_revoked`; whatever the
-/// exchange order, every device ends with the narrowed grant and the cancelled child, so a
-/// concurrent narrowing always wins over a child created against the old authority.
+/// One device delegates a child while the channel lets the agent `ask`, and another narrows the
+/// channel's agent access to `read`. The executing device reports progress until it sees the
+/// narrowing, and any device that holds both rows cancels the child with
+/// `parent_authority_revoked`; whatever the exchange order, every device ends with the narrowed
+/// access and the cancelled child, so a concurrent narrowing always wins over a child created
+/// against the old authority.
 #[test]
-fn chat_simulated_delegation_against_a_narrowed_parent_grant_cancels_the_child() {
+fn chat_simulated_delegation_against_narrowed_channel_access_cancels_the_child() {
     block_on(async {
         for seed in 0..DELEGATION_SEEDS {
             let mut rng = Rng(seed ^ 0xde1e);
-            let mut replicas = conversation_replicas(3).await;
+            let mut replicas = scoped_replicas(3).await;
             replicas[0].exec(&coordination_sql()).await;
             converge(&mut replicas).await;
 
             replicas[0].exec(&delegated_sql()).await;
-            replicas[1].exec(&grant_sql("read", None, None)).await;
+            replicas[1]
+                .exec(&access_sql(Scope::Channel, Some("read"), &at(0, 30)))
+                .await;
             for round in 0..PROGRESS_ROUNDS {
                 pull_at_random(&mut replicas, &mut rng).await;
                 let updated_at = at(round + 1, rng.below(60));
@@ -782,7 +818,7 @@ fn chat_simulated_delegation_against_a_narrowed_parent_grant_cancels_the_child()
                 );
                 assert_eq!(
                     replica
-                        .scalar_text("SELECT capability FROM chat_agent_working_folder_grants")
+                        .scalar_text("SELECT agent_access FROM chat_channels")
                         .await
                         .as_deref(),
                     Some("read"),
@@ -959,47 +995,64 @@ async fn child_settled(replica: &mut Replica) -> bool {
         .is_some()
 }
 
-/// SQL creating [`ASSIGNMENT`] on `executor` with the model override `model`.
-fn overridden_assignment_sql(executor: &str, model: &str) -> String {
+/// SQL creating [`ASSIGNMENT`] on `executor` with the frozen model `model` and `instructions`.
+fn frozen_assignment_sql(executor: &str, model: &str, instructions: &str) -> String {
     format!(
         "INSERT INTO chat_work_assignments
             (id, reply_thread_id, agent_id, triggering_message_item_id, executing_device_id,
-             override_model_selection_schema_version, override_model_selection_data, state,
+             model_selection_schema_version, model_selection_data, instructions, state,
              created_at, updated_at)
-         VALUES ({id}, {thread}, {agent}, {mention}, {executor}, 1, {data}, 'queued',
-                 {created}, {created});",
+         VALUES ({id}, {thread}, {agent}, {mention}, {executor}, 1, {data}, {instructions},
+                 'queued', {created}, {created});",
         id = quoted(ASSIGNMENT),
         thread = quoted(&thread()),
         agent = quoted(AGENT),
         mention = quoted(MENTION),
         executor = quoted(executor),
-        data = quoted(&format!(
-            "{{\"providerManagedModel\":false,\"modelId\":\"{model}\",\"modelOptions\":[]}}"
-        )),
+        data = quoted(&model_data(model)),
+        instructions = quoted(instructions),
         created = quoted(CREATED),
     )
 }
 
-/// Two devices Start one mention concurrently with different model overrides; the created group
-/// is fixed with the request, so every device keeps one whole override from one of the creates,
-/// beside that create's executing device.
+/// SQL posting the reply thread and [`MENTION`] without an assignment.
+fn mention_sql() -> String {
+    format!(
+        "{}{}{}",
+        message_sql(ROOT, None, "c001", "Root"),
+        thread_sql(),
+        message_sql(MENTION, Some(&thread()), "c001", "@Reviewer please check"),
+    )
+}
+
+/// [`ASSIGNMENT`]'s executing device, model schema version, model id, and instructions.
+async fn frozen_start(replica: &mut Replica) -> String {
+    replica
+        .scalar_text(
+            "SELECT executing_device_id || ' ' || model_selection_schema_version || ' '
+                    || json_extract(model_selection_data, '$.modelId') || ' ' || instructions
+             FROM chat_work_assignments",
+        )
+        .await
+        .expect("the assignment arrived")
+}
+
+/// Two devices Start one mention concurrently, each resolving a different model and
+/// instructions; the created group is fixed with the request, so every device keeps the whole
+/// model and instructions of one of the creates, beside that create's executing device.
 #[test]
-fn chat_concurrent_overridden_starts_keep_one_whole_override() {
+fn chat_concurrent_starts_keep_one_whole_frozen_model_and_instructions() {
     block_on(async {
         let mut replicas = conversation_replicas(3).await;
-        replicas[0]
-            .exec(&format!(
-                "{}{}{}",
-                message_sql(ROOT, None, "c001", "Root"),
-                thread_sql(),
-                message_sql(MENTION, Some(&thread()), "c001", "@Reviewer please check"),
-            ))
-            .await;
+        replicas[0].exec(&mention_sql()).await;
         converge(&mut replicas).await;
 
-        for (index, executor, model) in [(0, "device-0", "model-a"), (1, "device-1", "model-b")] {
+        for (index, executor, model, instructions) in [
+            (0, "device-0", "model-a", "Vault rules A"),
+            (1, "device-1", "model-b", "Vault rules B"),
+        ] {
             replicas[index]
-                .exec(&overridden_assignment_sql(executor, model))
+                .exec(&frozen_assignment_sql(executor, model, instructions))
                 .await;
         }
         converge(&mut replicas).await;
@@ -1007,27 +1060,93 @@ fn chat_concurrent_overridden_starts_keep_one_whole_override() {
 
         let mut created = Vec::new();
         for replica in &mut replicas {
-            created.push(
-                replica
-                    .scalar_text(
-                        "SELECT executing_device_id || ' '
-                                || override_model_selection_schema_version || ' '
-                                || json_extract(override_model_selection_data, '$.modelId')
-                         FROM chat_work_assignments",
-                    )
-                    .await
-                    .expect("the assignment arrived"),
-            );
+            created.push(frozen_start(replica).await);
         }
         assert!(
-            ["device-0 1 model-a", "device-1 1 model-b"].contains(&created[0].as_str()),
-            "the override stays with its own create: {}",
+            [
+                "device-0 1 model-a Vault rules A",
+                "device-1 1 model-b Vault rules B"
+            ]
+            .contains(&created[0].as_str()),
+            "the model and instructions stay with their own create: {}",
             created[0]
         );
         assert!(
             created.iter().all(|row| *row == created[0]),
-            "every device agrees on the override: {created:?}"
+            "every device agrees on the frozen start: {created:?}"
         );
+    });
+}
+
+/// SQL recording `label` as the model that ran [`ASSIGNMENT`].
+fn model_label_sql(label: &str, updated_at: &str) -> String {
+    format!(
+        "UPDATE chat_work_assignments SET model_label = {label}, updated_at = {updated_at}
+         WHERE id = {assignment};",
+        label = quoted(label),
+        updated_at = quoted(updated_at),
+        assignment = quoted(ASSIGNMENT),
+    )
+}
+
+/// [`ASSIGNMENT`]'s model label, or `-` while none is recorded.
+async fn model_label(replica: &mut Replica) -> String {
+    replica
+        .scalar_text("SELECT coalesce(model_label, '-') FROM chat_work_assignments")
+        .await
+        .expect("the assignment arrived")
+}
+
+/// The executing device fills the model label after the assignment arrived everywhere, a later
+/// label replaces it on every device, and concurrent labels converge on the later write while
+/// the frozen model and instructions stay as created.
+#[test]
+fn chat_model_label_is_a_register_a_later_write_fills() {
+    block_on(async {
+        let mut replicas = conversation_replicas(3).await;
+        replicas[0].exec(&coordination_sql()).await;
+        converge(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(model_label(replica).await, "-", "replica {}", replica.index);
+        }
+
+        replicas[0]
+            .exec(&model_label_sql("Model Frozen", &at(1, 0)))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                model_label(replica).await,
+                "Model Frozen",
+                "replica {}",
+                replica.index
+            );
+        }
+
+        replicas[1]
+            .exec(&model_label_sql("Model Frozen Early", &at(2, 0)))
+            .await;
+        replicas[2].now_ms += LATER_MS;
+        replicas[2]
+            .exec(&model_label_sql("Model Frozen Late", &at(2, 1)))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                model_label(replica).await,
+                "Model Frozen Late",
+                "replica {}",
+                replica.index
+            );
+            assert_eq!(
+                frozen_start(replica).await,
+                format!("{EXECUTOR} 1 {FROZEN_MODEL} {FROZEN_INSTRUCTIONS}"),
+                "replica {}",
+                replica.index
+            );
+        }
     });
 }
 

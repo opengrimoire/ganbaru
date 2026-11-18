@@ -1,20 +1,26 @@
-//! Chat identity and policy across replicas: participants and agents arrive with their policy
-//! revisions, a crash while sealing or applying them leaves nothing partial, and concurrent edits
-//! of an agent's current policy keep the more restrictive one whatever order the replicas
-//! exchange in. Conversations, channels,
-//! memberships, AI channel access, and working folder grants follow them: a concurrent removal or
-//! revocation wins over a concurrent widening, and a later re-add that saw the removal wins over
-//! it. The timeline follows: messages, revisions, reply threads, and read cursors arrive whole,
-//! concurrent posts that take one order key read in one order everywhere, read cursors only move
-//! forward, and the Chat hook is handed applied messages and revisions to refresh search.
-//! Attachment references arrive by value with their revision and name only non-empty files.
-//! Channel notes follow their channel, and a deletion of one wins over a concurrent edit.
-//! Standing push approvals follow their folder, and a revocation wins over a concurrent approval.
-//! Device local Chat rows stay on their device.
+//! Chat identity and agent configuration across replicas: participants and agents arrive with
+//! their provider family and policy revisions, a crash while sealing or applying them leaves
+//! nothing partial, and concurrent edits of an agent's current revision settle on one value
+//! every replica agrees on. The vault agent settings singleton is published by seeding, stays
+//! one row everywhere, and is never deleted; project agent settings leave with their project.
+//! Concurrent agent access edits at vault, project, and channel scope keep the narrower level
+//! whatever order the replicas exchange in, with an inherited level counting as the widest,
+//! while instructions and a channel's model override are last writer wins, the override whole
+//! or absent. Conversations, channels, and memberships follow: a concurrent removal wins over a
+//! concurrent re-add, and a later re-add that saw the removal wins over it. The timeline
+//! follows: messages, revisions, reply threads, and read cursors arrive whole, concurrent posts
+//! that take one order key read in one order everywhere, read cursors only move forward, and the
+//! Chat hook is handed applied messages and revisions to refresh search. Attachment references
+//! arrive by value with their revision and name only non-empty files. Channel notes follow their
+//! channel, and a deletion of one wins over a concurrent edit. Standing push approvals follow
+//! their channel and folder, and a revocation wins over a concurrent approval. Work assignments
+//! carry the model and instructions they were requested with. Device local Chat rows stay on
+//! their device.
 
 use std::sync::{Arc, Mutex};
 
-use ganbaru_sync_contracts::{ChangeAction, Content, Envelope, RowKey, derived_key};
+use ganbaru_sync_contracts::chat_push_approvals::PUSH_APPROVAL_KEY_PREFIX;
+use ganbaru_sync_contracts::{Change, ChangeAction, Content, Envelope, RowKey, derived_key};
 use sqlx::SqliteConnection;
 
 use super::authorization::{forge, view};
@@ -29,8 +35,8 @@ use crate::error::failpoints;
 use crate::hooks::{ChangeSink, HookFuture, MaterializeHook};
 use crate::manifest::TableSpec;
 use crate::manifest::vault::chat::{
-    CHANNEL_MEMBERSHIP_KEY_PREFIX, CHANNELS_TABLE, CONVERSATION_CURSOR_KEY_PREFIX,
-    CONVERSATIONS_TABLE, FOLDER_GRANT_KEY_PREFIX, MEMBERSHIP_KEY_PREFIX, MESSAGES_TABLE,
+    APP_SETTINGS_TABLE, CHANNEL_MEMBERSHIP_KEY_PREFIX, CHANNELS_TABLE,
+    CONVERSATION_CURSOR_KEY_PREFIX, CONVERSATIONS_TABLE, MEMBERSHIP_KEY_PREFIX, MESSAGES_TABLE,
     PARTICIPANTS_TABLE, REPLY_CURSOR_KEY_PREFIX, REPLY_CURSORS_TABLE, REPLY_THREAD_KEY_PREFIX,
     REPLY_THREADS_TABLE, REVISIONS_TABLE,
 };
@@ -42,27 +48,22 @@ const SALT: u64 = 73;
 const AGENT: &str = "participant:reviewer";
 const CREATED: &str = "2026-10-24T09:00:00.000Z";
 
-/// Seeds of the concurrent policy edit scenario.
+/// The model selection of the agent's first policy revision.
+const FIRST_MODEL: &str = r#"{"modelId":"first"}"#;
+
+/// Seeds of the concurrent current revision scenario.
 const POLICY_SEEDS: u64 = 8;
 
-/// Edit rounds of one policy scenario.
+/// Edit rounds of one current revision scenario.
 const POLICY_ROUNDS: usize = 4;
 
-/// Agent safety modes, least restrictive first, as the adapter ranks them. Custom defers to the
-/// provider's own configuration, which can grant anything, so it ranks lowest.
-const SAFETY_MODES: [&str; 4] = [
-    "custom",
-    "full_access",
-    "approve_for_me",
-    "ask_for_approval",
-];
-
-/// Folder capabilities, least restrictive first, as the adapter ranks them.
-const CAPABILITIES: [&str; 5] = ["publish", "execute", "edit", "read", "none"];
+/// How far a replica's clock moves ahead so its concurrent edit carries the later clock.
+const LATER_MS: u64 = 60_000;
 
 /// Replicas that each seeded their existing rows at vault open, as the app does, with operations
-/// exchanged, so the seeded local owner and routine projects are published everywhere. Built once
-/// per count and copied, since converging the seeded rows dominates every Chat test.
+/// exchanged, so the seeded local owner, vault agent settings, and routine projects are published
+/// everywhere. Built once per count and copied, since converging the seeded rows dominates every
+/// Chat test.
 async fn replicas(count: usize) -> Vec<Replica> {
     prepared(&format!("chat seeded {count}"), async || {
         let mut replicas = Vec::with_capacity(count);
@@ -92,36 +93,38 @@ fn at(minute: usize, second: usize) -> String {
     )
 }
 
-/// SQL creating [`AGENT`] with an avatar and a home device.
+/// SQL creating [`AGENT`] with an avatar and its provider family.
 fn agent_sql() -> String {
     format!(
         "INSERT INTO chat_participants
             (id, participant_kind, display_name, avatar_data, created_at, updated_at)
          VALUES ({agent}, 'ai_agent', 'Reviewer', {avatar}, {created}, {created});
-         INSERT INTO chat_agents
-            (participant_id, role, instructions, home_device_id, created_at, updated_at)
-         VALUES ({agent}, 'Reviews changes', 'Be brief', 'device-0', {created}, {created});",
+         INSERT INTO chat_agents (participant_id, provider_family_id, created_at, updated_at)
+         VALUES ({agent}, 'codex', {created}, {created});",
         agent = quoted(AGENT),
         avatar = quoted(r#"{"kind":"emoji","emoji":"R"}"#),
         created = quoted(CREATED),
     )
 }
 
-/// SQL adding policy revision `id` of [`AGENT`] with `safety` and making it current.
-fn policy_sql(id: &str, safety: &str, created_at: &str) -> String {
+/// SQL adding policy revision `id` of [`AGENT`] with `model` and making it current.
+fn policy_sql(id: &str, model: &str, created_at: &str) -> String {
     format!(
-        "INSERT INTO chat_agent_policy_revisions
-            (id, agent_id, provider_instance_id, model_selection_data, safety_mode, created_at)
-         VALUES ({id}, {agent}, 'codex-personal', '{{}}', {safety}, {created_at});
+        "INSERT INTO chat_agent_policy_revisions (id, agent_id, model_selection_data, created_at)
+         VALUES ({id}, {agent}, {model}, {created_at});
          UPDATE chat_agents
-         SET current_policy_revision_id = {id}, current_policy_safety_mode = {safety},
-             updated_at = {created_at}
+         SET current_policy_revision_id = {id}, updated_at = {created_at}
          WHERE participant_id = {agent};",
         id = quoted(id),
         agent = quoted(AGENT),
-        safety = quoted(safety),
+        model = quoted(model),
         created_at = quoted(created_at),
     )
+}
+
+/// The model selection policy revision `id` holds in the scenarios that write it.
+fn model_of(id: &str) -> String {
+    format!(r#"{{"modelId":"{id}"}}"#)
 }
 
 /// The identity rows every scenario starts from: the agent with its first policy.
@@ -129,7 +132,7 @@ fn identity_sql() -> String {
     format!(
         "{}{}",
         agent_sql(),
-        policy_sql("policy-0", "approve_for_me", CREATED)
+        policy_sql("policy-0", FIRST_MODEL, CREATED)
     )
 }
 
@@ -145,25 +148,18 @@ async fn assert_converged(replicas: &mut [Replica]) {
     }
 }
 
-/// The current policy safety mode of [`AGENT`] and the safety mode of the revision it names.
-async fn current_policy(replica: &mut Replica) -> (String, String) {
-    let copied = replica
+/// The current policy revision of [`AGENT`] and the model selection of the revision it names,
+/// as `id model`.
+async fn current_policy(replica: &mut Replica) -> String {
+    replica
         .scalar_text(
-            "SELECT current_policy_safety_mode FROM chat_agents
-             WHERE participant_id = 'participant:reviewer'",
-        )
-        .await
-        .expect("the agent names a policy");
-    let named = replica
-        .scalar_text(
-            "SELECT policy.safety_mode FROM chat_agents agent
+            "SELECT policy.id || ' ' || policy.model_selection_data FROM chat_agents agent
              JOIN chat_agent_policy_revisions policy
                ON policy.id = agent.current_policy_revision_id
              WHERE agent.participant_id = 'participant:reviewer'",
         )
         .await
-        .expect("the named policy arrived");
-    (copied, named)
+        .expect("the agent names a policy that arrived")
 }
 
 /// Captured replicated Chat rows as `table key`, in table and key order.
@@ -185,7 +181,7 @@ fn chat_identity_rows_round_trip_with_every_replicated_value() {
         let mut replicas = replicas(2).await;
         replicas[0].exec(&identity_sql()).await;
         replicas[0]
-            .exec(&policy_sql("policy-1", "full_access", &at(1, 0)))
+            .exec(&policy_sql("policy-1", &model_of("policy-1"), &at(1, 0)))
             .await;
         converge(&mut replicas).await;
         assert_converged(&mut replicas).await;
@@ -194,19 +190,18 @@ fn chat_identity_rows_round_trip_with_every_replicated_value() {
         assert_eq!(
             reader
                 .scalar_text(
-                    "SELECT display_name || ' ' || avatar_data || ' ' || role || ' '
-                            || instructions || ' ' || home_device_id
+                    "SELECT display_name || ' ' || avatar_data || ' ' || provider_family_id
                      FROM chat_participants participant
                      JOIN chat_agents agent ON agent.participant_id = participant.id
                      WHERE participant.id = 'participant:reviewer'",
                 )
                 .await
                 .as_deref(),
-            Some(r#"Reviewer {"kind":"emoji","emoji":"R"} Reviews changes Be brief device-0"#)
+            Some(r#"Reviewer {"kind":"emoji","emoji":"R"} codex"#)
         );
         assert_eq!(
             current_policy(reader).await,
-            ("full_access".to_owned(), "full_access".to_owned())
+            format!("policy-1 {}", model_of("policy-1"))
         );
         // Display numbers follow `(created_at, id)` order on every replica.
         assert_eq!(
@@ -222,10 +217,13 @@ fn chat_identity_rows_round_trip_with_every_replicated_value() {
         );
         assert_eq!(
             reader
-                .scalar_text("SELECT id || '=' || revision FROM chat_agent_effective_policies",)
+                .scalar_text(
+                    "SELECT id || '=' || revision || ' ' || interaction_mode
+                     FROM chat_agent_effective_policies",
+                )
                 .await
                 .as_deref(),
-            Some("policy-1=2")
+            Some("policy-1=2 build")
         );
     });
 }
@@ -258,9 +256,9 @@ fn chat_a_crash_while_sealing_or_applying_identity_rows_leaves_nothing_partial()
             .exec(&format!("{}{}", identity_sql(), conversation_sql()))
             .await;
         let captured = chat_captures(&mut replicas[0]).await;
-        // Three identity rows, then the conversation, two memberships, the AI channel access,
-        // the grant, and the channel.
-        assert_eq!(captured.len(), 9, "{captured:?}");
+        // Three identity rows, then the conversation, two memberships, the AI channel
+        // membership, and the channel.
+        assert_eq!(captured.len(), 8, "{captured:?}");
         for name in ["seal.reserve", "seal.before_commit"] {
             let report = after_rollback(&mut replicas[0], name, async |r: &mut Replica| {
                 r.seal().await
@@ -271,7 +269,7 @@ fn chat_a_crash_while_sealing_or_applying_identity_rows_leaves_nothing_partial()
             if name == "seal.reserve" {
                 // A new current policy gives the next failpoint rows to seal.
                 replicas[0]
-                    .exec(&policy_sql("policy-1", "custom", &at(1, 0)))
+                    .exec(&policy_sql("policy-1", &model_of("policy-1"), &at(1, 0)))
                     .await;
             }
         }
@@ -295,122 +293,221 @@ fn chat_a_crash_while_sealing_or_applying_identity_rows_leaves_nothing_partial()
         .await;
         assert_eq!(
             current_policy(reader).await,
-            ("custom".to_owned(), "custom".to_owned())
+            format!("policy-1 {}", model_of("policy-1"))
         );
-        assert_eq!(grant_state(reader).await, "edit inherit active");
+        assert_eq!(channel_membership_state(reader).await, "active");
         assert_converged(&mut replicas).await;
     });
 }
 
+/// Two devices point the agent at different revisions concurrently: the pointer is a plain
+/// register, so the edit with the later clock wins everywhere, in either order, and a later edit
+/// that saw it replaces it.
 #[test]
-fn chat_concurrent_current_revisions_keep_the_more_restrictive_one() {
+fn chat_concurrent_current_revisions_converge_on_the_later_edit() {
     block_on(async {
-        let mut replicas = replicas(2).await;
-        replicas[0].exec(&identity_sql()).await;
-        converge(&mut replicas).await;
+        for later in [0_usize, 1] {
+            let mut replicas = replicas(2).await;
+            replicas[0].exec(&identity_sql()).await;
+            converge(&mut replicas).await;
 
-        // Replica 0 relaxes while replica 1 tightens; the later edit is the relaxing one, so
-        // restrictiveness, not time, decides.
-        replicas[1]
-            .exec(&policy_sql("policy-strict", "ask_for_approval", &at(1, 0)))
-            .await;
-        replicas[0]
-            .exec(&policy_sql("policy-open", "full_access", &at(2, 0)))
-            .await;
-        converge(&mut replicas).await;
-        assert_converged(&mut replicas).await;
-        for replica in &mut replicas {
-            assert_eq!(
-                current_policy(replica).await,
-                ("ask_for_approval".to_owned(), "ask_for_approval".to_owned())
-            );
-            // Both revisions arrived and keep their display numbers.
-            assert_eq!(
+            for (index, replica) in replicas.iter_mut().enumerate() {
+                let id = format!("policy-from-{index}");
                 replica
-                    .count("SELECT count(*) FROM chat_agent_policy_revisions")
-                    .await,
-                3
+                    .exec(&policy_sql(&id, &model_of(&id), &at(1, 0)))
+                    .await;
+            }
+            replicas[later].now_ms += LATER_MS;
+            converge(&mut replicas).await;
+            assert_converged(&mut replicas).await;
+            let winner = format!("policy-from-{later}");
+            for replica in &mut replicas {
+                assert_eq!(
+                    current_policy(replica).await,
+                    format!("{winner} {}", model_of(&winner)),
+                    "later edit from replica {later}"
+                );
+                // Both revisions arrived and keep their display numbers.
+                assert_eq!(
+                    replica
+                        .count("SELECT count(*) FROM chat_agent_policy_revisions")
+                        .await,
+                    3
+                );
+            }
+
+            // A later edit that is not concurrent replaces the winner.
+            let other = 1 - later;
+            replicas[other]
+                .exec(&policy_sql(
+                    "policy-next",
+                    &model_of("policy-next"),
+                    &at(2, 0),
+                ))
+                .await;
+            converge(&mut replicas).await;
+            assert_converged(&mut replicas).await;
+            assert_eq!(
+                current_policy(&mut replicas[later]).await,
+                format!("policy-next {}", model_of("policy-next"))
             );
         }
-
-        // A later edit that is not concurrent replaces the stricter pointer.
-        replicas[0]
-            .exec(&policy_sql("policy-relaxed", "approve_for_me", &at(3, 0)))
-            .await;
-        converge(&mut replicas).await;
-        assert_eq!(
-            current_policy(&mut replicas[1]).await,
-            ("approve_for_me".to_owned(), "approve_for_me".to_owned())
-        );
     });
 }
 
 #[test]
-fn chat_concurrent_policy_edits_of_different_safety_converge_to_the_most_restrictive() {
+fn chat_simulated_concurrent_current_revision_edits_agree_on_one_of_them() {
     block_on(async {
         for seed in 0..POLICY_SEEDS {
             let mut rng = Rng(seed);
             let mut replicas = replicas(3).await;
             replicas[0].exec(&identity_sql()).await;
             converge(&mut replicas).await;
+            let mut expected = vec!["policy-0".to_owned()];
             for round in 0..POLICY_ROUNDS {
-                let mut strictest_safety = None;
+                let mut written = Vec::new();
                 for (index, replica) in replicas.iter_mut().enumerate() {
                     if !rng.chance(70) {
                         continue;
                     }
-                    let created_at = at(round + 1, rng.below(60));
-                    let id = format!("{round}-{index}");
-                    let rank = rng.below(SAFETY_MODES.len());
+                    let id = format!("policy-{round}-{index}");
                     replica
                         .exec(&policy_sql(
-                            &format!("policy-{id}"),
-                            SAFETY_MODES[rank],
-                            &created_at,
+                            &id,
+                            &model_of(&id),
+                            &at(round + 1, rng.below(60)),
                         ))
                         .await;
-                    strictest_safety = strictest_safety.max(Some(rank));
+                    written.push(id);
                     if rng.chance(50) {
                         replica.seal().await.unwrap();
                     }
                 }
                 converge(&mut replicas).await;
                 assert_converged(&mut replicas).await;
-                for replica in &mut replicas {
-                    let (copied, named) = current_policy(replica).await;
-                    assert_eq!(copied, named, "seed {seed} round {round}");
-                    if let Some(rank) = strictest_safety {
-                        assert_eq!(copied, SAFETY_MODES[rank], "seed {seed} round {round}");
-                    }
+                if !written.is_empty() {
+                    expected = written;
                 }
+                let current = current_policy(&mut replicas[0]).await;
+                let (id, model) = current.split_once(' ').unwrap();
+                assert!(
+                    expected.iter().any(|candidate| candidate == id),
+                    "seed {seed} round {round}: {id} is none of {expected:?}"
+                );
+                assert_eq!(model, model_of(id), "seed {seed} round {round}");
             }
         }
     });
 }
 
+/// Audience state is device local: the conversation insert creates it on the author, and the
+/// applier stands the trigger down, so the reader's state comes from the Chat hook the app
+/// registers.
 #[test]
 fn chat_device_local_rows_stay_on_their_device() {
     block_on(async {
         let mut replicas = replicas(2).await;
-        replicas[0].exec(&identity_sql()).await;
-        let before = replicas[1]
-            .count("SELECT count(*) FROM chat_agent_access_state")
+        replicas[0]
+            .exec(&format!("{}{}", identity_sql(), conversation_sql()))
             .await;
+        let audience = "SELECT count(*) FROM chat_conversation_audience_state
+                        WHERE conversation_id = 'conversation:design'";
         converge(&mut replicas).await;
-        // The command trigger created access state on the author only; the applier stands it
-        // down, so the reader's state comes from the Chat hook the app registers.
+        assert_eq!(replicas[0].count(audience).await, 1);
+        assert_eq!(replicas[1].count(audience).await, 0);
         assert_eq!(
-            replicas[0]
-                .count("SELECT count(*) FROM chat_agent_access_state")
+            replicas[1]
+                .count("SELECT count(*) FROM chat_conversations WHERE id = 'conversation:design'")
                 .await,
             1
         );
+    });
+}
+
+/// The seeded vault agent settings row is captured by seeding, so every replica publishes it
+/// and they agree on one row with the default access and no instructions.
+#[test]
+fn chat_seeding_publishes_the_vault_agent_settings_and_replicas_agree_on_them() {
+    block_on(async {
+        let mut fresh = Replica::new(0, SALT).await;
+        let now = fresh.now_ms;
+        let seeded = fresh
+            .engine
+            .seed_captures(&mut fresh.conn, now)
+            .await
+            .unwrap();
+        assert!(seeded.contains(&"chat_agent_app_settings"), "{seeded:?}");
         assert_eq!(
-            replicas[1]
-                .count("SELECT count(*) FROM chat_agent_access_state")
+            fresh
+                .count(&format!(
+                    "SELECT count(*) FROM sync_capture
+                     WHERE table_id = {} AND row_key = 'vault' AND created = 1",
+                    APP_SETTINGS_TABLE.0
+                ))
                 .await,
-            before
+            1
         );
+
+        let mut replicas = replicas(3).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                app_settings(replica).await,
+                "1 ask ",
+                "replica {}",
+                replica.index
+            );
+        }
+
+        replicas[2]
+            .exec(&instructions_sql(
+                Scope::App,
+                "Prefer small changes",
+                &at(1, 0),
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(app_settings(replica).await, "1 ask Prefer small changes");
+        }
+    });
+}
+
+/// The vault agent settings as `rows access instructions`.
+async fn app_settings(replica: &mut Replica) -> String {
+    replica
+        .scalar_text(
+            "SELECT count(*) || ' ' || max(agent_access) || ' ' || max(agent_instructions)
+             FROM chat_agent_app_settings",
+        )
+        .await
+        .expect("an aggregate always has a row")
+}
+
+/// A forged tombstone of the vault agent settings is invalid by its bytes alone, so the row
+/// stays on the receiver.
+#[test]
+fn chat_vault_agent_settings_are_never_deleted() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        let tombstone = Change {
+            table: APP_SETTINGS_TABLE,
+            row: RowKey::new("vault").unwrap(),
+            action: ChangeAction::Tombstone,
+            groups: Vec::new(),
+            replaced_by: None,
+            cause: None,
+        };
+        let forged = forge_change(&mut replicas[0], tombstone).await;
+        assert_eq!(
+            replicas[1].receive(&[forged]).await,
+            vec![StoreOutcome::Stored {
+                held: Some(HoldReason::Invalid)
+            }]
+        );
+        replicas[1].apply_all().await.unwrap();
+        assert_eq!(app_settings(&mut replicas[1]).await, "1 ask ");
     });
 }
 
@@ -420,24 +517,25 @@ const FOLDER: &str = "working-folder-routine-learning";
 const CONVERSATION: &str = "conversation:design";
 pub(super) const CHANNEL: &str = "channel:design";
 
-/// Seeds of the revoke against widen scenario.
+/// The push URL the approval of [`folder_approval_sql`] names.
+const APPROVED_PUSH_URL: &str = "git@example.com:team/app.git";
+
+/// The destination branch the approval of [`folder_approval_sql`] names.
+const APPROVED_BRANCH: &str = "main";
+
+/// Seeds of the removal against re-add and narrowing against widening scenario.
 const ACCESS_SEEDS: u64 = 8;
 
-/// Edit rounds of one revoke against widen scenario.
+/// Edit rounds of one removal against re-add and narrowing against widening scenario.
 const ACCESS_ROUNDS: usize = 4;
 
 /// Membership roles, least restrictive first, as the adapter ranks them.
 const ROLES: [&str; 2] = ["owner", "member"];
 
-/// Runtime approval overrides, least restrictive first, as the adapter ranks them; `None`
-/// inherits the agent's policy, which an override can only narrow.
-const APPROVALS: [Option<&str>; 5] = [
-    None,
-    Some("provider_custom"),
-    Some("unattended"),
-    Some("auto_approve"),
-    Some("ask"),
-];
+/// Agent access levels, widest first, as the adapter ranks them; `None` inherits the enclosing
+/// scope's level and counts as the widest.
+const ACCESS_LEVELS: [Option<&str>; 5] =
+    [None, Some("own"), Some("ask"), Some("read"), Some("talk")];
 
 /// The derived key `prefix` names over `parts`.
 fn key(prefix: &str, parts: &[&str]) -> String {
@@ -449,20 +547,45 @@ fn optional(text: Option<&str>) -> String {
     text.map_or_else(|| "NULL".to_owned(), quoted)
 }
 
-/// SQL creating [`CONVERSATION`] with its channel, the owner and [`AGENT`] as members,
-/// [`AGENT`]'s AI channel access, and its default `edit` grant on
-/// [`FOLDER`]. It needs the rows of [`identity_sql`].
+/// SQL creating [`CONVERSATION`] with its channel, the owner and [`AGENT`] as members, and
+/// [`AGENT`]'s AI channel membership. It needs the rows of [`identity_sql`].
 fn conversation_sql() -> String {
-    conversation_on(PROJECT, FOLDER)
+    conversation_on(PROJECT)
 }
 
-/// [`identity_sql`] and a conversation of `project` that grants `folder`.
-pub(super) fn folder_grant_sql(project: &str, folder: &str) -> String {
-    format!("{}{}", identity_sql(), conversation_on(project, folder))
+/// [`identity_sql`], a conversation of `project`, and the owner's standing approval of
+/// [`AGENT`]'s pushes from `folder` in it.
+pub(super) fn folder_approval_sql(project: &str, folder: &str) -> String {
+    format!(
+        "{}{}
+         INSERT INTO chat_push_approvals
+            (conversation_id, agent_id, working_folder_id, push_url, destination_branch, sync_key,
+             approved_by_participant_id, approved_at)
+         VALUES ({conversation}, {agent}, {folder}, {url}, {branch}, {key}, {owner}, {created});",
+        identity_sql(),
+        conversation_on(project),
+        conversation = quoted(CONVERSATION),
+        agent = quoted(AGENT),
+        folder = quoted(folder),
+        url = quoted(APPROVED_PUSH_URL),
+        branch = quoted(APPROVED_BRANCH),
+        key = quoted(&key(
+            PUSH_APPROVAL_KEY_PREFIX,
+            &[
+                CONVERSATION,
+                AGENT,
+                folder,
+                APPROVED_PUSH_URL,
+                APPROVED_BRANCH
+            ]
+        )),
+        owner = quoted(OWNER),
+        created = quoted(CREATED),
+    )
 }
 
-/// [`conversation_sql`] on `project`, granting `folder`.
-fn conversation_on(project: &str, folder: &str) -> String {
+/// [`conversation_sql`] on `project`.
+fn conversation_on(project: &str) -> String {
     format!(
         "INSERT INTO chat_conversations
             (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
@@ -474,44 +597,120 @@ fn conversation_on(project: &str, folder: &str) -> String {
          VALUES ({conversation}, {owner}, {owner_key}, 'owner', {created}, {created}),
                 ({conversation}, {agent}, {agent_key}, 'member', {created}, {created});
          INSERT INTO chat_agent_channel_memberships
-            (conversation_id, agent_id, sync_key, read_history,
-             participate, created_at, updated_at)
-         VALUES ({conversation}, {agent}, {access_key}, 1, 1, {created}, {created});
-         INSERT INTO chat_agent_working_folder_grants
-            (conversation_id, agent_id, working_folder_id, sync_key, project_id, capability,
-             is_default, created_at)
-         VALUES ({conversation}, {agent}, {folder}, {grant_key}, {project}, 'edit', 1,
-                 {created});",
+            (conversation_id, agent_id, sync_key, created_at, updated_at)
+         VALUES ({conversation}, {agent}, {access_key}, {created}, {created});",
         conversation = quoted(CONVERSATION),
         channel = quoted(CHANNEL),
         project = quoted(project),
-        folder = quoted(folder),
         owner = quoted(OWNER),
         agent = quoted(AGENT),
         created = quoted(CREATED),
         owner_key = quoted(&key(MEMBERSHIP_KEY_PREFIX, &[CONVERSATION, OWNER])),
         agent_key = quoted(&key(MEMBERSHIP_KEY_PREFIX, &[CONVERSATION, AGENT])),
         access_key = quoted(&key(CHANNEL_MEMBERSHIP_KEY_PREFIX, &[CONVERSATION, AGENT])),
-        grant_key = quoted(&key(
-            FOLDER_GRANT_KEY_PREFIX,
-            &[CONVERSATION, AGENT, folder]
-        )),
     )
 }
 
-/// SQL setting [`AGENT`]'s grant to `capability` with `approval`, revoked at `revoked_at`
-/// when given.
-fn grant_sql(capability: &str, approval: Option<&str>, revoked_at: Option<&str>) -> String {
+/// SQL adding [`PROJECT`]'s agent settings, inheriting the vault's access.
+fn project_settings_sql() -> String {
     format!(
-        "UPDATE chat_agent_working_folder_grants
-         SET capability = {capability}, runtime_approval_policy = {approval},
-             revoked_at = {revoked_at}, revision = revision + 1
-         WHERE agent_id = {agent};",
-        capability = quoted(capability),
-        approval = optional(approval),
-        revoked_at = optional(revoked_at),
-        agent = quoted(AGENT),
+        "INSERT INTO chat_project_agent_settings (project_id, created_at, updated_at)
+         VALUES ({project}, {created}, {created});",
+        project = quoted(PROJECT),
+        created = quoted(CREATED),
     )
+}
+
+/// A scope that holds agent access and instructions.
+#[derive(Clone, Copy, Debug)]
+enum Scope {
+    /// The vault agent settings singleton.
+    App,
+    /// [`PROJECT`]'s agent settings.
+    Project,
+    /// [`CHANNEL`].
+    Channel,
+}
+
+impl Scope {
+    const ALL: [Self; 3] = [Self::App, Self::Project, Self::Channel];
+
+    /// The table and row condition of the scope's row.
+    fn row(self) -> (&'static str, &'static str) {
+        match self {
+            Self::App => ("chat_agent_app_settings", "id = 'vault'"),
+            Self::Project => (
+                "chat_project_agent_settings",
+                "project_id = 'project-routine-learning'",
+            ),
+            Self::Channel => ("chat_channels", "id = 'channel:design'"),
+        }
+    }
+}
+
+/// SQL setting `scope`'s agent access to `level`, or to inherit when `None`.
+fn access_sql(scope: Scope, level: Option<&str>, updated_at: &str) -> String {
+    let (table, row) = scope.row();
+    format!(
+        "UPDATE {table} SET agent_access = {level}, updated_at = {updated_at},
+             revision = revision + 1
+         WHERE {row};",
+        level = optional(level),
+        updated_at = quoted(updated_at),
+    )
+}
+
+/// SQL setting `scope`'s agent instructions to `text`.
+fn instructions_sql(scope: Scope, text: &str, updated_at: &str) -> String {
+    let (table, row) = scope.row();
+    format!(
+        "UPDATE {table} SET agent_instructions = {text}, updated_at = {updated_at},
+             revision = revision + 1
+         WHERE {row};",
+        text = quoted(text),
+        updated_at = quoted(updated_at),
+    )
+}
+
+/// The query reading `scope`'s agent access, or `inherit`.
+fn access_value(scope: Scope) -> String {
+    let (table, row) = scope.row();
+    format!("SELECT coalesce(agent_access, 'inherit') FROM {table} WHERE {row}")
+}
+
+/// `scope`'s agent access, or `inherit`.
+async fn access_level(replica: &mut Replica, scope: Scope) -> String {
+    replica
+        .scalar_text(&access_value(scope))
+        .await
+        .unwrap_or_else(|| panic!("the {scope:?} row arrived"))
+}
+
+/// `scope`'s agent instructions.
+async fn instructions(replica: &mut Replica, scope: Scope) -> String {
+    let (table, row) = scope.row();
+    replica
+        .scalar_text(&format!(
+            "SELECT agent_instructions FROM {table} WHERE {row}"
+        ))
+        .await
+        .unwrap_or_else(|| panic!("the {scope:?} row arrived"))
+}
+
+/// Replicas sharing the conversation rows and [`PROJECT`]'s agent settings, with every scope's
+/// access set to `ask`.
+async fn scoped_replicas(count: usize) -> Vec<Replica> {
+    let mut replicas = conversation_replicas(count).await;
+    replicas[0]
+        .exec(&format!(
+            "{}{}{}",
+            project_settings_sql(),
+            access_sql(Scope::Project, Some("ask"), CREATED),
+            access_sql(Scope::Channel, Some("ask"), CREATED),
+        ))
+        .await;
+    converge(&mut replicas).await;
+    replicas
 }
 
 /// SQL setting [`AGENT`]'s conversation membership to `role`, removed at `removed_at` when
@@ -529,38 +728,37 @@ fn membership_sql(role: &str, removed_at: Option<&str>, updated_at: &str) -> Str
     )
 }
 
-/// SQL setting [`AGENT`]'s AI channel access to `read_history` and `participate`, removed at
-/// `removed_at` when given.
-fn access_sql(
-    read_history: bool,
-    participate: bool,
-    removed_at: Option<&str>,
-    updated_at: &str,
-) -> String {
+/// SQL marking [`AGENT`]'s AI channel membership removed at `removed_at`, or present again when
+/// `None`.
+fn channel_membership_sql(removed_at: Option<&str>, updated_at: &str) -> String {
     format!(
         "UPDATE chat_agent_channel_memberships
-         SET read_history = {read}, participate = {participate}, removed_at = {removed_at},
-             updated_at = {updated_at}
+         SET removed_at = {removed_at}, updated_at = {updated_at}
          WHERE agent_id = {agent};",
-        read = i32::from(read_history),
-        participate = i32::from(participate),
         removed_at = optional(removed_at),
         updated_at = quoted(updated_at),
         agent = quoted(AGENT),
     )
 }
 
-/// [`AGENT`]'s grant as `capability approval active|revoked`.
-async fn grant_state(replica: &mut Replica) -> String {
-    replica
-        .scalar_text(
-            "SELECT capability || ' ' || coalesce(runtime_approval_policy, 'inherit') || ' '
-                    || CASE WHEN revoked_at IS NULL THEN 'active' ELSE 'revoked' END
-             FROM chat_agent_working_folder_grants
-             WHERE agent_id = 'participant:reviewer'",
-        )
-        .await
-        .expect("the grant arrived")
+/// A channel model override as its schema version and selection.
+type ChannelModel<'a> = (i64, &'a str);
+
+/// SQL setting the model [`CHANNEL`] starts [`AGENT`] on to `model` as its schema version and
+/// selection, or to the agent's default when `None`.
+fn channel_model_sql(model: Option<ChannelModel<'_>>, updated_at: &str) -> String {
+    let (version, data) = model.map_or_else(
+        || ("NULL".to_owned(), "NULL".to_owned()),
+        |(version, data)| (version.to_string(), quoted(data)),
+    );
+    format!(
+        "UPDATE chat_agent_channel_memberships
+         SET model_selection_schema_version = {version}, model_selection_data = {data},
+             updated_at = {updated_at}
+         WHERE agent_id = {agent};",
+        updated_at = quoted(updated_at),
+        agent = quoted(AGENT),
+    )
 }
 
 /// [`AGENT`]'s conversation membership as `role active|removed`.
@@ -576,28 +774,29 @@ async fn membership_state(replica: &mut Replica) -> String {
         .expect("the membership arrived")
 }
 
-/// [`AGENT`]'s AI channel access as the number of cleared capabilities, or `None` once
-/// removed.
-async fn access_cleared(replica: &mut Replica) -> Option<i64> {
-    let removed = replica
-        .count(
-            "SELECT count(*) FROM chat_agent_channel_memberships
-             WHERE agent_id = 'participant:reviewer' AND removed_at IS NOT NULL",
+/// [`AGENT`]'s AI channel membership as `active` or `removed`.
+async fn channel_membership_state(replica: &mut Replica) -> String {
+    replica
+        .scalar_text(
+            "SELECT CASE WHEN removed_at IS NULL THEN 'active' ELSE 'removed' END
+             FROM chat_agent_channel_memberships
+             WHERE agent_id = 'participant:reviewer'",
         )
-        .await;
-    if removed > 0 {
-        return None;
-    }
-    Some(
-        replica
-            .count(
-                "SELECT (read_history = 0) + (participate = 0)
-                        + (history_boundary = 'from_grant')
-                 FROM chat_agent_channel_memberships
-                 WHERE agent_id = 'participant:reviewer'",
-            )
-            .await,
-    )
+        .await
+        .expect("the AI channel membership arrived")
+}
+
+/// The model [`CHANNEL`] starts [`AGENT`] on as `version data`, or `default`.
+async fn channel_model(replica: &mut Replica) -> String {
+    replica
+        .scalar_text(
+            "SELECT coalesce(model_selection_schema_version || ' ' || model_selection_data,
+                             'default')
+             FROM chat_agent_channel_memberships
+             WHERE agent_id = 'participant:reviewer'",
+        )
+        .await
+        .expect("the AI channel membership arrived")
 }
 
 #[test]
@@ -615,26 +814,28 @@ fn chat_conversation_rows_round_trip_with_their_derived_keys() {
             reader
                 .scalar_text(
                     "SELECT conversation.conversation_kind || ' ' || channel.name || ' '
-                            || channel.is_default
+                            || channel.is_default || ' '
+                            || coalesce(channel.agent_access, 'inherit') || ' ['
+                            || channel.agent_instructions || ']'
                      FROM chat_conversations conversation
                      JOIN chat_channels channel ON channel.conversation_id = conversation.id
                      WHERE conversation.id = 'conversation:design'",
                 )
                 .await
                 .as_deref(),
-            Some("channel design 0")
+            Some("channel design 0 inherit []")
         );
         assert_eq!(membership_state(reader).await, "member active");
-        assert_eq!(access_cleared(reader).await, Some(0));
-        assert_eq!(grant_state(reader).await, "edit inherit active");
+        assert_eq!(channel_membership_state(reader).await, "active");
+        assert_eq!(channel_model(reader).await, "default");
         assert_eq!(
             reader
                 .scalar_text(
-                    "SELECT sync_key FROM chat_agent_working_folder_grants
+                    "SELECT sync_key FROM chat_agent_channel_memberships
                      WHERE agent_id = 'participant:reviewer'",
                 )
                 .await,
-            Some(key(FOLDER_GRANT_KEY_PREFIX, &[CONVERSATION, AGENT, FOLDER]))
+            Some(key(CHANNEL_MEMBERSHIP_KEY_PREFIX, &[CONVERSATION, AGENT]))
         );
         assert_eq!(
             reader
@@ -649,218 +850,178 @@ fn chat_conversation_rows_round_trip_with_their_derived_keys() {
 }
 
 #[test]
-fn chat_concurrent_revocation_and_widening_keep_the_revocation() {
+fn chat_concurrent_removal_and_re_add_keep_the_removal() {
     block_on(async {
-        let mut replicas = replicas(2).await;
-        replicas[0]
-            .exec(&format!("{}{}", identity_sql(), conversation_sql()))
-            .await;
-        converge(&mut replicas).await;
+        let mut replicas = scoped_replicas(2).await;
 
-        // Replica 1 revokes everything first; replica 0 widens everything later.
-        let revoked = at(1, 0);
+        // Replica 1 removes the agent and narrows the channel first; replica 0 widens
+        // everything later.
+        let removed = at(1, 0);
         replicas[1]
             .exec(&format!(
                 "{}{}{}",
-                grant_sql("edit", None, Some(&revoked)),
-                membership_sql("member", Some(&revoked), &revoked),
-                access_sql(true, true, Some(&revoked), &revoked),
+                membership_sql("member", Some(&removed), &removed),
+                channel_membership_sql(Some(&removed), &removed),
+                access_sql(Scope::Channel, Some("talk"), &removed),
             ))
             .await;
         let widened = at(2, 0);
         replicas[0]
             .exec(&format!(
-                "{}{}{}",
-                grant_sql("publish", Some("unattended"), None),
+                "{}{}",
                 membership_sql("owner", None, &widened),
-                access_sql(true, true, None, &widened),
+                access_sql(Scope::Channel, Some("own"), &widened),
             ))
             .await;
+        replicas[0].now_ms += LATER_MS;
         converge(&mut replicas).await;
         assert_converged(&mut replicas).await;
         for replica in &mut replicas {
-            assert_eq!(grant_state(replica).await, "edit inherit revoked");
             assert_eq!(membership_state(replica).await, "member removed");
-            assert_eq!(access_cleared(replica).await, None);
+            assert_eq!(channel_membership_state(replica).await, "removed");
+            assert_eq!(access_level(replica, Scope::Channel).await, "talk");
         }
     });
 }
 
-/// SQL setting [`AGENT`]'s AI channel approval override to `approval`, keeping its
-/// capabilities.
-fn access_approval_sql(approval: Option<&str>, updated_at: &str) -> String {
-    format!(
-        "UPDATE chat_agent_channel_memberships
-         SET runtime_approval_policy = {approval}, updated_at = {updated_at}
-         WHERE agent_id = {agent};",
-        approval = optional(approval),
-        updated_at = quoted(updated_at),
-        agent = quoted(AGENT),
-    )
+/// Pairs of concurrent access edits, the narrower first, each written over `ask`. Inheriting is
+/// only offered where a scope has an enclosing one.
+fn access_pairs(scope: Scope) -> Vec<(&'static str, Option<&'static str>)> {
+    let mut pairs = vec![("read", Some("own")), ("talk", Some("read"))];
+    if !matches!(scope, Scope::App) {
+        pairs.push(("read", None));
+    }
+    pairs
 }
 
-/// [`AGENT`]'s AI channel access as `read_history participate approval`.
-async fn access_state(replica: &mut Replica) -> String {
-    replica
-        .scalar_text(
-            "SELECT read_history || ' ' || participate || ' '
-                    || coalesce(runtime_approval_policy, 'inherit')
-             FROM chat_agent_channel_memberships
-             WHERE agent_id = 'participant:reviewer'",
-        )
-        .await
-        .expect("the access arrived")
-}
-
+/// One device narrows access while another widens it with the later clock, at vault, project,
+/// and channel scope at once: the narrower level wins at every scope on every replica, whichever
+/// device carries the later clock.
 #[test]
-fn chat_concurrent_inherited_approval_does_not_replace_an_explicit_narrowing() {
+fn chat_concurrent_access_edits_keep_the_narrower_level_at_every_scope() {
     block_on(async {
-        let mut replicas = replicas(2).await;
-        replicas[0]
-            .exec(&format!(
-                "{}{}{}{}",
-                identity_sql(),
-                conversation_sql(),
-                grant_sql("edit", Some("provider_custom"), None),
-                access_approval_sql(Some("provider_custom"), &at(0, 30)),
-            ))
-            .await;
-        converge(&mut replicas).await;
+        for pair in 0..3 {
+            for later in [0_usize, 1] {
+                let mut replicas = scoped_replicas(2).await;
+                let narrower = 1 - later;
+                let mut expected = Vec::new();
+                for scope in Scope::ALL {
+                    let Some(&(narrow, wide)) = access_pairs(scope).get(pair) else {
+                        continue;
+                    };
+                    replicas[narrower]
+                        .exec(&access_sql(scope, Some(narrow), &at(1, 0)))
+                        .await;
+                    replicas[later]
+                        .exec(&access_sql(scope, wide, &at(2, 0)))
+                        .await;
+                    expected.push((scope, narrow));
+                }
+                replicas[later].now_ms += LATER_MS;
+                converge(&mut replicas).await;
+                assert_converged(&mut replicas).await;
+                for replica in &mut replicas {
+                    for &(scope, narrow) in &expected {
+                        assert_eq!(
+                            access_level(replica, scope).await,
+                            narrow,
+                            "{scope:?} pair {pair}, later edit from replica {later}"
+                        );
+                    }
+                }
 
-        // Replica 0 narrows both overrides to unattended; replica 1 later clears them, which
-        // falls back to the agent default that may be wider.
-        replicas[0]
-            .exec(&format!(
-                "{}{}",
-                grant_sql("edit", Some("unattended"), None),
-                access_approval_sql(Some("unattended"), &at(1, 0)),
-            ))
-            .await;
-        replicas[1]
-            .exec(&format!(
-                "{}{}",
-                grant_sql("edit", None, None),
-                access_approval_sql(None, &at(2, 0)),
-            ))
-            .await;
-        converge(&mut replicas).await;
-        assert_converged(&mut replicas).await;
-        for replica in &mut replicas {
-            assert_eq!(grant_state(replica).await, "edit unattended active");
-            assert_eq!(access_state(replica).await, "1 1 unattended");
+                // A widening that saw the narrowing replaces it.
+                replicas[narrower]
+                    .exec(&access_sql(Scope::Channel, Some("own"), &at(3, 0)))
+                    .await;
+                converge(&mut replicas).await;
+                assert_converged(&mut replicas).await;
+                assert_eq!(
+                    access_level(&mut replicas[later], Scope::Channel).await,
+                    "own"
+                );
+            }
         }
     });
 }
 
-/// SQL setting [`AGENT`]'s scratch runtime approval override.
-fn scratch_approval_sql(approval: Option<&str>, updated_at: &str) -> String {
-    format!(
-        "UPDATE chat_agent_channel_memberships
-         SET scratch_runtime_approval_policy = {approval}, updated_at = {updated_at}
-         WHERE agent_id = {agent};",
-        approval = optional(approval),
-        updated_at = quoted(updated_at),
-        agent = quoted(AGENT),
-    )
-}
-
-/// [`AGENT`]'s scratch runtime approval override, or `inherit`.
-async fn scratch_state(replica: &mut Replica) -> String {
-    replica
-        .scalar_text(
-            "SELECT coalesce(scratch_runtime_approval_policy, 'inherit')
-             FROM chat_agent_channel_memberships
-             WHERE agent_id = 'participant:reviewer'",
-        )
-        .await
-        .expect("the access arrived")
-}
-
-/// [`AGENT`]'s folder and scratch approval overrides as the runtime resolves them, each
-/// falling back to the channel override: `folder scratch`.
-async fn resolved_target_approvals(replica: &mut Replica) -> String {
-    replica
-        .scalar_text(
-            "SELECT coalesce(folder_grant.runtime_approval_policy, access.runtime_approval_policy,
-                             'inherit')
-                    || ' ' || coalesce(access.scratch_runtime_approval_policy,
-                                       access.runtime_approval_policy, 'inherit')
-             FROM chat_agent_channel_memberships access
-             JOIN chat_agent_working_folder_grants folder_grant
-               ON folder_grant.conversation_id = access.conversation_id
-              AND folder_grant.agent_id = access.agent_id
-             WHERE access.agent_id = 'participant:reviewer'",
-        )
-        .await
-        .expect("the access and grant arrived")
-}
-
-/// An explicit folder or scratch override beats a concurrent clear by static rank, whatever the
-/// channel override holds. With the channel override looser than the explicit value, as here,
-/// clearing would inherit the looser value, so the winner is also the stricter resolved
-/// approval; the opposite channel case is the open inherit residual.
+/// Concurrent instruction edits at every scope keep the edit with the later clock, whichever
+/// device carries it.
 #[test]
-fn chat_concurrent_explicit_target_override_beats_a_clear_under_a_looser_channel_override() {
+fn chat_concurrent_instruction_edits_keep_the_last_writer_at_every_scope() {
     block_on(async {
-        let mut replicas = replicas(2).await;
-        replicas[0]
-            .exec(&format!(
-                "{}{}{}{}{}",
-                identity_sql(),
-                conversation_sql(),
-                access_approval_sql(Some("unattended"), &at(0, 30)),
-                grant_sql("edit", Some("auto_approve"), None),
-                scratch_approval_sql(Some("auto_approve"), &at(0, 40)),
-            ))
-            .await;
-        converge(&mut replicas).await;
-
-        replicas[0]
-            .exec(&format!(
-                "{}{}",
-                grant_sql("edit", None, None),
-                scratch_approval_sql(None, &at(1, 0)),
-            ))
-            .await;
-        replicas[1]
-            .exec(&format!(
-                "{}{}",
-                grant_sql("edit", Some("ask"), None),
-                scratch_approval_sql(Some("ask"), &at(2, 0)),
-            ))
-            .await;
-        converge(&mut replicas).await;
-        assert_converged(&mut replicas).await;
-        for replica in &mut replicas {
-            assert_eq!(grant_state(replica).await, "edit ask active");
-            assert_eq!(scratch_state(replica).await, "ask");
-            assert_eq!(access_state(replica).await, "1 1 unattended");
-            assert_eq!(resolved_target_approvals(replica).await, "ask ask");
+        for later in [0_usize, 1] {
+            let mut replicas = scoped_replicas(2).await;
+            for scope in Scope::ALL {
+                for (index, replica) in replicas.iter_mut().enumerate() {
+                    replica
+                        .exec(&instructions_sql(
+                            scope,
+                            &format!("{scope:?} from {index}"),
+                            &at(1, 0),
+                        ))
+                        .await;
+                }
+            }
+            replicas[later].now_ms += LATER_MS;
+            converge(&mut replicas).await;
+            assert_converged(&mut replicas).await;
+            for replica in &mut replicas {
+                for scope in Scope::ALL {
+                    assert_eq!(
+                        instructions(replica, scope).await,
+                        format!("{scope:?} from {later}"),
+                        "later edit from replica {later}"
+                    );
+                }
+            }
         }
     });
 }
 
+/// A channel's model override travels as one value: concurrent overrides, or an override against
+/// a clear, settle on the later edit whole everywhere, never a version from one and a selection
+/// from the other.
 #[test]
-fn chat_concurrent_capability_clear_outranks_a_stricter_approval() {
+fn chat_concurrent_channel_model_overrides_converge_whole_or_absent() {
     block_on(async {
-        let mut replicas = replicas(2).await;
-        replicas[0]
-            .exec(&format!("{}{}", identity_sql(), conversation_sql()))
-            .await;
-        converge(&mut replicas).await;
-
-        // Replica 1 stops participation; replica 0 later asks for every approval but keeps
-        // participating.
-        replicas[1]
-            .exec(&access_sql(true, false, None, &at(1, 0)))
-            .await;
-        replicas[0]
-            .exec(&access_approval_sql(Some("ask"), &at(2, 0)))
-            .await;
-        converge(&mut replicas).await;
-        assert_converged(&mut replicas).await;
-        for replica in &mut replicas {
-            assert_eq!(access_state(replica).await, "1 0 inherit");
+        let first = r#"{"modelId":"first"}"#;
+        let second = r#"{"modelId":"second"}"#;
+        let cases: [(Option<ChannelModel>, Option<ChannelModel>); 2] = [
+            (Some((1, first)), Some((2, second))),
+            (Some((1, first)), None),
+        ];
+        for (base, other) in cases {
+            for later in [0_usize, 1] {
+                let mut replicas = conversation_replicas(2).await;
+                replicas[0]
+                    .exec(&channel_model_sql(
+                        Some((3, r#"{"modelId":"base"}"#)),
+                        &at(0, 30),
+                    ))
+                    .await;
+                converge(&mut replicas).await;
+                replicas[1 - later]
+                    .exec(&channel_model_sql(base, &at(1, 0)))
+                    .await;
+                replicas[later]
+                    .exec(&channel_model_sql(other, &at(1, 0)))
+                    .await;
+                replicas[later].now_ms += LATER_MS;
+                converge(&mut replicas).await;
+                assert_converged(&mut replicas).await;
+                let expected = other.map_or_else(
+                    || "default".to_owned(),
+                    |(version, data)| format!("{version} {data}"),
+                );
+                for replica in &mut replicas {
+                    assert_eq!(
+                        channel_model(replica).await,
+                        expected,
+                        "later edit from replica {later}"
+                    );
+                }
+            }
         }
     });
 }
@@ -877,46 +1038,76 @@ fn chat_a_re_add_after_a_seen_removal_converges_to_active() {
         let removed = at(1, 0);
         replicas[0]
             .exec(&format!(
-                "{}{}{}",
-                grant_sql("edit", None, Some(&removed)),
+                "{}{}",
                 membership_sql("member", Some(&removed), &removed),
-                access_sql(true, true, Some(&removed), &removed),
+                channel_membership_sql(Some(&removed), &removed),
             ))
             .await;
         converge(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(channel_membership_state(replica).await, "removed");
+        }
 
         // Replica 1 saw the removal, so its re-add is causally later and replaces it.
         let added = at(2, 0);
         replicas[1]
             .exec(&format!(
-                "{}{}{}",
-                grant_sql("read", None, None),
+                "{}{}",
                 membership_sql("member", None, &added),
-                access_sql(true, false, None, &added),
+                channel_membership_sql(None, &added),
             ))
             .await;
         converge(&mut replicas).await;
         assert_converged(&mut replicas).await;
         for replica in &mut replicas {
-            assert_eq!(grant_state(replica).await, "read inherit active");
             assert_eq!(membership_state(replica).await, "member active");
-            assert_eq!(access_cleared(replica).await, Some(1));
+            assert_eq!(channel_membership_state(replica).await, "active");
         }
     });
 }
 
-/// Raw replicated values of [`AGENT`]'s grant that [`grant_sql`] writes.
-const GRANT_VALUE: &str = "SELECT capability || '|' || coalesce(runtime_approval_policy, '') || '|'
-        || coalesce(revoked_at, '')
-     FROM chat_agent_working_folder_grants WHERE agent_id = 'participant:reviewer'";
+/// Deleting a project deletes its agent settings on every replica, also against a concurrent
+/// edit of them.
+#[test]
+fn chat_project_agent_settings_leave_with_their_project() {
+    block_on(async {
+        let mut replicas = scoped_replicas(2).await;
+        for replica in &mut replicas {
+            assert_eq!(access_level(replica, Scope::Project).await, "ask");
+        }
+        replicas[0]
+            .exec(&instructions_sql(Scope::Project, "Offline edit", &at(1, 0)))
+            .await;
+        replicas[1]
+            .exec(&format!(
+                "DELETE FROM projects WHERE id = {}",
+                quoted(PROJECT)
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                replica
+                    .count("SELECT count(*) FROM chat_project_agent_settings")
+                    .await,
+                0,
+                "replica {}",
+                replica.index
+            );
+            // The vault settings stay.
+            assert_eq!(app_settings(replica).await, "1 ask ");
+        }
+    });
+}
 
 /// Raw replicated values of [`AGENT`]'s membership that [`membership_sql`] writes.
 const MEMBERSHIP_VALUE: &str = "SELECT membership_role || '|' || coalesce(removed_at, '')
      FROM chat_conversation_memberships WHERE participant_id = 'participant:reviewer'";
 
-/// Raw replicated values of [`AGENT`]'s AI channel access that [`access_sql`] writes.
-const ACCESS_VALUE: &str = "SELECT read_history || '|' || participate || '|'
-        || coalesce(removed_at, '')
+/// Raw replicated presence of [`AGENT`]'s AI channel membership that
+/// [`channel_membership_sql`] writes.
+const PRESENCE_VALUE: &str = "SELECT coalesce(removed_at, '')
      FROM chat_agent_channel_memberships WHERE agent_id = 'participant:reviewer'";
 
 /// Runs `sql` on `replica` and says whether it changed the value `value` reads. A write that
@@ -927,20 +1118,20 @@ async fn edits(replica: &mut Replica, value: &str, sql: &str) -> bool {
     replica.scalar_text(value).await != before
 }
 
-/// The edits of one access round: whether a replica revoked each row, and otherwise the
+/// The edits of one access round: whether a replica removed each membership, and otherwise the
 /// strictest value a replica wrote.
 #[derive(Default)]
 struct AccessRound {
-    grant_revoked: bool,
-    grant: Option<(usize, usize)>,
     membership_removed: bool,
     role: Option<usize>,
-    access_removed: bool,
-    cleared: Option<i64>,
+    channel_removed: bool,
+    channel_re_added: bool,
+    channel_access: Option<usize>,
+    app_access: Option<usize>,
 }
 
 #[test]
-fn chat_simulated_revoke_against_widen_on_a_grant_and_a_membership_keeps_revocations() {
+fn chat_simulated_removal_against_re_add_and_narrowing_against_widening_keep_the_narrower() {
     block_on(async {
         for seed in 0..ACCESS_SEEDS {
             let mut rng = Rng(seed ^ 0x5eed);
@@ -949,28 +1140,16 @@ fn chat_simulated_revoke_against_widen_on_a_grant_and_a_membership_keeps_revocat
                 .exec(&format!("{}{}", identity_sql(), conversation_sql()))
                 .await;
             converge(&mut replicas).await;
-            let mut expected_grant = Some("edit inherit active".to_owned());
             let mut expected_role = "member active".to_owned();
-            let mut expected_cleared = Some(0);
+            let mut expected_presence = "active";
+            let mut expected_channel = "inherit";
+            let mut expected_app = "ask";
+            let channel_value = access_value(Scope::Channel);
+            let app_value = access_value(Scope::App);
             for round in 0..ACCESS_ROUNDS {
                 let mut round_edits = AccessRound::default();
                 for replica in &mut replicas {
                     let stamp = at(round + 1, rng.below(60));
-                    if rng.chance(60) {
-                        if rng.chance(40) {
-                            let sql = grant_sql("edit", None, Some(&stamp));
-                            round_edits.grant_revoked |= edits(replica, GRANT_VALUE, &sql).await;
-                        } else {
-                            let capability = rng.below(CAPABILITIES.len());
-                            let approval = rng.below(APPROVALS.len());
-                            let sql =
-                                grant_sql(CAPABILITIES[capability], APPROVALS[approval], None);
-                            if edits(replica, GRANT_VALUE, &sql).await {
-                                round_edits.grant =
-                                    round_edits.grant.max(Some((capability, approval)));
-                            }
-                        }
-                    }
                     if rng.chance(60) {
                         if rng.chance(40) {
                             let sql = membership_sql("member", Some(&stamp), &stamp);
@@ -985,17 +1164,31 @@ fn chat_simulated_revoke_against_widen_on_a_grant_and_a_membership_keeps_revocat
                         }
                     }
                     if rng.chance(60) {
-                        if rng.chance(40) {
-                            let sql = access_sql(true, true, Some(&stamp), &stamp);
-                            round_edits.access_removed |= edits(replica, ACCESS_VALUE, &sql).await;
-                        } else {
-                            let read = rng.chance(50);
-                            let participate = rng.chance(50);
-                            let sql = access_sql(read, participate, None, &stamp);
-                            if edits(replica, ACCESS_VALUE, &sql).await {
-                                let cleared = i64::from(!read) + i64::from(!participate);
-                                round_edits.cleared = round_edits.cleared.max(Some(cleared));
+                        let removing = rng.chance(50);
+                        let sql =
+                            channel_membership_sql(removing.then_some(stamp.as_str()), &stamp);
+                        if edits(replica, PRESENCE_VALUE, &sql).await {
+                            if removing {
+                                round_edits.channel_removed = true;
+                            } else {
+                                round_edits.channel_re_added = true;
                             }
+                        }
+                    }
+                    if rng.chance(60) {
+                        let level = rng.below(ACCESS_LEVELS.len());
+                        let sql = access_sql(Scope::Channel, ACCESS_LEVELS[level], &stamp);
+                        if edits(replica, &channel_value, &sql).await {
+                            round_edits.channel_access =
+                                round_edits.channel_access.max(Some(level));
+                        }
+                    }
+                    if rng.chance(40) {
+                        // The vault level never inherits.
+                        let level = 1 + rng.below(ACCESS_LEVELS.len() - 1);
+                        let sql = access_sql(Scope::App, ACCESS_LEVELS[level], &stamp);
+                        if edits(replica, &app_value, &sql).await {
+                            round_edits.app_access = round_edits.app_access.max(Some(level));
                         }
                     }
                     if rng.chance(50) {
@@ -1005,43 +1198,41 @@ fn chat_simulated_revoke_against_widen_on_a_grant_and_a_membership_keeps_revocat
                 converge(&mut replicas).await;
                 assert_converged(&mut replicas).await;
 
-                // Revocation outranks every widening; any revoked value may win among several.
-                if round_edits.grant_revoked {
-                    expected_grant = None;
-                } else if let Some((capability, approval)) = round_edits.grant {
-                    expected_grant = Some(format!(
-                        "{} {} active",
-                        CAPABILITIES[capability],
-                        APPROVALS[approval].unwrap_or("inherit")
-                    ));
-                }
+                // Removal outranks every re-add, and the narrower access level outranks every
+                // wider one.
                 if round_edits.membership_removed {
                     expected_role = "member removed".to_owned();
                 } else if let Some(role) = round_edits.role {
                     expected_role = format!("{} active", ROLES[role]);
                 }
-                if round_edits.access_removed {
-                    expected_cleared = None;
-                } else if round_edits.cleared.is_some() {
-                    expected_cleared = round_edits.cleared;
+                if round_edits.channel_removed {
+                    expected_presence = "removed";
+                } else if round_edits.channel_re_added {
+                    expected_presence = "active";
+                }
+                if let Some(level) = round_edits.channel_access {
+                    expected_channel = ACCESS_LEVELS[level].unwrap_or("inherit");
+                }
+                if let Some(level) = round_edits.app_access {
+                    expected_app = ACCESS_LEVELS[level].unwrap_or("inherit");
                 }
                 for replica in &mut replicas {
-                    let grant = grant_state(replica).await;
-                    match &expected_grant {
-                        Some(expected) => {
-                            assert_eq!(&grant, expected, "seed {seed} round {round}");
-                        }
-                        None => assert!(grant.ends_with(" revoked"), "seed {seed} round {round}"),
-                    }
+                    let context = format!("seed {seed} round {round}");
+                    assert_eq!(membership_state(replica).await, expected_role, "{context}");
                     assert_eq!(
-                        membership_state(replica).await,
-                        expected_role,
-                        "seed {seed} round {round}"
+                        channel_membership_state(replica).await,
+                        expected_presence,
+                        "{context}"
                     );
                     assert_eq!(
-                        access_cleared(replica).await,
-                        expected_cleared,
-                        "seed {seed} round {round}"
+                        access_level(replica, Scope::Channel).await,
+                        expected_channel,
+                        "{context}"
+                    );
+                    assert_eq!(
+                        access_level(replica, Scope::App).await,
+                        expected_app,
+                        "{context}"
                     );
                 }
             }

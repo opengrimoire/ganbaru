@@ -39,11 +39,11 @@ VALUES ('task-child', 'project-chat', 'section-later', 'status-todo', 'task-now'
 INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
 VALUES ('participant-agent', 'ai_agent', 'Helper',
         '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
-INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
-VALUES ('participant-agent', 'Builds things', '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
+INSERT INTO chat_agents (participant_id, provider_family_id, created_at, updated_at)
+VALUES ('participant-agent', 'codex', '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_agent_policy_revisions
-    (id, agent_id, provider_instance_id, model_selection_data, created_at)
-VALUES ('policy-1', 'participant-agent', 'codex-personal', '{}', '2026-10-23T00:00:00.000Z');
+    (id, agent_id, model_selection_data, created_at)
+VALUES ('policy-1', 'participant-agent', '{}', '2026-10-23T00:00:00.000Z');
 
 INSERT INTO chat_conversations (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
 VALUES ('conversation-general', 'project-chat', 'channel', '2026-10-23T00:00:00.000Z',
@@ -51,6 +51,10 @@ VALUES ('conversation-general', 'project-chat', 'channel', '2026-10-23T00:00:00.
 INSERT INTO chat_channels (id, project_id, conversation_id, name, is_default, created_at, updated_at)
 VALUES ('channel-general', 'project-chat', 'conversation-general', 'general', 1,
         '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
+INSERT INTO chat_project_agent_settings
+    (project_id, agent_access, agent_instructions, created_at, updated_at)
+VALUES ('project-chat', 'read', 'Prefer small diffs', '2026-10-23T00:00:00.000Z',
+        '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_conversation_memberships
     (conversation_id, participant_id, sync_key, membership_role, created_at, updated_at)
 VALUES ('conversation-general', 'participant:local-owner', 'membership-owner', 'owner',
@@ -58,15 +62,18 @@ VALUES ('conversation-general', 'participant:local-owner', 'membership-owner', '
        ('conversation-general', 'participant-agent', 'membership-agent', 'member',
         '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_agent_channel_memberships
-    (conversation_id, agent_id, sync_key, read_history, participate, created_at, updated_at)
-VALUES ('conversation-general', 'participant-agent', 'channel-membership-agent', 1, 1,
+    (conversation_id, agent_id, sync_key, created_at, updated_at)
+VALUES ('conversation-general', 'participant-agent', 'channel-membership-agent',
         '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
-INSERT INTO chat_agent_working_folder_grants
-    (conversation_id, agent_id, project_id, working_folder_id, sync_key, capability, created_at)
-VALUES ('conversation-general', 'participant-agent', 'project-chat', 'folder-managed',
-        'grant-managed', 'edit', '2026-10-23T00:00:00.000Z'),
-       ('conversation-general', 'participant-agent', 'project-chat', 'folder-archived',
-        'grant-archived', 'read', '2026-10-23T00:00:00.000Z');
+INSERT INTO chat_push_approvals
+    (conversation_id, agent_id, working_folder_id, push_url, destination_branch, sync_key,
+     approved_by_participant_id, approved_at)
+VALUES ('conversation-general', 'participant-agent', 'folder-managed',
+        'git@example.com:team/app.git', 'trunk', 'push-managed', 'participant:local-owner',
+        '2026-10-23T00:00:00.000Z'),
+       ('conversation-general', 'participant-agent', 'folder-archived',
+        'git@example.com:team/old.git', 'trunk', 'push-archived', 'participant:local-owner',
+        '2026-10-23T00:00:00.000Z');
 
 INSERT INTO chat_conversation_items (id, conversation_id, item_kind, order_key, created_at)
 VALUES ('item-root', 'conversation-general', 'message', 'c000', '2026-10-23T00:00:00.000Z');
@@ -93,15 +100,15 @@ VALUES ('reply-thread', 'conversation-general', 'item-root', '2026-10-23T00:00:0
         '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 
 INSERT INTO chat_work_assignments
-    (id, reply_thread_id, agent_id, triggering_message_item_id, state, created_at, updated_at)
-VALUES ('assignment-1', 'reply-thread', 'participant-agent', 'item-root', 'working',
+    (id, reply_thread_id, agent_id, triggering_message_item_id, model_selection_schema_version,
+     model_selection_data, state, created_at, updated_at)
+VALUES ('assignment-1', 'reply-thread', 'participant-agent', 'item-root', 1, '{}', 'working',
         '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_assignment_authorization_revisions
-    (id, assignment_id, revision, requester_participant_id, agent_policy_revision_id,
-     agent_access_revision, destination_conversation_id,
+    (id, assignment_id, revision, requester_participant_id, destination_conversation_id,
      execution_environment_id, working_folder_id, resolved_runtime_approval_policy, scope_digest,
      decision_state, created_at)
-VALUES ('authorization-1', 'assignment-1', 1, 'participant:local-owner', 'policy-1', 1,
+VALUES ('authorization-1', 'assignment-1', 1, 'participant:local-owner',
         'conversation-general',
         'current-folder:folder-managed', 'folder-managed', 'ask',
         '1111111111111111111111111111111111111111111111111111111111111111', 'allowed',
@@ -134,10 +141,10 @@ VALUES ('turn-1', 'thread-managed', 0, 'active', 'ask_for_approval', 'build',
         '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_agent_runs
     (id, assignment_id, project_id, working_folder_id, execution_environment_id,
-     agent_policy_revision_id, authorization_revision_id, authorization_scope_digest,
+     authorization_revision_id, authorization_scope_digest,
      provider_turn_id, provider_thread_id, state, run_ordinal, created_at, updated_at)
 VALUES ('run-1', 'assignment-1', 'project-chat', 'folder-managed', 'current-folder:folder-managed',
-        'policy-1', 'authorization-1',
+        'authorization-1',
         '1111111111111111111111111111111111111111111111111111111111111111', 'turn-1',
         'thread-managed', 'working', 1, '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 
@@ -196,11 +203,10 @@ INSERT INTO chat_scheduled_message_references
 VALUES ('scheduled-1', 'execution_environment', 'Scratch', 'Scratch',
         9, 12, 'scratch-environment', 2);
 INSERT INTO chat_assignment_authorization_revisions
-    (id, assignment_id, revision, requester_participant_id, agent_policy_revision_id,
-     agent_access_revision, destination_conversation_id,
+    (id, assignment_id, revision, requester_participant_id, destination_conversation_id,
      execution_environment_id, working_folder_id, resolved_runtime_approval_policy, scope_digest,
      decision_state, created_at)
-VALUES ('authorization-scratch', 'assignment-1', 2, 'participant:local-owner', 'policy-1', 1,
+VALUES ('authorization-scratch', 'assignment-1', 2, 'participant:local-owner',
         'conversation-general', 'scratch-environment', NULL,
         'ask', '2222222222222222222222222222222222222222222222222222222222222222', 'allowed',
         '2026-10-23T00:00:00.000Z');
@@ -216,10 +222,10 @@ VALUES ('turn-scratch', 'thread-scratch', 0, 'active', 'ask_for_approval', 'buil
         '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_agent_runs
     (id, assignment_id, project_id, execution_environment_id, scratch_generation_id,
-     agent_policy_revision_id, authorization_revision_id, authorization_scope_digest,
+     authorization_revision_id, authorization_scope_digest,
      provider_turn_id, provider_thread_id, state, run_ordinal, created_at, updated_at)
 VALUES ('run-scratch', 'assignment-1', 'project-chat', 'scratch-environment', 'scratch-generation',
-        'policy-1', 'authorization-scratch',
+        'authorization-scratch',
         '2222222222222222222222222222222222222222222222222222222222222222', 'turn-scratch',
         'thread-scratch', 'working', 2, '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_scratch_generation_sources

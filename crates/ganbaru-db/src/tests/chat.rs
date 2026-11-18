@@ -158,8 +158,9 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_conversations",
             "chat_channels",
             "chat_conversation_memberships",
-            "chat_agent_working_folder_grants",
-            "chat_agent_access_state",
+            "chat_agent_app_settings",
+            "chat_project_agent_settings",
+            "chat_push_approvals",
             "chat_agent_channel_memberships",
             "chat_conversation_audience_state",
             "chat_message_references",
@@ -241,7 +242,7 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "idx_chat_channels_conversation",
             "chat_participants_local_user_identity",
             "idx_chat_conversation_memberships_participant",
-            "idx_chat_agent_working_folder_grants_folder",
+            "idx_chat_push_approvals_folder",
             "idx_chat_agent_channel_memberships_agent",
             "idx_chat_assignment_authorization_revisions_active",
             "idx_chat_host_tool_invocations_authorization",
@@ -415,7 +416,7 @@ fn fresh_vaults_seed_primary_folders_but_no_chat_conversations_or_pending_keys()
         for table in [
             "chat_conversation_memberships",
             "chat_agent_channel_memberships",
-            "chat_agent_working_folder_grants",
+            "chat_push_approvals",
             "chat_conversation_read_cursors",
             "chat_reply_thread_read_cursors",
         ] {
@@ -459,7 +460,7 @@ fn fresh_chat_has_only_the_local_owner_and_unprivileged_profile_recipes() {
 }
 
 #[test]
-fn standalone_agent_identity_is_inert_until_access_is_replaced() {
+fn standalone_agent_identity_is_inert_until_a_channel_adds_it() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
         sqlx::query(
@@ -473,9 +474,8 @@ fn standalone_agent_identity_is_inert_until_access_is_replaced() {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO chat_agents
-                (participant_id, role, instructions, created_at, updated_at)
-             VALUES ('agent:inert', 'General support', '', ?, ?)",
+            "INSERT INTO chat_agents (participant_id, provider_family_id, created_at, updated_at)
+             VALUES ('agent:inert', 'codex', ?, ?)",
         )
         .bind(NOW)
         .bind(NOW)
@@ -483,51 +483,52 @@ fn standalone_agent_identity_is_inert_until_access_is_replaced() {
         .await
         .unwrap();
 
-        let access_revision: i64 = sqlx::query_scalar(
-            "SELECT access_revision FROM chat_agent_access_state
-             WHERE agent_id = 'agent:inert'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        let memberships: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM chat_conversation_memberships
-             WHERE participant_id = 'agent:inert'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        let ai_access: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM chat_agent_channel_memberships
-             WHERE agent_id = 'agent:inert'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        let folder_grants: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM chat_agent_working_folder_grants
-             WHERE agent_id = 'agent:inert'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        for table in [
+            "chat_conversation_memberships",
+            "chat_agent_channel_memberships",
+            "chat_push_approvals",
+        ] {
+            let column = if table == "chat_conversation_memberships" {
+                "participant_id"
+            } else {
+                "agent_id"
+            };
+            let rows: i64 = sqlx::query_scalar(AssertSqlSafe(format!(
+                "SELECT count(*) FROM {table} WHERE {column} = 'agent:inert'"
+            )))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(rows, 0, "{table}");
+        }
 
-        let stored_runtime_default: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM pragma_table_info('chat_agent_access_state')
-             WHERE name = 'runtime_approval_policy'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-
-        assert_eq!(access_revision, 0);
-        assert_eq!(memberships, 0);
-        assert_eq!(ai_access, 0);
-        assert_eq!(folder_grants, 0);
+        let agent_columns = sqlx::query("SELECT name FROM pragma_table_info('chat_agents')")
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect::<Vec<_>>();
         assert_eq!(
-            stored_runtime_default, 0,
-            "the agent default runtime approval derives from its approval behavior"
+            agent_columns,
+            [
+                "participant_id",
+                "provider_family_id",
+                "current_policy_revision_id",
+                "created_at",
+                "updated_at"
+            ],
+            "access and instructions live on the vault, project, and channel, not the agent"
         );
+        let access_state: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM sqlite_schema WHERE name IN (
+                 'chat_agent_access_state', 'chat_agent_working_folder_grants'
+             )",
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        assert_eq!(access_state, None);
     });
 }
 
@@ -618,11 +619,10 @@ fn authorization_source_snapshots_are_immutable_and_folder_policy_is_required() 
         sqlx::query(
             "INSERT INTO chat_assignment_authorization_revisions
                 (id, assignment_id, revision, requester_participant_id,
-                 agent_policy_revision_id, agent_access_revision,
                  destination_conversation_id,
                  resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
              VALUES ('authorization:test', 'assignment:test', 1, 'participant:local-owner',
-                     'policy:test', 1, 'conversation:test', 'ask', ?, 'allowed', ?)",
+                     'conversation:test', 'ask', ?, 'allowed', ?)",
         )
         .bind("d".repeat(64))
         .bind(NOW)
@@ -1263,10 +1263,11 @@ fn delegated_assignments_sit_one_level_below_a_bounded_parent() {
             sqlx::query(
                 "INSERT INTO chat_work_assignments
                      (id, reply_thread_id, agent_id, triggering_message_item_id, state,
+                      model_selection_schema_version, model_selection_data,
                       parent_assignment_id, delegation_depth, delegation_objective,
                       delegation_expected_result, delegation_folder_ceiling, created_at,
                       updated_at)
-                 VALUES (?, 'reply-thread', 'participant-agent', 'item-root', 'queued',
+                 VALUES (?, 'reply-thread', 'participant-agent', 'item-root', 'queued', 1, '{}',
                          ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(id.to_owned())
@@ -1384,91 +1385,166 @@ fn delegated_assignments_sit_one_level_below_a_bounded_parent() {
 }
 
 #[test]
-fn assignment_model_override_schema_keeps_version_and_selection_together() {
+fn assignments_require_a_frozen_model_and_bound_instructions_and_model_label() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
         load_project_chat_graph(&pool).await;
-        let insert = |id: &str, version: Option<i64>, data: Option<&str>| {
+        let insert = |id: &str,
+                      version: Option<i64>,
+                      data: Option<&str>,
+                      instructions: String,
+                      label: Option<String>| {
             sqlx::query(
                 "INSERT INTO chat_work_assignments
                     (id, reply_thread_id, agent_id, triggering_message_item_id,
                      previous_assignment_id, state, created_at, updated_at,
-                     override_model_selection_schema_version, override_model_selection_data)
+                     model_selection_schema_version, model_selection_data, instructions,
+                     model_label)
                  VALUES (?, 'reply-thread', 'participant-agent', 'item-root',
-                         'assignment-1', 'queued', ?, ?, ?, ?)",
+                         'assignment-1', 'queued', ?, ?, ?, ?, ?, ?)",
             )
             .bind(id.to_owned())
             .bind(NOW)
             .bind(NOW)
             .bind(version)
             .bind(data.map(str::to_owned))
+            .bind(instructions)
+            .bind(label)
             .execute(&pool)
         };
         let selection = r#"{"modelId":"gpt-5","modelOptions":[]}"#;
+        let frozen = |id: &str| insert(id, Some(1), Some(selection), String::new(), None);
 
-        insert("assignment-default", None, None).await.unwrap();
-        insert("assignment-override", Some(1), Some(selection))
-            .await
-            .unwrap();
+        frozen("assignment-frozen").await.unwrap();
+        insert(
+            "assignment-long-instructions",
+            Some(1),
+            Some(selection),
+            "i".repeat(50_176),
+            Some("m".repeat(256)),
+        )
+        .await
+        .unwrap();
         for (id, version, data) in [
+            ("assignment-no-model", None, None),
             ("assignment-version-only", Some(1), None),
             ("assignment-data-only", None, Some(selection)),
             ("assignment-version-zero", Some(0), Some(selection)),
             ("assignment-array", Some(1), Some("[]")),
             ("assignment-text", Some(1), Some("model")),
         ] {
-            assert!(insert(id, version, data).await.is_err(), "{id}");
+            assert!(
+                insert(id, version, data, String::new(), None)
+                    .await
+                    .is_err(),
+                "{id}"
+            );
         }
         let oversized = format!(r#"{{"modelId":"{}"}}"#, "m".repeat(16_384));
         assert!(
-            insert("assignment-oversized", Some(1), Some(&oversized))
+            insert(
+                "assignment-oversized",
+                Some(1),
+                Some(&oversized),
+                String::new(),
+                None
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            insert(
+                "assignment-instructions-oversized",
+                Some(1),
+                Some(selection),
+                "i".repeat(50_177),
+                None
+            )
+            .await
+            .is_err(),
+            "the joined instructions stay within their bound"
+        );
+        for label in [String::new(), "m".repeat(257)] {
+            assert!(
+                insert(
+                    "assignment-label",
+                    Some(1),
+                    Some(selection),
+                    String::new(),
+                    Some(label.clone())
+                )
                 .await
-                .is_err()
+                .is_err(),
+                "a model label holds 1 to 256 characters: {}",
+                label.len()
+            );
+        }
+
+        sqlx::query(
+            "UPDATE chat_work_assignments SET model_label = 'GPT-5'
+             WHERE id = 'assignment-frozen'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let label: Option<String> = sqlx::query_scalar(
+            "SELECT model_label FROM chat_work_assignments WHERE id = 'assignment-frozen'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            label.as_deref(),
+            Some("GPT-5"),
+            "the executing device fills the label"
         );
     });
 }
 
 #[test]
-fn mention_override_schema_keeps_version_and_selection_together() {
+fn channel_membership_model_keeps_version_and_selection_together() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
-        let mut connection = pool.acquire().await.unwrap();
-        sqlx::raw_sql("PRAGMA foreign_keys=OFF")
-            .execute(&mut *connection)
-            .await
-            .unwrap();
+        load_project_chat_graph(&pool).await;
         let selection = r#"{"modelId":"gpt-5","modelOptions":[]}"#;
-        for (id, version, data, accepted) in [
-            ("reference:default", None, None, true),
-            ("reference:override", Some(1_i64), Some(selection), true),
-            ("reference:version-only", Some(1), None, false),
-            ("reference:data-only", None, Some(selection), false),
+        let oversized = format!(r#"{{"modelId":"{}"}}"#, "m".repeat(16_384));
+        for (case, version, data, accepted) in [
+            ("override", Some(1_i64), Some(selection), true),
+            ("default", None, None, true),
+            ("version-only", Some(1), None, false),
+            ("data-only", None, Some(selection), false),
+            ("version-zero", Some(0), Some(selection), false),
+            ("array", Some(1), Some("[]"), false),
+            ("oversized", Some(1), Some(oversized.as_str()), false),
         ] {
             let result = sqlx::query(
-                "INSERT INTO chat_participant_reference_targets
-                    (reference_id, participant_id, override_model_selection_schema_version,
-                     override_model_selection_data)
-                 VALUES (?, 'participant-agent', ?, ?)",
+                "UPDATE chat_agent_channel_memberships
+                 SET model_selection_schema_version = ?, model_selection_data = ?
+                 WHERE conversation_id = 'conversation-general'
+                   AND agent_id = 'participant-agent'",
             )
-            .bind(id)
             .bind(version)
             .bind(data)
-            .execute(&mut *connection)
+            .execute(&pool)
             .await;
             if accepted {
                 result.unwrap();
             } else {
-                let error = result.expect_err(id);
-                assert!(
-                    error.to_string().contains("CHECK constraint failed"),
-                    "{id}: {error}"
-                );
+                assert!(result.is_err(), "{case} is refused");
             }
         }
-        sqlx::raw_sql("PRAGMA foreign_keys=ON")
-            .execute(&mut *connection)
-            .await
-            .unwrap();
+
+        let reference_columns: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM pragma_table_info('chat_participant_reference_targets') ORDER BY cid",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            reference_columns,
+            ["reference_id", "participant_id"],
+            "a mention names only its participant; the channel chooses the model"
+        );
     });
 }
 
@@ -1814,8 +1890,8 @@ fn agent_usage_days_check_dates_and_counts_and_follow_their_agent() {
             "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
              VALUES ('participant-idle', 'ai_agent', 'Idle',
                      '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z')",
-            "INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
-             VALUES ('participant-idle', 'Waits', '2026-10-23T00:00:00.000Z',
+            "INSERT INTO chat_agents (participant_id, provider_family_id, created_at, updated_at)
+             VALUES ('participant-idle', 'codex', '2026-10-23T00:00:00.000Z',
                      '2026-10-23T00:00:00.000Z')",
             "INSERT INTO chat_agent_usage_daily
                  (id, device_id, agent_id, local_date, counted_tokens, working_seconds, run_count)
@@ -2350,8 +2426,8 @@ fn channel_notes_are_written_only_by_people_outside_the_sync_applier() {
     });
 }
 
-/// Inserts a standing push approval of the fixture agent for the managed folder, made by
-/// `approver`.
+/// Inserts a standing push approval of the fixture agent in the fixture channel for the managed
+/// folder, made by `approver`.
 async fn insert_push_approval(
     pool: &sqlx::SqlitePool,
     branch: &str,
@@ -2359,10 +2435,10 @@ async fn insert_push_approval(
 ) -> Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error> {
     sqlx::query(
         "INSERT INTO chat_push_approvals
-             (agent_id, working_folder_id, push_url, destination_branch, sync_key,
-              runtime_approval_policy, safety_mode, approved_by_participant_id, approved_at)
-         VALUES ('participant-agent', 'folder-managed', 'git@example.com:team/app.git', ?,
-                 'push-approval-' || ?, 'ask', 'ask_for_approval', ?, ?)",
+             (conversation_id, agent_id, working_folder_id, push_url, destination_branch,
+              sync_key, approved_by_participant_id, approved_at)
+         VALUES ('conversation-general', 'participant-agent', 'folder-managed',
+                 'git@example.com:team/app.git', ?, 'push-approval-' || ?, ?, ?)",
     )
     .bind(branch)
     .bind(branch)
@@ -2425,8 +2501,8 @@ fn push_approvals_are_made_only_by_people_outside_the_sync_applier() {
             "UPDATE chat_push_approvals SET approved_by_participant_id = 'participant-agent'
              WHERE destination_branch = 'main'",
             "UPDATE chat_push_approvals SET approved_by_participant_id = NULL,
-                 runtime_approval_policy = 'unattended' WHERE destination_branch = 'main'",
-            "UPDATE chat_push_approvals SET safety_mode = 'full_access'
+                 approved_at = '2026-07-20T12:05:00.000Z' WHERE destination_branch = 'main'",
+            "UPDATE chat_push_approvals SET approved_at = '2026-07-20T12:05:00.000Z'
              WHERE destination_branch = 'release' AND approved_by_participant_id IS NULL",
         ] {
             let error = sqlx::query(update)
@@ -2450,78 +2526,60 @@ fn push_approvals_are_made_only_by_people_outside_the_sync_applier() {
             .execute(&pool)
             .await
             .unwrap();
-        let kept: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM chat_push_approvals WHERE revoked_at IS NULL")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let kept: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM chat_push_approvals
+             WHERE revoked_at IS NULL AND sync_key GLOB 'push-approval-*'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(kept, 4, "removing the approver keeps the approvals");
     });
 }
 
 #[test]
-fn push_approvals_are_revoked_when_the_agent_loses_publish_access() {
-    let narrowings: [(&str, &[&str]); 7] = [
-        (
-            "grant narrows",
-            &["UPDATE chat_agent_working_folder_grants SET capability = 'execute'
-               WHERE sync_key = 'grant-managed'"],
-        ),
-        (
-            "grant revoked",
-            &["UPDATE chat_agent_working_folder_grants SET revoked_at = '2026-07-20T12:05:00.000Z'
-               WHERE sync_key = 'grant-managed'"],
-        ),
-        (
-            "grant approval override",
-            &["UPDATE chat_agent_working_folder_grants SET runtime_approval_policy = 'unattended'
-               WHERE sync_key = 'grant-managed'"],
-        ),
-        (
-            "grant deleted",
-            &["DELETE FROM chat_agent_working_folder_grants WHERE sync_key = 'grant-managed'"],
-        ),
+fn push_approvals_are_revoked_when_the_agent_leaves_the_channel() {
+    let removals: [(&str, &str); 3] = [
         (
             "membership removed",
-            &["UPDATE chat_agent_channel_memberships SET removed_at = '2026-07-20T12:05:00.000Z'
-               WHERE sync_key = 'channel-membership-agent'"],
+            "UPDATE chat_agent_channel_memberships SET removed_at = '2026-07-20T12:05:00.000Z'
+             WHERE sync_key = 'channel-membership-agent'",
+        ),
+        (
+            "membership deleted",
+            "DELETE FROM chat_agent_channel_memberships
+             WHERE sync_key = 'channel-membership-agent'",
         ),
         (
             "agent archived",
-            &["UPDATE chat_participants SET archived_at = '2026-07-20T12:05:00.000Z'
-               WHERE id = 'participant-agent'"],
-        ),
-        (
-            "safety mode changed",
-            &["UPDATE chat_agents SET current_policy_revision_id = 'policy-1',
-                   current_policy_safety_mode = 'full_access'
-               WHERE participant_id = 'participant-agent'"],
+            "UPDATE chat_participants SET archived_at = '2026-07-20T12:05:00.000Z'
+             WHERE id = 'participant-agent'",
         ),
     ];
     super::block_on(async {
-        for (case, statements) in narrowings {
+        for (case, statement) in removals {
             let pool = migrated_memory_pool().await;
             load_project_chat_graph(&pool).await;
-            sqlx::query(
-                "UPDATE chat_agent_working_folder_grants
-                 SET capability = 'publish'
-                 WHERE sync_key = 'grant-managed'",
-            )
-            .execute(&pool)
-            .await
-            .unwrap();
             insert_push_approval(&pool, "main", Some("participant:local-owner"))
                 .await
                 .unwrap();
-            for statement in statements {
-                sqlx::query(AssertSqlSafe(*statement))
-                    .execute(&pool)
+            sqlx::query(AssertSqlSafe(statement))
+                .execute(&pool)
+                .await
+                .unwrap_or_else(|error| panic!("{case}: {error}"));
+            let rows =
+                sqlx::query("SELECT sync_key, revoked_at, revision FROM chat_push_approvals")
+                    .fetch_all(&pool)
                     .await
-                    .unwrap_or_else(|error| panic!("{case}: {error}"));
+                    .unwrap();
+            assert_eq!(rows.len(), 3, "{case}");
+            for row in rows {
+                let key: String = row.get("sync_key");
+                let revoked_at: Option<String> = row.get("revoked_at");
+                let revision: i64 = row.get("revision");
+                assert!(revoked_at.is_some(), "{case} revokes {key}");
+                assert_eq!(revision, 2, "{case} bumps the {key} revision once");
             }
-            let (revoked_at, revision) = push_approval_state(&pool, "main").await;
-            assert!(revoked_at.is_some(), "{case} revokes the approval");
-            assert_eq!(revision, 2, "{case} bumps the revision once");
         }
     });
 }
@@ -2531,33 +2589,32 @@ fn push_approvals_survive_unrelated_and_applied_changes() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
         load_project_chat_graph(&pool).await;
-        sqlx::query(
-            "UPDATE chat_agent_working_folder_grants SET capability = 'publish'
-             WHERE sync_key = 'grant-managed'",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
         insert_push_approval(&pool, "main", Some("participant:local-owner"))
             .await
             .unwrap();
         for statement in [
-            "UPDATE chat_agent_working_folder_grants SET capability = 'none'
-             WHERE sync_key = 'grant-archived'",
+            "UPDATE chat_channels SET agent_access = 'read' WHERE id = 'channel-general'",
+            "UPDATE chat_agent_channel_memberships
+             SET model_selection_schema_version = 1, model_selection_data = '{}'
+             WHERE sync_key = 'channel-membership-agent'",
             "UPDATE chat_participants SET display_name = 'Renamed' WHERE id = 'participant-agent'",
         ] {
             sqlx::query(statement).execute(&pool).await.unwrap();
         }
         set_sync_applying(&pool, true).await;
         sqlx::query(
-            "UPDATE chat_agent_working_folder_grants SET capability = 'edit'
-             WHERE sync_key = 'grant-managed'",
+            "UPDATE chat_agent_channel_memberships SET removed_at = '2026-07-20T12:05:00.000Z'
+             WHERE sync_key = 'channel-membership-agent'",
         )
         .execute(&pool)
         .await
         .unwrap();
         set_sync_applying(&pool, false).await;
-        assert_eq!(push_approval_state(&pool, "main").await, (None, 1));
+        assert_eq!(
+            push_approval_state(&pool, "main").await,
+            (None, 1),
+            "an applied removal leaves the revocation to the device that removed the agent"
+        );
 
         sqlx::query("DELETE FROM projects WHERE id = 'project-chat'")
             .execute(&pool)
@@ -2623,5 +2680,172 @@ fn terminal_layouts_are_keyed_by_channel_and_folder_and_follow_both() {
             0,
             "layouts are deleted with their channel"
         );
+    });
+}
+
+#[test]
+fn app_agent_settings_are_one_seeded_row_asking_with_empty_instructions() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        let row = sqlx::query(
+            "SELECT id, agent_access, agent_instructions, revision FROM chat_agent_app_settings",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            row.len(),
+            1,
+            "a fresh vault seeds exactly one app settings row"
+        );
+        assert_eq!(row[0].get::<String, _>("id"), "vault");
+        assert_eq!(row[0].get::<String, _>("agent_access"), "ask");
+        assert_eq!(row[0].get::<String, _>("agent_instructions"), "");
+        assert_eq!(row[0].get::<i64, _>("revision"), 1);
+
+        assert!(
+            sqlx::query(
+                "INSERT INTO chat_agent_app_settings (id, updated_at)
+                 VALUES ('second', '2026-10-23T00:00:00.000Z')",
+            )
+            .execute(&pool)
+            .await
+            .is_err(),
+            "the app settings row is a singleton"
+        );
+        assert!(
+            sqlx::query("UPDATE chat_agent_app_settings SET agent_access = NULL")
+                .execute(&pool)
+                .await
+                .is_err(),
+            "the app scope always names a level"
+        );
+    });
+}
+
+/// The statement that sets `agent_access` to the bound value at `scope` in the fixture graph.
+fn access_update(scope: &str) -> &'static str {
+    match scope {
+        "app" => "UPDATE chat_agent_app_settings SET agent_access = ? WHERE id = 'vault'",
+        "project" => {
+            "UPDATE chat_project_agent_settings SET agent_access = ?
+             WHERE project_id = 'project-chat'"
+        }
+        "channel" => "UPDATE chat_channels SET agent_access = ? WHERE id = 'channel-general'",
+        _ => unreachable!("unknown scope {scope}"),
+    }
+}
+
+/// The statement that sets `agent_instructions` to the bound value at `scope`.
+fn instructions_update(scope: &str) -> &'static str {
+    match scope {
+        "app" => "UPDATE chat_agent_app_settings SET agent_instructions = ? WHERE id = 'vault'",
+        "project" => {
+            "UPDATE chat_project_agent_settings SET agent_instructions = ?
+             WHERE project_id = 'project-chat'"
+        }
+        "channel" => "UPDATE chat_channels SET agent_instructions = ? WHERE id = 'channel-general'",
+        _ => unreachable!("unknown scope {scope}"),
+    }
+}
+
+#[test]
+fn agent_access_names_one_of_four_levels_and_only_inner_scopes_inherit() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        for scope in ["app", "project", "channel"] {
+            for level in ["talk", "read", "ask", "own"] {
+                let changed = sqlx::query(AssertSqlSafe(access_update(scope)))
+                    .bind(level)
+                    .execute(&pool)
+                    .await
+                    .unwrap_or_else(|error| panic!("{scope} {level}: {error}"));
+                assert_eq!(changed.rows_affected(), 1, "{scope} {level}");
+            }
+            for level in ["", "write", "Own", "none"] {
+                assert!(
+                    sqlx::query(AssertSqlSafe(access_update(scope)))
+                        .bind(level)
+                        .execute(&pool)
+                        .await
+                        .is_err(),
+                    "{scope} refuses {level:?}"
+                );
+            }
+            let inherit = sqlx::query(AssertSqlSafe(access_update(scope)))
+                .bind(None::<String>)
+                .execute(&pool)
+                .await;
+            assert_eq!(
+                inherit.is_ok(),
+                scope != "app",
+                "{scope}: null inherits from the enclosing scope, and the app scope has none"
+            );
+        }
+    });
+}
+
+#[test]
+fn agent_instructions_hold_at_most_16384_characters_at_every_scope() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        for scope in ["app", "project", "channel"] {
+            for (length, accepted) in [(0, true), (16_384, true), (16_385, false)] {
+                let result = sqlx::query(AssertSqlSafe(instructions_update(scope)))
+                    .bind("i".repeat(length))
+                    .execute(&pool)
+                    .await;
+                assert_eq!(result.is_ok(), accepted, "{scope} with {length} characters");
+            }
+            assert!(
+                sqlx::query(AssertSqlSafe(instructions_update(scope)))
+                    .bind(None::<String>)
+                    .execute(&pool)
+                    .await
+                    .is_err(),
+                "{scope} keeps empty text, not null, for no instructions"
+            );
+        }
+    });
+}
+
+#[test]
+fn project_agent_settings_are_deleted_with_their_project() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let count = |pool: sqlx::SqlitePool| async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM chat_project_agent_settings WHERE project_id = 'project-chat'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        };
+        assert_eq!(count(pool.clone()).await, 1);
+        assert!(
+            sqlx::query(
+                "INSERT INTO chat_project_agent_settings (project_id, created_at, updated_at)
+                 VALUES ('project-missing', '2026-10-23T00:00:00.000Z',
+                         '2026-10-23T00:00:00.000Z')",
+            )
+            .execute(&pool)
+            .await
+            .is_err(),
+            "project settings need their project"
+        );
+
+        sqlx::query("DELETE FROM projects WHERE id = 'project-chat'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count(pool.clone()).await, 0);
+        let app: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_agent_app_settings")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(app, 1, "deleting a project keeps the app settings");
     });
 }

@@ -1,15 +1,15 @@
 //! Chat adapter: the value checks that mirror the Chat identity and policy table checks, and the
 //! priorities of their coupled groups.
 //!
-//! An agent's current policy is coupled with a copy of the revision's safety mode. Concurrent
-//! edits keep the more restrictive one: asking for approval outranks approving for the user,
-//! which outranks full access, which outranks a custom mode that defers to the provider. An
-//! edit made after seeing the other still wins by causality.
+//! Agent access at the vault, project, and channel scopes keeps the narrower level among
+//! concurrent edits: talk only outranks read only, which outranks ask before commands, which
+//! outranks own the folder, and an explicit level outranks inheriting. An edit made after seeing
+//! the other still wins by causality.
 //!
-//! Conversation memberships, AI channel memberships, and working folder grants keep the narrower
-//! access among concurrent edits: removal and revocation first, then the stricter approval
-//! override, folder capability, and channel capabilities. A channel archive outranks a
-//! concurrent unarchive, and a message deletion outranks a concurrent restore.
+//! Conversation memberships and AI channel memberships keep the narrower access among concurrent
+//! edits: removal first, then demotion. A push approval revocation outranks a concurrent
+//! approval, a channel archive outranks a concurrent unarchive, and a message deletion outranks
+//! a concurrent restore.
 //!
 //! Timeline values mirror their table checks too, including the byte bounds that keep one
 //! message revision within an operation. A revision's attachments carry their working folder,
@@ -35,27 +35,30 @@ use crate::codec;
 use crate::domains::distractions::is_usage_date;
 use crate::manifest::OwnedTable;
 use crate::manifest::vault::chat::{
-    ADAPTER, AGENT_USAGE_DAILY_TABLE, AGENTS_TABLE, ASSIGNMENTS_TABLE, ATTACHMENT_REFERENCES,
-    ATTACHMENTS_CLASS, CHANNEL_MEMBERSHIPS_TABLE, CHANNEL_NOTES_TABLE, CHANNEL_TARGETS_TABLE,
-    CHANNELS_TABLE, CONVERSATION_CURSORS_TABLE, CONVERSATIONS_TABLE, ENVIRONMENT_TARGETS_TABLE,
-    FOLDER_GRANTS_TABLE, FOLDER_TARGETS_TABLE, INPUTS_TABLE, ITEMS_TABLE, MEMBERSHIPS_TABLE,
+    ADAPTER, AGENT_USAGE_DAILY_TABLE, AGENTS_TABLE, APP_SETTINGS_TABLE, ASSIGNMENTS_TABLE,
+    ATTACHMENT_REFERENCES, ATTACHMENTS_CLASS, CHANNEL_MEMBERSHIPS_TABLE, CHANNEL_NOTES_TABLE,
+    CHANNEL_TARGETS_TABLE, CHANNELS_TABLE, CONVERSATION_CURSORS_TABLE, CONVERSATIONS_TABLE,
+    ENVIRONMENT_TARGETS_TABLE, FOLDER_TARGETS_TABLE, INPUTS_TABLE, ITEMS_TABLE, MEMBERSHIPS_TABLE,
     MESSAGES_TABLE, PARTICIPANT_TARGETS_TABLE, PARTICIPANTS_TABLE, PATH_TARGETS_TABLE,
-    POLICY_REVISIONS_TABLE, PUSH_APPROVALS_TABLE, RECURRENCES_TABLE, REFERENCES_TABLE,
-    REPLY_CURSORS_TABLE, REPLY_THREADS_TABLE, REVISIONS_TABLE, SCHEDULED_ATTACHMENT_REFERENCES,
-    SCHEDULED_REFERENCES, SCHEDULED_TABLE, SEMANTIC_UPDATES_TABLE, agent_group, agent_usage_group,
-    assignment_group, channel_group, channel_membership_group, channel_note_group,
-    conversation_group, folder_grant_group, input_group, item_group, membership_group,
-    message_group, participant_group, policy_revision_group, push_approval_group,
-    read_cursor_group, recurrence_group, reply_thread_group, scheduled_group,
-    semantic_update_group, timeline_group,
+    POLICY_REVISIONS_TABLE, PROJECT_SETTINGS_TABLE, PUSH_APPROVALS_TABLE, RECURRENCES_TABLE,
+    REFERENCES_TABLE, REPLY_CURSORS_TABLE, REPLY_THREADS_TABLE, REVISIONS_TABLE,
+    SCHEDULED_ATTACHMENT_REFERENCES, SCHEDULED_REFERENCES, SCHEDULED_TABLE, SEMANTIC_UPDATES_TABLE,
+    agent_group, agent_usage_group, app_settings_group, assignment_group, channel_group,
+    channel_membership_group, channel_note_group, conversation_group, input_group, item_group,
+    membership_group, message_group, participant_group, policy_revision_group,
+    project_settings_group, push_approval_group, read_cursor_group, recurrence_group,
+    reply_thread_group, scheduled_group, semantic_update_group, timeline_group,
 };
 
 /// Characters of a display name after trimming.
 pub const MAX_DISPLAY_NAME_CHARS: usize = 160;
-/// Characters of an agent role after trimming.
-pub const MAX_ROLE_CHARS: usize = 1000;
-/// Characters of agent instructions.
-pub const MAX_INSTRUCTIONS_CHARS: usize = 65_536;
+/// Characters of the agent instructions one scope holds.
+pub const MAX_INSTRUCTIONS_CHARS: usize = 16_384;
+/// Characters of the instructions a work assignment fixes: the three scopes with their
+/// separators.
+pub const MAX_RESOLVED_INSTRUCTIONS_CHARS: usize = 3 * MAX_INSTRUCTIONS_CHARS + 1024;
+/// Characters of the model label a work assignment records.
+pub const MAX_MODEL_LABEL_CHARS: usize = 256;
 /// Characters of a provider instance id.
 pub const MAX_PROVIDER_INSTANCE_CHARS: usize = 1024;
 /// Characters of a stored JSON object: an avatar, a model selection, or provider options.
@@ -69,24 +72,11 @@ pub const PARTICIPANT_KINDS: [&str; 3] = ["local_user", "ai_agent", "human"];
 const LOCAL_USER_KIND: &str = "local_user";
 /// The key the baseline seeds for the local user, the only one the kind may hold.
 pub const LOCAL_OWNER_PARTICIPANT_KEY: &str = "participant:local-owner";
-/// Agent safety modes, least restrictive first. Custom defers to the
-/// provider's own configuration, which can grant anything, so it ranks lowest.
-pub const SAFETY_MODES: [&str; 4] = [
-    "custom",
-    "full_access",
-    "approve_for_me",
-    "ask_for_approval",
-];
-/// Reasoning effort levels.
-pub const EFFORTS: [&str; 6] = ["none", "minimal", "low", "medium", "high", "xhigh"];
-/// Response speeds.
-pub const SPEEDS: [&str; 2] = ["standard", "fast"];
+/// Agent access levels, widest first: own the folder, ask before commands, read only, and talk
+/// only.
+pub const AGENT_ACCESS_LEVELS: [&str; 4] = ["own", "ask", "read", "talk"];
 /// Interaction modes.
 pub const INTERACTION_MODES: [&str; 1] = ["build"];
-/// History boundaries of an AI channel membership.
-pub const HISTORY_BOUNDARIES: [&str; 2] = ["entire", "from_grant"];
-/// Folder capabilities, least restrictive first.
-pub const FOLDER_CAPABILITIES: [&str; 5] = ["publish", "execute", "edit", "read", "none"];
 /// Characters of a channel name.
 pub const MAX_CHANNEL_NAME_CHARS: usize = 80;
 /// Characters of a channel topic.
@@ -97,9 +87,6 @@ pub use ganbaru_sync_contracts::chat_channel_notes::MAX_CHANNEL_NOTE_CHARS;
 pub const CONVERSATION_KINDS: [&str; 3] = ["channel", "direct_message", "task_discussion"];
 /// Conversation membership roles, least restrictive first.
 pub const MEMBERSHIP_ROLES: [&str; 2] = ["owner", "member"];
-/// Runtime approval overrides, least restrictive first. Provider custom defers to the
-/// provider's own configuration, mirroring the custom safety mode.
-pub const APPROVAL_POLICIES: [&str; 4] = ["provider_custom", "unattended", "auto_approve", "ask"];
 /// Characters of a Chat row id the timeline tables hold, as the tables check it.
 pub const MAX_ID_CHARS: usize = 1024;
 /// Bytes of a Chat participant id, the Chat organizational identifier limit.
@@ -210,8 +197,6 @@ pub const MAX_DELEGATION_EXPECTED_RESULT_CHARS: usize = 2000;
 /// Folder capabilities a delegation ceiling may name: a folder the child may not use at all is
 /// left out of the ceiling instead.
 pub const DELEGATION_CEILING_CAPABILITIES: [&str; 4] = ["publish", "execute", "edit", "read"];
-/// Rank of no approval override, the least restrictive.
-const INHERITED_APPROVAL_RANK: u8 = 1;
 
 fn text(field: &Field) -> Result<&str, AdapterError> {
     match field {
@@ -324,21 +309,6 @@ fn flag(field: &Field) -> Result<(), AdapterError> {
     }
 }
 
-/// A current revision pointer and its copied restrictiveness: both null, or a revision id with
-/// a value from `allowed`.
-fn current_pair(
-    id: &Field,
-    copied: &Field,
-    allowed: &[&str],
-    what: &'static str,
-) -> Result<(), AdapterError> {
-    match (optional_text(id)?, copied) {
-        (None, Field::Null) => Ok(()),
-        (Some(_), copied) => one_of(copied, allowed, what),
-        (None, _) => Err(AdapterError(what)),
-    }
-}
-
 /// Refuses a local user under any key but the seeded one.
 fn validate_participant_row(row: &RowKey, groups: &[GroupValue]) -> Result<(), AdapterError> {
     let local_user = groups
@@ -371,24 +341,51 @@ fn validate_participant(group: GroupId, fields: &[Field]) -> Result<(), AdapterE
 
 fn validate_agent(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
     match (group, fields) {
-        (agent_group::CREATED | agent_group::UPDATED, [at]) => timestamp(at),
-        (agent_group::PROFILE, [role, instructions]) => {
-            trimmed(role, MAX_ROLE_CHARS, "chat agent role")?;
-            bounded(
-                instructions,
-                0,
-                MAX_INSTRUCTIONS_CHARS,
-                "chat agent instructions",
-            )
+        (agent_group::CREATED, [family, created_at]) => {
+            trimmed(
+                family,
+                MAX_PROVIDER_INSTANCE_CHARS,
+                "chat agent provider family",
+            )?;
+            timestamp(created_at)
         }
-        (agent_group::POLICY, [id, safety]) => {
-            current_pair(id, safety, &SAFETY_MODES, "chat agent current policy")
-        }
-        (agent_group::HOME, [device]) => match optional_text(device)? {
-            Some("") => Err(AdapterError("chat agent home device")),
-            _ => Ok(()),
-        },
+        (agent_group::POLICY, [_revision]) => Ok(()),
+        (agent_group::UPDATED, [at]) => timestamp(at),
         _ => Err(AdapterError("chat agent value")),
+    }
+}
+
+/// An agent access level, or null where the scope inherits.
+fn agent_access(field: &Field, inherits: bool) -> Result<(), AdapterError> {
+    match field {
+        Field::Null if inherits => Ok(()),
+        field => one_of(field, &AGENT_ACCESS_LEVELS, "chat agent access"),
+    }
+}
+
+fn instructions(field: &Field, what: &'static str) -> Result<(), AdapterError> {
+    bounded(field, 0, MAX_INSTRUCTIONS_CHARS, what)
+}
+
+fn validate_app_settings(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (app_settings_group::ACCESS, [access]) => agent_access(access, false),
+        (app_settings_group::INSTRUCTIONS, [text]) => {
+            instructions(text, "chat vault agent instructions")
+        }
+        (app_settings_group::UPDATED, [at]) => timestamp(at),
+        _ => Err(AdapterError("chat vault agent settings value")),
+    }
+}
+
+fn validate_project_settings(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (project_settings_group::ACCESS, [access]) => agent_access(access, true),
+        (project_settings_group::INSTRUCTIONS, [text]) => {
+            instructions(text, "chat project agent instructions")
+        }
+        (project_settings_group::CREATED | project_settings_group::UPDATED, [at]) => timestamp(at),
+        _ => Err(AdapterError("chat project agent settings value")),
     }
 }
 
@@ -398,33 +395,20 @@ fn validate_policy_revision(group: GroupId, fields: &[Field]) -> Result<(), Adap
             policy_revision_group::CREATED,
             [
                 _agent,
-                provider,
                 model_version,
                 model,
-                effort,
-                speed,
                 options_version,
                 options,
                 mode,
                 created_at,
-                safety,
             ],
         ) => {
-            bounded(
-                provider,
-                1,
-                MAX_PROVIDER_INSTANCE_CHARS,
-                "chat policy provider instance",
-            )?;
             schema_version(model_version)?;
             json_object(model, "chat policy model selection")?;
-            optional_one_of(effort, &EFFORTS, "chat policy effort")?;
-            optional_one_of(speed, &SPEEDS, "chat policy speed")?;
             schema_version(options_version)?;
             json_object(options, "chat policy provider options")?;
             one_of(mode, &INTERACTION_MODES, "chat policy interaction mode")?;
-            timestamp(created_at)?;
-            one_of(safety, &SAFETY_MODES, "chat policy safety mode")
+            timestamp(created_at)
         }
         _ => Err(AdapterError("chat policy revision value")),
     }
@@ -454,74 +438,26 @@ fn validate_membership(group: GroupId, fields: &[Field]) -> Result<(), AdapterEr
     }
 }
 
-/// A history boundary and its order key: `entire` with none, or `from_grant` with a non-empty
-/// key.
-fn history_pair(boundary: &Field, order_key: &Field) -> Result<(), AdapterError> {
-    one_of(boundary, &HISTORY_BOUNDARIES, "chat history boundary")?;
-    match (text(boundary)?, order_key) {
-        ("entire", Field::Null) => Ok(()),
-        ("from_grant", key @ Field::Text(_)) => bounded(
-            key,
-            1,
-            MAX_ORDER_KEY_BYTES,
-            "chat history boundary order key",
-        ),
-        _ => Err(AdapterError("chat history boundary order key")),
-    }
-}
-
 fn validate_channel_membership(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
     match (group, fields) {
         (channel_membership_group::IDENTITY, [_, _]) | (channel_membership_group::EXISTS, []) => {
             Ok(())
         }
-        (
-            channel_membership_group::ACCESS,
-            [
-                read_history,
-                participate,
-                boundary,
-                history_from,
-                approval,
-                scratch_approval,
-                removed_at,
-            ],
-        ) => {
-            flag(read_history)?;
-            flag(participate)?;
-            history_pair(boundary, history_from)?;
-            optional_one_of(approval, &APPROVAL_POLICIES, "chat approval policy")?;
-            optional_one_of(scratch_approval, &APPROVAL_POLICIES, "chat approval policy")?;
-            optional_timestamp(removed_at)
-        }
+        (channel_membership_group::PRESENCE, [removed_at]) => optional_timestamp(removed_at),
         (channel_membership_group::CREATED | channel_membership_group::UPDATED, [at]) => {
             timestamp(at)
         }
+        (channel_membership_group::MODEL, [version, data]) => channel_model(version, data),
         _ => Err(AdapterError("chat channel membership value")),
-    }
-}
-
-fn validate_folder_grant(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
-    match (group, fields) {
-        (folder_grant_group::IDENTITY, [_, _, _]) | (folder_grant_group::EXISTS, []) => Ok(()),
-        (folder_grant_group::GRANT, [capability, is_default, approval, revoked_at]) => {
-            one_of(
-                capability,
-                &FOLDER_CAPABILITIES,
-                "chat folder grant capability",
-            )?;
-            flag(is_default)?;
-            optional_one_of(approval, &APPROVAL_POLICIES, "chat approval policy")?;
-            optional_timestamp(revoked_at)
-        }
-        (folder_grant_group::CREATED, [_project, created_at]) => timestamp(created_at),
-        _ => Err(AdapterError("chat folder grant value")),
     }
 }
 
 fn validate_push_approval(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
     match (group, fields) {
-        (push_approval_group::IDENTITY, [_agent, _folder, push_url, destination_branch]) => {
+        (
+            push_approval_group::IDENTITY,
+            [_conversation, _agent, _folder, push_url, destination_branch],
+        ) => {
             git_word(
                 push_url,
                 MAX_PUSH_APPROVAL_URL_BYTES,
@@ -533,12 +469,7 @@ fn validate_push_approval(group: GroupId, fields: &[Field]) -> Result<(), Adapte
                 "chat push approval branch",
             )
         }
-        (
-            push_approval_group::APPROVAL,
-            [policy, safety_mode, _approver, approved_at, revoked_at],
-        ) => {
-            one_of(policy, &APPROVAL_POLICIES, "chat approval policy")?;
-            one_of(safety_mode, &SAFETY_MODES, "chat safety mode")?;
+        (push_approval_group::APPROVAL, [_approver, approved_at, revoked_at]) => {
             timestamp(approved_at)?;
             optional_timestamp(revoked_at)
         }
@@ -574,6 +505,10 @@ fn validate_channel(group: GroupId, fields: &[Field]) -> Result<(), AdapterError
         }
         (channel_group::LIFECYCLE, [archived_at]) => optional_timestamp(archived_at),
         (channel_group::UPDATED, [at]) => timestamp(at),
+        (channel_group::AGENT_ACCESS, [access]) => agent_access(access, true),
+        (channel_group::AGENT_INSTRUCTIONS, [text]) => {
+            instructions(text, "chat channel agent instructions")
+        }
         _ => Err(AdapterError("chat channel value")),
     }
 }
@@ -908,11 +843,7 @@ fn validate_target(table: TableId, group: GroupId, fields: &[Field]) -> Result<(
             MAX_ENVIRONMENT_ID_CHARS,
             "chat environment reference",
         ),
-        (timeline_group::CREATED, [_participant, override_version, override_data])
-            if table == PARTICIPANT_TARGETS_TABLE =>
-        {
-            model_override(override_version, override_data)
-        }
+        (timeline_group::CREATED, [_participant]) if table == PARTICIPANT_TARGETS_TABLE => Ok(()),
         (timeline_group::CREATED, [_folder]) if table == FOLDER_TARGETS_TABLE => Ok(()),
         (timeline_group::CREATED, [_folder, kind, path]) if table == PATH_TARGETS_TABLE => {
             one_of(kind, &PATH_KINDS, "chat workspace path kind")?;
@@ -1189,14 +1120,29 @@ fn validate_assignment(group: GroupId, fields: &[Field]) -> Result<(), AdapterEr
                 _trigger,
                 device,
                 created_at,
-                override_version,
-                override_data,
+                model_version,
+                model,
+                instructions,
             ],
         ) => {
             executing_device(device)?;
             timestamp(created_at)?;
-            model_override(override_version, override_data)
+            schema_version(model_version)?;
+            json_object(model, "chat assignment model selection")?;
+            bounded(
+                instructions,
+                0,
+                MAX_RESOLVED_INSTRUCTIONS_CHARS,
+                "chat assignment instructions",
+            )
         }
+        (assignment_group::MODEL_LABEL, [Field::Null]) => Ok(()),
+        (assignment_group::MODEL_LABEL, [label]) => bounded(
+            label,
+            1,
+            MAX_MODEL_LABEL_CHARS,
+            "chat assignment model label",
+        ),
         (assignment_group::PREVIOUS, [_previous]) => Ok(()),
         (assignment_group::STATE, [state, reason, settled_at, outcome, reviewed_at, reviewer]) => {
             one_of(state, &ASSIGNMENT_STATES, "chat assignment state")?;
@@ -1253,17 +1199,17 @@ fn assignment_delegation(
     }
 }
 
-/// A model override, of an assignment or of the mention that asked for it, is its schema
-/// version and selection together, or neither when the work runs with its agent's model.
-fn model_override(version: &Field, data: &Field) -> Result<(), AdapterError> {
+/// A channel's model for an agent is its schema version and selection together, or neither
+/// when the agent runs with its default model.
+fn channel_model(version: &Field, data: &Field) -> Result<(), AdapterError> {
     match (version, data) {
         (Field::Null, Field::Null) => Ok(()),
         (Field::Null, _) | (_, Field::Null) => {
-            Err(AdapterError("chat model override is incomplete"))
+            Err(AdapterError("chat channel model is incomplete"))
         }
         _ => {
             schema_version(version)?;
-            json_object(data, "chat model override")
+            json_object(data, "chat channel model")
         }
     }
 }
@@ -1421,26 +1367,6 @@ fn input_delivery_priority(fields: &[Field]) -> u8 {
 /// Priority of an ended row: a removal or revocation outranks every live value.
 const ENDED: u8 = u8::MAX;
 
-/// Rank of an approval override, 1 for the least restrictive.
-///
-/// No override inherits: a folder grant's or scratch override falls back to the channel
-/// override and a channel override to the agent's default, which an explicit override can
-/// only narrow (the runtime keeps the narrower of the default and the override). The default
-/// can be unattended or defer to the provider, so inheriting ranks lowest, below the explicit
-/// policies in [`APPROVAL_POLICIES`] order. A folder or scratch override replaces the channel
-/// override instead of narrowing it, so when the channel override is stricter than a concurrent
-/// explicit folder or scratch override, inheriting was the stricter intent; a static rank cannot
-/// see the channel row, and the loser's value is not available to Chat after the merge.
-fn approval_rank(field: Option<&Field>) -> u8 {
-    match field {
-        None | Some(Field::Null) => INHERITED_APPROVAL_RANK,
-        field => INHERITED_APPROVAL_RANK + restrictiveness(field, &APPROVAL_POLICIES),
-    }
-}
-
-/// Number of approval override ranks.
-const APPROVAL_RANKS: u8 = INHERITED_APPROVAL_RANK + APPROVAL_POLICIES.len() as u8;
-
 /// Whether the field at `index` is set, which marks a removal or revocation.
 fn ended(fields: &[Field], index: usize) -> bool {
     !matches!(fields.get(index), None | Some(Field::Null))
@@ -1455,40 +1381,20 @@ fn membership_priority(fields: &[Field]) -> u8 {
     }
 }
 
-/// A channel removal wins, then the value that clears more of history reading, participation,
-/// and full history, then the stricter channel approval override, then the stricter scratch
-/// approval override. The Chat materialize hook settles concurrent versions the priority ties
-/// onto the strictest resolved parts.
+/// A removal from a channel wins over a concurrent re-add.
 fn channel_membership_priority(fields: &[Field]) -> u8 {
-    if ended(fields, 6) {
-        return ENDED;
-    }
-    let cleared = [
-        matches!(fields.first(), Some(Field::Integer(0))),
-        matches!(fields.get(1), Some(Field::Integer(0))),
-        matches!(fields.get(2), Some(Field::Text(text)) if text == "from_grant"),
-    ]
-    .into_iter()
-    .filter(|cleared| *cleared)
-    .count();
-    let cleared = u8::try_from(cleared).unwrap_or(0);
-    let approvals =
-        (approval_rank(fields.get(4)) - 1) * APPROVAL_RANKS + (approval_rank(fields.get(5)) - 1);
-    1 + cleared * APPROVAL_RANKS * APPROVAL_RANKS + approvals
+    if ended(fields, 0) { ENDED } else { 1 }
 }
 
-/// A revocation wins, then the lower folder capability, then the stricter approval override.
-fn folder_grant_priority(fields: &[Field]) -> u8 {
-    if ended(fields, 3) {
-        return ENDED;
-    }
-    let capability = restrictiveness(fields.first(), &FOLDER_CAPABILITIES).max(1);
-    1 + (capability - 1) * APPROVAL_RANKS + (approval_rank(fields.get(2)) - 1)
+/// The narrower access level wins among concurrent edits of one scope. An inherited level ranks
+/// lowest: the scope it inherits from can be as wide as Own the folder.
+fn agent_access_priority(fields: &[Field]) -> u8 {
+    restrictiveness(fields.first(), &AGENT_ACCESS_LEVELS)
 }
 
 /// A revocation wins over a concurrent approval.
 fn push_approval_priority(fields: &[Field]) -> u8 {
-    if ended(fields, 4) { ENDED } else { 1 }
+    if ended(fields, 2) { ENDED } else { 1 }
 }
 
 /// An archive wins over a concurrent unarchive.
@@ -1575,19 +1481,20 @@ impl DomainAdapter for ChatAdapter {
         Ok(Vec::new())
     }
 
-    /// The more restrictive current policy wins among concurrent edits.
+    /// The narrower access wins among concurrent edits.
     fn priority(&self, table: TableId, group: GroupId, value: &Value) -> u8 {
-        let copied = value.fields().get(1);
-        if table == AGENTS_TABLE && group == agent_group::POLICY {
-            restrictiveness(copied, &SAFETY_MODES)
+        if (table == APP_SETTINGS_TABLE && group == app_settings_group::ACCESS)
+            || (table == PROJECT_SETTINGS_TABLE && group == project_settings_group::ACCESS)
+            || (table == CHANNELS_TABLE && group == channel_group::AGENT_ACCESS)
+        {
+            agent_access_priority(value.fields())
         } else if table == MEMBERSHIPS_TABLE && group == membership_group::MEMBERSHIP {
             membership_priority(value.fields())
-        } else if table == CHANNEL_MEMBERSHIPS_TABLE && group == channel_membership_group::ACCESS {
+        } else if table == CHANNEL_MEMBERSHIPS_TABLE && group == channel_membership_group::PRESENCE
+        {
             channel_membership_priority(value.fields())
         } else if table == PUSH_APPROVALS_TABLE && group == push_approval_group::APPROVAL {
             push_approval_priority(value.fields())
-        } else if table == FOLDER_GRANTS_TABLE && group == folder_grant_group::GRANT {
-            folder_grant_priority(value.fields())
         } else if (table == CHANNELS_TABLE && group == channel_group::LIFECYCLE)
             || (table == CONVERSATIONS_TABLE && group == conversation_group::LIFECYCLE)
             || (table == MESSAGES_TABLE && group == message_group::LIFECYCLE)
@@ -1626,6 +1533,10 @@ impl DomainAdapter for ChatAdapter {
             validate_agent(group, fields)
         } else if table == POLICY_REVISIONS_TABLE {
             validate_policy_revision(group, fields)
+        } else if table == APP_SETTINGS_TABLE {
+            validate_app_settings(group, fields)
+        } else if table == PROJECT_SETTINGS_TABLE {
+            validate_project_settings(group, fields)
         } else if table == CONVERSATIONS_TABLE {
             validate_conversation(group, fields)
         } else if table == MEMBERSHIPS_TABLE {
@@ -1634,8 +1545,6 @@ impl DomainAdapter for ChatAdapter {
             validate_channel_membership(group, fields)
         } else if table == PUSH_APPROVALS_TABLE {
             validate_push_approval(group, fields)
-        } else if table == FOLDER_GRANTS_TABLE {
-            validate_folder_grant(group, fields)
         } else if table == CHANNELS_TABLE {
             validate_channel(group, fields)
         } else if table == CHANNEL_NOTES_TABLE {
@@ -1717,7 +1626,7 @@ impl DomainAdapter for ChatAdapter {
             .collect()
     }
 
-    /// A participant presents its display name, an agent its role, and a channel its name with
+    /// A participant presents its display name, an agent its provider, and a channel its name with
     /// its topic as the preview. A message revision, a scheduled message, and a channel note
     /// present their text as the preview, unchanged so it can be copied back. Other rows present
     /// nothing: a message's text lives in its revisions, outside the row's values.
@@ -1730,7 +1639,7 @@ impl DomainAdapter for ChatAdapter {
         }
         let profile_group = match table {
             PARTICIPANTS_TABLE => participant_group::PROFILE,
-            AGENTS_TABLE => agent_group::PROFILE,
+            AGENTS_TABLE => agent_group::CREATED,
             CHANNELS_TABLE => channel_group::DETAILS,
             _ => return Presentation::default(),
         };
@@ -1811,41 +1720,52 @@ mod tests {
         Field::Text(text.to_owned())
     }
 
-    fn policy(safety: Option<&str>) -> Value {
-        match safety {
-            Some(safety) => value(vec![t("policy-1"), t(safety)]),
-            None => value(vec![Field::Null, Field::Null]),
-        }
-    }
-
-    fn policy_revision(model: &str, safety: &str) -> Value {
+    fn policy_revision(model: &str, mode: &str) -> Value {
         value(vec![
             t("agent-1"),
-            t("codex"),
             Field::Integer(1),
             t(model),
-            t("high"),
-            Field::Null,
             Field::Integer(1),
             t("{}"),
-            t("build"),
+            t(mode),
             t(AT),
-            t(safety),
         ])
     }
 
     #[test]
-    fn chat_priorities_prefer_the_more_restrictive_revision() {
+    fn chat_access_priorities_prefer_the_narrower_level_at_every_scope() {
         let adapter = ChatAdapter;
-        let safety = |mode| adapter.priority(AGENTS_TABLE, agent_group::POLICY, &policy(mode));
-        assert!(safety(Some("ask_for_approval")) > safety(Some("approve_for_me")));
-        assert!(safety(Some("approve_for_me")) > safety(Some("full_access")));
-        assert!(safety(Some("full_access")) > safety(Some("custom")));
-        assert!(safety(Some("custom")) > safety(None));
-
-        let role = value(vec![t("Reviewer"), t("")]);
+        for (table, group) in [
+            (APP_SETTINGS_TABLE, app_settings_group::ACCESS),
+            (PROJECT_SETTINGS_TABLE, project_settings_group::ACCESS),
+            (CHANNELS_TABLE, channel_group::AGENT_ACCESS),
+        ] {
+            let priority = |access: Option<&str>| {
+                adapter.priority(table, group, &value(vec![optional(access)]))
+            };
+            assert!(priority(Some("talk")) > priority(Some("read")));
+            assert!(priority(Some("read")) > priority(Some("ask")));
+            assert!(priority(Some("ask")) > priority(Some("own")));
+            assert!(
+                priority(Some("own")) > priority(None),
+                "an explicit level outranks inheriting"
+            );
+        }
         assert_eq!(
-            adapter.priority(AGENTS_TABLE, agent_group::PROFILE, &role),
+            adapter.priority(
+                AGENTS_TABLE,
+                agent_group::POLICY,
+                &value(vec![t("policy-1")])
+            ),
+            0,
+            "the default model is a plain register"
+        );
+        assert_eq!(
+            adapter.priority(
+                CHANNELS_TABLE,
+                channel_group::AGENT_INSTRUCTIONS,
+                &value(vec![t("Be brief")])
+            ),
             0
         );
     }
@@ -1892,57 +1812,66 @@ mod tests {
             .is_err()
         );
 
-        assert!(
-            adapter
-                .validate(AGENTS_TABLE, agent_group::POLICY, &policy(None))
-                .is_ok()
-        );
-        assert!(
-            check(
-                AGENTS_TABLE,
-                agent_group::POLICY,
-                vec![Field::Null, t("custom")]
-            )
-            .is_err()
-        );
+        let agent =
+            |family: &str| check(AGENTS_TABLE, agent_group::CREATED, vec![t(family), t(AT)]);
+        assert!(agent("codex").is_ok());
+        assert!(agent("  ").is_err());
+        assert!(agent(&"p".repeat(MAX_PROVIDER_INSTANCE_CHARS + 1)).is_err());
+        assert!(check(AGENTS_TABLE, agent_group::POLICY, vec![Field::Null]).is_ok());
+        assert!(check(AGENTS_TABLE, agent_group::POLICY, vec![t("policy-1")]).is_ok());
         assert!(
             check(
                 AGENTS_TABLE,
                 agent_group::POLICY,
-                vec![t("policy-1"), Field::Null]
-            )
-            .is_err()
-        );
-        assert!(
-            check(
-                AGENTS_TABLE,
-                agent_group::POLICY,
-                vec![t("policy-1"), t("reckless")]
-            )
-            .is_err()
-        );
-        assert!(check(AGENTS_TABLE, agent_group::HOME, vec![Field::Null]).is_ok());
-        assert!(check(AGENTS_TABLE, agent_group::HOME, vec![t("")]).is_err());
-        let instructions = "a".repeat(MAX_INSTRUCTIONS_CHARS + 1);
-        assert!(
-            check(
-                AGENTS_TABLE,
-                agent_group::PROFILE,
-                vec![t("Reviewer"), t(&instructions)]
+                vec![t("policy-1"), t("custom")]
             )
             .is_err()
         );
 
-        let revision = |model, safety| {
+        let revision = |model, mode| {
             adapter.validate(
                 POLICY_REVISIONS_TABLE,
                 policy_revision_group::CREATED,
-                &policy_revision(model, safety),
+                &policy_revision(model, mode),
             )
         };
-        assert!(revision("{\"model\":\"gpt\"}", "custom").is_ok());
-        assert!(revision("\"gpt\"", "custom").is_err());
-        assert!(revision("{}", "reckless").is_err());
+        assert!(revision("{\"model\":\"gpt\"}", "build").is_ok());
+        assert!(revision("\"gpt\"", "build").is_err());
+        assert!(revision("{}", "plan").is_err());
+
+        let too_long = "a".repeat(MAX_INSTRUCTIONS_CHARS + 1);
+        for (table, access, instructions, inherits) in [
+            (
+                APP_SETTINGS_TABLE,
+                app_settings_group::ACCESS,
+                app_settings_group::INSTRUCTIONS,
+                false,
+            ),
+            (
+                PROJECT_SETTINGS_TABLE,
+                project_settings_group::ACCESS,
+                project_settings_group::INSTRUCTIONS,
+                true,
+            ),
+            (
+                CHANNELS_TABLE,
+                channel_group::AGENT_ACCESS,
+                channel_group::AGENT_INSTRUCTIONS,
+                true,
+            ),
+        ] {
+            for level in AGENT_ACCESS_LEVELS {
+                assert!(check(table, access, vec![t(level)]).is_ok(), "{level}");
+            }
+            assert!(check(table, access, vec![t("publish")]).is_err());
+            assert_eq!(
+                check(table, access, vec![Field::Null]).is_ok(),
+                inherits,
+                "only a project or channel inherits"
+            );
+            assert!(check(table, instructions, vec![t("")]).is_ok());
+            assert!(check(table, instructions, vec![t(&too_long)]).is_err());
+        }
     }
 
     fn optional(text: Option<&str>) -> Field {
@@ -1951,35 +1880,6 @@ mod tests {
 
     fn membership(role: &str, removed: bool) -> Value {
         value(vec![t(role), optional(removed.then_some(AT))])
-    }
-
-    /// An AI channel membership access value with each capability set or cleared.
-    fn channel_access(
-        read_history: bool,
-        participate: bool,
-        from_grant: bool,
-        approval: Option<&str>,
-        scratch_approval: Option<&str>,
-        removed: bool,
-    ) -> Value {
-        value(vec![
-            Field::Integer(i64::from(read_history)),
-            Field::Integer(i64::from(participate)),
-            t(if from_grant { "from_grant" } else { "entire" }),
-            if from_grant { t("c001") } else { Field::Null },
-            optional(approval),
-            optional(scratch_approval),
-            optional(removed.then_some(AT)),
-        ])
-    }
-
-    fn grant(capability: &str, approval: Option<&str>, revoked: bool) -> Value {
-        value(vec![
-            t(capability),
-            Field::Integer(1),
-            optional(approval),
-            optional(revoked.then_some(AT)),
-        ])
     }
 
     #[test]
@@ -2005,101 +1905,38 @@ mod tests {
     }
 
     #[test]
-    fn chat_channel_membership_priorities_prefer_removal_then_fewer_capabilities_then_stricter_approval()
-     {
+    fn chat_channel_membership_priorities_prefer_removal() {
         let adapter = ChatAdapter;
-        let priority = |value: &Value| {
+        let priority = |removed: Option<&str>| {
             adapter.priority(
                 CHANNEL_MEMBERSHIPS_TABLE,
-                channel_membership_group::ACCESS,
-                value,
+                channel_membership_group::PRESENCE,
+                &value(vec![optional(removed)]),
             )
         };
-        let open = channel_access(true, true, false, Some("provider_custom"), None, false);
-        let removed = channel_access(true, true, false, Some("provider_custom"), None, true);
-        let strictest_live = channel_access(false, false, true, Some("ask"), Some("ask"), false);
-        assert!(priority(&removed) > priority(&strictest_live));
-        assert!(priority(&open) >= 1);
-        assert!(priority(&strictest_live) < u8::MAX);
-
-        // Clearing more capabilities wins over any approval override.
-        let cleared = [
-            channel_access(true, true, false, Some("ask"), Some("ask"), false),
-            channel_access(false, true, false, None, None, false),
-            channel_access(true, false, false, None, None, false),
-        ];
-        assert!(priority(&cleared[1]) > priority(&cleared[0]));
-        assert!(priority(&cleared[2]) > priority(&cleared[0]));
-        let more_cleared = [
-            channel_access(true, true, false, Some("ask"), Some("ask"), false),
-            channel_access(false, true, false, Some("ask"), Some("ask"), false),
-            channel_access(false, false, false, Some("ask"), Some("ask"), false),
-            channel_access(false, false, true, Some("ask"), Some("ask"), false),
-        ];
-        for (looser, stricter) in more_cleared.iter().zip(&more_cleared[1..]) {
-            assert!(priority(stricter) > priority(looser));
-        }
-        assert!(
-            priority(&channel_access(false, false, true, None, None, false))
-                > priority(&channel_access(
-                    false,
-                    false,
-                    false,
-                    Some("ask"),
-                    Some("ask"),
-                    false
-                ))
+        assert!(priority(Some(AT)) > priority(None));
+        assert_eq!(
+            adapter.priority(
+                CHANNEL_MEMBERSHIPS_TABLE,
+                channel_membership_group::MODEL,
+                &value(vec![Field::Integer(1), t("{}")]),
+            ),
+            0,
+            "the channel's model is a plain register"
         );
-
-        // With equal capabilities, the stricter approval override wins, and no override, which
-        // inherits the agent default, is the least strict.
-        let approvals = [
-            None,
-            Some("provider_custom"),
-            Some("unattended"),
-            Some("auto_approve"),
-            Some("ask"),
-        ];
-        for pair in approvals.windows(2) {
-            let looser = channel_access(true, true, false, pair[0], Some("ask"), false);
-            let stricter = channel_access(true, true, false, pair[1], None, false);
-            assert!(priority(&stricter) > priority(&looser), "{pair:?}");
-            let looser = channel_access(true, true, false, None, pair[0], false);
-            let stricter = channel_access(true, true, false, None, pair[1], false);
-            assert!(priority(&stricter) > priority(&looser), "scratch {pair:?}");
-        }
     }
 
     #[test]
-    fn chat_folder_grant_priorities_prefer_revocation_then_lower_capability_then_stricter_approval()
-    {
+    fn chat_push_approval_revocation_outranks_approval() {
         let adapter = ChatAdapter;
-        let priority =
-            |value: &Value| adapter.priority(FOLDER_GRANTS_TABLE, folder_grant_group::GRANT, value);
-        assert!(
-            priority(&grant("publish", None, true)) > priority(&grant("none", Some("ask"), false))
-        );
-        for pair in FOLDER_CAPABILITIES.windows(2) {
-            assert!(
-                priority(&grant(pair[1], Some("provider_custom"), false))
-                    > priority(&grant(pair[0], Some("ask"), false)),
-                "{pair:?}"
-            );
-        }
-        let approvals = [
-            None,
-            Some("provider_custom"),
-            Some("unattended"),
-            Some("auto_approve"),
-            Some("ask"),
-        ];
-        for pair in approvals.windows(2) {
-            assert!(
-                priority(&grant("edit", pair[1], false)) > priority(&grant("edit", pair[0], false)),
-                "{pair:?}"
-            );
-        }
-        assert!(priority(&grant("none", Some("ask"), false)) < u8::MAX);
+        let priority = |revoked: Option<&str>| {
+            adapter.priority(
+                PUSH_APPROVALS_TABLE,
+                push_approval_group::APPROVAL,
+                &value(vec![t("participant:local-owner"), t(AT), optional(revoked)]),
+            )
+        };
+        assert!(priority(Some(AT)) > priority(None));
     }
 
     #[test]
@@ -2246,8 +2083,9 @@ mod tests {
         ]
     }
 
-    /// An assignment CREATED value carrying the model override `version` and `data`.
-    fn assignment_created(version: Field, data: Field) -> Vec<Field> {
+    /// An assignment CREATED value carrying the model `version` and `data` and the resolved
+    /// `instructions`.
+    fn assignment_created(version: Field, data: Field, instructions: &str) -> Vec<Field> {
         vec![
             t("thread-1"),
             t("agent-1"),
@@ -2256,6 +2094,7 @@ mod tests {
             t(AT),
             version,
             data,
+            t(instructions),
         ]
     }
 
@@ -2344,31 +2183,56 @@ mod tests {
     }
 
     #[test]
-    fn chat_assignment_model_override_is_whole_or_absent() {
+    fn chat_assignment_fixes_a_whole_model_and_bounded_instructions() {
         let adapter = ChatAdapter;
         let check =
             |fields| adapter.validate(ASSIGNMENTS_TABLE, assignment_group::CREATED, &value(fields));
         let selection = r#"{"modelId":"gpt-5","modelOptions":{"effort":"high"}}"#;
 
-        assert!(check(assignment_created(Field::Null, Field::Null)).is_ok());
-        assert!(check(assignment_created(Field::Integer(1), t(selection))).is_ok());
+        assert!(check(assignment_created(Field::Integer(1), t(selection), "")).is_ok());
+        let longest = "i".repeat(MAX_RESOLVED_INSTRUCTIONS_CHARS);
         assert!(
-            check(assignment_created(Field::Integer(1), Field::Null)).is_err(),
-            "a version without a selection"
+            check(assignment_created(
+                Field::Integer(1),
+                t(selection),
+                &longest
+            ))
+            .is_ok()
+        );
+        let too_long = "i".repeat(MAX_RESOLVED_INSTRUCTIONS_CHARS + 1);
+        assert!(
+            check(assignment_created(
+                Field::Integer(1),
+                t(selection),
+                &too_long
+            ))
+            .is_err()
         );
         assert!(
-            check(assignment_created(Field::Null, t(selection))).is_err(),
-            "a selection without a version"
+            check(assignment_created(Field::Null, Field::Null, "")).is_err(),
+            "every assignment fixes the model it runs"
         );
-        assert!(check(assignment_created(Field::Integer(0), t(selection))).is_err());
-        assert!(check(assignment_created(Field::Integer(1), t("[]"))).is_err());
-        assert!(check(assignment_created(Field::Integer(1), t("not json"))).is_err());
-        let mut short = assignment_created(Field::Null, Field::Null);
-        short.truncate(5);
+        assert!(check(assignment_created(Field::Integer(1), Field::Null, "")).is_err());
+        assert!(check(assignment_created(Field::Integer(0), t(selection), "")).is_err());
+        assert!(check(assignment_created(Field::Integer(1), t("[]"), "")).is_err());
+        let mut short = assignment_created(Field::Integer(1), t(selection), "");
+        short.truncate(7);
         assert!(
             check(short).is_err(),
-            "the created group carries the override"
+            "the created group carries the instructions"
         );
+
+        let label = |label: Field| {
+            adapter.validate(
+                ASSIGNMENTS_TABLE,
+                assignment_group::MODEL_LABEL,
+                &value(vec![label]),
+            )
+        };
+        assert!(label(Field::Null).is_ok());
+        assert!(label(t("GPT-5 Codex")).is_ok());
+        assert!(label(t("")).is_err());
+        assert!(label(t(&"m".repeat(MAX_MODEL_LABEL_CHARS + 1))).is_err());
     }
 
     #[test]
@@ -2408,34 +2272,40 @@ mod tests {
     }
 
     #[test]
-    fn chat_mention_model_override_is_whole_or_absent() {
+    fn chat_channel_model_is_whole_or_absent() {
         let adapter = ChatAdapter;
         let check = |fields| {
             adapter.validate(
-                PARTICIPANT_TARGETS_TABLE,
-                timeline_group::CREATED,
+                CHANNEL_MEMBERSHIPS_TABLE,
+                channel_membership_group::MODEL,
                 &value(fields),
             )
         };
         let selection = r#"{"providerManagedModel":true,"modelOptions":[]}"#;
 
-        assert!(check(vec![t("agent-1"), Field::Null, Field::Null]).is_ok());
-        assert!(check(vec![t("agent-1"), Field::Integer(1), t(selection)]).is_ok());
-        assert!(check(vec![t("agent-1"), Field::Integer(1), Field::Null]).is_err());
-        assert!(check(vec![t("agent-1"), Field::Null, t(selection)]).is_err());
-        assert!(check(vec![t("agent-1"), Field::Integer(1), t("[]")]).is_err());
+        assert!(check(vec![Field::Null, Field::Null]).is_ok());
+        assert!(check(vec![Field::Integer(1), t(selection)]).is_ok());
+        assert!(check(vec![Field::Integer(1), Field::Null]).is_err());
+        assert!(check(vec![Field::Null, t(selection)]).is_err());
+        assert!(check(vec![Field::Integer(1), t("[]")]).is_err());
         assert!(
-            check(vec![t("agent-1")]).is_err(),
-            "the created group carries the override"
+            adapter
+                .validate(
+                    PARTICIPANT_TARGETS_TABLE,
+                    timeline_group::CREATED,
+                    &value(vec![t("agent-1")]),
+                )
+                .is_ok()
         );
         assert!(
             adapter
                 .validate(
-                    FOLDER_TARGETS_TABLE,
+                    PARTICIPANT_TARGETS_TABLE,
                     timeline_group::CREATED,
-                    &value(vec![t("folder-1")]),
+                    &value(vec![t("agent-1"), Field::Integer(1), t(selection)]),
                 )
-                .is_ok()
+                .is_err(),
+            "a mention carries no model"
         );
     }
 
@@ -2596,44 +2466,32 @@ mod tests {
                 .is_err()
         );
 
-        let access = |boundary: &str, history_from: Field, approval: &str| {
-            let mut fields = channel_access(true, true, false, None, None, false)
-                .fields()
-                .to_vec();
-            fields[2] = t(boundary);
-            fields[3] = history_from;
-            fields[4] = t(approval);
+        let presence = |removed: Field| {
             check(
                 CHANNEL_MEMBERSHIPS_TABLE,
-                channel_membership_group::ACCESS,
-                fields,
+                channel_membership_group::PRESENCE,
+                vec![removed],
             )
         };
-        assert!(access("entire", Field::Null, "ask").is_ok());
-        assert!(access("from_grant", t("c001"), "unattended").is_ok());
-        assert!(access("from_grant", Field::Null, "ask").is_err());
-        assert!(access("from_grant", t(""), "ask").is_err());
-        assert!(access("from_grant", Field::Integer(1), "ask").is_err());
-        assert!(access("entire", t("c001"), "ask").is_err());
-        assert!(access("entire", Field::Null, "always").is_err());
+        assert!(presence(Field::Null).is_ok());
+        assert!(presence(t(AT)).is_ok());
+        assert!(presence(t("yesterday")).is_err());
 
+        let approval = |fields| check(PUSH_APPROVALS_TABLE, push_approval_group::IDENTITY, fields);
+        let identity = |url: &str, branch: &str| {
+            vec![
+                t("conversation-1"),
+                t("agent-1"),
+                t("folder-1"),
+                t(url),
+                t(branch),
+            ]
+        };
+        assert!(approval(identity("git@example.com:team/app.git", "main")).is_ok());
+        assert!(approval(identity("git@example.com:team/app.git", "my branch")).is_err());
         assert!(
-            adapter
-                .validate(
-                    FOLDER_GRANTS_TABLE,
-                    folder_grant_group::GRANT,
-                    &grant("execute", Some("auto_approve"), true)
-                )
-                .is_ok()
-        );
-        assert!(
-            adapter
-                .validate(
-                    FOLDER_GRANTS_TABLE,
-                    folder_grant_group::GRANT,
-                    &grant("admin", None, false)
-                )
-                .is_err()
+            approval(identity("git@example.com:team/app.git", "main")[1..].to_vec()).is_err(),
+            "an approval names its channel"
         );
 
         let details = |name: &str, topic: &str| {
@@ -2893,15 +2751,12 @@ mod tests {
         assert_eq!(channel.preview, "Mockups and reviews");
         let agent = adapter.presentation(
             AGENTS_TABLE,
-            &[(
-                agent_group::PROFILE,
-                value(vec![t("Reviewer"), t("Check every diff")]),
-            )],
+            &[(agent_group::CREATED, value(vec![t("codex"), t(AT)]))],
         );
         assert_eq!(
             agent,
             Presentation {
-                title: "Reviewer".to_string(),
+                title: "codex".to_string(),
                 preview: String::new(),
             }
         );

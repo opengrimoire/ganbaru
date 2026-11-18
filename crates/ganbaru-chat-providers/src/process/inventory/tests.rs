@@ -40,6 +40,8 @@ mod linux_tests {
         assert_eq!(stat.parent_pid, 7);
         assert_eq!(stat.process_group, 4242);
         assert_eq!(stat.start_time, ProcessStartTime(987654));
+        assert_eq!(stat.own_ticks, 14 + 15);
+        assert_eq!(stat.exited_children_ticks, 16 + 17);
         assert!(!stat.zombie);
         assert!(parse_stat("4242 (cut").is_none());
     }
@@ -70,6 +72,33 @@ mod linux_tests {
         assert!(!listed(pid), "a stopped process is not listed");
         drop(registration);
         assert!(inventory().values().all(|record| record.pid != pid));
+    }
+
+    #[test]
+    fn descendant_cpu_time_counts_busy_children_and_not_the_idle_parent() {
+        let mut parent = std::process::Command::new("/bin/sh");
+        parent
+            .args(["-c", "/bin/sh -c 'while :; do :; done' & wait"])
+            .process_group(0);
+        let mut child = parent.spawn().expect("shell starts");
+        let pid = child.id();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut used = Duration::ZERO;
+        while used < Duration::from_millis(100) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+            used = descendant_cpu_time(pid).expect("the parent is running");
+        }
+        let group = libc::pid_t::try_from(pid).expect("process ID fits");
+        crate::process::signal_process_group(group, libc::SIGKILL).expect("group stops");
+        child.wait().expect("shell is reaped");
+        assert!(
+            used >= Duration::from_millis(100),
+            "busy child time counts: {used:?}"
+        );
+        assert!(
+            descendant_cpu_time(pid).is_none(),
+            "a gone process has no time"
+        );
     }
 
     #[test]
@@ -123,6 +152,8 @@ mod linux_tests {
             parent_pid,
             process_group: parent_pid,
             start_time: ProcessStartTime(1),
+            own_ticks: 0,
+            exited_children_ticks: 0,
         };
         let processes = BTreeMap::from([
             (10, stat(1)),

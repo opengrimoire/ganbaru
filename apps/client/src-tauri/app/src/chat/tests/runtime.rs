@@ -672,10 +672,16 @@ fn ready_session_stops_lazily_and_hung_shutdown_stays_bounded() {
 async fn started_owner(
     registry: &ChatRuntimeRegistry,
 ) -> Arc<ganbaru_chat::runtime::ThreadRuntimeOwner> {
+    started_owner_with_control(registry, Arc::new(FakeDriverControl::default())).await
+}
+
+async fn started_owner_with_control(
+    registry: &ChatRuntimeRegistry,
+    control: Arc<FakeDriverControl>,
+) -> Arc<ganbaru_chat::runtime::ThreadRuntimeOwner> {
     let owner = registry
         .owner(ChatThreadId::new("thread-1").unwrap())
         .unwrap();
-    let control = Arc::new(FakeDriverControl::default());
     let sink: Arc<dyn ProviderEventSink> = Arc::new(RecordingEventSink::new(Arc::clone(&control)));
     owner
         .start_session(
@@ -740,6 +746,49 @@ fn a_provider_update_restarts_only_quiet_idle_sessions_of_its_family() {
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(
             busy.snapshot().unwrap().session_state,
+            ProviderSessionState::Stopped
+        );
+    });
+}
+
+#[test]
+fn reported_background_work_keeps_an_idle_session_running() {
+    tauri::async_runtime::block_on(async {
+        let registry = ChatRuntimeRegistry::with_idle_timeout_for_test(Duration::from_millis(80));
+        let control = Arc::new(FakeDriverControl::default());
+        control.set_background_work(true);
+        let owner = started_owner_with_control(&registry, Arc::clone(&control)).await;
+        owner
+            .try_command(restart_after_update("fake", Duration::from_millis(40)))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            owner.snapshot().unwrap().session_state,
+            ProviderSessionState::Ready,
+            "neither the idle stop nor an update restart cuts off background work"
+        );
+
+        control.set_background_work(false);
+        owner.try_command(ThreadRuntimeCommand::Touch).unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            owner.snapshot().unwrap().session_state,
+            ProviderSessionState::Stopped,
+            "the session stops once its background work ends and it stays idle"
+        );
+    });
+}
+
+#[test]
+fn a_changed_idle_timeout_reaches_running_sessions() {
+    tauri::async_runtime::block_on(async {
+        let registry = ChatRuntimeRegistry::default();
+        let owner = started_owner(&registry).await;
+        registry.set_idle_timeout(Duration::from_millis(60));
+        owner.try_command(ThreadRuntimeCommand::Touch).unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            owner.snapshot().unwrap().session_state,
             ProviderSessionState::Stopped
         );
     });

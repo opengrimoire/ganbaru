@@ -12,7 +12,6 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex, MutexGuard};
-#[cfg(target_os = "linux")]
 use std::time::Duration;
 
 /// Largest number of descendant processes one list reports; the rest are counted as omitted.
@@ -25,6 +24,10 @@ const MAX_LABEL_BYTES: usize = 256;
 const STOP_GRACE: Duration = Duration::from_secs(3);
 #[cfg(target_os = "linux")]
 const STOP_POLL: Duration = Duration::from_millis(100);
+/// Clock ticks per second in `/proc` CPU times, fixed at 100 by the Linux user ABI on the
+/// architectures Ganbaru ships for.
+#[cfg(target_os = "linux")]
+const USER_HZ: u64 = 100;
 
 /// Why a provider process runs, set on its launch configuration.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -179,6 +182,34 @@ pub fn list_processes() -> ChatProcessListRead {
         roots,
         descendants,
         omitted,
+    }
+}
+
+/// CPU time used so far by the work below a provider process: every descendant, and the
+/// children that already exited. The provider's own time is left out, so a CLI that only wakes
+/// for its timers does not look busy.
+///
+/// Returns `None` when the process is gone or the platform offers no process tree.
+pub fn descendant_cpu_time(pid: u32) -> Option<Duration> {
+    #[cfg(target_os = "linux")]
+    {
+        let processes = linux::scan_processes();
+        let root = processes.get(&pid)?;
+        let (descendants, _) = linux::descendants(&[pid], &processes, usize::MAX);
+        let ticks = descendants
+            .iter()
+            .filter_map(|descendant| processes.get(&descendant.pid))
+            .fold(root.exited_children_ticks, |total, stat| {
+                total
+                    .saturating_add(stat.own_ticks)
+                    .saturating_add(stat.exited_children_ticks)
+            });
+        Some(Duration::from_millis(ticks.saturating_mul(1_000 / USER_HZ)))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        None
     }
 }
 
@@ -355,6 +386,10 @@ mod linux {
         pub(super) parent_pid: u32,
         pub(super) process_group: u32,
         pub(super) start_time: ProcessStartTime,
+        /// User and system CPU time of the process itself, in clock ticks.
+        pub(super) own_ticks: u64,
+        /// User and system CPU time of children the process waited for, in clock ticks.
+        pub(super) exited_children_ticks: u64,
     }
 
     pub(super) fn read_stat(pid: u32) -> Option<ProcessStat> {
@@ -377,7 +412,18 @@ mod linux {
             parent_pid: fields.get(1)?.parse().ok()?,
             process_group: fields.get(2)?.parse().ok()?,
             start_time: ProcessStartTime(fields.get(19)?.parse().ok()?),
+            own_ticks: ticks(&fields, 11).saturating_add(ticks(&fields, 12)),
+            exited_children_ticks: ticks(&fields, 13).saturating_add(ticks(&fields, 14)),
         })
+    }
+
+    /// A CPU time field after the name, or zero when it is missing or unreadable, so listing a
+    /// process never depends on its CPU times.
+    fn ticks(fields: &[&str], index: usize) -> u64 {
+        fields
+            .get(index)
+            .and_then(|field| field.parse().ok())
+            .unwrap_or(0)
     }
 
     /// Every readable process, keyed by process ID.

@@ -608,6 +608,7 @@ pub async fn chat_update_behavior(
     behavior: ChatBehaviorPreferences,
 ) -> ChatResult<ChatConfiguration> {
     write_chat_behavior(&app, &behavior).await?;
+    crate::chat::configuration::apply_runtime_behavior(&app, &behavior);
     read_chat_configuration(&app).await
 }
 

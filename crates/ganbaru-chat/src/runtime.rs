@@ -34,7 +34,7 @@ use helpers::*;
 use worker::run_thread_runtime;
 
 const DEFAULT_COMMAND_CAPACITY: usize = 32;
-const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const DEFAULT_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 const STOP_FLUSH_INTERVAL: Duration = Duration::from_millis(32);
 /// How long an accepted interrupt may wait for the provider to settle the turn before the
@@ -42,11 +42,18 @@ const STOP_FLUSH_INTERVAL: Duration = Duration::from_millis(32);
 /// interrupt is not trusted with the next turn.
 pub const INTERRUPT_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long a session must stay idle with no provider events before an updated CLI replaces it.
-/// Reason: work the agent left running after its turn ended sends no events Ganbaru tracks, so
-/// a short quiet period keeps a restart from cutting it off right after the turn.
+/// Reason: a short quiet period lets anything still finishing right after a turn settle first.
 pub const UPDATE_RESTART_QUIET: Duration = Duration::from_secs(60);
-/// The longest a session waiting to restart after an update goes between idle checks.
-const UPDATE_RESTART_POLL_INTERVAL: Duration = Duration::from_secs(5);
+/// How long a due stop waits before checking again whether the session is still busy.
+const STOP_RECHECK_INTERVAL: Duration = Duration::from_secs(30);
+/// How long CPU use below the provider is measured before a stop; a first sample waits this
+/// long for the second.
+const CPU_SAMPLE_INTERVAL: Duration = Duration::from_secs(10);
+/// Oldest CPU sample a stop check compares against; an older one is measured again.
+const CPU_SAMPLE_MAX_AGE: Duration = Duration::from_secs(120);
+/// Share of one core, in percent, above which the work below a provider counts as running.
+/// Reason: an idle shell or watcher stays well below it, while a build or test run is far above.
+const BUSY_CPU_PERCENT: u128 = 2;
 
 pub enum ThreadRuntimeCommand {
     SessionState(ProviderSessionState),
@@ -475,7 +482,7 @@ impl ThreadRuntimeOwner {
 
 pub struct ChatRuntimeRegistry {
     owners: Mutex<HashMap<ChatThreadId, Arc<ThreadRuntimeOwner>>>,
-    idle_timeout: Duration,
+    idle_timeout: IdleTimeout,
     interrupt_confirmation_timeout: Duration,
 }
 
@@ -483,13 +490,41 @@ impl Default for ChatRuntimeRegistry {
     fn default() -> Self {
         Self {
             owners: Mutex::new(HashMap::new()),
-            idle_timeout: DEFAULT_IDLE_TIMEOUT,
+            idle_timeout: IdleTimeout::new(DEFAULT_IDLE_TIMEOUT),
             interrupt_confirmation_timeout: INTERRUPT_CONFIRMATION_TIMEOUT,
         }
     }
 }
 
+/// How long a session stays idle before its provider stops, shared by the registry and every
+/// worker so a changed setting reaches running sessions.
+#[derive(Clone, Debug)]
+pub(crate) struct IdleTimeout(Arc<AtomicU64>);
+
+impl IdleTimeout {
+    fn new(timeout: Duration) -> Self {
+        Self(Arc::new(AtomicU64::new(millis(timeout))))
+    }
+
+    pub(crate) fn get(&self) -> Duration {
+        Duration::from_millis(self.0.load(Ordering::Relaxed))
+    }
+
+    fn set(&self, timeout: Duration) {
+        self.0.store(millis(timeout), Ordering::Relaxed);
+    }
+}
+
+fn millis(timeout: Duration) -> u64 {
+    u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX)
+}
+
 impl ChatRuntimeRegistry {
+    /// Sets how long sessions stay idle before their provider stops, for running sessions too.
+    pub fn set_idle_timeout(&self, timeout: Duration) {
+        self.idle_timeout.set(timeout);
+    }
+
     /// Returns the thread's owner, creating it and its worker when none exists.
     ///
     /// Callers create owners only for threads that exist or that the same command is creating;
@@ -536,13 +571,14 @@ impl ChatRuntimeRegistry {
             return Ok(Arc::clone(owner));
         }
         let now = Instant::now();
-        owners.retain(|_, owner| !owner.can_evict(now, self.idle_timeout));
+        let idle_timeout = self.idle_timeout.get();
+        owners.retain(|_, owner| !owner.can_evict(now, idle_timeout));
         let (sender, receiver) = mpsc::channel(capacity.max(1));
         let snapshot = Arc::new(Mutex::new(ThreadRuntimeSnapshot::stopped()));
         let generation = Arc::new(AtomicU64::new(0));
         let worker_thread_id = thread_id.clone();
         let worker_snapshot = Arc::clone(&snapshot);
-        let idle_timeout = self.idle_timeout;
+        let idle_timeout = self.idle_timeout.clone();
         let interrupt_confirmation_timeout = self.interrupt_confirmation_timeout;
         let worker = tokio::spawn(async move {
             if let Some(start_gate) = start_gate {
@@ -801,7 +837,7 @@ impl ChatRuntimeRegistry {
     pub fn with_idle_timeout_for_test(idle_timeout: Duration) -> Self {
         Self {
             owners: Mutex::new(HashMap::new()),
-            idle_timeout,
+            idle_timeout: IdleTimeout::new(idle_timeout),
             interrupt_confirmation_timeout: INTERRUPT_CONFIRMATION_TIMEOUT,
         }
     }
@@ -810,7 +846,7 @@ impl ChatRuntimeRegistry {
     pub fn with_interrupt_confirmation_timeout_for_test(timeout: Duration) -> Self {
         Self {
             owners: Mutex::new(HashMap::new()),
-            idle_timeout: DEFAULT_IDLE_TIMEOUT,
+            idle_timeout: IdleTimeout::new(DEFAULT_IDLE_TIMEOUT),
             interrupt_confirmation_timeout: timeout,
         }
     }

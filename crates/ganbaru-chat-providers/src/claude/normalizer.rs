@@ -1,11 +1,13 @@
 //! Claude SDK message normalization into Ganbaru's canonical event model.
 
+mod background;
 mod blocks;
 mod limits;
 mod messages;
 mod seen;
 mod usage;
 
+use background::ClaudeBackgroundTasks;
 use blocks::{ClaudeStreamScope, ClaudeStreamState, usable_message_id};
 use limits::ClaudeRateLimitMemory;
 pub(super) use limits::usage_reply_status;
@@ -56,6 +58,8 @@ pub struct ClaudeRouteState {
     rate_limits: ClaudeRateLimitMemory,
     pub(super) usage: ClaudeUsageTracker,
     pub(super) tool_kinds: HashMap<String, CanonicalItemKind>,
+    /// Background commands and agents that outlive the turn that started them.
+    background_tasks: ClaudeBackgroundTasks,
 }
 
 impl ClaudeRouteState {
@@ -77,7 +81,13 @@ impl ClaudeRouteState {
             rate_limits: ClaudeRateLimitMemory::default(),
             usage: ClaudeUsageTracker::default(),
             tool_kinds: HashMap::new(),
+            background_tasks: ClaudeBackgroundTasks::default(),
         }
+    }
+
+    /// Whether the CLI reports a background command or agent that is still running.
+    pub fn background_work_running(&self) -> bool {
+        self.background_tasks.any_running()
     }
 
     /// Claims the right to project an ExitPlanMode plan, which both the assistant message and

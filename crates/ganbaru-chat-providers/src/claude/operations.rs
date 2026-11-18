@@ -64,6 +64,18 @@ impl ProviderDriver for ClaudeProviderDriver {
         claude_capabilities()
     }
 
+    fn session_process_id(&self) -> Option<u32> {
+        self.live.as_ref()?.connection.process_id()
+    }
+
+    fn background_work_running(&self) -> bool {
+        self.live.as_ref().is_some_and(|live| {
+            live.route
+                .lock()
+                .is_ok_and(|route| route.background_work_running())
+        })
+    }
+
     /// Agent launches load only the tools their scope allows, confine the file tools to
     /// the working directory, deny the network tools, and send every shell command to Ganbaru
     /// as a permission request. Where the Ganbaru sandbox is present, the commands run under

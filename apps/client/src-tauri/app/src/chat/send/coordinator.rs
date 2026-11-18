@@ -173,6 +173,7 @@ pub(crate) async fn send_turn(
             ));
         }
     }
+    crate::chat::configuration::refresh_runtime_behavior(&app).await;
     let owner = app
         .state::<ChatRuntimeRegistry>()
         .owner(thread_id.clone())?;

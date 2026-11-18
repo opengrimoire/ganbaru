@@ -124,6 +124,18 @@ pub trait ProviderDriver: Send {
 
     fn capabilities(&self) -> ProviderCapabilities;
 
+    /// Process ID of the provider process the live session runs in, when the session owns one,
+    /// so the runtime can see whether work the agent started below it is still running.
+    fn session_process_id(&self) -> Option<u32> {
+        None
+    }
+
+    /// Whether the provider reports work it started for the live session, such as a background
+    /// command or agent, that is still running after its turn ended.
+    fn background_work_running(&self) -> bool {
+        false
+    }
+
     fn authority_support(&self) -> ProviderAuthoritySupport {
         ProviderAuthoritySupport::default()
     }

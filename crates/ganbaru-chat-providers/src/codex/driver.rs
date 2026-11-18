@@ -241,6 +241,10 @@ impl ProviderDriver for CodexProviderDriver {
         codex_capabilities()
     }
 
+    fn session_process_id(&self) -> Option<u32> {
+        self.live.as_ref()?.connection.process_id()
+    }
+
     fn authority_support(&self) -> ProviderAuthoritySupport {
         self.device_authority_support()
     }

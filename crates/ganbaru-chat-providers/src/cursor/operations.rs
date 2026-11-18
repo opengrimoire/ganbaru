@@ -111,6 +111,10 @@ impl ProviderDriver for CursorProviderDriver {
         potential_capabilities_for(self.flavor)
     }
 
+    fn session_process_id(&self) -> Option<u32> {
+        self.live.as_ref()?.connection.process_id()
+    }
+
     /// Boundaries any ACP agent of this flavor can hold; a probe narrows `internal_host_tools` to
     /// the agent's HTTP MCP support.
     ///

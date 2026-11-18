@@ -182,6 +182,15 @@ impl ClaudeConnectionKill {
 }
 
 impl ClaudeJsonlConnection {
+    /// Process ID of the provider process, while the connection still owns it.
+    pub fn process_id(&self) -> Option<u32> {
+        self.process
+            .lock()
+            .ok()?
+            .as_ref()
+            .and_then(ProviderProcessHandle::process_id)
+    }
+
     /// Watch that tells whether the resource scope's memory ceiling stopped the provider; `None`
     /// when the provider is not scoped or was already stopped.
     pub fn memory_limit_watch(&self) -> Option<crate::process::systemd_scope::MemoryLimitWatch> {

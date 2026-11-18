@@ -148,3 +148,27 @@ pub(crate) fn read_chat_config<R: tauri::Runtime>(
     let stored = read_native_device_entry(app, CHAT_DEVICE_ENTRY).map_err(config_io_error)?;
     ChatDeviceConfig::from_stored(stored.as_ref())
 }
+
+/// Applies the behavior preferences the Chat runtime reads, such as how long an idle session
+/// keeps its provider running.
+#[cfg(desktop)]
+pub(crate) fn apply_runtime_behavior<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    behavior: &ChatBehaviorPreferences,
+) {
+    use tauri::Manager;
+    app.state::<ganbaru_chat::runtime::ChatRuntimeRegistry>()
+        .set_idle_timeout(std::time::Duration::from_secs(u64::from(
+            behavior.idle_session_timeout_seconds,
+        )));
+}
+
+/// Applies the active vault's behavior preferences to the Chat runtime, so a value another
+/// device synced takes effect before the next turn. When they cannot be read, the runtime keeps
+/// the values it has, and the failure surfaces wherever the preferences are read next.
+#[cfg(desktop)]
+pub(crate) async fn refresh_runtime_behavior<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    if let Ok(behavior) = read_chat_behavior(app).await {
+        apply_runtime_behavior(app, &behavior);
+    }
+}

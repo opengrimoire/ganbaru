@@ -26,6 +26,9 @@ impl ClaudeEventNormalizer {
                 state.resume_cursor.session_uuid = session_id.to_string();
             }
         }
+        if state.background_tasks.observe(subtype, object) {
+            return Ok(Vec::new());
+        }
         match subtype {
             "init" => {
                 let provider_thread = state

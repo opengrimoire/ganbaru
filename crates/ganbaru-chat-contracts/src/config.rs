@@ -54,7 +54,7 @@ fn default_terminal_scrollback_lines() -> u32 {
 }
 
 fn default_idle_session_timeout_seconds() -> u32 {
-    900
+    1_800
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

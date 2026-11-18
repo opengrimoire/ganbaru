@@ -812,7 +812,7 @@ describe("Chat configuration", () => {
         automaticallyFoldSettledWork: true,
         timelineDensity: "compact",
         terminalScrollbackLines: 12_000,
-        idleSessionTimeoutSeconds: 900,
+        idleSessionTimeoutSeconds: 1_800,
         confirmMultilineTerminalPaste: true,
         notifyWaitingForYou: true,
         notifyReviewReady: false,

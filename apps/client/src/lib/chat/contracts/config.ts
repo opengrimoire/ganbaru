@@ -95,7 +95,7 @@ export const CHAT_BEHAVIOR_DEFAULTS: Readonly<ChatBehaviorPreferences> = Object.
   automaticallyFoldSettledWork: true,
   timelineDensity: "comfortable",
   terminalScrollbackLines: 10_000,
-  idleSessionTimeoutSeconds: 900,
+  idleSessionTimeoutSeconds: 1_800,
   confirmMultilineTerminalPaste: true,
   notifyWaitingForYou: true,
   notifyReviewReady: true,

@@ -22,9 +22,15 @@ pub struct FakeDriverControl {
     opened_instructions: Mutex<Vec<Option<String>>>,
     native_rollback: AtomicBool,
     rollback_requests: Mutex<Vec<RollbackRequest>>,
+    background_work: AtomicBool,
 }
 
 impl FakeDriverControl {
+    /// Makes the live session report background work as running or finished.
+    pub fn set_background_work(&self, running: bool) {
+        self.background_work.store(running, Ordering::Release);
+    }
+
     /// Makes later sessions advertise native rollback and accept rollback requests.
     pub fn enable_native_rollback(&self) {
         self.native_rollback.store(true, Ordering::Release);
@@ -231,6 +237,10 @@ impl ProviderDriver for FakeProviderDriver {
 
     fn capabilities(&self) -> ProviderCapabilities {
         self.control.capabilities()
+    }
+
+    fn background_work_running(&self) -> bool {
+        self.control.background_work.load(Ordering::Acquire)
     }
 
     fn probe<'a>(

@@ -56,6 +56,10 @@ impl ProviderDriver for OpenCodeProviderDriver {
         capabilities()
     }
 
+    fn session_process_id(&self) -> Option<u32> {
+        self.live.as_ref()?.owned_server.as_ref()?.process_id()
+    }
+
     /// An owned local server enforces organizational scopes through session permission rules
     /// that outrank agent and configuration rules, with project configuration, formatters, and
     /// language servers off. Reads and edits stay in the working directory, web tools, subagents,

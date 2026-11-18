@@ -319,15 +319,8 @@
   </ChatIconTile>
 {/snippet}
 
-{#snippet rowDetails(label: string, description: string, controlId?: string)}
-  <div class="min-w-0 flex-1">
-    {#if controlId}
-      <label for={controlId} class="text-[0.866667rem] text-foreground">{label}</label>
-    {:else}
-      <div class="text-[0.866667rem] text-foreground">{label}</div>
-    {/if}
-    <div class="mt-0.5 wrap-break-word text-[0.8rem] leading-5 text-muted-foreground">{description}</div>
-  </div>
+{#snippet rowLabel(label: string)}
+  <div class="min-w-0 flex-1 wrap-break-word text-[0.866667rem] text-foreground">{label}</div>
 {/snippet}
 
 <section class="access-profiles" data-agents-settings-subsection="accessProfiles">
@@ -411,21 +404,21 @@
                 </div>
               {/if}
               <div class="flex items-center justify-between gap-4 px-1 py-1">
-                {@render rowDetails(t("settings.agents.agents.readHistory"), t("settings.agents.agents.readHistoryDescription"))}
-                <Switch checked={draft.readHistory} disabled={settingsLocked} ariaLabel={t("settings.agents.agents.readHistory")} onChange={(checked) => { draft.readHistory = checked; }} />
+                {@render rowLabel(t("settings.agents.accessProfiles.readHistory"))}
+                <Switch checked={draft.readHistory} disabled={settingsLocked} ariaLabel={t("settings.agents.accessProfiles.readHistory")} onChange={(checked) => { draft.readHistory = checked; }} />
               </div>
               {#if draft.readHistory}
                 <div class="flex items-center justify-between gap-4 px-1 py-1 max-[480px]:flex-col max-[480px]:items-stretch max-[480px]:gap-2">
-                  {@render rowDetails(t("settings.agents.agents.history"), t("settings.agents.accessProfiles.historyDescription"))}
+                  {@render rowLabel(t("settings.agents.agents.history"))}
                   <Select inline value={draft.historyBoundary} options={historyOptions} disabled={settingsLocked} ariaLabel={t("settings.agents.agents.history")} onChange={(value) => { draft.historyBoundary = value === "fromGrant" ? "fromGrant" : "entire"; }} />
                 </div>
               {/if}
               <div class="flex items-center justify-between gap-4 px-1 py-1">
-                {@render rowDetails(t("settings.agents.agents.participate"), t("settings.agents.agents.participateDescription"))}
-                <Switch checked={draft.participate} disabled={settingsLocked} ariaLabel={t("settings.agents.agents.participate")} onChange={(checked) => { draft.participate = checked; }} />
+                {@render rowLabel(t("settings.agents.accessProfiles.participate"))}
+                <Switch checked={draft.participate} disabled={settingsLocked} ariaLabel={t("settings.agents.accessProfiles.participate")} onChange={(checked) => { draft.participate = checked; }} />
               </div>
               <div class="flex items-center justify-between gap-4 px-1 py-1 max-[480px]:flex-col max-[480px]:items-stretch max-[480px]:gap-2">
-                {@render rowDetails(t("settings.agents.accessProfiles.maximumFolderCapability"), t("settings.agents.accessProfiles.maximumFolderCapabilityDescription"))}
+                {@render rowLabel(t("settings.agents.accessProfiles.maximumFolderCapability"))}
                 <Select inline value={draft.maximumFolderCapability} options={folderCapabilityOptions} disabled={settingsLocked} ariaLabel={t("settings.agents.accessProfiles.maximumFolderCapability")} onChange={(value) => { if (isFolderCapability(value)) draft.maximumFolderCapability = value; }} />
               </div>
             </section>

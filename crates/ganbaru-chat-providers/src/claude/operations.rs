@@ -8,6 +8,7 @@ use super::protocol::*;
 use super::session::*;
 use super::support::*;
 use crate::events::*;
+use crate::model_recommendation::{NativeCompany, recommended_model_id};
 use crate::models::*;
 use crate::registry::{admit_version, refused_version};
 use crate::{
@@ -124,7 +125,10 @@ impl ProviderDriver for ClaudeProviderDriver {
                             .contains_key("ANTHROPIC_API_KEY");
                     self.cached_models = Some(ProviderModelCatalog {
                         instance_id: self.configuration.instance_id.clone(),
-                        default_model_id: default_model_route(&snapshot.models),
+                        recommended_model_id: recommended_model_id(
+                            NativeCompany::Anthropic,
+                            &snapshot.models,
+                        ),
                         models: snapshot.models,
                         source: ModelCatalogSource::Provider,
                         discovered_at: checked_at.clone(),
@@ -201,7 +205,10 @@ impl ProviderDriver for ClaudeProviderDriver {
             self.cached_commands = snapshot.initialize.commands.clone();
             let catalog = ProviderModelCatalog {
                 instance_id: self.configuration.instance_id.clone(),
-                default_model_id: default_model_route(&snapshot.models),
+                recommended_model_id: recommended_model_id(
+                    NativeCompany::Anthropic,
+                    &snapshot.models,
+                ),
                 models: snapshot.models,
                 source: ModelCatalogSource::Provider,
                 discovered_at: now_utc()?,

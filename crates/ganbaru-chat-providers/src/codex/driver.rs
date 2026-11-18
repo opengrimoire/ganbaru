@@ -12,6 +12,7 @@ use crate::events::{
     SessionConfiguredEvent, SessionExitedEvent, SessionStartedEvent, TurnCompletedEvent,
     TurnStartedEvent,
 };
+use crate::model_recommendation::{NativeCompany, recommended_model_id};
 use crate::models::*;
 use crate::process::{ProviderProcessConfig, spawn_provider_process};
 use crate::{DriverFuture, DriverOperationContext, ProviderDriver, ProviderEventSink};
@@ -510,8 +511,11 @@ impl ProviderDriver for CodexProviderDriver {
                     });
                     self.cached_models = Some(ProviderModelCatalog {
                         instance_id: self.configuration.instance_id.clone(),
+                        recommended_model_id: recommended_model_id(
+                            NativeCompany::OpenAi,
+                            &snapshot.models,
+                        ),
                         models: snapshot.models,
-                        default_model_id: None,
                         source: ModelCatalogSource::Provider,
                         discovered_at: checked_at.clone(),
                         stale: false,
@@ -571,8 +575,8 @@ impl ProviderDriver for CodexProviderDriver {
             }
             let catalog = ProviderModelCatalog {
                 instance_id: self.configuration.instance_id.clone(),
+                recommended_model_id: recommended_model_id(NativeCompany::OpenAi, &snapshot.models),
                 models: snapshot.models,
-                default_model_id: None,
                 source: ModelCatalogSource::Provider,
                 discovered_at: now_utc()?,
                 stale: false,

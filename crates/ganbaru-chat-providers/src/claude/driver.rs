@@ -14,6 +14,7 @@ use super::support::*;
 use super::transport::ClaudeJsonlConnection;
 use crate::confinement::ShellSandbox;
 use crate::events::*;
+use crate::model_recommendation::{NativeCompany, recommended_model_id};
 use crate::models::*;
 use crate::process::{ProviderProcessConfig, spawn_provider_process};
 use crate::{DriverOperationContext, ProviderEventSink};
@@ -458,7 +459,7 @@ impl ClaudeProviderDriver {
         self.cached_commands = initialize.commands.clone();
         self.cached_models = Some(ProviderModelCatalog {
             instance_id: self.configuration.instance_id.clone(),
-            default_model_id: default_model_route(&models),
+            recommended_model_id: recommended_model_id(NativeCompany::Anthropic, &models),
             models,
             source: ModelCatalogSource::Provider,
             discovered_at: now_utc()?,

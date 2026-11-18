@@ -5,7 +5,7 @@ import {
   familiesInPickerOrder,
   firstPickerChoice,
   providersInPickerOrder,
-  resolveProviderDefaultSelection,
+  resolveRecommendedSelection,
 } from "./model-picker-model";
 
 const NOW_MS = Date.parse("2026-11-17T12:00:00Z");
@@ -30,7 +30,7 @@ function provider(
   options: {
     state?: ProbeState;
     models?: ProviderModel[];
-    defaultModelId?: string | null;
+    recommendedModelId?: string | null;
     favoriteModelIds?: string[];
     lastUsedAt?: string | null;
   } = {},
@@ -79,7 +79,7 @@ function provider(
     },
     lastSuccessfulProbeAt: state === "healthy" ? "2026-11-17T11:00:00Z" : null,
     modelCatalog: options.models
-      ? { instanceId, models: options.models, defaultModelId: options.defaultModelId ?? null, source: "provider", discoveredAt: "2026-11-17T11:00:00Z", stale: false }
+      ? { instanceId, models: options.models, recommendedModelId: options.recommendedModelId ?? null, source: "provider", discoveredAt: "2026-11-17T11:00:00Z", stale: false }
       : null,
     usageLimits: null,
     lastUsedAt: options.lastUsedAt ?? null,
@@ -157,37 +157,39 @@ describe("first picker choice", () => {
   });
 });
 
-describe("provider default choice", () => {
+describe("models without a provider default", () => {
   const unselected = { providerInstanceId: null, modelId: null, providerManaged: false };
 
-  function defaultRows(providers: ProviderInstanceRead[]): string[] {
-    return buildModelCompanySections(providers, [], unselected, "", "Default", "en", NOW_MS)
+  function configuredRows(providers: ProviderInstanceRead[]): string[] {
+    return buildModelCompanySections(providers, [], unselected, "", "Model set in the provider", "en", NOW_MS)
       .flatMap((section) => section.managedProviders.map((entry) => entry.configuration.instanceId));
   }
 
-  it("offers Default for every provider whose catalog lists no default entry, selected or not", () => {
-    const codex = provider("codex-main", "codex", { models: [model("gpt-5.5")] });
+  it("offers the provider's configured model only for providers without discovered models", () => {
+    const codex = provider("codex-main", "codex", { models: [model("gpt-5.6-sol")] });
     const cursor = provider("cursor-main", "cursor");
-    expect(defaultRows([codex, cursor]).sort()).toEqual(["codex-main", "cursor-main"]);
+    expect(configuredRows([codex, cursor])).toEqual(["cursor-main"]);
   });
 
-  it("leaves the provider's own default entry as the only Default choice", () => {
+  it("shows a selection without a model as the catalog's recommended model", () => {
     const claude = provider("claude-main", "claude", {
-      models: [model("default", { displayName: "Default (Opus 9)" }), model("opus")],
-      defaultModelId: "default",
-    });
-    expect(defaultRows([claude])).toEqual([]);
-  });
-
-  it("shows a provider default selection as the catalog default entry", () => {
-    const claude = provider("claude-main", "claude", {
-      models: [model("default"), model("opus")],
-      defaultModelId: "default",
+      models: [model("fable"), model("opus"), model("sonnet")],
+      recommendedModelId: "opus",
     });
     const managed = { modelId: null, providerManaged: true, options: [] };
-    expect(resolveProviderDefaultSelection(claude, managed)).toEqual({ modelId: "default", providerManaged: false, options: [] });
-    expect(resolveProviderDefaultSelection(provider("cursor-main", "cursor"), managed)).toBe(managed);
-    const named = { modelId: "opus", providerManaged: false };
-    expect(resolveProviderDefaultSelection(claude, named)).toBe(named);
+    expect(resolveRecommendedSelection(claude, managed)).toEqual({ modelId: "opus", providerManaged: false, options: [] });
+    expect(resolveRecommendedSelection(provider("cursor-main", "cursor"), managed)).toBe(managed);
+    const named = { modelId: "sonnet", providerManaged: false };
+    expect(resolveRecommendedSelection(claude, named)).toBe(named);
+  });
+
+  it("falls back to the strongest visible model when the recommendation is hidden", () => {
+    const claude = provider("claude-main", "claude", {
+      models: [model("sonnet"), model("fable"), model("opus")],
+      recommendedModelId: "opus",
+    });
+    claude.configuration.visibleModelIds = ["sonnet", "fable"];
+    const managed = { modelId: null, providerManaged: true, options: [] };
+    expect(resolveRecommendedSelection(claude, managed).modelId).toBe("fable");
   });
 });

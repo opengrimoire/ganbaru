@@ -975,14 +975,34 @@ pub fn resume_cursor(cursor: &ClaudeResumeCursor) -> VersionedJson {
 }
 
 /// The Claude model value that follows the account's default model instead of naming one.
-pub const CLAUDE_DEFAULT_MODEL_ROUTE: &str = "default";
+const CLAUDE_DEFAULT_MODEL_ROUTE: &str = "default";
 
-/// The catalog entry that follows Claude's default model, when the listed `models` include it.
-pub fn default_model_route(models: &[ProviderModel]) -> Option<ModelId> {
-    models
+/// Replaces Claude's default route with the model it resolves to, since the route follows
+/// whatever the account default becomes. The resolved model is kept only when no other entry
+/// already runs it, such as the `opus` alias.
+fn without_default_route(models: Vec<ClaudeModel>) -> Vec<ClaudeModel> {
+    let resolved_elsewhere: BTreeSet<String> = models
         .iter()
-        .find(|model| model.id.as_str() == CLAUDE_DEFAULT_MODEL_ROUTE)
-        .map(|model| model.id.clone())
+        .filter(|model| model.value != CLAUDE_DEFAULT_MODEL_ROUTE)
+        .filter_map(|model| model.resolved_model.clone())
+        .collect();
+    models
+        .into_iter()
+        .filter_map(|model| {
+            if model.value != CLAUDE_DEFAULT_MODEL_ROUTE {
+                return Some(model);
+            }
+            let resolved = model.resolved_model.clone()?;
+            let label = resolved_claude_model_label(&resolved)?;
+            (!resolved_elsewhere.contains(&resolved)).then(|| ClaudeModel {
+                value: resolved.clone(),
+                resolved_model: Some(resolved),
+                display_name: label,
+                description: None,
+                ..model
+            })
+        })
+        .collect()
 }
 
 pub fn provider_models(
@@ -992,7 +1012,7 @@ pub fn provider_models(
 ) -> ChatResult<Vec<ProviderModel>> {
     let mut output = Vec::new();
     let mut seen = BTreeSet::new();
-    for model in models {
+    for model in without_default_route(models) {
         validate_model_id(&model.value)?;
         if !seen.insert(model.value.clone()) {
             continue;
@@ -1059,17 +1079,6 @@ fn claude_model_display_name(model: &ClaudeModel) -> String {
     let display_name = model.display_name.trim();
     if display_name.is_empty() {
         return String::new();
-    }
-    // The default route can resolve to the same model as a pinned alias such as
-    // `opus`, so its label keeps the word Default to stay distinguishable.
-    if model.value == CLAUDE_DEFAULT_MODEL_ROUTE {
-        if let Some(resolved) = model
-            .resolved_model
-            .as_deref()
-            .and_then(resolved_claude_model_label)
-        {
-            return format!("Default ({resolved})");
-        }
     }
     if display_name
         .chars()

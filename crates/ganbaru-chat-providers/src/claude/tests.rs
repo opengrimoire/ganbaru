@@ -270,12 +270,8 @@ fn native_model_metadata_resolves_names_and_supported_effort_levels() {
 
     let models = provider_models(models, &[], &BTreeMap::new()).unwrap();
 
-    assert_eq!(models[0].display_name, "Default (Opus 4.8)");
-    assert_eq!(
-        default_model_route(&models).as_ref().map(ModelId::as_str),
-        Some(CLAUDE_DEFAULT_MODEL_ROUTE)
-    );
-    assert_eq!(default_model_route(&models[1..]), None);
+    assert_eq!(models[0].id.as_str(), "claude-opus-4-8");
+    assert_eq!(models[0].display_name, "Opus 4.8");
     assert_eq!(models[1].display_name, "Sonnet 5");
     assert_eq!(models[2].display_name, "Haiku 4.5");
     let ModelOptionDefinition::Choice {
@@ -331,13 +327,9 @@ fn custom_model_names_do_not_infer_fast_mode_support() {
 #[test]
 fn native_model_routes_keep_distinct_capabilities_despite_matching_labels() {
     let input: Vec<ClaudeModel> = serde_json::from_value(json!([{
-        "value": "default",
-        "displayName": "Opus 9",
-        "supportsFastMode": true
-    }, {
         "value": "opus",
         "displayName": "Opus 9",
-        "supportsFastMode": false
+        "supportsFastMode": true
     }, {
         "value": "claude-opus-9",
         "displayName": "Opus 9"
@@ -350,7 +342,7 @@ fn native_model_routes_keep_distinct_capabilities_despite_matching_labels() {
             .iter()
             .map(|model| model.id.as_str())
             .collect::<Vec<_>>(),
-        ["default", "opus", "claude-opus-9"]
+        ["opus", "claude-opus-9"]
     );
     let fast_modes = models
         .iter()
@@ -360,7 +352,45 @@ fn native_model_routes_keep_distinct_capabilities_despite_matching_labels() {
             })
         })
         .collect::<Vec<_>>();
-    assert_eq!(fast_modes, [true, false, false]);
+    assert_eq!(fast_modes, [true, false]);
+}
+
+#[test]
+fn the_default_route_is_listed_only_as_the_model_it_runs() {
+    let input = |resolved: &str| -> Vec<ClaudeModel> {
+        serde_json::from_value(json!([{
+            "value": "default",
+            "resolvedModel": resolved,
+            "displayName": "Default (recommended)",
+            "description": "Opus 9 · Best for everyday, complex tasks",
+            "supportsEffort": true,
+            "supportedEffortLevels": ["low", "high"]
+        }, {
+            "value": "opus",
+            "resolvedModel": "claude-opus-9",
+            "displayName": "Opus 9"
+        }]))
+        .unwrap()
+    };
+    let ids = |models: Vec<ProviderModel>| {
+        models
+            .into_iter()
+            .map(|model| (model.id.as_str().to_string(), model.display_name))
+            .collect::<Vec<_>>()
+    };
+
+    let shared = provider_models(input("claude-opus-9"), &[], &BTreeMap::new()).unwrap();
+    assert_eq!(ids(shared), [("opus".to_string(), "Opus 9".to_string())]);
+
+    let distinct = provider_models(input("claude-opus-10"), &[], &BTreeMap::new()).unwrap();
+    assert_eq!(distinct[0].options.len(), 1);
+    assert_eq!(
+        ids(distinct),
+        [
+            ("claude-opus-10".to_string(), "Opus 10".to_string()),
+            ("opus".to_string(), "Opus 9".to_string()),
+        ]
+    );
 }
 
 #[test]

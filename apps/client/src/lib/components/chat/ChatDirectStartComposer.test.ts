@@ -251,7 +251,7 @@ describe("ChatDirectStartComposer", () => {
       ...composer(),
       text: "",
       providerInstanceId: "claude",
-      modelSelection: composerModelSelection("default", false, []),
+      modelSelection: composerModelSelection("opus", false, []),
       safetyMode: "ask_for_approval",
       interactionMode: "build",
       threadId: "thread-1",
@@ -1181,7 +1181,7 @@ describe("ChatDirectStartComposer model controls", () => {
     await tick();
 
     expect(chat.composer.providerInstanceId).toBe("claude");
-    expect(readComposerModelSelection(chat.composer.modelSelection).modelId).toBe("default");
+    expect(readComposerModelSelection(chat.composer.modelSelection).modelId).toBe("opus");
     expect(document.querySelector(".model-flyout")).not.toBeNull();
     expect(target.querySelector(".model-popover")).not.toBeNull();
   });
@@ -1193,7 +1193,7 @@ describe("ChatDirectStartComposer model controls", () => {
     const claude = settings.providerInstances.find((entry) => entry.configuration.instanceId === "claude");
     if (!codex || !claude) throw new Error("Favorite fixtures require Codex and Claude");
     codex.configuration.favoriteModelIds = ["gpt-5.6-sol"];
-    claude.configuration.favoriteModelIds = ["default"];
+    claude.configuration.favoriteModelIds = ["opus"];
     chat.settings = settings;
     chat.composer = {
       ...composer(),
@@ -1244,7 +1244,7 @@ describe("ChatDirectStartComposer model controls", () => {
     await tick();
 
     const selection = readComposerModelSelection(chat.composer.modelSelection);
-    expect(selection.modelId).toBe("default");
+    expect(selection.modelId).toBe("opus");
     expect(selection.providerManaged).toBe(false);
     expect(selection.options).toEqual([{
       key: "effort",

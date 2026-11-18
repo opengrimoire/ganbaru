@@ -9,6 +9,7 @@ use super::interactions::{
 use super::protocol::*;
 use super::session::*;
 use crate::events::*;
+use crate::model_recommendation::recommended_model_id;
 use crate::models::*;
 use crate::registry::{CoreVersion, admit_version, refused_version};
 use crate::{
@@ -262,8 +263,11 @@ impl ProviderDriver for CursorProviderDriver {
             let (started, _) = self.probe_snapshot(context).await?;
             let catalog = ProviderModelCatalog {
                 instance_id: self.configuration.instance_id.clone(),
+                recommended_model_id: recommended_model_id(
+                    self.flavor.native_company(),
+                    &started.models,
+                ),
                 models: started.models,
-                default_model_id: None,
                 source: ModelCatalogSource::Provider,
                 discovered_at: now_utc()?,
                 stale: false,

@@ -76,7 +76,9 @@ describe("Chat model companies", () => {
       model("gpt-5.5", "GPT-5.5"),
       model("gpt-5.6-luna", "GPT-5.6-Luna"),
       model("gpt-5.6-sol", "GPT-5.6-Sol"),
+      model("gpt-5.6-astra", "GPT-5.6-Astra"),
     ])).toEqual([
+      "gpt-5.6-astra",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
@@ -90,8 +92,10 @@ describe("Chat model companies", () => {
       model("haiku", "Haiku 4.5"),
       model("sonnet", "Sonnet 5"),
       model("opus-old", "Opus 4.7"),
-      model("default", "Opus 4.8"),
-    ])).toEqual(["default", "opus-old", "sonnet", "haiku"]);
+      model("opus", "Opus 4.8"),
+      model("fable", "Fable 5.2"),
+    ])).toEqual(["fable", "opus", "opus-old", "sonnet", "haiku"]);
+    expect(modelCompany("cursor", model("claude-fable-5-thinking-high", "Fable 5 Thinking High")).id).toBe("anthropic");
   });
 
   it("keeps Grok Build ahead of general and retired coding families", () => {

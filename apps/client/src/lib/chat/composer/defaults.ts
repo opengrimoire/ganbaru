@@ -8,6 +8,7 @@ import type {
 import {
   composerModelSelection,
   isProviderAvailable,
+  providerHasCatalogModels,
   readComposerModelSelection,
   resolveDefaultProviderModel,
 } from "./model";
@@ -101,7 +102,7 @@ function validModelSelection(
   if (!value) return null;
   const selection = readComposerModelSelection(value);
   if (selection.providerManaged) {
-    return composerModelSelection(null, true, selection.options);
+    return providerHasCatalogModels(provider) ? null : composerModelSelection(null, true, selection.options);
   }
   if (!selection.modelId || !selectableModelIds(provider).has(selection.modelId)) return null;
   return composerModelSelection(selection.modelId, false, selection.options);

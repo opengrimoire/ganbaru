@@ -169,8 +169,8 @@ export interface ProviderModel {
 export interface ProviderModelCatalog {
   instanceId: ProviderInstanceId;
   models: ProviderModel[];
-  /** The entry of `models` that follows the provider's own default model, when the provider lists one. */
-  defaultModelId: ModelId | null;
+  /** The entry of `models` that runs when nothing names a model, chosen instead of the provider's changing default. */
+  recommendedModelId: ModelId | null;
   source: ModelCatalogSource;
   discoveredAt: UtcTimestamp;
   stale: boolean;

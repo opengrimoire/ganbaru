@@ -22,7 +22,7 @@ An agent is created the first time any device detects a supported provider (Clau
 
 Deferred: a second account of the same provider, or a generic ACP agent, will be added by hand in Settings > Agents with a short label. Its ID will be random, and the label will become its name and handle (`Claude (work)`, `@claude-work`), so mentions are never ambiguous. The label will sync; each device will bind the agent to one of its own provider installations, and until it does, the agent will count as not installed there.
 
-Settings > Agents is provider setup: for each agent, whether its provider is installed and signed in on this device, its default model and effort, and a test. The default model and effort sync with the agent; installation, executables, and credentials stay device-local, as today. When a device's provider does not offer the chosen model, the run uses the provider's default and the thread shows which model ran.
+Settings > Agents is provider setup: for each agent, whether its provider is installed and signed in on this device, its default model and effort, and a test. The default model and effort sync with the agent; installation, executables, and credentials stay device-local, as today. When a device's provider does not offer the chosen model, the run uses that provider's recommended model and the thread shows which model ran.
 
 On a device where a provider is not installed, its agent still appears in channels and history, can still be mentioned, and its work waits in the thread for Start here on a device that has it. Because no device creates a provider agent, the agent has no home device: work runs on the desktop where the mention was posted when the provider is ready there, and otherwise waits for Start here. Android never executes agent work; it shows the agents, their work, and reviews.
 
@@ -73,7 +73,7 @@ A channel uses every folder of its project. A run uses a target chosen explicitl
 
 ## Model and effort
 
-Each agent's default model, with its effort and other model options, is set in Settings > Agents. A channel may override the model for an agent in its Agents section; the row shows "Default (model)" until it does. A thread switches its own model with `/model` in a message that starts or continues the work, and later work in that thread keeps the model it last chose. The channel composer has no other model control, so a post never carries hidden model choices. Direct provider threads outside channels keep their own model controls. Every agent reply names the model that produced it, so a switch, a channel override, or a device falling back to the provider default is visible where it happened.
+Each agent's default model, with its effort and other model options, is set in Settings > Agents. A channel may override the model for an agent in its Agents section; the row shows "Agent's model (model)" until it does. A thread switches its own model with `/model` in a message that starts or continues the work, and later work in that thread keeps the model it last chose. The channel composer has no other model control, so a post never carries hidden model choices. Direct provider threads outside channels keep their own model controls. Every agent reply names the model that produced it, so a switch, a channel override, or a device falling back to the recommended model is visible where it happened.
 
 ## Common journeys
 

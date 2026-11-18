@@ -48,7 +48,7 @@ const FAMILY_DEFAULTS: Record<string, ModelCompanyId> = {
 };
 
 const MODEL_MATCHERS: readonly [ModelCompanyId, RegExp][] = [
-  ["anthropic", /(?:^|[\s/_.-])(anthropic|claude|sonnet|opus|haiku)(?:$|[\s/_.-])/i],
+  ["anthropic", /(?:^|[\s/_.-])(anthropic|claude|fable|sonnet|opus|haiku)(?:$|[\s/_.-])/i],
   ["openai", /(?:^|[\s/_.-])(openai|chatgpt|gpt|codex|o[134])(?:$|[\s/_.-]|\d)/i],
   ["google", /(?:^|[\s/_.-])(google|gemini|gemma)(?:$|[\s/_.-]|\d)/i],
   ["xai", /(?:^|[\s/_.-])(xai|grok)(?:$|[\s/_.-]|\d)/i],
@@ -177,10 +177,14 @@ function normalizeVisibleModelIdentity(value: string): string {
 }
 
 function anthropicFamilyRank(identity: string): number {
-  if (identity.includes("opus")) return 0;
-  if (identity.includes("sonnet")) return 1;
-  if (identity.includes("haiku")) return 2;
-  return 3;
+  return familyRank(identity, ["fable", "opus", "sonnet", "haiku"]);
+}
+
+/** The index of the first of `families`, strongest first, that `identity` names as a word. */
+function familyRank(identity: string, families: readonly string[]): number {
+  const words = new Set(identity.split(/[^a-z0-9]+/u));
+  const index = families.findIndex((family) => words.has(family));
+  return index === -1 ? families.length : index;
 }
 
 function xaiFamilyRank(identity: string): number {
@@ -190,15 +194,14 @@ function xaiFamilyRank(identity: string): number {
 }
 
 function openAiVariantRank(identity: string): number {
-  if (identity.includes("sol")) return 0;
-  if (identity.includes("terra")) return 1;
-  if (identity.includes("luna")) return 2;
-  if (identity.includes("pro")) return 3;
-  if (identity.includes("spark")) return 8;
-  if (identity.includes("nano")) return 7;
-  if (identity.includes("mini")) return 6;
-  if (identity.includes("codex")) return 5;
-  return 4;
+  const tier = familyRank(identity, ["astra", "sol", "terra", "luna"]);
+  if (tier < 4) return tier;
+  if (identity.includes("pro")) return 4;
+  if (identity.includes("spark")) return 9;
+  if (identity.includes("nano")) return 8;
+  if (identity.includes("mini")) return 7;
+  if (identity.includes("codex")) return 6;
+  return 5;
 }
 
 function genericVariantRank(identity: string): number {

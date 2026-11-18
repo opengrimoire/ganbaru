@@ -113,19 +113,19 @@ export function chatAgentBehaviorLine(
 /** The models of a provider catalog that name an agent's default model. */
 export interface ChatAgentModelCatalog {
   models: readonly Pick<ProviderModel, "id" | "displayName">[];
-  defaultModelId: ModelId | null;
+  recommendedModelId: ModelId | null;
 }
 
 /**
  * The model an agent starts on when a channel does not override it: its own model, else the
- * catalog entry that follows the provider default, else `null` when the provider picks.
+ * catalog's recommended model, else `null` when the provider has no catalog on this device.
  */
 export function chatAgentDefaultModelId(
   policy: Pick<ChatAgentPolicyRead, "providerManagedModel" | "modelId"> | null,
   catalog: ChatAgentModelCatalog | null,
 ): ModelId | null {
   const modelId = policy && !policy.providerManagedModel ? policy.modelId : null;
-  return modelId ?? catalog?.defaultModelId ?? null;
+  return modelId ?? catalog?.recommendedModelId ?? null;
 }
 
 /** The model an agent starts on when a channel does not override it, by display name. */

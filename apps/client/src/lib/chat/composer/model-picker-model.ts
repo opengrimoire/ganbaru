@@ -7,7 +7,7 @@ import type {
   RememberedComposerSelection,
 } from "$lib/chat/contracts";
 import { compareProviderReadiness } from "$lib/chat/usage/provider-readiness";
-import { isProviderAvailable, modelOptionRole, providerDefaultModel, rankedModels } from "./model";
+import { isProviderAvailable, modelOptionRole, providerHasCatalogModels, rankedModels, recommendedProviderModel } from "./model";
 import {
   compareCompanyModels,
   formatModelDisplayName,
@@ -52,16 +52,16 @@ export interface ModelCatalogSelection {
 }
 
 /**
- * Shows and runs a selection that leaves the model to `provider` as the catalog entry that follows
- * the provider default, when the catalog lists one, so it carries that entry's name and options.
+ * Shows a selection that names no model as the model `provider` recommends, which is what runs
+ * for it whenever the provider has a catalog on this device.
  */
-export function resolveProviderDefaultSelection<Selection extends { modelId: string | null; providerManaged: boolean }>(
+export function resolveRecommendedSelection<Selection extends { modelId: string | null; providerManaged: boolean }>(
   provider: ProviderInstanceRead | null,
   selection: Selection,
 ): Selection {
-  if (!selection.providerManaged) return selection;
-  const defaultModel = providerDefaultModel(provider);
-  return defaultModel ? { ...selection, modelId: defaultModel.id, providerManaged: false } : selection;
+  if (!selection.providerManaged || !provider) return selection;
+  const recommended = recommendedProviderModel(provider);
+  return recommended ? { ...selection, modelId: recommended.id, providerManaged: false } : selection;
 }
 
 /** Formats a model name for the compact Chat model control. */
@@ -172,7 +172,7 @@ export function buildModelCompanySections(
     for (const model of rankedModels(visible, [], [], query)) {
       sectionFor(modelCompany(provider.configuration.familyId, model)).models.push({ provider, model });
     }
-    if (providerDefaultModel(provider) === null && (!query || providerManagedLabel.toLocaleLowerCase(locale).includes(query.toLocaleLowerCase(locale)))) {
+    if (!providerHasCatalogModels(provider) && (!query || providerManagedLabel.toLocaleLowerCase(locale).includes(query.toLocaleLowerCase(locale)))) {
       sectionFor(integrationCompany(provider.configuration.familyId)).managedProviders.push(provider);
     }
   }

@@ -77,14 +77,10 @@ export function availableProvidersInDefaultOrder(
     .map(({ provider }) => provider);
 }
 
-/** The catalog entry that follows the provider's own default model, or `null` when it lists none. */
-export function providerDefaultModel(provider: ProviderInstanceRead | null): ProviderModel | null {
-  const catalog = provider?.modelCatalog;
-  if (!catalog?.defaultModelId) return null;
-  return catalog.models.find((model) => model.id === catalog.defaultModelId) ?? null;
-}
-
-/** Selects the provider's default entry, otherwise its strongest visible built-in model. */
+/**
+ * Selects the catalog's recommended model when it is visible, otherwise the strongest visible
+ * built-in model of the first listed company.
+ */
 export function recommendedProviderModel(
   provider: ProviderInstanceRead,
   candidates: readonly ProviderModel[] = configuredVisibleModels(provider),
@@ -94,9 +90,9 @@ export function recommendedProviderModel(
   ));
   const builtIn = selectable.filter((model) => !model.custom);
   const pool = builtIn.length > 0 ? builtIn : selectable;
-  const defaultModelId = provider.modelCatalog?.defaultModelId ?? null;
-  const providerDefault = pool.find((model) => model.id === defaultModelId);
-  if (providerDefault) return providerDefault;
+  const recommendedModelId = provider.modelCatalog?.recommendedModelId ?? null;
+  const recommended = pool.find((model) => model.id === recommendedModelId);
+  if (recommended) return recommended;
   const first = pool[0];
   if (!first) return null;
   const company = modelCompany(provider.configuration.familyId, first);
@@ -181,6 +177,14 @@ export function copyVersionedJson(value: VersionedJson): VersionedJson {
   };
 }
 
+/**
+ * Reports whether this device discovered models for `provider`. Only a provider without them
+ * runs on the model configured in its own tool, since a catalog always yields a named model.
+ */
+export function providerHasCatalogModels(provider: ProviderInstanceRead | null): boolean {
+  return (provider?.modelCatalog?.models.length ?? 0) > 0;
+}
+
 /** Resolves a ready initial provider and model while honoring a healthy folder preference. */
 export function resolveDefaultProviderModel(
   providers: readonly ProviderInstanceRead[],
@@ -192,7 +196,7 @@ export function resolveDefaultProviderModel(
   )) ?? available[0];
   if (!provider) return null;
   const model = recommendedProviderModel(provider);
-  const providerManaged = model === null && (provider.modelCatalog?.models.length ?? 0) === 0;
+  const providerManaged = model === null && !providerHasCatalogModels(provider);
   return {
     provider,
     model,

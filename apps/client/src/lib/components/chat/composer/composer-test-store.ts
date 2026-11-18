@@ -312,7 +312,7 @@ export function modelSettings(): ChatSettingsRead {
       lastUsedAt: null, duplicateOf: null,
       modelCatalog: {
         instanceId: "codex-local",
-        defaultModelId: null,
+        recommendedModelId: null,
         source: "provider",
         discoveredAt: "2026-07-22T12:00:00.000Z",
         stale: false,
@@ -401,14 +401,14 @@ export function claudeModelSettings(): ChatSettingsRead {
   provider.lastProbe = provider.lastProbe ? { ...provider.lastProbe, instanceId: "claude" } : null;
   provider.modelCatalog = {
     instanceId: "claude",
-    defaultModelId: "default",
+    recommendedModelId: "opus",
     source: "provider",
     discoveredAt: "2026-07-23T12:00:00.000Z",
     stale: false,
     models: [{
-      id: "default",
+      id: "opus",
       displayName: "Opus 4.8",
-      description: "Use the default model (currently Opus 4.8)",
+      description: "Opus 4.8 · Most capable for complex work",
       contextLimit: null,
       availability: "available",
       capabilities: [],

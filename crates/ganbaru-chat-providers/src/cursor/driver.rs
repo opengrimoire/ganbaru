@@ -9,6 +9,7 @@ use super::protocol::*;
 use super::session::*;
 use super::transport::AcpRpcConnection;
 use crate::events::*;
+use crate::model_recommendation::{NativeCompany, recommended_model_id};
 use crate::models::*;
 use crate::{DriverOperationContext, ProviderEventSink};
 use std::collections::HashMap;
@@ -49,6 +50,14 @@ impl AcpProviderFlavor {
             Self::Cursor => "Cursor",
             Self::Grok => "Grok",
             Self::Generic => "ACP agent",
+        }
+    }
+
+    /// The company whose models this agent runs natively, which its recommended model prefers.
+    pub fn native_company(self) -> NativeCompany {
+        match self {
+            Self::Grok => NativeCompany::Xai,
+            Self::Cursor | Self::Generic => NativeCompany::None,
         }
     }
 
@@ -645,8 +654,11 @@ impl CursorProviderDriver {
         }
         self.cached_models = Some(ProviderModelCatalog {
             instance_id: self.configuration.instance_id.clone(),
+            recommended_model_id: recommended_model_id(
+                self.flavor.native_company(),
+                &started.models,
+            ),
             models: started.models,
-            default_model_id: None,
             source: ModelCatalogSource::Provider,
             discovered_at: now_utc()?,
             stale: false,

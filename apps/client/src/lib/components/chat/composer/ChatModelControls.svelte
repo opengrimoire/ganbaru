@@ -31,7 +31,7 @@
     isKnownModelOption,
     modelEffortStopPosition,
     modelOptionRole,
-    resolveProviderDefaultSelection,
+    resolveRecommendedSelection,
     visibleProviderModels,
     type KnownModelOption,
     type QuickEffortChoice,
@@ -143,7 +143,7 @@
     : allProviders);
   const provider = $derived(providers.find((entry) => entry.configuration.instanceId === providerInstanceId) ?? null);
   const unconfiguredFamilies = $derived(lockProvider ? [] : (chat.settings?.providerFamilies ?? []).filter((family) => !providers.some((entry) => entry.configuration.familyId === family.familyId)));
-  const selection = $derived(resolveProviderDefaultSelection(provider, value === undefined
+  const selection = $derived(resolveRecommendedSelection(provider, value === undefined
     ? readComposerModelSelection(chat.composer.modelSelection)
     : {
         modelId: value.modelId,

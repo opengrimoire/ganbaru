@@ -8,6 +8,7 @@ use super::permissions::{
 use super::protocol::parse_rollback_cursor;
 use super::support::*;
 use crate::events::*;
+use crate::model_recommendation::{NativeCompany, recommended_model_id};
 use crate::models::*;
 use crate::registry::{admit_version, refused_version};
 use crate::{
@@ -129,8 +130,11 @@ impl ProviderDriver for OpenCodeProviderDriver {
                     self.cached_commands = snapshot.commands.clone();
                     self.cached_models = Some(ProviderModelCatalog {
                         instance_id: self.configuration.instance_id.clone(),
+                        recommended_model_id: recommended_model_id(
+                            NativeCompany::None,
+                            &snapshot.models,
+                        ),
                         models: snapshot.models,
-                        default_model_id: None,
                         source: ModelCatalogSource::Provider,
                         discovered_at: checked_at.clone(),
                         stale: false,
@@ -190,8 +194,8 @@ impl ProviderDriver for OpenCodeProviderDriver {
             self.cached_commands = snapshot.commands.clone();
             let catalog = ProviderModelCatalog {
                 instance_id: self.configuration.instance_id.clone(),
+                recommended_model_id: recommended_model_id(NativeCompany::None, &snapshot.models),
                 models: snapshot.models,
-                default_model_id: None,
                 source: ModelCatalogSource::Provider,
                 discovered_at: now_utc()?,
                 stale: false,

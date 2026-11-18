@@ -381,12 +381,11 @@ pub struct ProviderModel {
 pub struct ProviderModelCatalog {
     pub instance_id: ProviderInstanceId,
     pub models: Vec<ProviderModel>,
-    /// The entry of `models` that follows the provider's own default model, such as Claude's
-    /// `default` route, when the provider lists one. A selection that leaves the model to the
-    /// provider is shown and run as this entry, so the provider default carries its name and
-    /// options.
+    /// The entry of `models` that runs when nothing names a model, chosen by Ganbaru from the
+    /// catalog instead of following the provider's own default, which changes with whatever was
+    /// last picked in the provider's tool.
     #[serde(default)]
-    pub default_model_id: Option<ModelId>,
+    pub recommended_model_id: Option<ModelId>,
     pub source: ModelCatalogSource,
     pub discovered_at: UtcTimestamp,
     pub stale: bool,

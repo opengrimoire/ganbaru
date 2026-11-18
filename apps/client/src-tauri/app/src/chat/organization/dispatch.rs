@@ -1484,16 +1484,16 @@ struct DispatchModel {
 }
 
 /// Chooses the model a dispatch runs from the `frozen` selection of its assignment and the
-/// `catalog` this device last discovered for the provider. The provider default runs as the
-/// catalog's default entry when it lists one, with that entry's name. A named model the catalog
-/// does not offer runs on the provider default instead; without a catalog the named model runs
-/// as frozen, since the provider is the only authority on what it offers.
+/// `catalog` this device last discovered for the provider. A selection without a model, or with a
+/// model the catalog does not offer, runs the catalog's recommended model under its name; without
+/// a catalog the named model runs as frozen, since the provider is the only authority on what it
+/// offers.
 fn dispatch_model(
     frozen: &ChatModelSelection,
     catalog: Option<&ProviderModelCatalog>,
 ) -> DispatchModel {
     let Some(model_id) = frozen.model_id.as_ref() else {
-        return provider_default_model(frozen.model_options.clone(), catalog);
+        return recommended_model(frozen.model_options.clone(), catalog);
     };
     let Some(catalog) = catalog else {
         return DispatchModel {
@@ -1506,21 +1506,21 @@ fn dispatch_model(
             selection: frozen.clone(),
             label: Some(model.display_name.clone()),
         },
-        None => provider_default_model(Vec::new(), Some(catalog)),
+        None => recommended_model(Vec::new(), Some(catalog)),
     }
 }
 
-/// The provider default with `model_options`: the `catalog` entry that follows it when the
-/// catalog lists one, otherwise no model at all so the provider picks.
-fn provider_default_model(
+/// The `catalog`'s recommended model with `model_options`, or no model at all, so the provider
+/// runs its configured one, when the catalog recommends nothing.
+fn recommended_model(
     model_options: Vec<ModelOptionSelection>,
     catalog: Option<&ProviderModelCatalog>,
 ) -> DispatchModel {
-    let route = catalog.and_then(|catalog| {
-        let id = catalog.default_model_id.as_ref()?;
+    let recommended = catalog.and_then(|catalog| {
+        let id = catalog.recommended_model_id.as_ref()?;
         catalog.models.iter().find(|model| &model.id == id)
     });
-    match route {
+    match recommended {
         Some(model) => DispatchModel {
             selection: ChatModelSelection {
                 provider_managed_model: false,
@@ -1609,7 +1609,7 @@ mod tests {
                     custom: false,
                 })
                 .collect(),
-            default_model_id: None,
+            recommended_model_id: None,
             source: ModelCatalogSource::Provider,
             discovered_at: UtcTimestamp::new("2026-11-18T00:00:00.000Z").unwrap(),
             stale: false,
@@ -1629,7 +1629,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_model_falls_back_to_the_provider_default_without_a_label() {
+    fn an_unknown_model_without_a_recommendation_runs_the_provider_configured_model() {
         let catalog = catalog(&[("gpt-5", "GPT-5")]);
         let model = dispatch_model(&named("gpt-9"), Some(&catalog));
         assert_eq!(model.selection, ChatModelSelection::provider_default());
@@ -1648,7 +1648,7 @@ mod tests {
     }
 
     #[test]
-    fn the_provider_default_keeps_its_selection() {
+    fn a_selection_without_a_model_stays_empty_when_nothing_is_recommended() {
         let default = ChatModelSelection::provider_default();
         let model = dispatch_model(&default, Some(&catalog(&[])));
         assert_eq!(model.selection, default);
@@ -1656,12 +1656,12 @@ mod tests {
     }
 
     #[test]
-    fn the_provider_default_runs_as_the_catalog_default_entry() {
-        let mut catalog = catalog(&[("default", "Default (Opus 9)"), ("opus", "Opus 9")]);
-        catalog.default_model_id = Some(ModelId::new("default").unwrap());
+    fn a_selection_without_a_known_model_runs_the_recommended_model() {
+        let mut catalog = catalog(&[("sonnet", "Sonnet 9"), ("opus", "Opus 9")]);
+        catalog.recommended_model_id = Some(ModelId::new("opus").unwrap());
         let expected = DispatchModel {
-            selection: named("default"),
-            label: Some("Default (Opus 9)".to_string()),
+            selection: named("opus"),
+            label: Some("Opus 9".to_string()),
         };
         assert_eq!(
             dispatch_model(&ChatModelSelection::provider_default(), Some(&catalog)),

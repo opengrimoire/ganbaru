@@ -61,7 +61,9 @@ Access is one setting per channel, inherited from the project and the app. It ap
 
 Work on their own is offered only on a device that can confine commands, either through the provider's own sandbox or through Ganbaru's sandbox; elsewhere it is shown disabled with the reason.
 
-Pushing to a Git remote is never part of a level. Agents under Ask before commands or Work on their own may request a push, and every push, Work on their own included, waits on a confirmation card naming the branch, remote, and commit, checked as in [Chat security](../../data/security/chat.md). Push and don't ask again remembers that agent, folder, push URL, and destination branch; the channel's Agents section lists these approvals, and lowering the channel's access below Ask before commands, removing the agent from the channel, or revoking the approval there ends it.
+Pushing to a Git remote is never part of a level. Agents under Ask before commands or Work on their own may request a push, and every push needs a person's decision, Work on their own included: the confirmation card names the branch, remote, and commit, checked as in [Chat security](../../data/security/chat.md). Push and don't ask again records that decision for that channel, agent, folder, push URL, and destination branch, so later matching requests push when their turn ends; the channel's Agents section lists these approvals, and lowering the channel's effective access below Ask before commands, removing the agent from the channel, or revoking the approval there ends it.
+
+Private scratch follows the same level: Talk only and Read only offer no scratch, Ask before commands asks before each command there, and Work on their own runs commands there without asking under the same confinement rule. Promoting scratch files into a folder needs a level that edits files.
 
 The channel lists each agent with one line describing what it will actually do under the current access on this device, for example "Asks before every command" or "Read only here: Cursor cannot ask before commands". When a provider cannot honor the level, the agent works at the closest narrower level it supports and that line says so; it never widens and never hides the difference.
 
@@ -69,7 +71,7 @@ A channel uses every folder of its project. A run uses the folder its thread alr
 
 ## Model and effort
 
-Each agent's default model and effort are set in Settings > Agents. A channel may override the model for an agent in its Agents section; the row shows "Default (model)" until it does. A thread switches its own model with `/model` in the message that starts the work, and work that continues in that thread keeps it. This command replaces the composer's model and effort controls, so a post never carries hidden model choices. Every agent reply names the model that produced it, so a switch, a channel override, or a device falling back to the provider default is visible where it happened.
+Each agent's default model, with its effort and other model options, is set in Settings > Agents. A channel may override the model for an agent in its Agents section; the row shows "Default (model)" until it does. A thread switches its own model with `/model` in the message that starts the work, and work that continues in that thread keeps it. The channel composer has no other model control, so a post never carries hidden model choices. Direct provider threads outside channels keep their own model controls. Every agent reply names the model that produced it, so a switch, a channel override, or a device falling back to the provider default is visible where it happened.
 
 ## Common journeys
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ProbeState, ProviderInstanceRead, ProviderModel } from "$lib/chat/contracts";
+import type { ProbeState, ProviderAccountPlan, ProviderInstanceRead, ProviderModel } from "$lib/chat/contracts";
 import {
   buildModelCompanySections,
   familiesInPickerOrder,
@@ -33,6 +33,7 @@ function provider(
     recommendedModelId?: string | null;
     favoriteModelIds?: string[];
     lastUsedAt?: string | null;
+    accountPlan?: ProviderAccountPlan | null;
   } = {},
 ): ProviderInstanceRead {
   const state = options.state ?? "healthy";
@@ -60,7 +61,7 @@ function provider(
       negotiatedProtocolVersion: null,
       accountLabel: null,
       authSource: null,
-      accountPlan: null,
+      accountPlan: options.accountPlan ?? null,
       capabilities: { entries: [] },
       authoritySupport: {
         isolatedConversation: true,
@@ -100,6 +101,24 @@ describe("picker order", () => {
     const cursorSignedOut = provider("cursor-main", "cursor", { state: "authentication_required" });
     expect(ids(providersInPickerOrder([cursorSignedOut, claude, codex, grokUsed], NOW_MS)))
       .toEqual(["grok-main", "codex-main", "claude-main", "cursor-main"]);
+  });
+
+  it("ranks a paid plan above a free one, before recent use and the company order", () => {
+    const codexFree = provider("codex-main", "codex", {
+      accountPlan: "free",
+      lastUsedAt: "2026-11-17T11:30:00Z",
+      models: [model("gpt-5.6-sol")],
+    });
+    const claudePaid = provider("claude-main", "claude", { accountPlan: "subscription", models: [model("opus")] });
+    expect(ids(providersInPickerOrder([codexFree, claudePaid], NOW_MS))).toEqual(["claude-main", "codex-main"]);
+    expect(buildModelCompanySections([codexFree, claudePaid], [], { providerInstanceId: null, modelId: null, providerManaged: false }, "", "Model set in the provider", "en", NOW_MS)
+      .map((section) => section.company.id)).toEqual(["anthropic", "openai"]);
+  });
+
+  it("lets the most recent use decide between equal plans", () => {
+    const codex = provider("codex-main", "codex", { accountPlan: "subscription" });
+    const claudeUsed = provider("claude-main", "claude", { accountPlan: "subscription", lastUsedAt: "2026-11-17T11:30:00Z" });
+    expect(ids(providersInPickerOrder([codex, claudeUsed], NOW_MS))).toEqual(["claude-main", "codex-main"]);
   });
 
   it("keeps backend order between equally ready instances of one family", () => {

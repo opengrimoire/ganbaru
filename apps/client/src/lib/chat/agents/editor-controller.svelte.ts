@@ -632,12 +632,6 @@ export function createAgentEditorController(options: AgentEditorOptions) {
     untouchedDefaultAccess = currentAccessSnapshot;
   }
 
-  function handleProfilesChange(nextProfiles: ChatAccessProfileRead[]): void {
-    accessProfiles = nextProfiles;
-    const agentId = selected?.participant.id;
-    if (agentId) void loadAgentAccess(agentId);
-  }
-
   function selectExecution(selection: {
     providerInstanceId: string | null;
     modelId: string | null;
@@ -865,7 +859,6 @@ export function createAgentEditorController(options: AgentEditorOptions) {
     rebaseAccessConflict,
     reloadCurrentAccessConflict,
     defaultChannelAccess,
-    handleProfilesChange,
     selectExecution,
     save,
     clearFieldError,

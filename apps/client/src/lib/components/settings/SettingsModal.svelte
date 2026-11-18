@@ -780,6 +780,15 @@
       onConfirm={discardDraftAndContinue}
       onCancel={cancelDraftNavigation}
     />
+  {:else if openDraft === "accessProfile"}
+    <ConfirmDialog
+      title={t("settings.agents.accessProfiles.discardTitle")}
+      message={t("settings.agents.accessProfiles.discardMessage")}
+      confirmLabel={t("settings.agents.accessProfiles.discard")}
+      cancelLabel={t("settings.agents.agents.keepEditing")}
+      onConfirm={discardDraftAndContinue}
+      onCancel={cancelDraftNavigation}
+    />
   {:else}
     <ConfirmDialog
       title={t("settings.agents.agents.discardDraftTitle")}

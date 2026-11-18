@@ -8,8 +8,6 @@
   import Eye from "@lucide/svelte/icons/eye";
   import EyeOff from "@lucide/svelte/icons/eye-off";
   import Folder from "@lucide/svelte/icons/folder";
-  import LoaderCircle from "@lucide/svelte/icons/loader-circle";
-  import ShieldCheck from "@lucide/svelte/icons/shield-check";
   import Plus from "@lucide/svelte/icons/plus";
   import Search from "@lucide/svelte/icons/search";
   import X from "@lucide/svelte/icons/x";
@@ -56,7 +54,6 @@
   import ChatPushApprovalsList from "./ChatPushApprovalsList.svelte";
   import { UNGROUPED_PROJECT_LIST_KEY } from "$lib/projects/lists";
   import ChatChannelScopeControls from "./ChatChannelScopeControls.svelte";
-  type ChatAccessProfilesManagerComponent = typeof import("./ChatAccessProfilesManager.svelte").default;
 
   let {
     initialAgentId,
@@ -122,10 +119,6 @@
   let conflictPanelElement = $state<HTMLElement>();
   let recoveryNoticeElement = $state<HTMLElement>();
 
-  let profileManagerOpen = $state(false);
-  let profileManagerLoading = $state(false);
-  let ChatAccessProfilesManager = $state<ChatAccessProfilesManagerComponent | null>(null);
-  let profileManagerLoad: Promise<void> | null = null;
   let expandedAccessChannelId = $state<string | null>(null);
   let advancedChannelIds = $state<Set<string>>(new Set());
 
@@ -579,28 +572,6 @@
     }
   }
 
-  function loadProfileManager(): Promise<void> {
-    if (ChatAccessProfilesManager) return Promise.resolve();
-    profileManagerLoad ??= import("./ChatAccessProfilesManager.svelte")
-      .then((module) => { ChatAccessProfilesManager = module.default; })
-      .finally(() => { profileManagerLoad = null; });
-    return profileManagerLoad;
-  }
-
-  async function openProfileManager(): Promise<void> {
-    if (profileManagerLoading || profileManagerOpen) return;
-    profileManagerLoading = true;
-    try {
-      await loadProfileManager();
-      profileManagerOpen = true;
-    } catch (cause: unknown) {
-      editor.errorField = null;
-      editor.error = chatErrorMessage(cause, t("settings.agents.agents.loadFailed"));
-    } finally {
-      profileManagerLoading = false;
-    }
-  }
-
   function requestArchive(): void {
     if (!editor.selected || lifecycleBusy) return;
     editor.lifecycleError = null;
@@ -709,7 +680,6 @@
         <button type="button" class="archive-filter" aria-label={archiveFilterLabel} aria-pressed={editor.showArchived} data-app-tooltip={archiveFilterLabel} disabled={editor.creating || editor.dirty || lifecycleBusy} onclick={() => { editor.showArchived = !editor.showArchived; }}><Archive size={14} /><span aria-hidden="true">{#if editor.showArchived}<Eye size={8} />{:else}<EyeOff size={8} />{/if}</span></button>
       {/if}
       <button type="button" class="settings-button" disabled={editor.creating || editor.dirty} onclick={() => editor.beginCreate(null)}><Plus size={13} />{t("settings.agents.agents.add")}</button>
-      <button type="button" class="settings-button" disabled={editor.dirty || profileManagerLoading} aria-busy={profileManagerLoading || undefined} onclick={() => void openProfileManager()}>{#if profileManagerLoading}<LoaderCircle size={13} class="animate-spin" aria-hidden="true" />{:else}<ShieldCheck size={13} />{/if}{t("settings.agents.agents.profileManager.manage")}</button>
     </div>
   </header>
 
@@ -942,15 +912,6 @@
     cancelLabel={t("common.cancel")}
     onConfirm={() => void confirmArchive()}
     onCancel={() => { archiveTarget = null; }}
-  />
-{/if}
-
-{#if profileManagerOpen && ChatAccessProfilesManager}
-  {@const Manager = ChatAccessProfilesManager}
-  <Manager
-    profiles={editor.accessProfiles}
-    onProfilesChange={editor.handleProfilesChange}
-    onClose={() => { profileManagerOpen = false; }}
   />
 {/if}
 

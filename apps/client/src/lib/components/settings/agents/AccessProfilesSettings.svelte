@@ -389,9 +389,7 @@
               </div>
             </div>
 
-            {#if builtIn}
-              <Notice class="px-1 text-[0.8rem]" role="status" copy={false} message={t("settings.agents.accessProfiles.builtInNotice")} />
-            {:else if mode === "duplicate"}
+            {#if mode === "duplicate"}
               <Notice class="px-1 text-[0.8rem]" role="status" copy={false} message={t("settings.agents.accessProfiles.duplicateNotice")} />
             {/if}
 

@@ -539,7 +539,6 @@ export const agentsSettings = {
     custom: "Custom",
     newProfile: "New profile",
     copyName: (name: string) => `${name} copy`,
-    builtInNotice: "Built-in profiles can't be changed, so duplicate one to customize it.",
     duplicateNotice: "The copy starts with these settings, which you can change once it is created.",
     name: "Name",
     namePlaceholder: "Profile name",

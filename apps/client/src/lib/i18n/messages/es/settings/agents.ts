@@ -542,7 +542,6 @@ export const agentsSettings = {
     custom: "Personalizado",
     newProfile: "Nuevo perfil",
     copyName: (name: string) => `Copia de ${name}`,
-    builtInNotice: "Los perfiles integrados no se pueden cambiar, así que duplica uno para personalizarlo.",
     duplicateNotice: "La copia empieza con esta configuración, que podrás cambiar una vez creada.",
     name: "Nombre",
     namePlaceholder: "Nombre del perfil",

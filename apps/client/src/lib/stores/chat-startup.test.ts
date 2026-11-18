@@ -112,6 +112,20 @@ describe("Chat startup", () => {
     expect(chat.providerDiscoveryLoading).toBe(true);
   });
 
+  it("discovers providers for a vault activated while Chat is open", async () => {
+    await chat.ensureLoaded();
+    expect(chatApi.discoverDefaultChatProviders).toHaveBeenCalledOnce();
+    resetChatForVault({ keepProviderDiscoveryRequest: true });
+    await chat.prewarmForProject("project");
+    expect(chatApi.discoverDefaultChatProviders).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a vault prepared before Chat opens free of provider processes", async () => {
+    resetChatForVault({ keepProviderDiscoveryRequest: true });
+    await chat.prewarmForProject("project");
+    expect(chatApi.discoverDefaultChatProviders).not.toHaveBeenCalled();
+  });
+
   it("loads the selected channel while provider discovery remains unresolved", async () => {
     await chat.ensureLoaded();
     expect(chat.loaded).toBe(true);

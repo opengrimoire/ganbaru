@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ChatIconTile from "./ChatIconTile.svelte";
   import ChatProviderIcon from "./ChatProviderIcon.svelte";
 
   let {
@@ -10,34 +11,18 @@
     label: string;
     size?: number;
   } = $props();
+
+  const CLAUDE_TILE_BACKGROUND = "#D97656";
+  const CLAUDE_LOGO_COLOR = "#FAFAF8";
+  const isClaude = $derived(familyId === "claude");
 </script>
 
-<span
-  class="model-avatar"
-  class:claude={familyId === "claude"}
-  style:width={`${size}px`}
-  style:height={`${size}px`}
-  role="img"
-  aria-label={label}
->
+<ChatIconTile class="model-avatar" {size} {label} background={isClaude ? CLAUDE_TILE_BACKGROUND : undefined}>
   <ChatProviderIcon
     familyId={familyId}
     {label}
     monochromeColor="#000000"
-    colorOverride={familyId === "claude" ? "#FAFAF8" : null}
+    colorOverride={isClaude ? CLAUDE_LOGO_COLOR : null}
     size={Math.round(size * 0.58)}
   />
-</span>
-
-<style>
-  .model-avatar {
-    display: inline-grid;
-    flex: 0 0 auto;
-    place-items: center;
-    overflow: hidden;
-    border-radius: var(--chat-participant-avatar-radius, 22%);
-    background: #f2f2f2;
-  }
-
-  .model-avatar.claude { background: #D97656; }
-</style>
+</ChatIconTile>

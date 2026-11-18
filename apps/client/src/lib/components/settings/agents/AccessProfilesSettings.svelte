@@ -19,6 +19,7 @@
   } from "$lib/chat/contracts";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import ChatIconTile from "$lib/components/chat/identity/ChatIconTile.svelte";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
@@ -52,6 +53,10 @@
     maximumFolderCapability: ChatFolderCapability;
   }
 
+  /** Tile sizes match the agent avatars in the Agents tab directory and editor heading. */
+  const DIRECTORY_TILE_SIZE = 32;
+  const LARGE_TILE_SIZE = 38;
+  const TILE_ICON_RATIO = 0.5;
   const NEW_PROFILE_DRAFT: ProfileDraft = {
     displayName: "",
     readHistory: true,
@@ -165,14 +170,6 @@
     return profile.builtinKey
       ? t(`settings.agents.agents.profiles.${profile.builtinKey}`)
       : profile.displayName;
-  }
-
-  function profileDescription(capability: ChatFolderCapability): string {
-    if (capability === "read") return t("settings.agents.agents.profileDescriptions.readOnly");
-    if (capability === "edit") return t("settings.agents.agents.profileDescriptions.editFiles");
-    if (capability === "execute") return t("settings.agents.agents.profileDescriptions.buildAndTest");
-    if (capability === "publish") return t("settings.agents.agents.profileDescriptions.publishChanges");
-    return t("settings.agents.agents.profileDescriptions.conversationOnly");
   }
 
   function folderCapabilityLabel(capability: ChatFolderCapability): string {
@@ -311,20 +308,15 @@
   }
 </script>
 
-{#snippet capabilityIcon(capability: ChatFolderCapability, size: number)}
-  {#if capability === "read"}<Folder {size} />
-  {:else if capability === "edit"}<FilePenLine {size} />
-  {:else if capability === "execute"}<PencilRuler {size} />
-  {:else if capability === "publish"}<GitPullRequest {size} />
-  {:else}<MessagesSquare {size} />{/if}
-{/snippet}
-
-{#snippet separator()}
-  <div class="h-px shrink-0 bg-border/50" aria-hidden="true"></div>
-{/snippet}
-
-{#snippet sectionHeading(title: string)}
-  <h3 class="px-1 text-[0.866667rem] font-semibold text-foreground">{title}</h3>
+{#snippet profileTile(capability: ChatFolderCapability, size: number)}
+  {@const iconSize = Math.round(size * TILE_ICON_RATIO)}
+  <ChatIconTile {size}>
+    {#if capability === "read"}<Folder size={iconSize} />
+    {:else if capability === "edit"}<FilePenLine size={iconSize} />
+    {:else if capability === "execute"}<PencilRuler size={iconSize} />
+    {:else if capability === "publish"}<GitPullRequest size={iconSize} />
+    {:else}<MessagesSquare size={iconSize} />{/if}
+  </ChatIconTile>
 {/snippet}
 
 {#snippet rowDetails(label: string, description: string, controlId?: string)}
@@ -359,7 +351,7 @@
                   disabled={saving}
                   onclick={() => requestSelect(profile)}
                 >
-                  <span class="profile-icon">{@render capabilityIcon(profile.latestRevision.maximumFolderCapability, 15)}</span>
+                  {@render profileTile(profile.latestRevision.maximumFolderCapability, DIRECTORY_TILE_SIZE)}
                   <span class="directory-summary">
                     <strong>{profileLabel(profile)}</strong>
                     <small>{profile.builtinKey ? t("settings.agents.accessProfiles.builtIn") : t("settings.agents.accessProfiles.custom")}</small>
@@ -368,7 +360,7 @@
               {/each}
               {#if drafting}
                 <button type="button" class="profile-row active" aria-current="page">
-                  <span class="profile-icon draft">{@render capabilityIcon(draft.maximumFolderCapability, 15)}</span>
+                  {@render profileTile(draft.maximumFolderCapability, DIRECTORY_TILE_SIZE)}
                   <span class="directory-summary">
                     <strong>{draft.displayName.trim() || t("settings.agents.accessProfiles.newProfile")}</strong>
                     <small>{t("settings.agents.accessProfiles.custom")}</small>
@@ -376,7 +368,7 @@
                 </button>
               {:else}
                 <button type="button" class="profile-row add-row" disabled={saving} onclick={() => onRequestNavigation(beginCreate)}>
-                  <span class="profile-icon draft"><Plus size={15} /></span>
+                  <span class="draft-tile"><Plus size={15} /></span>
                   <span class="directory-summary"><strong>{t("settings.agents.accessProfiles.add")}</strong></span>
                 </button>
               {/if}
@@ -390,10 +382,10 @@
         <div class="detail-scroll-frame">
           <div bind:this={detailScrollElement} data-mobile-scroll-fade class="detail-scroll hide-scrollbar">
             <div class="editor-heading">
-              <span class="profile-icon large" class:draft={drafting}>{@render capabilityIcon(draft.maximumFolderCapability, 17)}</span>
+              {@render profileTile(draft.maximumFolderCapability, LARGE_TILE_SIZE)}
               <div class="min-w-0">
                 <h3>{draft.displayName.trim() || t("settings.agents.accessProfiles.newProfile")}</h3>
-                <p>{profileDescription(draft.maximumFolderCapability)}</p>
+                <p>{builtIn ? t("settings.agents.accessProfiles.builtIn") : t("settings.agents.accessProfiles.custom")}</p>
               </div>
             </div>
 
@@ -403,9 +395,8 @@
               <Notice class="px-1 text-[0.8rem]" role="status" copy={false} message={t("settings.agents.accessProfiles.duplicateNotice")} />
             {/if}
 
-            {#if drafting}
-              <section class="flex flex-col gap-4">
-                {@render sectionHeading(t("settings.agents.accessProfiles.profileHeading"))}
+            <section class="flex flex-col gap-3">
+              {#if drafting}
                 <div class="flex items-center justify-between gap-4 px-1 py-1 max-[480px]:flex-col max-[480px]:items-stretch max-[480px]:gap-2">
                   <label for="access-profile-name" class="min-w-0 flex-1 text-[0.866667rem] text-foreground">{t("settings.agents.accessProfiles.name")}</label>
                   <input
@@ -420,34 +411,21 @@
                     oninput={() => { saveError = null; }}
                   />
                 </div>
-              </section>
-              {@render separator()}
-            {/if}
-
-            <section class="flex flex-col gap-4">
-              {@render sectionHeading(t("settings.agents.accessProfiles.channelHeading"))}
-              <div class="flex flex-col gap-3">
-                <div class="flex items-center justify-between gap-4 px-1 py-1">
-                  {@render rowDetails(t("settings.agents.agents.readHistory"), t("settings.agents.agents.readHistoryDescription"))}
-                  <Switch checked={draft.readHistory} disabled={settingsLocked} ariaLabel={t("settings.agents.agents.readHistory")} onChange={(checked) => { draft.readHistory = checked; }} />
-                </div>
-                {#if draft.readHistory}
-                  <div class="flex items-center justify-between gap-4 px-1 py-1 max-[480px]:flex-col max-[480px]:items-stretch max-[480px]:gap-2">
-                    {@render rowDetails(t("settings.agents.agents.history"), t("settings.agents.accessProfiles.historyDescription"))}
-                    <Select inline value={draft.historyBoundary} options={historyOptions} disabled={settingsLocked} ariaLabel={t("settings.agents.agents.history")} onChange={(value) => { draft.historyBoundary = value === "fromGrant" ? "fromGrant" : "entire"; }} />
-                  </div>
-                {/if}
-                <div class="flex items-center justify-between gap-4 px-1 py-1">
-                  {@render rowDetails(t("settings.agents.agents.participate"), t("settings.agents.agents.participateDescription"))}
-                  <Switch checked={draft.participate} disabled={settingsLocked} ariaLabel={t("settings.agents.agents.participate")} onChange={(checked) => { draft.participate = checked; }} />
-                </div>
+              {/if}
+              <div class="flex items-center justify-between gap-4 px-1 py-1">
+                {@render rowDetails(t("settings.agents.agents.readHistory"), t("settings.agents.agents.readHistoryDescription"))}
+                <Switch checked={draft.readHistory} disabled={settingsLocked} ariaLabel={t("settings.agents.agents.readHistory")} onChange={(checked) => { draft.readHistory = checked; }} />
               </div>
-            </section>
-
-            {@render separator()}
-
-            <section class="flex flex-col gap-4">
-              {@render sectionHeading(t("settings.agents.accessProfiles.folderHeading"))}
+              {#if draft.readHistory}
+                <div class="flex items-center justify-between gap-4 px-1 py-1 max-[480px]:flex-col max-[480px]:items-stretch max-[480px]:gap-2">
+                  {@render rowDetails(t("settings.agents.agents.history"), t("settings.agents.accessProfiles.historyDescription"))}
+                  <Select inline value={draft.historyBoundary} options={historyOptions} disabled={settingsLocked} ariaLabel={t("settings.agents.agents.history")} onChange={(value) => { draft.historyBoundary = value === "fromGrant" ? "fromGrant" : "entire"; }} />
+                </div>
+              {/if}
+              <div class="flex items-center justify-between gap-4 px-1 py-1">
+                {@render rowDetails(t("settings.agents.agents.participate"), t("settings.agents.agents.participateDescription"))}
+                <Switch checked={draft.participate} disabled={settingsLocked} ariaLabel={t("settings.agents.agents.participate")} onChange={(checked) => { draft.participate = checked; }} />
+              </div>
               <div class="flex items-center justify-between gap-4 px-1 py-1 max-[480px]:flex-col max-[480px]:items-stretch max-[480px]:gap-2">
                 {@render rowDetails(t("settings.agents.accessProfiles.maximumFolderCapability"), t("settings.agents.accessProfiles.maximumFolderCapabilityDescription"))}
                 <Select inline value={draft.maximumFolderCapability} options={folderCapabilityOptions} disabled={settingsLocked} ariaLabel={t("settings.agents.accessProfiles.maximumFolderCapability")} onChange={(value) => { if (isFolderCapability(value)) draft.maximumFolderCapability = value; }} />
@@ -534,9 +512,7 @@
   .profile-row:hover:not(:disabled),.profile-row.active { background:var(--accent); color:var(--accent-foreground); }
   .add-row { color:var(--muted-foreground); }
   .add-row:hover:not(:disabled) { color:var(--accent-foreground); }
-  .profile-icon { display:grid; width:2rem; height:2rem; flex:0 0 auto; place-items:center; border:1px solid var(--border); border-radius:0.45rem; color:var(--muted-foreground); }
-  .profile-icon.draft { border-style:dashed; }
-  .profile-icon.large { width:2.375rem; height:2.375rem; }
+  .draft-tile { display:grid; width:2rem; height:2rem; place-items:center; border:1px dashed var(--border); border-radius:0.45rem; color:var(--muted-foreground); }
   .directory-summary { display:grid; min-width:0; }
   .directory-summary strong,.directory-summary small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .directory-summary strong { font-size:calc(0.8rem * var(--type-scale)); font-weight:600; }

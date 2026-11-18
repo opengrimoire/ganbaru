@@ -6,7 +6,7 @@ Status: Implemented. A second account of the same provider and generic ACP agent
 
 When each agent carries its own name, role, instructions, model, and approval mode, and its access is edited channel by channel through history switches, folder toggles, default targets, and approval overrides, people cannot predict what an agent will do in a channel from any one screen.
 
-Ganbaru Chat follows Claude Tag, which configures the place, not the agent: one Claude, and each channel decides how it participates, what instructions it reads, which model it starts on, and which repositories it may use. Ganbaru keeps that model and adapts it to two local facts: several providers can be installed, and work runs on the person's own machine instead of a throwaway cloud sandbox.
+Ganbaru Chat follows Claude Tag, which configures the place, not the agent: one Claude, and each channel decides how it participates, what instructions it reads, which model it starts on, and which repositories it may use. Ganbaru keeps that model and adapts it to two local facts: several providers can be installed, and work runs on the person's own machine instead of a throwaway cloud sandbox. Model line and named agents are a deliberate exception for the model only: tagging `@Opus` or `@Sol` picks a model as directly as naming it, while access and instructions still come from the channel.
 
 ## Principles
 

@@ -9,6 +9,7 @@
   } from "$lib/chat/agents/agent-names";
   import { chatAgentDefaultModelName } from "$lib/chat/agents/channel-access";
   import { formatModelDisplayName } from "$lib/chat/composer/model-company";
+  import { resolveRecommendedSelection } from "$lib/chat/composer/model-picker-model";
   import type {
     ChatAiAgentRead,
     ModelOptionSelection,
@@ -17,6 +18,7 @@
   } from "$lib/chat/contracts";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
   import ChatModelControls from "$lib/components/chat/composer/ChatModelControls.svelte";
+  import { SETTINGS_PRIMARY_BUTTON_CLASS, SETTINGS_SECONDARY_BUTTON_CLASS } from "$lib/components/settings/action-buttons";
   import Notice from "$lib/components/ui/Notice.svelte";
   import SwitchField from "$lib/components/ui/SwitchField.svelte";
   import { formatNumber } from "$lib/i18n/formatters";
@@ -59,12 +61,18 @@
   const namedAgents = $derived(familyAgents
     .filter((agent) => agent.agentKind === "custom")
     .sort((left, right) => left.participant.displayName.localeCompare(right.participant.displayName, localization.locale)));
-  const catalog = $derived(chat.settings?.providerInstances.find((provider) => (
-    provider.configuration.instanceId === instanceId
-  ))?.modelCatalog ?? null);
+  const provider = $derived(chat.settings?.providerInstances.find((entry) => (
+    entry.configuration.instanceId === instanceId
+  )) ?? null);
+  const catalog = $derived(provider?.modelCatalog ?? null);
+  /** A named agent keeps one model, so a choice left on the recommendation is frozen to the model recommended now. */
+  const chosenModel = $derived(resolveRecommendedSelection(provider, selection));
   const nameProblem = $derived(agentNameProblem(
     name,
-    chat.agentIdentities.map((agent) => agent.participant.displayName),
+    [
+      ...chat.agentIdentities.map((agent) => agent.participant.displayName),
+      ...(chat.settings?.providerFamilies ?? []).flatMap((family) => [family.familyId, family.displayName]),
+    ],
   ));
   const visibleProblem = $derived(nameTouched || name.trim() ? nameProblem : null);
 
@@ -121,9 +129,9 @@
         displayName: name.trim(),
         providerFamilyId: familyId,
         policy: {
-          providerManagedModel: selection.providerManaged,
-          modelId: selection.modelId,
-          modelOptions: selection.options.map((option) => ({ ...option })),
+          providerManagedModel: chosenModel.providerManaged,
+          modelId: chosenModel.modelId,
+          modelOptions: chosenModel.options.map((option) => ({ ...option })),
           providerOptions: { schemaVersion: 1, value: {} },
           interactionMode: "build",
         },
@@ -179,13 +187,13 @@
         <ChatModelControls value={selection} lockProvider disabled={creating} onChange={(next) => { selection = next; }} />
       </div>
       <div class="flex flex-wrap justify-end gap-2">
-        <button type="button" class="roster-action" disabled={creating} onclick={closeForm}>{t("settings.agents.roster.cancel")}</button>
-        <button type="submit" class="roster-action" disabled={creating || (nameTouched && nameProblem !== null)}>{t("settings.agents.roster.create")}</button>
+        <button type="button" class={SETTINGS_SECONDARY_BUTTON_CLASS} disabled={creating} onclick={closeForm}>{t("settings.agents.roster.cancel")}</button>
+        <button type="submit" class={SETTINGS_PRIMARY_BUTTON_CLASS} disabled={creating || (nameTouched && nameProblem !== null)}>{t("settings.agents.roster.create")}</button>
       </div>
     </form>
   {:else if canCreate}
     <div>
-      <button type="button" class="roster-action" onclick={() => { adding = true; }}>
+      <button type="button" class={SETTINGS_SECONDARY_BUTTON_CLASS} onclick={() => { adding = true; }}>
         <Plus size={13} />
         {t("settings.agents.roster.add")}
       </button>
@@ -193,8 +201,3 @@
   {/if}
   {#if error}<Notice class="text-panel-detail" message={error} copy={false} />{/if}
 </section>
-
-<style>
-  .roster-action { display:inline-flex; min-height:1.9rem; align-items:center; justify-content:center; gap:0.35rem; border:1px solid var(--border); border-radius:0.42rem; background:var(--background); padding:0.3rem 0.65rem; color:var(--foreground); font-size:calc(0.733333rem * var(--type-scale)); font-weight:600; line-height:1; white-space:nowrap; }
-  .roster-action:hover:not(:disabled) { background:var(--accent); }
-</style>

@@ -221,7 +221,8 @@ pub(super) fn validate_agent_name(display_name: &str) -> ChatResult<&str> {
 
 /// Creates an agent of `family` named `display_name` that runs `policy`, under a random id, and
 /// returns its id. The name must differ, ignoring case, from every agent's name, archived ones
-/// included, and from every built-in model line, so each `@` mention names one agent.
+/// included, from every built-in model line, and from every provider family, so each `@` mention names
+/// one agent.
 pub(super) async fn create_custom_agent(
     pool: &SqlitePool,
     family: &ProviderFamilyId,
@@ -229,7 +230,7 @@ pub(super) async fn create_custom_agent(
     policy: &ChatAgentPolicyInput,
 ) -> ChatResult<ChatParticipantId> {
     let name = validate_agent_name(display_name)?;
-    if is_model_line(name) {
+    if is_reserved_agent_name(name) {
         return Err(name_taken());
     }
     let now = now_timestamp()?;
@@ -257,6 +258,16 @@ pub(super) async fn create_custom_agent(
     insert_policy_revision(&mut transaction, &agent_id, policy, &now).await?;
     transaction.commit().await.map_err(persistence_error)?;
     Ok(agent_id)
+}
+
+/// Whether `name` belongs, ignoring case, to a built-in model line or to a provider family, by id or
+/// display name, so a named agent never takes the handle a provider agent gets once detected.
+fn is_reserved_agent_name(name: &str) -> bool {
+    is_model_line(name)
+        || ProviderDriverRegistry.list_metadata().iter().any(|family| {
+            family.display_name.eq_ignore_ascii_case(name)
+                || family.family_id.as_str().eq_ignore_ascii_case(name)
+        })
 }
 
 fn name_taken() -> ChatError {
@@ -421,6 +432,8 @@ mod tests {
                 "ANTHROPIC",
                 "Opus",
                 "sol",
+                "Cursor",
+                "opencode",
                 "two words",
                 "@me",
                 "",

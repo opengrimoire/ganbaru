@@ -30,7 +30,7 @@ export function isModelLineName(name: string): boolean {
 /**
  * Checks a name for a new named agent the way the vault does: trimmed, at most {@link MAX_AGENT_NAME_CHARACTERS}
  * characters, no spaces, control characters, or `@`, and different, ignoring case, from every model line and from
- * `takenNames`, which should hold every agent's name, archived ones included.
+ * `takenNames`, which should hold every agent's name, archived ones included, and every provider family's id and name.
  *
  * @param name The name as typed.
  * @param takenNames The names other agents already carry.

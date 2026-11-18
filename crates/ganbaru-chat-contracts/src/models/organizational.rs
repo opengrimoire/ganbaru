@@ -20,10 +20,10 @@ pub enum ChatParticipantKind {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChatAgentKind {
-    /// The agent of a whole provider family, which runs its default model.
-    Provider,
     /// A built-in agent of one model line, such as Opus or Sol, which runs the line's newest
     /// model.
+    Line,
+    /// The agent of one catalog model, such as Opus 5.5, which always runs that model.
     Model,
     /// An agent a person named, with its own model and effort.
     Custom,
@@ -353,14 +353,6 @@ impl ChatModelSelection {
     }
 }
 
-/// One agent's model override in one channel.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatChannelModelOverrideRead {
-    pub agent_id: ChatParticipantId,
-    pub model: ChatModelSelection,
-}
-
 /// One standing push approval of an agent in a channel.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -388,7 +380,6 @@ pub struct ChatChannelAgentSettingsRead {
     pub effective: ChatEffectiveChannelAccessRead,
     /// Each agent in the channel, resolved on the reading device.
     pub agents: Vec<ChatAgentResolvedAccessRead>,
-    pub model_overrides: Vec<ChatChannelModelOverrideRead>,
     pub push_approvals: Vec<ChatChannelPushApprovalRead>,
     pub revision: u64,
 }

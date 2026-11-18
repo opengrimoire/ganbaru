@@ -209,7 +209,6 @@ commands.allow = [
   "chat_send_turn",
   "chat_set_agent_policy",
   "chat_set_assignment_input_held",
-  "chat_set_channel_model_override",
   "chat_set_channel_read",
   "chat_set_full_access_trust",
   "chat_set_last_selected_thread",

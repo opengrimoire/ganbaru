@@ -3,9 +3,7 @@
 
 use super::persistence_error;
 use super::workflow::parse_model_selection;
-use ganbaru_chat::coordination::agent_settings::{
-    read_channel_instructions, read_channel_model_override,
-};
+use ganbaru_chat::coordination::agent_settings::read_channel_instructions;
 use ganbaru_chat_contracts::models::*;
 use sqlx::SqliteConnection;
 
@@ -86,11 +84,10 @@ pub(super) struct FrozenWorkSettings {
 /// Resolves the settings new work of `agent_id` in `conversation_id` freezes. Work that
 /// continues `previous_assignment_id` keeps its predecessor's model and instructions unless the
 /// trigger names a model with `/model`. Otherwise the model is the one `/model` names, else the
-/// channel's override for the agent, else the agent's default model, else the provider default,
-/// and the instructions are the vault, project, and channel instructions joined. A built-in model
-/// line agent always freezes its line, such as `opus`, unless `/model` names another model, and
-/// dispatch runs the line's newest model. A named agent keeps the model it was made with, so a
-/// channel override never applies to it.
+/// agent's own model, else the provider default, and the instructions are the vault, project,
+/// and channel instructions joined. A built-in model line agent freezes its line, such as `opus`,
+/// and dispatch runs the line's newest model; a catalog or named agent freezes the model it was
+/// made with.
 ///
 /// The model a command names is frozen as named, since the device that creates work may not
 /// know the executing device's models; dispatch falls back to the provider default when the
@@ -125,12 +122,6 @@ pub(super) async fn resolve_frozen_work_settings(
     let line = family
         .as_deref()
         .and_then(|family| super::agent_kinds::model_agent_line(family, agent_id));
-    let named = family.as_deref().is_some_and(|family| {
-        matches!(
-            super::agent_kinds::agent_kind(family, agent_id),
-            ChatAgentKind::Custom
-        )
-    });
     let model_selection = match (requested, line) {
         (Some(requested), _) => requested,
         (None, Some(line)) => ChatModelSelection {
@@ -140,19 +131,9 @@ pub(super) async fn resolve_frozen_work_settings(
             })?),
             model_options: Vec::new(),
         },
-        (None, None) => {
-            let channel = if named {
-                None
-            } else {
-                read_channel_model_override(connection, conversation_id, agent_id).await?
-            };
-            match channel {
-                Some(selection) => selection,
-                None => read_agent_default_model(connection, agent_id)
-                    .await?
-                    .unwrap_or_else(ChatModelSelection::provider_default),
-            }
-        }
+        (None, None) => read_agent_default_model(connection, agent_id)
+            .await?
+            .unwrap_or_else(ChatModelSelection::provider_default),
     };
     Ok(FrozenWorkSettings {
         model_selection,

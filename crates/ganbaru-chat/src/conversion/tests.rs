@@ -164,14 +164,15 @@ fn derived_keys_depend_on_every_key_column_and_its_order() {
         key,
         channel_membership_key("agent", "conversation").unwrap()
     );
-    let codex = provider_agent_id("codex").unwrap();
-    assert!(codex.starts_with(PROVIDER_AGENT_KEY_PREFIX));
-    assert_eq!(codex, provider_agent_id("codex").unwrap());
-    assert_ne!(codex, provider_agent_id("claude").unwrap());
-    let sol = model_agent_id("codex", "sol").unwrap();
-    assert!(sol.starts_with(MODEL_AGENT_KEY_PREFIX));
-    assert_ne!(sol, model_agent_id("codex", "astra").unwrap());
-    assert_ne!(sol, model_agent_id("claude", "sol").unwrap());
+    let sol = line_agent_id("codex", "sol").unwrap();
+    assert!(sol.starts_with(LINE_AGENT_KEY_PREFIX));
+    assert_eq!(sol, line_agent_id("codex", "sol").unwrap());
+    assert_ne!(sol, line_agent_id("codex", "astra").unwrap());
+    assert_ne!(sol, line_agent_id("claude", "sol").unwrap());
+    let pinned = catalog_agent_id("claude", "opus").unwrap();
+    assert!(pinned.starts_with(CATALOG_AGENT_KEY_PREFIX));
+    assert_ne!(pinned, line_agent_id("claude", "opus").unwrap());
+    assert_ne!(pinned, catalog_agent_id("codex", "opus").unwrap());
     assert_ne!(
         membership_key("a", "b").unwrap(),
         channel_membership_key("a", "b").unwrap()

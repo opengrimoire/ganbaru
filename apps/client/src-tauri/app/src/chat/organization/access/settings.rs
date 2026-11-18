@@ -1,5 +1,4 @@
-//! Agent settings at the app, project, and channel scopes, channel membership of agents, and
-//! channel model overrides.
+//! Agent settings at the app, project, and channel scopes, and channel membership of agents.
 //!
 //! Every write that can narrow access or remove an agent revokes, in its transaction, the work
 //! and the push approvals that current settings no longer cover, and drains the revocation jobs
@@ -12,8 +11,7 @@ use ganbaru_chat::conversion::{channel_membership_key, membership_key};
 use ganbaru_chat::coordination::access::{APP_AGENT_SETTINGS_ID, resolve_agent_access};
 use ganbaru_chat::coordination::agent_settings::{
     agent_is_present, read_app_agent_settings, read_channel_agent_members,
-    read_channel_agent_settings, read_channel_model_overrides, read_channel_push_approvals,
-    read_project_agent_settings,
+    read_channel_agent_settings, read_channel_push_approvals, read_project_agent_settings,
 };
 use ganbaru_chat::sync_effects::{revoke_exceeding_authorizations, revoke_lapsed_push_approvals};
 use ganbaru_sync::domains::chat::MAX_INSTRUCTIONS_CHARS;
@@ -267,52 +265,6 @@ pub async fn chat_remove_channel_agent(
     Ok(settings)
 }
 
-/// Sets or clears the model one agent starts new work on in one channel. Work already
-/// assigned keeps the model it froze.
-#[tauri::command]
-pub async fn chat_set_channel_model_override(
-    app: tauri::AppHandle,
-    db_url: String,
-    request: SetChatChannelModelOverrideCommand,
-) -> ChatResult<ChatChannelAgentSettingsRead> {
-    let providers = read_device_providers(&app);
-    let pool = chat_pool(app, db_url).await?;
-    let conversation_id = channel_conversation_id(&pool, &request.channel_id).await?;
-    let selection = request
-        .model
-        .as_ref()
-        .map(|model| serde_json::to_string(model).map_err(serialization_error))
-        .transpose()?;
-    let now = now_timestamp()?;
-    let mut transaction = pool.begin().await.map_err(persistence_error)?;
-    if !agent_is_present(
-        &mut transaction,
-        conversation_id.as_str(),
-        request.agent_id.as_str(),
-    )
-    .await?
-    {
-        return Err(not_a_member_error());
-    }
-    sqlx::query(
-        "UPDATE chat_agent_channel_memberships
-         SET model_selection_schema_version = ?, model_selection_data = ?, updated_at = ?
-         WHERE conversation_id = ? AND agent_id = ? AND removed_at IS NULL",
-    )
-    .bind(selection.as_ref().map(|_| 1_i64))
-    .bind(selection)
-    .bind(now.as_str())
-    .bind(conversation_id.as_str())
-    .bind(request.agent_id.as_str())
-    .execute(&mut *transaction)
-    .await
-    .map_err(persistence_error)?;
-    let settings =
-        read_channel_settings(&mut transaction, conversation_id.as_str(), &providers).await?;
-    transaction.commit().await.map_err(persistence_error)?;
-    Ok(settings)
-}
-
 /// Reads the channel scope of agent settings with what each member agent does here.
 pub(in crate::chat::organization) async fn read_channel_settings(
     connection: &mut SqliteConnection,
@@ -342,7 +294,6 @@ pub(in crate::chat::organization) async fn read_channel_settings(
             }
         })
         .collect();
-    let model_overrides = read_channel_model_overrides(connection, conversation_id).await?;
     let push_approvals = read_channel_push_approvals(connection, conversation_id).await?;
     Ok(ChatChannelAgentSettingsRead {
         channel_id: record.channel_id,
@@ -351,13 +302,12 @@ pub(in crate::chat::organization) async fn read_channel_settings(
         instructions: record.instructions,
         effective: record.effective,
         agents,
-        model_overrides,
         push_approvals,
         revision: record.revision,
     })
 }
 
-/// Makes `agent_id` a present member of the conversation, with no model override.
+/// Makes `agent_id` a present member of the conversation.
 pub(in crate::chat::organization) async fn add_agent_to_conversation(
     connection: &mut SqliteConnection,
     agent_id: &ChatParticipantId,

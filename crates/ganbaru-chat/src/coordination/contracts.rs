@@ -84,16 +84,6 @@ pub struct UpdateChatChannelAgentSettingsCommand {
     pub expected_revision: u64,
 }
 
-/// Sets or clears the model one agent starts on in one channel.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SetChatChannelModelOverrideCommand {
-    pub channel_id: ChatChannelId,
-    pub agent_id: ChatParticipantId,
-    /// `None` clears the override, so the agent's default model applies.
-    pub model: Option<ChatModelSelection>,
-}
-
 /// Adds an agent to a channel, where it works under the channel's access at once.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -388,8 +378,8 @@ pub struct PostChatMessageResult {
 mod tests {
     use super::{
         ChatAgentAccess, ChatScratchPromotionDestinationInput, InteractionMode,
-        SetChatAgentPolicyCommand, SetChatChannelModelOverrideCommand,
-        UpdateChatChannelAgentSettingsCommand, UpdateChatProjectAgentSettingsCommand,
+        SetChatAgentPolicyCommand, UpdateChatChannelAgentSettingsCommand,
+        UpdateChatProjectAgentSettingsCommand,
     };
     use serde_json::json;
 
@@ -450,25 +440,6 @@ mod tests {
             }))
             .is_err()
         );
-    }
-
-    #[test]
-    fn channel_model_override_sets_or_clears() {
-        let cleared = serde_json::from_value::<SetChatChannelModelOverrideCommand>(json!({
-            "channelId": "channel:general",
-            "agentId": "agent:codex",
-            "model": null
-        }))
-        .unwrap();
-        assert!(cleared.model.is_none());
-
-        let set = serde_json::from_value::<SetChatChannelModelOverrideCommand>(json!({
-            "channelId": "channel:general",
-            "agentId": "agent:codex",
-            "model": { "modelId": "gpt-5", "modelOptions": [] }
-        }))
-        .unwrap();
-        assert_eq!(set.model.unwrap().model_id.unwrap().as_str(), "gpt-5");
     }
 
     #[test]

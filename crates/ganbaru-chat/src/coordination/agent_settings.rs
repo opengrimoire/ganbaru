@@ -1,5 +1,5 @@
 //! Reads of the app, project, and channel scopes of agent settings, the agents present in a
-//! channel, their channel model overrides, and the channel's standing push approvals.
+//! channel, and the channel's standing push approvals.
 //!
 //! Resolving what each agent does on this device needs the device's provider support, so the
 //! caller combines these stored values with [`crate::coordination::access::resolve_agent_access`].
@@ -8,10 +8,10 @@ use crate::coordination::access::{
     APP_AGENT_SETTINGS_ID, compose_instructions, effective_channel_access,
 };
 use crate::models::{
-    ChatAgentAccess, ChatAppAgentSettingsRead, ChatChannelId, ChatChannelModelOverrideRead,
-    ChatChannelPushApprovalRead, ChatConversationId, ChatEffectiveChannelAccessRead, ChatError,
-    ChatErrorCode, ChatModelSelection, ChatParticipantId, ChatProjectAgentSettingsRead, ChatResult,
-    ProjectWorkingFolderId, UtcTimestamp,
+    ChatAgentAccess, ChatAppAgentSettingsRead, ChatChannelId, ChatChannelPushApprovalRead,
+    ChatConversationId, ChatEffectiveChannelAccessRead, ChatError, ChatErrorCode,
+    ChatParticipantId, ChatProjectAgentSettingsRead, ChatResult, ProjectWorkingFolderId,
+    UtcTimestamp,
 };
 use sqlx::SqliteConnection;
 
@@ -249,52 +249,6 @@ pub async fn agent_is_present(
         .any(|member| member.agent_id.as_str() == agent_id))
 }
 
-/// Returns the model overrides of the unremoved AI channel memberships of a conversation.
-pub async fn read_channel_model_overrides(
-    connection: &mut SqliteConnection,
-    conversation_id: &str,
-) -> ChatResult<Vec<ChatChannelModelOverrideRead>> {
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT agent_id, model_selection_data FROM chat_agent_channel_memberships
-         WHERE conversation_id = ? AND removed_at IS NULL
-           AND model_selection_data IS NOT NULL
-         ORDER BY agent_id",
-    )
-    .bind(conversation_id)
-    .fetch_all(&mut *connection)
-    .await
-    .map_err(persistence_error)?;
-    rows.into_iter()
-        .map(|(agent_id, data)| {
-            Ok(ChatChannelModelOverrideRead {
-                agent_id: ChatParticipantId::new(agent_id).map_err(|_| corrupt_data_error())?,
-                model: parse_model_selection(&data)?,
-            })
-        })
-        .collect()
-}
-
-/// Returns the model override of one agent in one conversation, absent when the channel uses
-/// the agent's default model or the agent has no unremoved AI channel membership.
-pub async fn read_channel_model_override(
-    connection: &mut SqliteConnection,
-    conversation_id: &str,
-    agent_id: &str,
-) -> ChatResult<Option<ChatModelSelection>> {
-    let data: Option<Option<String>> = sqlx::query_scalar(
-        "SELECT model_selection_data FROM chat_agent_channel_memberships
-         WHERE conversation_id = ? AND agent_id = ? AND removed_at IS NULL",
-    )
-    .bind(conversation_id)
-    .bind(agent_id)
-    .fetch_optional(&mut *connection)
-    .await
-    .map_err(persistence_error)?;
-    data.flatten()
-        .map(|data| parse_model_selection(&data))
-        .transpose()
-}
-
 /// Returns the unrevoked push approvals of a conversation, newest first. The approval id is the
 /// row's sync key, which names it on every device.
 pub async fn read_channel_push_approvals(
@@ -350,10 +304,6 @@ fn parse_access(value: &str) -> ChatResult<ChatAgentAccess> {
 
 fn parse_revision(value: i64) -> ChatResult<u64> {
     u64::try_from(value).map_err(|_| corrupt_data_error())
-}
-
-fn parse_model_selection(data: &str) -> ChatResult<ChatModelSelection> {
-    serde_json::from_str(data).map_err(|_| corrupt_data_error())
 }
 
 fn persistence_error<T>(_error: T) -> ChatError {

@@ -1,9 +1,9 @@
-//! Dispatch and folder choice of work for a provider agent added to a channel the way the app does
+//! Dispatch and folder choice of work for a catalog model agent added to a channel the way the app does
 //! it.
 
-use super::super::provider_agents::ensure_provider_agents;
+use super::super::provider_agents::{CatalogAgent, ensure_provider_agents};
 use super::*;
-use ganbaru_chat::conversion::provider_agent_id;
+use ganbaru_chat::conversion::catalog_agent_id;
 use ganbaru_chat::project_defaults::{default_channel_ids, ensure_project_chat_defaults};
 
 const PROJECT_ID: &str = "project-targetless";
@@ -56,17 +56,26 @@ async fn create_project_channel(pool: &SqlitePool, vault_root: &std::path::Path)
     default_channel_ids(PROJECT_ID).unwrap().1
 }
 
-/// The id of the test family's provider agent.
+/// The model the test agent always runs.
+const AGENT_MODEL: &str = "basic-model";
+
+/// The id of the test family's agent of [`AGENT_MODEL`].
 fn agent_id() -> ChatParticipantId {
-    ChatParticipantId::new(provider_agent_id(TEST_FAMILY).unwrap()).unwrap()
+    ChatParticipantId::new(catalog_agent_id(TEST_FAMILY, AGENT_MODEL).unwrap()).unwrap()
 }
 
-/// Ensures the test family's provider agent, adds it to `channel_id`, and sets the channel's own
+/// Ensures the test family's agent of [`AGENT_MODEL`], adds it to `channel_id`, and sets the channel's own
 /// access to `access`.
 async fn add_channel_agent(pool: &SqlitePool, channel_id: &str, access: &str) {
+    let agent = CatalogAgent {
+        model_id: ModelId::new(AGENT_MODEL).unwrap(),
+        display_name: "Basic agent".to_string(),
+        model_options: Vec::new(),
+        archived: false,
+    };
     ensure_provider_agents(
         pool,
-        &[(TEST_FAMILY.to_string(), "Basic agent".to_string())],
+        &std::collections::BTreeMap::from([(TEST_FAMILY.to_string(), vec![agent])]),
     )
     .await
     .unwrap();
@@ -420,7 +429,8 @@ async fn complete(pool: &SqlitePool, assignment_id: &ChatWorkAssignmentId) -> Ch
     ChatReplyThreadId::new(reply_thread_id).unwrap()
 }
 
-/// Sets the channel's agent instructions and its model override for the agent.
+/// Sets the channel's agent instructions and stores a model override for the agent, which no
+/// agent follows.
 async fn configure_channel(pool: &SqlitePool, instructions: &str, model: Option<&str>) {
     let conversation_id = default_channel_ids(PROJECT_ID).unwrap().0;
     sqlx::query("UPDATE chat_channels SET agent_instructions = ? WHERE conversation_id = ?")
@@ -453,7 +463,7 @@ fn named_model(model: &str) -> ChatModelSelection {
 }
 
 #[test]
-fn new_work_freezes_the_channel_override_else_the_provider_default_with_the_instructions() {
+fn new_work_freezes_the_agent_model_and_the_channel_instructions_over_a_stored_override() {
     tauri::async_runtime::block_on(async {
         let (pool, vault_root, channel_id, _, _) = project_with_two_folders("ask").await;
         let default_work = mention_agent(&pool, &channel_id).await;
@@ -463,10 +473,10 @@ fn new_work_freezes_the_channel_override_else_the_provider_default_with_the_inst
 
         assert_eq!(
             frozen_settings(&pool, &default_work).await.0,
-            ChatModelSelection::provider_default()
+            named_model(AGENT_MODEL)
         );
         let (model, instructions) = frozen_settings(&pool, &override_work).await;
-        assert_eq!(model, named_model("override-model"));
+        assert_eq!(model, named_model(AGENT_MODEL));
         assert!(instructions.contains("Answer in Spanish."));
         let _ = std::fs::remove_dir_all(&vault_root);
     });
@@ -553,7 +563,7 @@ fn talk_work_discloses_no_folder_and_no_path_in_its_context() {
 }
 
 #[test]
-fn a_named_agent_keeps_its_own_model_over_the_channel_override() {
+fn named_and_catalog_agents_keep_their_own_models_over_a_stored_override() {
     tauri::async_runtime::block_on(async {
         let (pool, vault_root, channel_id, _, _) = project_with_two_folders("ask").await;
         let named = super::super::provider_agents::create_custom_agent(
@@ -612,7 +622,7 @@ fn a_named_agent_keeps_its_own_model_over_the_channel_override() {
         );
         assert_eq!(
             frozen_settings(&pool, &provider_work).await.0,
-            named_model("override-model")
+            named_model(AGENT_MODEL)
         );
         let _ = std::fs::remove_dir_all(&vault_root);
     });

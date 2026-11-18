@@ -417,7 +417,6 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::organization::access::chat_update_channel_agent_settings,
             chat::organization::access::chat_add_channel_agent,
             chat::organization::access::chat_remove_channel_agent,
-            chat::organization::access::chat_set_channel_model_override,
             chat::organization::access::chat_read_channel_roster,
             chat::organization::access::chat_list_assignment_targets,
             chat::organization::access::chat_preview_channel_membership_removal,

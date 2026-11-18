@@ -55,8 +55,8 @@ pub(crate) async fn seed(pool: &SqlitePool, assignment_state: &str, run_state: &
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
          VALUES ('{AGENT}', 'ai_agent', 'Helper', '{NOW}', '{NOW}');
-         INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
-         VALUES ('{AGENT}', 'Helper', '{NOW}', '{NOW}');
+         INSERT INTO chat_agents (participant_id, provider_family_id, created_at, updated_at)
+         VALUES ('{AGENT}', 'codex', '{NOW}', '{NOW}');
          INSERT INTO chat_conversation_items (id, conversation_id, item_kind, order_key, created_at)
          VALUES ('item:root', '{conversation}', 'message', 'c000', '{NOW}');
          INSERT INTO chat_communication_messages (item_id, author_participant_id, created_at)
@@ -71,15 +71,15 @@ pub(crate) async fn seed(pool: &SqlitePool, assignment_state: &str, run_state: &
          VALUES ('{THREAD}', '{conversation}', 'item:root', '{NOW}', '{NOW}', '{NOW}');
          INSERT INTO chat_work_assignments
             (id, reply_thread_id, agent_id, triggering_message_item_id, state,
-             created_at, updated_at)
+             model_selection_schema_version, model_selection_data, created_at, updated_at)
          VALUES ('{ASSIGNMENT}', '{THREAD}', '{AGENT}', 'item:root', '{assignment_state}',
-                 '{NOW}', '{NOW}');
+                 1, '{{}}', '{NOW}', '{NOW}');
          UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
          INSERT INTO chat_agent_runs
-            (id, assignment_id, project_id, agent_policy_revision_id,
+            (id, assignment_id, project_id,
              authorization_revision_id, authorization_scope_digest, provider_turn_id,
              provider_thread_id, state, run_ordinal, created_at, updated_at)
-         VALUES ('{RUN}', '{ASSIGNMENT}', '{PROJECT_ID}', 'policy:reports', 'authorization:reports',
+         VALUES ('{RUN}', '{ASSIGNMENT}', '{PROJECT_ID}', 'authorization:reports',
                  '{digest}', '{TURN}', 'thread:reports', '{run_state}', 1, '{NOW}', '{NOW}');
          UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1;"
     )))
@@ -285,10 +285,10 @@ async fn a_run_posts_at_most_three_note_proposals() {
         "UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
          UPDATE chat_agent_runs SET state = 'completed' WHERE id = '{RUN}';
          INSERT INTO chat_agent_runs
-            (id, assignment_id, project_id, agent_policy_revision_id,
+            (id, assignment_id, project_id,
              authorization_revision_id, authorization_scope_digest, provider_turn_id,
              provider_thread_id, state, run_ordinal, created_at, updated_at)
-         VALUES ('run:reports-2', '{ASSIGNMENT}', '{PROJECT_ID}', 'policy:reports',
+         VALUES ('run:reports-2', '{ASSIGNMENT}', '{PROJECT_ID}',
                  'authorization:reports', '{digest}', 'turn:reports-2', 'thread:reports',
                  'working', 2, '{LATER}', '{LATER}');
          UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1;"

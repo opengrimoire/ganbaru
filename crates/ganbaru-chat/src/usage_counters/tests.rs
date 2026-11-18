@@ -260,10 +260,10 @@ async fn seed_run(pool: &SqlitePool, run_id: &str, ordinal: i64, state: &str, at
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
          INSERT INTO chat_agent_runs
-            (id, assignment_id, project_id, agent_policy_revision_id,
+            (id, assignment_id, project_id,
              authorization_revision_id, authorization_scope_digest, provider_turn_id,
              provider_thread_id, state, run_ordinal, created_at, updated_at)
-         VALUES ('{run_id}', 'assignment:usage', 'project-usage', 'policy:usage',
+         VALUES ('{run_id}', 'assignment:usage', 'project-usage',
                  'authorization:usage', '{digest}', 'turn:{run_id}', '{THREAD}', '{state}',
                  {ordinal}, '{at}', '{at}');
          UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1;",

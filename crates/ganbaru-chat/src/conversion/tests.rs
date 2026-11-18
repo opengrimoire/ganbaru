@@ -25,8 +25,8 @@ async fn migrated_pool() -> SqlitePool {
     pool
 }
 
-/// Seeds a project channel with one AI agent holding a channel membership and a folder
-/// grant, every key a placeholder as the migration leaves it.
+/// Seeds a project channel with one AI agent holding a channel membership, every key a
+/// placeholder as the migration leaves it.
 async fn seed_placeholders(pool: &SqlitePool) -> String {
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "INSERT INTO project_groups (id, name, order_key) VALUES ('group-conversion', 'C', 'a0');
@@ -56,20 +56,14 @@ async fn seed_placeholders(pool: &SqlitePool) -> String {
                  '{NOW}');
          INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
          VALUES ('{AGENT_ID}', 'ai_agent', 'Agent', '{NOW}', '{NOW}');
-         INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
-         VALUES ('{AGENT_ID}', 'Test', '{NOW}', '{NOW}');
+         INSERT INTO chat_agents (participant_id, provider_family_id, created_at, updated_at)
+         VALUES ('{AGENT_ID}', 'codex', '{NOW}', '{NOW}');
          INSERT INTO chat_conversation_memberships
             (conversation_id, participant_id, sync_key, membership_role, created_at, updated_at)
          VALUES ('{conversation}', '{AGENT_ID}', 'pending:1', 'member', '{NOW}', '{NOW}');
          INSERT INTO chat_agent_channel_memberships
-            (conversation_id, agent_id, sync_key, read_history, participate,
-             history_boundary, created_at, updated_at)
-         VALUES ('{conversation}', '{AGENT_ID}', 'pending:1', 1, 1, 'entire', '{NOW}', '{NOW}');
-         INSERT INTO chat_agent_working_folder_grants
-            (conversation_id, agent_id, working_folder_id, sync_key, project_id, capability,
-             is_default, created_at)
-         VALUES ('{conversation}', '{AGENT_ID}', '{FOLDER_ID}', 'pending:1', '{PROJECT_ID}',
-                 'read', 1, '{NOW}');
+            (conversation_id, agent_id, sync_key, created_at, updated_at)
+         VALUES ('{conversation}', '{AGENT_ID}', 'pending:1', '{NOW}', '{NOW}');
          INSERT INTO chat_conversation_items
             (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
          VALUES ('{ROOT_ITEM_ID}', '{conversation}', NULL, 'message', 'c000', '{NOW}');
@@ -108,7 +102,7 @@ async fn conversion_rewrites_every_placeholder_to_the_derived_key_once() {
     let error = assert_converted(&pool).await.unwrap_err();
     assert!(error.contains("chat_conversation_memberships"), "{error}");
 
-    assert_eq!(convert(&pool).await.unwrap(), 6);
+    assert_eq!(convert(&pool).await.unwrap(), 5);
     assert_converted(&pool).await.unwrap();
     assert_eq!(
         key_of(
@@ -143,10 +137,6 @@ async fn conversion_rewrites_every_placeholder_to_the_derived_key_once() {
         key_of(&pool, "chat_agent_channel_memberships", &agent).await,
         channel_membership_key(&conversation, AGENT_ID).unwrap()
     );
-    assert_eq!(
-        key_of(&pool, "chat_agent_working_folder_grants", &agent).await,
-        folder_grant_key(&conversation, AGENT_ID, FOLDER_ID).unwrap()
-    );
 
     assert_eq!(convert(&pool).await.unwrap(), 0);
 }
@@ -168,12 +158,16 @@ async fn converted_keys_cannot_change_again() {
 
 #[test]
 fn derived_keys_depend_on_every_key_column_and_its_order() {
-    let key = folder_grant_key("conversation", "agent", "folder").unwrap();
-    assert!(key.starts_with(FOLDER_GRANT_KEY_PREFIX));
+    let key = channel_membership_key("conversation", "agent").unwrap();
+    assert!(key.starts_with(CHANNEL_MEMBERSHIP_KEY_PREFIX));
     assert_ne!(
         key,
-        folder_grant_key("conversation", "folder", "agent").unwrap()
+        channel_membership_key("agent", "conversation").unwrap()
     );
+    let codex = provider_agent_id("codex").unwrap();
+    assert!(codex.starts_with(PROVIDER_AGENT_KEY_PREFIX));
+    assert_eq!(codex, provider_agent_id("codex").unwrap());
+    assert_ne!(codex, provider_agent_id("claude").unwrap());
     assert_ne!(
         membership_key("a", "b").unwrap(),
         channel_membership_key("a", "b").unwrap()

@@ -2,9 +2,10 @@
 //! keys of the Chat tables keyed by several columns.
 //!
 //! The conversations and timeline replication migrations leave `'pending:'` placeholders in the
-//! `sync_key` of conversation memberships, AI channel memberships, working folder grants, and
-//! conversation and reply thread read cursors. This pass rewrites each placeholder to the key every device derives from the row's key columns. It is
-//! idempotent, so a vault that is already converted is left unchanged.
+//! `sync_key` of conversation memberships, AI channel memberships, and conversation and reply
+//! thread read cursors. This pass rewrites each placeholder to the key every device derives from
+//! the row's key columns. It is idempotent, so a vault that is already converted is left
+//! unchanged.
 
 use ganbaru_sync_contracts::{PENDING_KEY_PREFIX, derived_key};
 use sqlx::{AssertSqlSafe, SqliteConnection, SqlitePool};
@@ -13,8 +14,8 @@ use sqlx::{AssertSqlSafe, SqliteConnection, SqlitePool};
 pub const MEMBERSHIP_KEY_PREFIX: &str = "conversation-membership";
 /// Prefix of AI channel membership keys, over the conversation and agent.
 pub const CHANNEL_MEMBERSHIP_KEY_PREFIX: &str = "ai-channel-membership";
-/// Prefix of working folder grant keys, over the conversation, agent, and working folder.
-pub const FOLDER_GRANT_KEY_PREFIX: &str = "folder-grant";
+/// Prefix of the participant id of the agent of one provider family, over the family id.
+pub const PROVIDER_AGENT_KEY_PREFIX: &str = "agent-provider";
 /// Prefix of conversation read cursor keys, over the conversation and participant.
 pub const CONVERSATION_CURSOR_KEY_PREFIX: &str = "conversation-read-cursor";
 /// Prefix of reply thread read cursor keys, over the reply thread and participant.
@@ -36,16 +37,10 @@ pub fn channel_membership_key(conversation_id: &str, agent_id: &str) -> Result<S
     key(CHANNEL_MEMBERSHIP_KEY_PREFIX, &[conversation_id, agent_id])
 }
 
-/// The `sync_key` of a working folder grant.
-pub fn folder_grant_key(
-    conversation_id: &str,
-    agent_id: &str,
-    working_folder_id: &str,
-) -> Result<String, String> {
-    key(
-        FOLDER_GRANT_KEY_PREFIX,
-        &[conversation_id, agent_id, working_folder_id],
-    )
+/// The participant id of the agent of the provider family `family_id`, which every device
+/// derives alike so the agents of one family converge.
+pub fn provider_agent_id(family_id: &str) -> Result<String, String> {
+    key(PROVIDER_AGENT_KEY_PREFIX, &[family_id])
 }
 
 /// The `sync_key` of a participant's conversation read cursor.
@@ -71,7 +66,7 @@ struct KeyedTable {
     derive: fn(&[String]) -> Result<String, String>,
 }
 
-const KEYED_TABLES: [KeyedTable; 5] = [
+const KEYED_TABLES: [KeyedTable; 4] = [
     KeyedTable {
         table: "chat_conversation_memberships",
         parts: &["conversation_id", "participant_id"],
@@ -81,11 +76,6 @@ const KEYED_TABLES: [KeyedTable; 5] = [
         table: "chat_agent_channel_memberships",
         parts: &["conversation_id", "agent_id"],
         derive: |parts| channel_membership_key(&parts[0], &parts[1]),
-    },
-    KeyedTable {
-        table: "chat_agent_working_folder_grants",
-        parts: &["conversation_id", "agent_id", "working_folder_id"],
-        derive: |parts| folder_grant_key(&parts[0], &parts[1], &parts[2]),
     },
     KeyedTable {
         table: "chat_conversation_read_cursors",

@@ -52,9 +52,9 @@ async fn seed_delegation(pool: &SqlitePool, parent_state: &str) {
         "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
          VALUES ('{PARENT_AGENT}', 'ai_agent', 'Lead', '{NOW}', '{NOW}'),
                 ('{CHILD_AGENT}', 'ai_agent', 'Helper', '{NOW}', '{NOW}');
-         INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
-         VALUES ('{PARENT_AGENT}', 'Lead', '{NOW}', '{NOW}'),
-                ('{CHILD_AGENT}', 'Helper', '{NOW}', '{NOW}');
+         INSERT INTO chat_agents (participant_id, provider_family_id, created_at, updated_at)
+         VALUES ('{PARENT_AGENT}', 'codex', '{NOW}', '{NOW}'),
+                ('{CHILD_AGENT}', 'claude', '{NOW}', '{NOW}');
          INSERT INTO chat_conversation_items (id, conversation_id, item_kind, order_key, created_at)
          VALUES ('item:parent-root', '{conversation}', 'message', 'c000', '{NOW}'),
                 ('item:child-root', '{conversation}', 'message', 'c001', '{NOW}');
@@ -73,15 +73,17 @@ async fn seed_delegation(pool: &SqlitePool, parent_state: &str) {
                 ('reply:child', '{conversation}', 'item:child-root', '{NOW}', '{NOW}', '{NOW}');
          INSERT INTO chat_work_assignments
             (id, reply_thread_id, agent_id, triggering_message_item_id, state,
-             created_at, updated_at)
+             model_selection_schema_version, model_selection_data, created_at, updated_at)
          VALUES ('{PARENT}', 'reply:parent', '{PARENT_AGENT}', 'item:parent-root',
-                 '{parent_state}', '{NOW}', '{NOW}');
+                 '{parent_state}', 1, '{{}}', '{NOW}', '{NOW}');
          INSERT INTO chat_work_assignments
             (id, reply_thread_id, agent_id, triggering_message_item_id, state,
              parent_assignment_id, delegation_depth, delegation_objective,
-             delegation_expected_result, delegation_folder_ceiling, created_at, updated_at)
+             delegation_expected_result, delegation_folder_ceiling, model_selection_schema_version,
+             model_selection_data, created_at, updated_at)
          VALUES ('{CHILD}', 'reply:child', '{CHILD_AGENT}', 'item:child-root', 'working',
-                 '{PARENT}', 1, 'Write notes', 'A summary', '[]', '{NOW}', '{NOW}');"
+                 '{PARENT}', 1, 'Write notes', 'A summary', '[]', 1, '{{}}', '{NOW}',
+                 '{NOW}');"
     )))
     .execute(pool)
     .await
@@ -284,9 +286,9 @@ async fn unsettled_undelegated_and_moved_children_post_nothing() {
             (id, reply_thread_id, agent_id, triggering_message_item_id, state,
              previous_assignment_id, parent_assignment_id, delegation_depth,
              delegation_objective, delegation_expected_result, delegation_folder_ceiling,
-             created_at, updated_at)
+             model_selection_schema_version, model_selection_data, created_at, updated_at)
          VALUES ('assignment:delegation-successor', 'reply:child', ?, 'item:child-root',
-                 'queued', ?, ?, 1, 'Write notes', 'A summary', '[]', ?, ?)",
+                 'queued', ?, ?, 1, 'Write notes', 'A summary', '[]', 1, '{}', ?, ?)",
     )
     .bind(CHILD_AGENT)
     .bind(CHILD)
@@ -320,10 +322,11 @@ async fn seed_grandchild(pool: &SqlitePool) {
          INSERT INTO chat_work_assignments
             (id, reply_thread_id, agent_id, triggering_message_item_id, state,
              parent_assignment_id, delegation_depth, delegation_objective,
-             delegation_expected_result, delegation_folder_ceiling, created_at, updated_at)
+             delegation_expected_result, delegation_folder_ceiling, model_selection_schema_version,
+             model_selection_data, created_at, updated_at)
          VALUES ('assignment:delegation-grandchild', 'reply:grandchild', '{PARENT_AGENT}',
                  'item:grandchild-root', 'queued', '{CHILD}', 2, 'Check notes', 'A verdict',
-                 '[]', '{NOW}', '{NOW}');"
+                 '[]', 1, '{{}}', '{NOW}', '{NOW}');"
     )))
     .execute(pool)
     .await

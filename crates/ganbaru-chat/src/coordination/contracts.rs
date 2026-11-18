@@ -4,80 +4,102 @@ use super::super::models::*;
 use crate::scheduling::RecurrenceSpec;
 use serde::{Deserialize, Serialize};
 
+/// An agent's default model, as Settings > Agents edits it.
 #[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChatAgentPolicyInput {
-    pub provider_instance_id: ProviderInstanceId,
-    pub safety_mode: ChatApprovalPolicy,
     #[serde(default)]
     pub provider_managed_model: bool,
     pub model_id: Option<ModelId>,
+    /// Options of the model, effort among them.
     #[serde(default)]
     pub model_options: Vec<ModelOptionSelection>,
-    pub effort: Option<String>,
-    pub speed: Option<String>,
     pub provider_options: VersionedJson,
+    #[serde(default = "default_interaction_mode")]
+    pub interaction_mode: InteractionMode,
 }
 
+fn default_interaction_mode() -> InteractionMode {
+    InteractionMode::Build
+}
+
+impl ChatAgentPolicyInput {
+    /// The model selection the policy stores.
+    pub fn model_selection(&self) -> ChatModelSelection {
+        ChatModelSelection {
+            provider_managed_model: self.provider_managed_model,
+            model_id: self.model_id.clone(),
+            model_options: self.model_options.clone(),
+        }
+    }
+}
+
+/// Saves a new default model for an agent.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CreateChatAgentCommand {
+pub struct SetChatAgentPolicyCommand {
     pub agent_id: ChatParticipantId,
-    pub display_name: String,
-    pub avatar: VersionedJson,
-    #[serde(default)]
-    pub role: String,
-    #[serde(default)]
-    pub instructions: String,
     pub policy: ChatAgentPolicyInput,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatFolderGrantInput {
-    pub working_folder_id: ProjectWorkingFolderId,
-    pub capability: ChatFolderCapability,
+/// Saves the app scope of agent settings.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateChatAppAgentSettingsCommand {
+    pub access: ChatAgentAccess,
     #[serde(default)]
-    pub is_default: bool,
-    pub runtime_approval_override: Option<ChatRuntimeApprovalPolicy>,
+    pub instructions: String,
+    pub expected_revision: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatAgentChannelAccessInput {
+/// Saves the project scope of agent settings; an absent access inherits the app access.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateChatProjectAgentSettingsCommand {
+    pub project_id: String,
+    pub access: Option<ChatAgentAccess>,
+    #[serde(default)]
+    pub instructions: String,
+    /// Zero while the project has never saved its own settings.
+    pub expected_revision: u64,
+}
+
+/// Saves the channel scope of agent settings; an absent access inherits the project access.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateChatChannelAgentSettingsCommand {
     pub channel_id: ChatChannelId,
-    pub capabilities: ChatChannelCapabilities,
-    pub history_boundary: ChatHistoryBoundary,
-    pub runtime_approval_override: Option<ChatRuntimeApprovalPolicy>,
-    pub scratch_runtime_approval_override: Option<ChatRuntimeApprovalPolicy>,
+    pub access: Option<ChatAgentAccess>,
     #[serde(default)]
-    pub folder_grants: Vec<ChatFolderGrantInput>,
+    pub instructions: String,
+    pub expected_revision: u64,
 }
 
+/// Sets or clears the model one agent starts on in one channel.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PreviewChatAgentAccessCommand {
+pub struct SetChatChannelModelOverrideCommand {
+    pub channel_id: ChatChannelId,
     pub agent_id: ChatParticipantId,
-    pub expected_access_revision: u64,
-    #[serde(default)]
-    pub channels: Vec<ChatAgentChannelAccessInput>,
-    #[serde(default)]
-    pub agent_profile: Option<UpdateChatAgentProfileCommand>,
-    #[serde(default)]
-    pub policy: Option<ChatAgentPolicyInput>,
+    /// `None` clears the override, so the agent's default model applies.
+    pub model: Option<ChatModelSelection>,
 }
 
+/// Adds an agent to a channel, where it works under the channel's access at once.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ReplaceChatAgentAccessCommand {
+pub struct AddChatChannelAgentCommand {
+    pub channel_id: ChatChannelId,
     pub agent_id: ChatParticipantId,
-    pub expected_access_revision: u64,
-    #[serde(default)]
-    pub channels: Vec<ChatAgentChannelAccessInput>,
-    #[serde(default)]
-    pub agent_profile: Option<UpdateChatAgentProfileCommand>,
-    #[serde(default)]
-    pub policy: Option<ChatAgentPolicyInput>,
+}
+
+/// Removes an agent from a channel, which revokes its running work there and its push
+/// approvals.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoveChatChannelAgentCommand {
+    pub channel_id: ChatChannelId,
+    pub agent_id: ChatParticipantId,
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,7 +107,6 @@ pub struct ReplaceChatAgentAccessCommand {
 pub struct PreviewChatChannelMembershipRemovalCommand {
     pub agent_id: ChatParticipantId,
     pub channel_id: ChatChannelId,
-    pub expected_access_revision: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -151,19 +172,6 @@ pub struct CleanupChatScratchCommand {
     pub expected_scope_revision: u64,
     #[serde(default)]
     pub confirmed: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateChatAgentProfileCommand {
-    pub agent_id: ChatParticipantId,
-    pub display_name: String,
-    pub avatar: VersionedJson,
-    #[serde(default)]
-    pub role: String,
-    #[serde(default)]
-    pub instructions: String,
-    pub expected_revision: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -347,22 +355,6 @@ pub struct ChatPushRequestStateRead {
     pub state: ChatPushRequestState,
 }
 
-/// A person's standing approval of an agent's pushes from one working folder to one push URL
-/// and destination branch.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatPushApprovalRead {
-    /// The replicated key that names the approval.
-    pub approval_id: String,
-    pub agent_id: ChatParticipantId,
-    pub working_folder_id: ProjectWorkingFolderId,
-    /// The folder's current display name.
-    pub working_folder_name: String,
-    pub push_url: String,
-    pub destination_branch: String,
-    pub approved_at: String,
-}
-
 /// Revokes a standing push approval, so later matching push requests ask again.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -386,40 +378,88 @@ pub struct PostChatMessageResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChatScratchPromotionDestinationInput, CreateChatAgentCommand, PreviewChatAgentAccessCommand,
+        ChatAgentAccess, ChatScratchPromotionDestinationInput, InteractionMode,
+        SetChatAgentPolicyCommand, SetChatChannelModelOverrideCommand,
+        UpdateChatChannelAgentSettingsCommand, UpdateChatProjectAgentSettingsCommand,
     };
     use serde_json::json;
 
-    fn agent_payload() -> serde_json::Value {
+    fn policy_payload() -> serde_json::Value {
         json!({
-            "agentId": "agent:reviewer",
-            "displayName": "Reviewer",
-            "avatar": { "schemaVersion": 1, "value": { "kind": "initials" } },
-            "role": "Code reviewer",
-            "instructions": "",
+            "agentId": "agent:codex",
             "policy": {
-                "providerInstanceId": "provider:test",
-                "safetyMode": "ask_for_approval",
                 "providerManagedModel": true,
                 "modelId": null,
                 "modelOptions": [],
-                "effort": null,
-                "speed": null,
                 "providerOptions": { "schemaVersion": 1, "value": {} }
             }
         })
     }
 
     #[test]
-    fn standalone_agent_creation_has_no_access_input() {
-        let payload = agent_payload();
-        assert!(serde_json::from_value::<CreateChatAgentCommand>(payload).is_ok());
+    fn agent_policy_keeps_only_the_model_and_provider_options() {
+        let command = serde_json::from_value::<SetChatAgentPolicyCommand>(policy_payload())
+            .expect("a model policy should deserialize");
+        assert_eq!(command.policy.interaction_mode, InteractionMode::Build);
+        assert!(command.policy.model_selection().provider_managed_model);
 
-        let mut legacy_payload = agent_payload();
-        legacy_payload["memberships"] = json!([{
-            "channelId": "channel:general"
-        }]);
-        assert!(serde_json::from_value::<CreateChatAgentCommand>(legacy_payload).is_err());
+        for removed in ["safetyMode", "effort", "speed", "providerInstanceId"] {
+            let mut payload = policy_payload();
+            payload["policy"][removed] = json!("ask_for_approval");
+            assert!(
+                serde_json::from_value::<SetChatAgentPolicyCommand>(payload).is_err(),
+                "{removed} is no longer part of an agent policy"
+            );
+        }
+    }
+
+    #[test]
+    fn scope_settings_inherit_with_an_absent_access() {
+        let project = serde_json::from_value::<UpdateChatProjectAgentSettingsCommand>(json!({
+            "projectId": "project:a",
+            "access": null,
+            "instructions": "Use the house style",
+            "expectedRevision": 0
+        }))
+        .unwrap();
+        assert_eq!(project.access, None);
+
+        let channel = serde_json::from_value::<UpdateChatChannelAgentSettingsCommand>(json!({
+            "channelId": "channel:general",
+            "access": "talk",
+            "expectedRevision": 3
+        }))
+        .unwrap();
+        assert_eq!(channel.access, Some(ChatAgentAccess::Talk));
+        assert_eq!(channel.instructions, "");
+
+        assert!(
+            serde_json::from_value::<UpdateChatChannelAgentSettingsCommand>(json!({
+                "channelId": "channel:general",
+                "access": "unattended",
+                "expectedRevision": 3
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn channel_model_override_sets_or_clears() {
+        let cleared = serde_json::from_value::<SetChatChannelModelOverrideCommand>(json!({
+            "channelId": "channel:general",
+            "agentId": "agent:codex",
+            "model": null
+        }))
+        .unwrap();
+        assert!(cleared.model.is_none());
+
+        let set = serde_json::from_value::<SetChatChannelModelOverrideCommand>(json!({
+            "channelId": "channel:general",
+            "agentId": "agent:codex",
+            "model": { "modelId": "gpt-5", "modelOptions": [] }
+        }))
+        .unwrap();
+        assert_eq!(set.model.unwrap().model_id.unwrap().as_str(), "gpt-5");
     }
 
     #[test]
@@ -445,40 +485,5 @@ mod tests {
             serde_json::from_value::<ChatScratchPromotionDestinationInput>(legacy_destination)
                 .is_err()
         );
-    }
-
-    #[test]
-    fn agent_access_preview_accepts_the_complete_atomic_draft() {
-        let payload = json!({
-            "agentId": "agent:reviewer",
-            "expectedAccessRevision": 4,
-            "channels": [],
-            "agentProfile": {
-                "agentId": "agent:reviewer",
-                "displayName": "Reviewer",
-                "avatar": { "schemaVersion": 1, "value": { "kind": "initials" } },
-                "role": "Code reviewer",
-                "instructions": "Review changes",
-                "expectedRevision": 7
-            },
-            "policy": {
-                "providerInstanceId": "provider:test",
-                "safetyMode": "ask_for_approval",
-                "providerManagedModel": true,
-                "modelId": null,
-                "modelOptions": [],
-                "effort": null,
-                "speed": null,
-                "providerOptions": { "schemaVersion": 1, "value": {} }
-            }
-        });
-        let command = serde_json::from_value::<PreviewChatAgentAccessCommand>(payload.clone())
-            .expect("the complete draft should deserialize");
-        assert!(command.agent_profile.is_some());
-        assert!(command.policy.is_some());
-
-        let mut unknown = payload;
-        unknown["legacyMemberships"] = json!([]);
-        assert!(serde_json::from_value::<PreviewChatAgentAccessCommand>(unknown).is_err());
     }
 }

@@ -1,5 +1,6 @@
 //! SQLite source of truth for Chat history and projections.
 
+pub mod agent_settings;
 pub mod attachments;
 pub mod drafts;
 pub mod events;

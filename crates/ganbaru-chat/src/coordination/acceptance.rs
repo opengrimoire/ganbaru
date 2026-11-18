@@ -4,7 +4,7 @@ use crate::scheduling::{RecurrenceRule, RecurrenceSpec};
 use sha2::{Digest, Sha256};
 
 /// Domain of an assignment acceptance digest.
-pub const ACCEPTANCE_DOMAIN: &[u8] = b"ganbaru-assignment-acceptance-v1";
+pub const ACCEPTANCE_DOMAIN: &[u8] = b"ganbaru-assignment-acceptance-v2";
 /// Domain of a scheduled message consent digest, so neither kind satisfies the other.
 pub const SCHEDULED_CONSENT_DOMAIN: &[u8] = b"ganbaru-scheduled-consent-v1";
 /// Domain of a repeating scheduled message consent digest.
@@ -14,8 +14,9 @@ pub const SCHEDULED_SERIES_CONSENT_DOMAIN: &[u8] = b"ganbaru-scheduled-series-co
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AcceptanceGrant {
     pub working_folder_id: String,
+    /// Stored folder capability the resolved access level grants.
     pub capability: String,
-    /// Effective runtime approval in the folder.
+    /// Stored runtime approval the resolved access level runs under in the folder.
     pub runtime_approval: String,
 }
 
@@ -23,12 +24,16 @@ pub struct AcceptanceGrant {
 #[derive(Clone, Copy, Debug)]
 pub struct AcceptanceSubject<'a> {
     pub agent_id: &'a str,
-    pub policy_revision_id: &'a str,
-    pub instructions: &'a str,
+    /// Stored spelling of the effective access level the device resolved for the channel.
+    pub access_level: &'a str,
+    /// Hex digest of the instructions frozen on the assignment.
+    pub instructions_sha256: &'a str,
+    /// Hex digest of the model selection frozen on the assignment.
+    pub model_selection_sha256: &'a str,
     pub provider_instance_id: &'a str,
-    /// Grants sorted by working folder id.
+    /// Folders sorted by working folder id.
     pub grants: &'a [AcceptanceGrant],
-    /// Effective runtime approval in the agent's scratch.
+    /// Stored runtime approval in the agent's scratch, empty when the level allows no scratch.
     pub scratch_runtime_approval: &'a str,
 }
 
@@ -37,8 +42,9 @@ pub fn acceptance_digest(subject: &AcceptanceSubject<'_>) -> String {
     let mut hasher = Sha256::new();
     hasher.update(ACCEPTANCE_DOMAIN);
     absorb(&mut hasher, subject.agent_id);
-    absorb(&mut hasher, subject.policy_revision_id);
-    absorb(&mut hasher, subject.instructions);
+    absorb(&mut hasher, subject.access_level);
+    absorb(&mut hasher, subject.instructions_sha256);
+    absorb(&mut hasher, subject.model_selection_sha256);
     absorb(&mut hasher, subject.provider_instance_id);
     absorb(&mut hasher, subject.scratch_runtime_approval);
     hasher.update((subject.grants.len() as u64).to_be_bytes());
@@ -106,12 +112,13 @@ mod tests {
     }
 
     #[test]
-    fn acceptance_digest_changes_with_policy_instructions_provider_and_grants() {
+    fn acceptance_digest_changes_with_access_instructions_model_provider_and_grants() {
         let grants = [grant("folder:a", "read", "ask")];
         let subject = AcceptanceSubject {
             agent_id: "participant:agent",
-            policy_revision_id: "policy:1",
-            instructions: "Review the code",
+            access_level: "ask",
+            model_selection_sha256: "model:1",
+            instructions_sha256: "instructions:1",
             provider_instance_id: "provider:a",
             grants: &grants,
             scratch_runtime_approval: "ask",
@@ -132,11 +139,15 @@ mod tests {
                 ..subject
             },
             AcceptanceSubject {
-                policy_revision_id: "policy:2",
+                access_level: "own",
                 ..subject
             },
             AcceptanceSubject {
-                instructions: "Delete everything",
+                model_selection_sha256: "model:2",
+                ..subject
+            },
+            AcceptanceSubject {
+                instructions_sha256: "instructions:2",
                 ..subject
             },
             AcceptanceSubject {
@@ -173,15 +184,16 @@ mod tests {
     fn acceptance_digest_keeps_field_boundaries() {
         let split = AcceptanceSubject {
             agent_id: "ab",
-            policy_revision_id: "c",
-            instructions: "",
+            access_level: "c",
+            model_selection_sha256: "",
+            instructions_sha256: "",
             provider_instance_id: "",
             grants: &[],
             scratch_runtime_approval: "",
         };
         let joined = AcceptanceSubject {
             agent_id: "a",
-            policy_revision_id: "bc",
+            access_level: "bc",
             ..split
         };
         assert_ne!(acceptance_digest(&split), acceptance_digest(&joined));
@@ -191,8 +203,9 @@ mod tests {
     fn acceptance_digest_differs_from_a_scheduled_consent_of_the_same_values() {
         let subject = AcceptanceSubject {
             agent_id: "same",
-            policy_revision_id: "same",
-            instructions: "",
+            access_level: "same",
+            model_selection_sha256: "",
+            instructions_sha256: "",
             provider_instance_id: "",
             grants: &[],
             scratch_runtime_approval: "",

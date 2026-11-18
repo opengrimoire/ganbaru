@@ -18,13 +18,13 @@ async fn migrated_pool() -> SqlitePool {
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "PRAGMA foreign_keys=OFF;
          UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
-         INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
-         VALUES ('{AGENT}', 'Counts', '{NOW}', '{NOW}');
+         INSERT INTO chat_agents (participant_id, provider_family_id, created_at, updated_at)
+         VALUES ('{AGENT}', 'codex', '{NOW}', '{NOW}');
          INSERT INTO chat_work_assignments
-            (id, reply_thread_id, agent_id, triggering_message_item_id, state, created_at,
-             updated_at)
+            (id, reply_thread_id, agent_id, triggering_message_item_id, state,
+             model_selection_schema_version, model_selection_data, created_at, updated_at)
          VALUES ('{ASSIGNMENT}', 'reply-thread:usage', '{AGENT}', 'item:usage', 'working',
-                 '{NOW}', '{NOW}');
+                 1, '{{}}', '{NOW}', '{NOW}');
          UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1;"
     )))
     .execute(&pool)
@@ -53,10 +53,10 @@ async fn seed_run(
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
          INSERT INTO chat_agent_runs
-            (id, assignment_id, project_id, agent_policy_revision_id,
+            (id, assignment_id, project_id,
              authorization_revision_id, authorization_scope_digest, provider_turn_id,
              provider_thread_id, state, run_ordinal, started_at, created_at, updated_at)
-         VALUES ('{run_id}', '{ASSIGNMENT}', 'project-usage', 'policy:usage',
+         VALUES ('{run_id}', '{ASSIGNMENT}', 'project-usage',
                  'authorization:usage', '{digest}', 'turn:{run_id}', 'thread:usage', 'working',
                  {ordinal}, {started_at}, '{NOW}', '{NOW}');
          UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1;

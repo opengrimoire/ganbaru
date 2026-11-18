@@ -1,40 +1,37 @@
 //! Device-local Chat state derived from replicated rows that sync materialized.
 //!
-//! Commands keep access state, audience revisions, and message search current through triggers
-//! that stand down while sync applies rows. After the sync engine writes rows of one table,
-//! [`after_materialize`] does the same work for the changed keys inside the engine transaction,
-//! with plain SQL and no dependency on the engine, so any caller holding the connection can run
-//! it. It never writes replicated rows.
-
-mod channel_access;
-
-pub use channel_access::{ChannelAccess, settled_channel_access};
+//! Commands keep audience revisions and message search current through triggers that stand down
+//! while sync applies rows. After the sync engine writes rows of one table, [`after_materialize`]
+//! does the same work for the changed keys inside the engine transaction, with plain SQL and no
+//! dependency on the engine, so any caller holding the connection can run it. It never writes
+//! replicated rows.
 
 use crate::attachment_files;
-use crate::coordination::reductions::{agent_policy_covers, live_agent_safety_mode_sql};
-use crate::coordination::revocation::{
-    revoke_agent_authorizations, revoke_assignment_authorizations,
-};
+use crate::coordination::access::{access_ceiling, effective_access_level_sql};
+use crate::coordination::revocation::{revoke_assignment_authorizations, revoke_authorization};
 use crate::models::{ChatError, ChatErrorCode, ChatResult};
 use chrono::{DateTime, SecondsFormat, Utc};
+use ganbaru_chat_contracts::models::{
+    ChatAgentAccess, ChatFolderCapability, ChatRuntimeApprovalPolicy,
+};
 use sqlx::SqliteConnection;
 use std::collections::BTreeSet;
 use std::time::SystemTime;
 
 /// Replicated table of Chat participants, keyed by id.
 pub const PARTICIPANTS_TABLE: &str = "chat_participants";
-/// Replicated table of AI agents, keyed by participant id.
-pub const AGENTS_TABLE: &str = "chat_agents";
-/// Replicated table of agent policy revisions, keyed by id.
-pub const POLICY_REVISIONS_TABLE: &str = "chat_agent_policy_revisions";
+/// Replicated single row table of app agent settings.
+pub const APP_SETTINGS_TABLE: &str = "chat_agent_app_settings";
+/// Replicated table of project agent settings, keyed by project id.
+pub const PROJECT_SETTINGS_TABLE: &str = "chat_project_agent_settings";
+/// Replicated table of project channels, keyed by id.
+pub const CHANNELS_TABLE: &str = "chat_channels";
 /// Replicated table of conversations, keyed by id.
 pub const CONVERSATIONS_TABLE: &str = "chat_conversations";
 /// Replicated table of conversation memberships, keyed by sync key.
 pub const MEMBERSHIPS_TABLE: &str = "chat_conversation_memberships";
 /// Replicated table of AI channel memberships, keyed by sync key.
 pub const CHANNEL_MEMBERSHIPS_TABLE: &str = "chat_agent_channel_memberships";
-/// Replicated table of working folder grants, keyed by sync key.
-pub const FOLDER_GRANTS_TABLE: &str = "chat_agent_working_folder_grants";
 /// Replicated table of messages, keyed by item id.
 pub const MESSAGES_TABLE: &str = "chat_communication_messages";
 /// Replicated table of message revisions, keyed by id.
@@ -46,35 +43,27 @@ pub const ASSIGNMENT_INPUTS_TABLE: &str = "chat_work_assignment_inputs";
 
 /// Reason recorded on authorizations revoked because their assignment settled on another device.
 pub const ASSIGNMENT_SETTLED_REASON: &str = "The work assignment settled on another device";
-/// Reason recorded on authorizations revoked because an applied membership or folder grant no
-/// longer covers them, matching the command that saves a reduction.
+/// Reason recorded on authorizations revoked because the channel access or membership that
+/// covered them was narrowed or removed.
 pub const ACCESS_REDUCTION_REASON: &str = "Agent access was reduced";
-/// Reason recorded on authorizations revoked because a synced agent policy pointer disagrees
-/// with the revision it names.
-pub const MISMATCHED_POINTER_REASON: &str = "Synced agent policy disagrees with its revision";
-/// Reason recorded on authorizations revoked because the agent's applied effective policy no
-/// longer covers the approval they froze.
-pub const AGENT_POLICY_REDUCED_REASON: &str = "Agent approval behavior was reduced";
-/// Reason recorded on authorizations revoked because the agent was archived on another device.
+/// Reason recorded on authorizations revoked because the agent was archived.
 pub const AGENT_ARCHIVED_REASON: &str = "The agent was archived";
 
 /// Device-local state [`after_materialize`] changed, so the caller can wake the services and
 /// views that read it.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ChatSyncEffects {
-    /// Agents whose access state row was created.
-    pub access_state_created: BTreeSet<String>,
-    /// Agents whose access revision was bumped.
-    pub access_revised: BTreeSet<String>,
     /// Conversations whose audience state was created or whose audience revision was bumped.
     pub audience_revised: BTreeSet<String>,
     /// Agents with authorizations revoked and access revocation jobs queued for them.
     pub revoked_agents: BTreeSet<String>,
+    /// Conversations that still hold unrevoked push approvals that lapsed, because the
+    /// conversation's effective access is below ask or the approved agent is no longer present
+    /// or is archived. Push approvals replicate, so the hook leaves them for the caller to revoke
+    /// with [`revoke_lapsed_push_approvals`] once the apply ends.
+    pub lapsed_push_approvals: BTreeSet<String>,
     /// Messages whose search row was rebuilt or removed.
     pub search_rebuilt: BTreeSet<String>,
-    /// Agents whose current policy pointer copies restrictiveness that disagrees with the
-    /// revision it names, so they have no effective revision.
-    pub mismatched_pointers: BTreeSet<String>,
     /// Conversations the apply deleted. The delete cascades away the authorizations that
     /// target them, with their runs, so no revocation job can name those runs; the caller stops
     /// running work whose authorization no longer exists.
@@ -104,12 +93,10 @@ pub struct ChatSyncEffects {
 impl ChatSyncEffects {
     /// Returns whether no device-local state changed and nothing was found to report.
     pub fn is_empty(&self) -> bool {
-        self.access_state_created.is_empty()
-            && self.access_revised.is_empty()
-            && self.audience_revised.is_empty()
+        self.audience_revised.is_empty()
             && self.revoked_agents.is_empty()
+            && self.lapsed_push_approvals.is_empty()
             && self.search_rebuilt.is_empty()
-            && self.mismatched_pointers.is_empty()
             && self.removed_conversations.is_empty()
             && self.reclaimed_attachments.is_empty()
             && self.queued_assignments.is_empty()
@@ -124,33 +111,25 @@ impl ChatSyncEffects {
 /// Recomputes the device-local Chat state derived from the rows of `table` whose keys are in
 /// `changed_keys`, after sync inserted, updated, or deleted them.
 ///
-/// It mirrors the gated command triggers: an agent gets its access state and a conversation
-/// its audience state, and a message or revision rebuilds the message's search row (a deleted
-/// message loses it). A revision also creates the attachment and resource rows of the
-/// attachments it names in a working folder this device has, and a changed revision, message, or
-/// deleted conversation removes such rows once nothing on this device references them.
-/// A conversation membership, AI channel membership, or folder grant bumps the audience (for
-/// memberships) and the AI agent's access revision, and revokes the agent's authorizations
-/// once one of them is no longer covered by the rows sync kept. A deleted conversation is
-/// reported, and deleted rows sweep every agent with an active authorization. Timestamps
-/// come from the changed rows, except revocations, which happen now on this device.
-/// Running it again for the same keys leaves the same rows, apart from the change counters it
-/// bumps again. A queued work assignment is reported for its executing device to start,
-/// a settled one ends its local dispatch job and revokes its active authorizations, and an input
-/// still pending names its assignment for delivery. Tables without derived state return no
+/// It mirrors the gated command triggers: a conversation gets its audience state, a membership
+/// bumps the audience of its conversation, and a message or revision rebuilds the message's
+/// search row (a deleted message loses it). A revision also creates the attachment and resource
+/// rows of the attachments it names in a working folder this device has, and a changed
+/// revision, message, or deleted conversation removes such rows once nothing on this device
+/// references them. A deleted conversation is reported.
+///
+/// An app, project, or channel settings row, a membership, an archived agent, or a deleted
+/// conversation runs [`revoke_exceeding_authorizations`], so a narrowing at any scope reaches
+/// every channel that inherits it and stops the work it no longer covers. The same rows report
+/// the channels whose push approvals lapsed. Both compare current rows, so arrival order
+/// does not matter and a widening or a repeated apply revokes nothing. A later widening does
+/// not bring a revoked authorization back.
+///
+/// A queued work assignment is reported for its executing device to start, a settled one ends
+/// its local dispatch job and revokes its active authorizations, and an input still pending
+/// names its assignment for delivery. Timestamps come from the changed rows, except
+/// revocations, which happen now on this device. Tables without derived state return no
 /// effects.
-///
-/// When an agent pointer copies a safety mode that differs from the revision it names, once
-/// both rows are present, it revokes the agent's authorizations and reports the pointer
-/// instead of failing the apply. The effective revision views already give that pointer no
-/// effective revision.
-///
-/// An agent or policy revision row revokes the agent's authorizations once its effective
-/// policy no longer covers an approval they froze, and an archived agent loses its
-/// authorizations. Both compare current rows, so arrival order does not matter and a widening or
-/// a repeated apply revokes nothing. While a pointer's revision has not arrived, the safety mode
-/// the pointer copied decides. A later widening or restore does not bring a revoked
-/// authorization back.
 pub async fn after_materialize(
     connection: &mut SqliteConnection,
     table: &str,
@@ -159,44 +138,8 @@ pub async fn after_materialize(
     let mut effects = ChatSyncEffects::default();
     let keys: BTreeSet<&str> = changed_keys.iter().map(String::as_str).collect();
     match table {
-        PARTICIPANTS_TABLE => {
-            for key in keys {
-                revoke_archived_agent(connection, key, &mut effects).await?;
-            }
-        }
-        AGENTS_TABLE => {
-            for key in keys {
-                create_access_state(connection, key, &mut effects).await?;
-                contain_mismatched_pointer(
-                    connection,
-                    POLICY_COPY_MISMATCH_BY_AGENT,
-                    key,
-                    &mut effects,
-                )
-                .await?;
-                revoke_on_policy_reduction(connection, key, &mut effects).await?;
-            }
-        }
-        POLICY_REVISIONS_TABLE => {
-            for key in keys {
-                contain_mismatched_pointer(
-                    connection,
-                    POLICY_COPY_MISMATCH_BY_REVISION,
-                    key,
-                    &mut effects,
-                )
-                .await?;
-                let agent_id: Option<String> = sqlx::query_scalar(
-                    "SELECT agent_id FROM chat_agent_policy_revisions WHERE id = ?",
-                )
-                .bind(key)
-                .fetch_optional(&mut *connection)
-                .await
-                .map_err(persistence_error)?;
-                if let Some(agent_id) = agent_id {
-                    revoke_on_policy_reduction(connection, &agent_id, &mut effects).await?;
-                }
-            }
+        PARTICIPANTS_TABLE | APP_SETTINGS_TABLE | PROJECT_SETTINGS_TABLE | CHANNELS_TABLE => {
+            sweep_exceeding_authorizations(connection, &mut effects).await?;
         }
         CONVERSATIONS_TABLE => {
             for key in keys {
@@ -205,31 +148,23 @@ pub async fn after_materialize(
                 }
             }
             if !effects.removed_conversations.is_empty() {
-                sweep_uncovered_authorizations(connection, &mut effects).await?;
+                sweep_exceeding_authorizations(connection, &mut effects).await?;
                 reclaim_applied_attachments(connection, &mut effects).await?;
             }
         }
         MEMBERSHIPS_TABLE => {
-            let rows = changed_access_rows(connection, MEMBERSHIP_ROW_BY_KEY, &keys).await?;
-            apply_access_rows(connection, &rows.present, true, &mut effects).await?;
-            if rows.deleted {
-                sweep_uncovered_authorizations(connection, &mut effects).await?;
-            }
+            revise_audiences(connection, MEMBERSHIP_ROW_BY_KEY, &keys, &mut effects).await?;
+            sweep_exceeding_authorizations(connection, &mut effects).await?;
         }
         CHANNEL_MEMBERSHIPS_TABLE => {
-            let rows =
-                changed_access_rows(connection, CHANNEL_MEMBERSHIP_ROW_BY_KEY, &keys).await?;
-            apply_access_rows(connection, &rows.present, true, &mut effects).await?;
-            if rows.deleted {
-                sweep_uncovered_authorizations(connection, &mut effects).await?;
-            }
-        }
-        FOLDER_GRANTS_TABLE => {
-            let rows = changed_access_rows(connection, FOLDER_GRANT_ROW_BY_KEY, &keys).await?;
-            apply_access_rows(connection, &rows.present, false, &mut effects).await?;
-            if rows.deleted {
-                sweep_uncovered_authorizations(connection, &mut effects).await?;
-            }
+            revise_audiences(
+                connection,
+                CHANNEL_MEMBERSHIP_ROW_BY_KEY,
+                &keys,
+                &mut effects,
+            )
+            .await?;
+            sweep_exceeding_authorizations(connection, &mut effects).await?;
         }
         MESSAGES_TABLE => {
             for key in keys {
@@ -420,26 +355,6 @@ async fn reclaim_applied_attachments(
     Ok(())
 }
 
-async fn create_access_state(
-    connection: &mut SqliteConnection,
-    agent_id: &str,
-    effects: &mut ChatSyncEffects,
-) -> ChatResult<()> {
-    let created = sqlx::query(
-        "INSERT OR IGNORE INTO chat_agent_access_state (agent_id, updated_at)
-         SELECT participant_id, updated_at FROM chat_agents WHERE participant_id = ?",
-    )
-    .bind(agent_id)
-    .execute(&mut *connection)
-    .await
-    .map_err(persistence_error)?
-    .rows_affected();
-    if created > 0 {
-        effects.access_state_created.insert(agent_id.to_string());
-    }
-    Ok(())
-}
-
 /// Creates the audience state of the conversation and returns whether the conversation is
 /// still present.
 async fn create_audience_state(
@@ -467,84 +382,298 @@ async fn create_audience_state(
         .map_err(persistence_error)
 }
 
-/// Conversation, participant, and change time of the conversation membership with sync key `?`.
-const MEMBERSHIP_ROW_BY_KEY: &str = "SELECT conversation_id, participant_id, updated_at
+/// Conversation and change time of the conversation membership with sync key `?`.
+const MEMBERSHIP_ROW_BY_KEY: &str = "SELECT conversation_id, updated_at
      FROM chat_conversation_memberships WHERE sync_key = ?";
 
-/// Conversation, agent, and change time of the AI channel membership with sync key `?`.
-const CHANNEL_MEMBERSHIP_ROW_BY_KEY: &str = "SELECT conversation_id, agent_id, updated_at
+/// Conversation and change time of the AI channel membership with sync key `?`.
+const CHANNEL_MEMBERSHIP_ROW_BY_KEY: &str = "SELECT conversation_id, updated_at
      FROM chat_agent_channel_memberships WHERE sync_key = ?";
 
-/// Conversation, agent, and change time of the working folder grant with sync key `?`.
-const FOLDER_GRANT_ROW_BY_KEY: &str =
-    "SELECT conversation_id, agent_id, coalesce(revoked_at, created_at)
-     FROM chat_agent_working_folder_grants WHERE sync_key = ?";
-
-/// Changed membership or grant rows of one apply.
-struct ChangedAccessRows {
-    /// Conversation, participant, and change time of each changed row that is still present.
-    present: BTreeSet<(String, String, String)>,
-    /// Whether the apply deleted any changed row, directly or by a cascade from a deleted
-    /// conversation, agent, project, or working folder.
-    deleted: bool,
-}
-
-/// Reads the changed rows of one membership or grant table by sync key.
-async fn changed_access_rows(
+/// Bumps the audience of the conversation of every changed membership still present, as the
+/// gated membership triggers do. A deleted membership no longer names its conversation; the
+/// conversation's own delete or the next membership change covers it.
+async fn revise_audiences(
     connection: &mut SqliteConnection,
     row_by_key: &'static str,
     keys: &BTreeSet<&str>,
-) -> ChatResult<ChangedAccessRows> {
-    let mut rows = ChangedAccessRows {
-        present: BTreeSet::new(),
-        deleted: false,
-    };
+    effects: &mut ChatSyncEffects,
+) -> ChatResult<()> {
     for key in keys {
-        let row: Option<(String, String, String)> = sqlx::query_as(row_by_key)
+        let row: Option<(String, String)> = sqlx::query_as(row_by_key)
             .bind(key)
             .fetch_optional(&mut *connection)
             .await
             .map_err(persistence_error)?;
-        match row {
-            Some(row) => {
-                rows.present.insert(row);
-            }
-            None => rows.deleted = true,
-        }
-    }
-    Ok(rows)
-}
-
-/// Revokes the active authorizations of every agent that holds one its current rows no
-/// longer cover, after an apply deleted memberships, grants, or conversations.
-///
-/// A deleted row no longer names its agent, so every agent with an active authorization
-/// is checked. Authorizations that a cascade already removed need no revocation, and covered
-/// ones are kept, so a repeated apply revokes nothing. Each revocation records the reason
-/// [`uncovered_authorization_reason`] names.
-async fn sweep_uncovered_authorizations(
-    connection: &mut SqliteConnection,
-    effects: &mut ChatSyncEffects,
-) -> ChatResult<()> {
-    let agents: Vec<String> = sqlx::query_scalar(
-        "SELECT DISTINCT assignment.agent_id
-         FROM chat_assignment_authorization_revisions authorization
-         JOIN chat_work_assignments assignment ON assignment.id = authorization.assignment_id
-         WHERE assignment.agent_id IS NOT NULL
-           AND authorization.decision_state = 'allowed'
-           AND authorization.revoked_at IS NULL
-         ORDER BY assignment.agent_id",
-    )
-    .fetch_all(&mut *connection)
-    .await
-    .map_err(persistence_error)?;
-    let now = now();
-    for agent_id in agents {
-        if let Some(reason) = uncovered_authorization_reason(connection, &agent_id).await? {
-            revoke(connection, &agent_id, &now, reason, effects).await?;
+        let Some((conversation_id, changed_at)) = row else {
+            continue;
+        };
+        let revised = sqlx::query(
+            "UPDATE chat_conversation_audience_state
+             SET revision = revision + 1, updated_at = ?
+             WHERE conversation_id = ?",
+        )
+        .bind(&changed_at)
+        .bind(&conversation_id)
+        .execute(&mut *connection)
+        .await
+        .map_err(persistence_error)?
+        .rows_affected();
+        if revised > 0 {
+            effects.audience_revised.insert(conversation_id);
         }
     }
     Ok(())
+}
+
+/// Revokes the authorizations [`revoke_exceeding_authorizations`] finds, records their agents,
+/// and reports the conversations whose push approvals lapsed without revoking them.
+async fn sweep_exceeding_authorizations(
+    connection: &mut SqliteConnection,
+    effects: &mut ChatSyncEffects,
+) -> ChatResult<()> {
+    let revoked = revoke_exceeding_authorizations(connection, &now()).await?;
+    effects.revoked_agents.extend(revoked);
+    effects
+        .lapsed_push_approvals
+        .extend(lapsed_push_approval_channels(connection).await?);
+    Ok(())
+}
+
+/// Every folder capability, for the rank table the sweep compares capabilities with.
+const FOLDER_CAPABILITIES: [ChatFolderCapability; 5] = [
+    ChatFolderCapability::None,
+    ChatFolderCapability::Read,
+    ChatFolderCapability::Edit,
+    ChatFolderCapability::Execute,
+    ChatFolderCapability::Publish,
+];
+
+/// SQL common table expressions for the most each stored access level allows, from
+/// [`access_ceiling`], and the rank of each stored folder capability.
+fn ceiling_tables_sql() -> String {
+    let ceilings = ChatAgentAccess::ALL
+        .into_iter()
+        .map(|level| {
+            let ceiling = access_ceiling(level);
+            format!(
+                "('{}', {}, {}, {})",
+                level.as_str(),
+                ceiling.folder_capability.rank(),
+                u8::from(ceiling.auto_approve),
+                u8::from(ceiling.scratch_allowed)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let capabilities = FOLDER_CAPABILITIES
+        .into_iter()
+        .map(|capability| format!("('{}', {})", capability.as_str(), capability.rank()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "access_ceiling(level, folder_rank, auto_approve, scratch_allowed) AS (
+             VALUES {ceilings}
+         ),
+         capability_rank(capability, rank) AS (VALUES {capabilities})"
+    )
+}
+
+/// SQL condition that holds when the AI agent `agent_id` is a present member of the
+/// conversation `conversation_id`, both columns of the enclosing query: its conversation
+/// membership and its AI channel membership are unremoved.
+fn agent_present_sql(conversation_id: &str, agent_id: &str) -> String {
+    format!(
+        "EXISTS (
+             SELECT 1 FROM chat_conversation_memberships presence_membership
+             JOIN chat_agent_channel_memberships presence_channel
+               ON presence_channel.conversation_id = presence_membership.conversation_id
+              AND presence_channel.agent_id = presence_membership.participant_id
+              AND presence_channel.removed_at IS NULL
+             WHERE presence_membership.conversation_id = {conversation_id}
+               AND presence_membership.participant_id = {agent_id}
+               AND presence_membership.removed_at IS NULL
+         )"
+    )
+}
+
+/// SQL query for the active authorizations of AI agents that current rows no longer cover, with
+/// their agent and whether the agent is archived.
+///
+/// An authorization is uncovered when its agent is archived, when the agent is no longer a
+/// present member of the destination, when a channel it disclosed no longer has the agent
+/// present, when a folder it was given is outside the destination conversation's project, or
+/// when its frozen authority exceeds the ceiling of the destination's live access level: a talk
+/// level allows no execution environment or folder target, a level without scratch allows no
+/// scratch, a folder source may not rank above the level's folder capability, and any approval
+/// other than ask needs a level that auto approves. A level the ceiling table does not know
+/// allows nothing.
+fn exceeding_authorizations_sql() -> String {
+    let tables = ceiling_tables_sql();
+    let level = effective_access_level_sql("authorization.destination_conversation_id");
+    let destination_present = agent_present_sql(
+        "authorization.destination_conversation_id",
+        "assignment.agent_id",
+    );
+    let source_present = agent_present_sql("source.conversation_id", "assignment.agent_id");
+    let ask = ChatRuntimeApprovalPolicy::Ask.as_str();
+    format!(
+        "WITH {tables}
+         SELECT authorization.id, assignment.agent_id,
+                participant.archived_at IS NOT NULL AS archived
+         FROM chat_assignment_authorization_revisions authorization
+         JOIN chat_work_assignments assignment ON assignment.id = authorization.assignment_id
+         JOIN chat_participants participant ON participant.id = assignment.agent_id
+         LEFT JOIN chat_conversations conversation
+           ON conversation.id = authorization.destination_conversation_id
+         LEFT JOIN access_ceiling ceiling ON ceiling.level = {level}
+         WHERE authorization.decision_state = 'allowed'
+           AND authorization.revoked_at IS NULL
+           AND participant.participant_kind = 'ai_agent'
+           AND (
+               participant.archived_at IS NOT NULL
+               OR conversation.id IS NULL
+               OR NOT {destination_present}
+               OR (coalesce(ceiling.folder_rank, 0) = 0
+                   AND (authorization.execution_environment_id IS NOT NULL
+                        OR authorization.working_folder_id IS NOT NULL))
+               OR (coalesce(ceiling.scratch_allowed, 0) = 0
+                   AND EXISTS (
+                       SELECT 1 FROM chat_execution_environments environment
+                       WHERE environment.id = authorization.execution_environment_id
+                         AND environment.kind = 'scratch'
+                   ))
+               OR (coalesce(ceiling.auto_approve, 0) = 0
+                   AND authorization.resolved_runtime_approval_policy IS NOT '{ask}')
+               OR EXISTS (
+                   SELECT 1 FROM chat_assignment_authorized_folder_sources folder_source
+                   LEFT JOIN capability_rank source_rank
+                     ON source_rank.capability = folder_source.capability
+                   WHERE folder_source.authorization_revision_id = authorization.id
+                     AND (
+                         source_rank.rank IS NULL
+                         OR source_rank.rank > coalesce(ceiling.folder_rank, 0)
+                         OR (coalesce(ceiling.auto_approve, 0) = 0
+                             AND folder_source.resolved_runtime_approval_policy IS NOT NULL
+                             AND folder_source.resolved_runtime_approval_policy IS NOT '{ask}')
+                         OR NOT EXISTS (
+                             SELECT 1 FROM project_working_folders folder
+                             WHERE folder.id = folder_source.working_folder_id
+                               AND folder.project_id IS conversation.project_id
+                         )
+                     )
+               )
+               OR EXISTS (
+                   SELECT 1 FROM chat_assignment_authorized_channel_sources source
+                   WHERE source.authorization_revision_id = authorization.id
+                     AND NOT {source_present}
+               )
+           )
+         ORDER BY authorization.id"
+    )
+}
+
+/// Revokes every active authorization of an AI agent that current rows no longer cover (see
+/// [`exceeding_authorizations_sql`]), with the work delegated from it, and queues a revocation
+/// job for each so the drain stops the runs they granted. Returns the agents that lost an
+/// authorization.
+///
+/// Commands that narrow app, project, or channel access, remove a membership, or archive an
+/// agent call it after their write, and the sync materialize hook calls it after an apply, so
+/// both revoke the same rows. An archived agent records [`AGENT_ARCHIVED_REASON`]; anything
+/// else records [`ACCESS_REDUCTION_REASON`]. Covered authorizations are kept, so a widening or
+/// a repeated call revokes nothing. `now` is the revocation and job timestamp.
+pub async fn revoke_exceeding_authorizations(
+    connection: &mut SqliteConnection,
+    now: &str,
+) -> ChatResult<BTreeSet<String>> {
+    let uncovered: Vec<(String, String, bool)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(exceeding_authorizations_sql()))
+            .fetch_all(&mut *connection)
+            .await
+            .map_err(persistence_error)?;
+    let mut agents = BTreeSet::new();
+    for (authorization_id, agent_id, archived) in uncovered {
+        let reason = if archived {
+            AGENT_ARCHIVED_REASON
+        } else {
+            ACCESS_REDUCTION_REASON
+        };
+        if revoke_authorization(connection, &authorization_id, now, reason).await? > 0 {
+            agents.insert(agent_id);
+        }
+    }
+    Ok(agents)
+}
+
+/// SQL condition that holds when the push approval row `approval`, a table name or alias of the
+/// enclosing query, has lapsed: its conversation's effective access is below ask (an unknown
+/// level counts as below), its agent is no longer a present member of the conversation, or its
+/// agent is archived.
+fn lapsed_push_approval_sql(approval: &str) -> String {
+    let at_least_ask = ChatAgentAccess::ALL
+        .into_iter()
+        .filter(|level| *level >= ChatAgentAccess::Ask)
+        .map(|level| format!("'{}'", level.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let conversation = format!("{approval}.conversation_id");
+    let agent = format!("{approval}.agent_id");
+    let level = effective_access_level_sql(&conversation);
+    let present = agent_present_sql(&conversation, &agent);
+    format!(
+        "({level} NOT IN ({at_least_ask})
+          OR NOT {present}
+          OR EXISTS (
+              SELECT 1 FROM chat_participants lapsed_agent
+              WHERE lapsed_agent.id = {agent} AND lapsed_agent.archived_at IS NOT NULL
+          ))"
+    )
+}
+
+/// Conversations that still hold an unrevoked push approval that has lapsed (see
+/// [`lapsed_push_approval_sql`]).
+async fn lapsed_push_approval_channels(
+    connection: &mut SqliteConnection,
+) -> ChatResult<BTreeSet<String>> {
+    let lapsed = lapsed_push_approval_sql("approval");
+    let conversations: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT DISTINCT approval.conversation_id FROM chat_push_approvals approval
+         WHERE approval.revoked_at IS NULL AND {lapsed}
+         ORDER BY approval.conversation_id"
+    )))
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(persistence_error)?;
+    Ok(conversations.into_iter().collect())
+}
+
+/// Revokes every unrevoked push approval that has lapsed, because its conversation's effective
+/// access fell below ask, its agent left the conversation, or its agent was archived, and
+/// returns the conversations that held them.
+///
+/// Push approvals replicate, so this runs outside a sync apply: after a command on this device
+/// narrows app, project, or channel access, removes an agent's membership, or archives an
+/// agent, and after an apply whose effects report [`ChatSyncEffects::lapsed_push_approvals`].
+/// The revocation replicates like any other edit, and a repeated call revokes nothing. `now` is
+/// the revocation timestamp.
+pub async fn revoke_lapsed_push_approvals(
+    connection: &mut SqliteConnection,
+    now: &str,
+) -> ChatResult<BTreeSet<String>> {
+    // RETURNING cannot name a table alias, so the statement names the table itself.
+    let lapsed = lapsed_push_approval_sql("chat_push_approvals");
+    let conversations: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "UPDATE chat_push_approvals
+         SET revoked_at = ?1, revision = revision + 1
+         WHERE revoked_at IS NULL AND {lapsed}
+         RETURNING conversation_id"
+    )))
+    .bind(now)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(persistence_error)?;
+    Ok(conversations.into_iter().collect())
 }
 
 /// Follows the applied state of the work assignment `assignment_id` on this device.
@@ -658,397 +787,6 @@ fn now() -> String {
     now.to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-/// Revokes the agent's active authorizations, bumps its access revision, and records both.
-async fn revoke(
-    connection: &mut SqliteConnection,
-    agent_id: &str,
-    now: &str,
-    reason: &str,
-    effects: &mut ChatSyncEffects,
-) -> ChatResult<()> {
-    let revoked = revoke_agent_authorizations(connection, agent_id, now, reason).await?;
-    if revoked > 0 {
-        effects.revoked_agents.insert(agent_id.to_string());
-    }
-    let revised: Option<String> = sqlx::query_scalar(
-        "UPDATE chat_agent_access_state
-         SET access_revision = access_revision + 1, updated_at = ?
-         WHERE agent_id = ?
-         RETURNING agent_id",
-    )
-    .bind(now)
-    .bind(agent_id)
-    .fetch_optional(&mut *connection)
-    .await
-    .map_err(persistence_error)?;
-    effects.access_revised.extend(revised);
-    Ok(())
-}
-
-/// Revokes the agent's active authorizations when its effective policy no longer covers one
-/// of them, so a narrowing applied from another device stops the runs it granted.
-async fn revoke_on_policy_reduction(
-    connection: &mut SqliteConnection,
-    agent_id: &str,
-    effects: &mut ChatSyncEffects,
-) -> ChatResult<()> {
-    if holds_authorization_beyond_policy(connection, agent_id).await? {
-        revoke(
-            connection,
-            agent_id,
-            &now(),
-            AGENT_POLICY_REDUCED_REASON,
-            effects,
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-/// Revokes the active authorizations of the AI agent `participant_id` when it is archived.
-///
-/// Archiving on one device refuses while the agent has active work there, which cannot speak
-/// for work running on this device. Only active authorizations revoke, so a repeated apply
-/// changes nothing.
-async fn revoke_archived_agent(
-    connection: &mut SqliteConnection,
-    participant_id: &str,
-    effects: &mut ChatSyncEffects,
-) -> ChatResult<()> {
-    if holds_archived_authorization(connection, participant_id).await? {
-        revoke(
-            connection,
-            participant_id,
-            &now(),
-            AGENT_ARCHIVED_REASON,
-            effects,
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-/// Returns whether the AI agent `participant_id` is archived and still holds an active
-/// authorization.
-async fn holds_archived_authorization(
-    connection: &mut SqliteConnection,
-    participant_id: &str,
-) -> ChatResult<bool> {
-    sqlx::query_scalar(
-        "SELECT EXISTS (
-             SELECT 1
-             FROM chat_participants participant
-             JOIN chat_work_assignments assignment ON assignment.agent_id = participant.id
-             JOIN chat_assignment_authorization_revisions authorization
-               ON authorization.assignment_id = assignment.id
-             WHERE participant.id = ?
-               AND participant.participant_kind = 'ai_agent'
-               AND participant.archived_at IS NOT NULL
-               AND authorization.decision_state = 'allowed'
-               AND authorization.revoked_at IS NULL
-         )",
-    )
-    .bind(participant_id)
-    .fetch_one(&mut *connection)
-    .await
-    .map_err(persistence_error)
-}
-
-/// Mirrors the command side of saving agent access for applied membership or grant rows.
-///
-/// A membership change bumps the audience of its conversation when `revises_audience` holds, as
-/// the gated membership triggers do. A change for an AI agent bumps the agent's access
-/// revision, and revokes the agent's active authorizations when one of them is no longer
-/// covered by the current rows, so a concurrent removal or narrowing that sync kept also stops
-/// the runs it granted. Revoking only uncovered authorizations keeps a widening or a repeated
-/// apply from revoking anything.
-async fn apply_access_rows(
-    connection: &mut SqliteConnection,
-    rows: &BTreeSet<(String, String, String)>,
-    revises_audience: bool,
-    effects: &mut ChatSyncEffects,
-) -> ChatResult<()> {
-    let mut agents = BTreeSet::new();
-    for (conversation_id, participant_id, changed_at) in rows {
-        if revises_audience {
-            let revised = sqlx::query(
-                "UPDATE chat_conversation_audience_state
-                 SET revision = revision + 1, updated_at = ?
-                 WHERE conversation_id = ?",
-            )
-            .bind(changed_at)
-            .bind(conversation_id)
-            .execute(&mut *connection)
-            .await
-            .map_err(persistence_error)?
-            .rows_affected();
-            if revised > 0 {
-                effects.audience_revised.insert(conversation_id.clone());
-            }
-        }
-        let revised: Option<String> = sqlx::query_scalar(
-            "UPDATE chat_agent_access_state
-             SET access_revision = access_revision + 1, updated_at = ?
-             WHERE agent_id = ?
-             RETURNING agent_id",
-        )
-        .bind(changed_at)
-        .bind(participant_id)
-        .fetch_optional(&mut *connection)
-        .await
-        .map_err(persistence_error)?;
-        agents.extend(revised);
-    }
-    let now: DateTime<Utc> = SystemTime::now().into();
-    let now = now.to_rfc3339_opts(SecondsFormat::Millis, true);
-    for agent_id in agents {
-        if let Some(reason) = uncovered_authorization_reason(connection, &agent_id).await? {
-            let revoked = revoke_agent_authorizations(connection, &agent_id, &now, reason).await?;
-            if revoked > 0 {
-                effects.revoked_agents.insert(agent_id.clone());
-            }
-        }
-        effects.access_revised.insert(agent_id);
-    }
-    Ok(())
-}
-
-/// SQL ranks of runtime approval policies, from least to most restrictive.
-const APPROVAL_RANKS: &str = "approval_rank(policy, rank) AS (
-    VALUES ('provider_custom', 1), ('unattended', 2), ('auto_approve', 3), ('ask', 4)
-)";
-
-/// SQL condition that holds when the channel membership `access` lets the agent post, as
-/// assignment context requires.
-const PARTICIPATES: &str = "access.participate = 1";
-
-/// SQL condition that holds when the channel membership `access` lets the agent read history
-/// from the lower bound of the disclosed channel `source`, as the context checks of channel
-/// disclosure do.
-const READS_HISTORY_FROM: &str = "(
-    access.read_history = 1
-    AND (
-        access.history_boundary = 'entire'
-        OR (
-            access.history_from_order_key IS NOT NULL
-            AND access.history_from_order_key <= source.lower_order_key
-        )
-    )
-)";
-
-/// SQL expression for the runtime approval override that governs `authorization`, resolved
-/// from the destination channel membership `access` in the runtime's precedence: a scratch
-/// target takes the scratch override, a working folder target takes the execution target's
-/// grant override, and either falls back to the channel override. Null when none is set, so
-/// the agent's own approval behavior applies.
-const RESOLVED_OVERRIDE: &str = "CASE
-    WHEN EXISTS (
-        SELECT 1 FROM chat_execution_environments environment
-        WHERE environment.id = authorization.execution_environment_id
-          AND environment.kind = 'scratch'
-    ) THEN coalesce(access.scratch_runtime_approval_policy, access.runtime_approval_policy)
-    ELSE coalesce(
-        (
-            SELECT folder_grant.runtime_approval_policy
-            FROM chat_assignment_authorized_folder_sources source
-            JOIN chat_agent_working_folder_grants folder_grant
-              ON folder_grant.conversation_id = access.conversation_id
-             AND folder_grant.agent_id = access.agent_id
-             AND folder_grant.working_folder_id = source.working_folder_id
-            WHERE source.authorization_revision_id = authorization.id
-              AND source.is_execution_target = 1
-        ),
-        access.runtime_approval_policy
-    )
-END";
-
-/// Frozen approvals of the active authorizations of agent `?1`, each with the override that
-/// governs it and the safety mode that decides coverage (see [`live_agent_safety_mode_sql`]):
-/// the execution target of every authorization, then every folder source with its own frozen
-/// approval. A folder source falls back from its grant override to the channel override, as the
-/// live tool check does.
-fn frozen_approvals_sql() -> String {
-    let live_mode = live_agent_safety_mode_sql("assignment.agent_id");
-    format!(
-        "SELECT authorization.resolved_runtime_approval_policy AS frozen,
-                {RESOLVED_OVERRIDE} AS approval_override,
-                {live_mode} AS safety_mode
-         FROM chat_assignment_authorization_revisions authorization
-         JOIN chat_work_assignments assignment ON assignment.id = authorization.assignment_id
-         LEFT JOIN chat_agent_channel_memberships access
-           ON access.conversation_id = authorization.destination_conversation_id
-          AND access.agent_id = assignment.agent_id
-         WHERE assignment.agent_id = ?1
-           AND authorization.decision_state = 'allowed'
-           AND authorization.revoked_at IS NULL
-         UNION ALL
-         SELECT source.resolved_runtime_approval_policy,
-                coalesce(folder_grant.runtime_approval_policy, access.runtime_approval_policy),
-                {live_mode}
-         FROM chat_assignment_authorization_revisions authorization
-         JOIN chat_work_assignments assignment ON assignment.id = authorization.assignment_id
-         JOIN chat_assignment_authorized_folder_sources source
-           ON source.authorization_revision_id = authorization.id
-         LEFT JOIN chat_agent_channel_memberships access
-           ON access.conversation_id = authorization.destination_conversation_id
-          AND access.agent_id = assignment.agent_id
-         LEFT JOIN chat_agent_working_folder_grants folder_grant
-           ON folder_grant.conversation_id = authorization.destination_conversation_id
-          AND folder_grant.agent_id = assignment.agent_id
-          AND folder_grant.working_folder_id = source.working_folder_id
-         WHERE assignment.agent_id = ?1
-           AND authorization.decision_state = 'allowed'
-           AND authorization.revoked_at IS NULL
-           AND source.resolved_runtime_approval_policy IS NOT NULL"
-    )
-}
-
-/// Returns whether the agent holds an active authorization that froze an approval its
-/// policy no longer covers. The safety mode follows [`live_agent_safety_mode_sql`], so the
-/// pointer's copied mode decides while its revision is missing, and without any safety mode
-/// nothing is covered, as the live tool checks refuse such an agent.
-async fn holds_authorization_beyond_policy(
-    connection: &mut SqliteConnection,
-    agent_id: &str,
-) -> ChatResult<bool> {
-    let approvals: Vec<(String, Option<String>, Option<String>)> =
-        sqlx::query_as(sqlx::AssertSqlSafe(frozen_approvals_sql()))
-            .bind(agent_id)
-            .fetch_all(&mut *connection)
-            .await
-            .map_err(persistence_error)?;
-    Ok(approvals.iter().any(|(frozen, approval_override, mode)| {
-        !mode
-            .as_deref()
-            .is_some_and(|mode| agent_policy_covers(mode, approval_override.as_deref(), frozen))
-    }))
-}
-
-/// Returns the revocation reason for the agent when it holds an active authorization that its
-/// current rows no longer cover, or `None` when every one is covered.
-///
-/// An archived agent records [`AGENT_ARCHIVED_REASON`] and an effective policy that no
-/// longer covers a frozen approval records [`AGENT_POLICY_REDUCED_REASON`], the reasons the
-/// participant and agent arms record, so the result does not depend on which hook ran first.
-/// Any other uncovered authorization (see [`holds_uncovered_access`]) records
-/// [`ACCESS_REDUCTION_REASON`].
-async fn uncovered_authorization_reason(
-    connection: &mut SqliteConnection,
-    agent_id: &str,
-) -> ChatResult<Option<&'static str>> {
-    if holds_archived_authorization(connection, agent_id).await? {
-        return Ok(Some(AGENT_ARCHIVED_REASON));
-    }
-    if holds_authorization_beyond_policy(connection, agent_id).await? {
-        return Ok(Some(AGENT_POLICY_REDUCED_REASON));
-    }
-    Ok(holds_uncovered_access(connection, agent_id)
-        .await?
-        .then_some(ACCESS_REDUCTION_REASON))
-}
-
-/// Returns whether the agent holds an active authorization that its current access rows no
-/// longer cover.
-///
-/// An authorization is uncovered when the agent's conversation membership or AI channel
-/// membership of its destination has ended, when a channel it disclosed can no longer be read
-/// from the disclosed lower bound, when a folder it was granted has no active grant of at least
-/// the authorized capability inside the destination conversation's project, or when the runtime
-/// approval override that governs its target (see [`RESOLVED_OVERRIDE`]) is now stricter than
-/// the authorized policy.
-async fn holds_uncovered_access(
-    connection: &mut SqliteConnection,
-    agent_id: &str,
-) -> ChatResult<bool> {
-    let sql = format!(
-        "WITH {CAPABILITY_RANKS}, {APPROVAL_RANKS}
-         SELECT EXISTS (
-             SELECT 1
-             FROM chat_assignment_authorization_revisions authorization
-             JOIN chat_work_assignments assignment
-               ON assignment.id = authorization.assignment_id
-             JOIN approval_rank authorized_approval
-               ON authorized_approval.policy = authorization.resolved_runtime_approval_policy
-             WHERE assignment.agent_id = ?1
-               AND authorization.decision_state = 'allowed'
-               AND authorization.revoked_at IS NULL
-               AND (
-                   NOT EXISTS (
-                       SELECT 1 FROM chat_conversation_memberships membership
-                       JOIN chat_agent_channel_memberships access
-                         ON access.conversation_id = membership.conversation_id
-                        AND access.agent_id = membership.participant_id
-                        AND access.removed_at IS NULL
-                       WHERE membership.conversation_id = authorization.destination_conversation_id
-                         AND membership.participant_id = ?1
-                         AND membership.removed_at IS NULL
-                         AND {PARTICIPATES}
-                   )
-                   OR EXISTS (
-                       SELECT 1 FROM chat_agent_channel_memberships access
-                       JOIN approval_rank override ON override.policy = {RESOLVED_OVERRIDE}
-                       WHERE access.conversation_id = authorization.destination_conversation_id
-                         AND access.agent_id = ?1
-                         AND override.rank > authorized_approval.rank
-                   )
-                   OR EXISTS (
-                       SELECT 1 FROM chat_assignment_authorized_channel_sources source
-                       WHERE source.authorization_revision_id = authorization.id
-                         AND NOT EXISTS (
-                             SELECT 1
-                             FROM chat_conversation_memberships membership
-                             JOIN chat_agent_channel_memberships access
-                               ON access.conversation_id = membership.conversation_id
-                              AND access.agent_id = membership.participant_id
-                              AND access.removed_at IS NULL
-                             WHERE membership.conversation_id = source.conversation_id
-                               AND membership.participant_id = ?1
-                               AND membership.removed_at IS NULL
-                               AND {READS_HISTORY_FROM}
-                         )
-                   )
-                   OR EXISTS (
-                       SELECT 1 FROM chat_assignment_authorized_folder_sources source
-                       JOIN capability_rank authorized_rank
-                         ON authorized_rank.capability = source.capability
-                       WHERE source.authorization_revision_id = authorization.id
-                         AND NOT EXISTS (
-                             SELECT 1
-                             FROM chat_agent_working_folder_grants folder_grant
-                             JOIN chat_agent_channel_memberships access
-                               ON access.conversation_id = folder_grant.conversation_id
-                              AND access.agent_id = folder_grant.agent_id
-                             JOIN capability_rank grant_rank
-                               ON grant_rank.capability = folder_grant.capability
-                             JOIN chat_conversations conversation
-                               ON conversation.id = folder_grant.conversation_id
-                             JOIN project_working_folders folder
-                               ON folder.id = folder_grant.working_folder_id
-                             WHERE folder_grant.conversation_id
-                                   = authorization.destination_conversation_id
-                               AND folder_grant.agent_id = ?1
-                               AND folder_grant.working_folder_id = source.working_folder_id
-                               AND folder_grant.revoked_at IS NULL
-                               AND folder_grant.project_id = conversation.project_id
-                               AND folder.project_id = conversation.project_id
-                               AND grant_rank.rank >= authorized_rank.rank
-                         )
-                   )
-               )
-         )"
-    );
-    sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
-        .bind(agent_id)
-        .fetch_one(&mut *connection)
-        .await
-        .map_err(persistence_error)
-}
-
-/// SQL ranks of folder capabilities, from no access to publishing.
-const CAPABILITY_RANKS: &str = "capability_rank(capability, rank) AS (
-    VALUES ('none', 0), ('read', 1), ('edit', 2), ('execute', 3), ('publish', 4)
-)";
-
 /// Replaces the search row of a message with its current revision, or removes it when the
 /// message is gone or has no current revision yet.
 async fn rebuild_message_search(
@@ -1088,122 +826,6 @@ async fn rebuild_message_search(
         effects.search_rebuilt.insert(message_item_id.to_string());
     }
     Ok(())
-}
-
-/// Agents with key `?` whose copied safety mode or owner disagrees with the policy revision
-/// their pointer names.
-const POLICY_COPY_MISMATCH_BY_AGENT: &str = "SELECT agent.participant_id
-     FROM chat_agents agent
-     JOIN chat_agent_policy_revisions policy ON policy.id = agent.current_policy_revision_id
-     WHERE agent.participant_id = ?
-       AND (policy.agent_id IS NOT agent.participant_id
-            OR policy.safety_mode IS NOT agent.current_policy_safety_mode)";
-
-/// Agents whose pointer names policy revision `?` and whose copied safety mode or owner
-/// disagrees with it.
-const POLICY_COPY_MISMATCH_BY_REVISION: &str = "SELECT agent.participant_id
-     FROM chat_agents agent
-     JOIN chat_agent_policy_revisions policy ON policy.id = agent.current_policy_revision_id
-     WHERE policy.id = ?
-       AND (policy.agent_id IS NOT agent.participant_id
-            OR policy.safety_mode IS NOT agent.current_policy_safety_mode)";
-
-/// Contains an agent policy pointer for `key` that `mismatch` finds copying restrictiveness that disagrees
-/// with the revision it names, without failing the apply.
-///
-/// The copy exists only so the sync merge can rank concurrent pointers by restrictiveness.
-/// Commands write the pointer and its copy together and the merge keeps them in one coupled
-/// group, so a disagreement can only come from a corrupt or dishonest operation that would let
-/// a wider revision outrank a stricter one. The effective revision views give such a pointer no
-/// effective revision, so dispatch, context, and tool checks refuse the agent until an
-/// honest edit replaces the pointer. This hook records the pointer and revokes the agent's
-/// active authorizations, which were granted before the mismatch arrived. Failing the apply
-/// instead would stop every later apply on this device. The check runs here rather than in a
-/// trigger because a pointer row may apply before the revision it names; this hook runs again
-/// when the revision arrives.
-async fn contain_mismatched_pointer(
-    connection: &mut SqliteConnection,
-    mismatch: &'static str,
-    key: &str,
-    effects: &mut ChatSyncEffects,
-) -> ChatResult<()> {
-    let mismatched: Vec<String> = sqlx::query_scalar(mismatch)
-        .bind(key)
-        .fetch_all(&mut *connection)
-        .await
-        .map_err(persistence_error)?;
-    let now = now();
-    for agent_id in mismatched {
-        revoke(
-            connection,
-            &agent_id,
-            &now,
-            MISMATCHED_POINTER_REASON,
-            effects,
-        )
-        .await?;
-        effects.mismatched_pointers.insert(agent_id);
-    }
-    Ok(())
-}
-
-/// Runtime approval policies from least to most restrictive, the order sync ranks overrides in.
-/// The app pins it equal to the sync folder grant ranking, since a settled value must rank at
-/// or above every version it settles.
-pub const APPROVAL_ORDER: [&str; 4] = ["provider_custom", "unattended", "auto_approve", "ask"];
-
-/// Position of `policy` in [`APPROVAL_ORDER`], or `None` for an unknown policy.
-fn approval_strictness(policy: &str) -> Option<usize> {
-    APPROVAL_ORDER
-        .iter()
-        .position(|candidate| *candidate == policy)
-}
-
-/// The explicit approval override that settles concurrent edits of the folder grant `grant_key`,
-/// or `None` when the merge's winner keeps its own.
-///
-/// `winner` is the override of the version the merge kept and `versions` the overrides of every
-/// concurrent version. An inherited override (`None`) follows the channel override at runtime,
-/// which can be stricter than an explicit grant override the static priority ranks above
-/// inheriting. When a version inherits and the channel override of the grant's agent is
-/// stricter than the winner's explicit override, that channel override settles the grant, so a
-/// concurrent widening never loosens what an inheriting edit kept. A winner that inherits, or a
-/// channel without an override, needs no settle: the agent's default narrows every version
-/// alike. The result reads only replicated rows and is stricter than the winner, so the static
-/// priority ranks it above every version.
-pub async fn settled_grant_approval(
-    conn: &mut SqliteConnection,
-    grant_key: &str,
-    winner: Option<&str>,
-    versions: &[Option<&str>],
-) -> ChatResult<Option<String>> {
-    let Some(winner) = winner else {
-        return Ok(None);
-    };
-    if versions.iter().all(Option::is_some) {
-        return Ok(None);
-    }
-    let channel: Option<String> = sqlx::query_scalar(
-        "SELECT access.runtime_approval_policy
-         FROM chat_agent_working_folder_grants grant_row
-         JOIN chat_agent_channel_memberships access
-           ON access.conversation_id = grant_row.conversation_id
-          AND access.agent_id = grant_row.agent_id
-         WHERE grant_row.sync_key = ? AND access.removed_at IS NULL",
-    )
-    .bind(grant_key)
-    .fetch_optional(&mut *conn)
-    .await
-    .map_err(persistence_error)?
-    .flatten();
-    let Some(channel) = channel else {
-        return Ok(None);
-    };
-    let stricter = match (approval_strictness(&channel), approval_strictness(winner)) {
-        (Some(channel_rank), Some(winner_rank)) => channel_rank > winner_rank,
-        _ => false,
-    };
-    Ok(stricter.then_some(channel))
 }
 
 fn persistence_error(_error: sqlx::Error) -> ChatError {

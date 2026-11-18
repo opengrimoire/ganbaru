@@ -1,7 +1,7 @@
 //! Revocation of active assignment authorizations.
 //!
-//! Commands that reduce access and the sync materialize hook share these statements, so a
-//! reduction made on this device and one applied from another device revoke the same rows.
+//! Commands that narrow access and the sync materialize hook share these statements, so a
+//! narrowing made on this device and one applied from another device revoke the same rows.
 
 use crate::models::{ChatError, ChatErrorCode, ChatResult};
 use sqlx::SqliteConnection;
@@ -13,20 +13,29 @@ enum RevocationScope<'a> {
     Agent(&'a str),
     /// Every authorization of one work assignment.
     Assignment(&'a str),
+    /// One authorization.
+    Authorization(&'a str),
 }
 
 impl<'a> RevocationScope<'a> {
     fn agent_id(self) -> Option<&'a str> {
         match self {
             Self::Agent(agent_id) => Some(agent_id),
-            Self::Assignment(_) => None,
+            Self::Assignment(_) | Self::Authorization(_) => None,
         }
     }
 
     fn assignment_id(self) -> Option<&'a str> {
         match self {
-            Self::Agent(_) => None,
             Self::Assignment(assignment_id) => Some(assignment_id),
+            Self::Agent(_) | Self::Authorization(_) => None,
+        }
+    }
+
+    fn authorization_id(self) -> Option<&'a str> {
+        match self {
+            Self::Authorization(authorization_id) => Some(authorization_id),
+            Self::Agent(_) | Self::Assignment(_) => None,
         }
     }
 }
@@ -156,6 +165,40 @@ pub async fn revoke_assignment_authorizations(
     .await
 }
 
+/// Revokes the authorization `authorization_id` when it is allowed and unrevoked, and queues an
+/// access revocation job for it unless a queued or claimed job already covers it. Work delegated
+/// from its assignment loses its authorizations too, with [`PARENT_AUTHORITY_REVOKED_REASON`].
+///
+/// `now` is the revocation and job timestamp. Returns the number of authorizations revoked, the
+/// delegated ones included, so a repeated call returns zero.
+pub async fn revoke_authorization(
+    connection: &mut SqliteConnection,
+    authorization_id: &str,
+    now: &str,
+    reason: &str,
+) -> ChatResult<u64> {
+    let revoked = revoke_authorizations(
+        connection,
+        RevocationScope::Authorization(authorization_id),
+        now,
+        reason,
+    )
+    .await?;
+    if revoked == 0 {
+        return Ok(0);
+    }
+    let assignment_id: String = sqlx::query_scalar(
+        "SELECT assignment_id FROM chat_assignment_authorization_revisions WHERE id = ?",
+    )
+    .bind(authorization_id)
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(persistence_error)?;
+    let delegated =
+        revoke_descendants(connection, RevocationScope::Assignment(&assignment_id), now).await?;
+    Ok(revoked + delegated)
+}
+
 async fn revoke_authorizations(
     connection: &mut SqliteConnection,
     scope: RevocationScope<'_>,
@@ -172,6 +215,7 @@ async fn revoke_authorizations(
                ON assignment.id = authorization.assignment_id
              WHERE (?3 IS NULL OR assignment.agent_id = ?3)
                AND (?4 IS NULL OR assignment.id = ?4)
+               AND (?5 IS NULL OR authorization.id = ?5)
                AND authorization.decision_state = 'allowed'
                AND authorization.revoked_at IS NULL
          )",
@@ -180,6 +224,7 @@ async fn revoke_authorizations(
     .bind(now)
     .bind(scope.agent_id())
     .bind(scope.assignment_id())
+    .bind(scope.authorization_id())
     .execute(&mut *connection)
     .await
     .map_err(persistence_error)?
@@ -194,6 +239,7 @@ async fn revoke_authorizations(
          JOIN chat_work_assignments assignment ON assignment.id = authorization.assignment_id
          WHERE (?3 IS NULL OR assignment.agent_id = ?3)
            AND (?4 IS NULL OR assignment.id = ?4)
+           AND (?5 IS NULL OR authorization.id = ?5)
            AND authorization.revoked_at = ?2
            AND NOT EXISTS (
                SELECT 1 FROM chat_access_revocation_jobs existing
@@ -205,6 +251,7 @@ async fn revoke_authorizations(
     .bind(now)
     .bind(scope.agent_id())
     .bind(scope.assignment_id())
+    .bind(scope.authorization_id())
     .execute(&mut *connection)
     .await
     .map_err(persistence_error)?;

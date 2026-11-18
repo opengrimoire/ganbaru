@@ -1,8 +1,8 @@
 //! Durable bridge between organizational assignments and provider turns.
 
 use super::models::{
-    ChatAgentPolicyRevisionId, ChatAgentRunId, ChatAuthorizationRevisionId, ChatError,
-    ChatErrorCode, ChatResult, ChatThreadId, ChatTurnId, ChatWorkAssignmentId, UtcTimestamp,
+    ChatAgentRunId, ChatAuthorizationRevisionId, ChatError, ChatErrorCode, ChatResult,
+    ChatThreadId, ChatTurnId, ChatWorkAssignmentId, UtcTimestamp,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -28,7 +28,6 @@ pub struct AgentRunBinding {
     pub run_id: ChatAgentRunId,
     pub assignment_id: ChatWorkAssignmentId,
     pub project_id: String,
-    pub agent_policy_revision_id: ChatAgentPolicyRevisionId,
     pub authorization_revision_id: ChatAuthorizationRevisionId,
     pub authorization_scope_digest: String,
     pub working_folder_id: Option<String>,
@@ -178,6 +177,9 @@ pub struct RunLaunch {
     /// The full package a continuation sends instead of its delta when the provider opens a
     /// fresh native session without reporting that the earlier one was lost.
     pub full_prompt_on_fresh_session: Option<FullPackage>,
+    /// Display name of the model the dispatch resolved, written onto the assignment when the
+    /// run starts.
+    pub model_label: Option<String>,
 }
 
 impl RunLaunch {
@@ -200,6 +202,7 @@ impl RunLaunch {
                 delivered_sources: full.delivered_sources.clone(),
             },
             full_prompt_on_fresh_session: None,
+            model_label: self.model_label.clone(),
         };
         Some((full.prompt.clone(), launch))
     }
@@ -370,12 +373,12 @@ pub async fn insert_starting_run(
         "INSERT INTO chat_agent_runs
             (id, assignment_id, project_id, working_folder_id,
              execution_environment_id, scratch_generation_id,
-             agent_policy_revision_id, authorization_revision_id,
+             authorization_revision_id,
              authorization_scope_digest,
              provider_turn_id, provider_thread_id, state, run_ordinal,
              attempt_reason, handoff_reason, instructions_sha256, model_selection_sha256,
              context_delivery, delivered_context_bytes, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(run.binding.run_id.as_str())
     .bind(run.binding.assignment_id.as_str())
@@ -383,7 +386,6 @@ pub async fn insert_starting_run(
     .bind(&run.binding.working_folder_id)
     .bind(&run.binding.execution_environment_id)
     .bind(&run.binding.scratch_generation_id)
-    .bind(run.binding.agent_policy_revision_id.as_str())
     .bind(run.binding.authorization_revision_id.as_str())
     .bind(&run.binding.authorization_scope_digest)
     .bind(run.provider_turn_id.as_str())
@@ -397,6 +399,41 @@ pub async fn insert_starting_run(
     .bind(i64_value(attempt.delivered_context_bytes)?)
     .bind(run.now.as_str())
     .bind(run.now.as_str())
+    .execute(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    record_model_label(
+        transaction,
+        &run.binding.assignment_id,
+        run.launch.model_label.as_deref(),
+    )
+    .await
+}
+
+/// Longest stored model label, in characters.
+pub const MODEL_LABEL_MAX_CHARS: usize = 256;
+
+/// Writes the display name of the model a dispatch resolved onto its assignment. A blank label
+/// writes nothing, and a label longer than [`MODEL_LABEL_MAX_CHARS`] is cut at a character
+/// boundary. An unchanged label leaves the row untouched so a relaunch publishes no change.
+async fn record_model_label(
+    transaction: &mut Transaction<'_, Sqlite>,
+    assignment_id: &ChatWorkAssignmentId,
+    model_label: Option<&str>,
+) -> ChatResult<()> {
+    let Some(label) = model_label.map(str::trim).filter(|label| !label.is_empty()) else {
+        return Ok(());
+    };
+    let label = label
+        .chars()
+        .take(MODEL_LABEL_MAX_CHARS)
+        .collect::<String>();
+    sqlx::query(
+        "UPDATE chat_work_assignments SET model_label = ?1
+         WHERE id = ?2 AND model_label IS NOT ?1",
+    )
+    .bind(&label)
+    .bind(assignment_id.as_str())
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
@@ -914,6 +951,7 @@ mod tests {
                 }],
             },
             full_prompt_on_fresh_session: full,
+            model_label: None,
         }
     }
 

@@ -9,9 +9,9 @@ const PARENT: &str = "assignment:folders";
 const PARENT_AGENT: &str = "participant:folder-agent";
 const HELPER: &str = "participant:helper";
 
-/// The revocation fixture with a second agent, `Helper`, in the channel. Helper's own grants
-/// are broader than the parent's on `workspace-2`, so a delegated child shows the ceiling
-/// narrowing them. The parent's queued follow-up holds the same folders as its working run.
+/// The revocation fixture with a second agent, `Helper`, in the channel. The channel access lets
+/// Helper edit `workspace-2`, which the parent only reads, so a delegated child shows the ceiling
+/// narrowing it. The parent's queued follow-up holds the same folders as its working run.
 async fn pool_with_helper() -> SqlitePool {
     let pool = pool_with_folder_runs().await;
     let (conversation, _) =
@@ -20,33 +20,18 @@ async fn pool_with_helper() -> SqlitePool {
         "INSERT INTO chat_participants
             (id, participant_kind, display_name, created_at, updated_at)
          VALUES ('{HELPER}', 'ai_agent', 'Helper', '{NOW}', '{NOW}');
-         INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
-         VALUES ('{HELPER}', 'Test', '{NOW}', '{NOW}');
+         INSERT INTO chat_agents (participant_id, provider_family_id, created_at, updated_at)
+         VALUES ('{HELPER}', 'codex', '{NOW}', '{NOW}');
          INSERT INTO chat_agent_policy_revisions
-            (id, agent_id, provider_instance_id, model_selection_data, created_at)
-         VALUES ('policy:helper', '{HELPER}', 'codex-personal', '{{}}', '{NOW}');
-         UPDATE chat_agent_access_state
-         SET access_revision = 1, updated_at = '{NOW}'
-         WHERE agent_id IN ('{HELPER}', '{PARENT_AGENT}');
+            (id, agent_id, model_selection_data, created_at)
+         VALUES ('policy:helper', '{HELPER}', '{{}}', '{NOW}');
          INSERT INTO chat_conversation_memberships
             (conversation_id, participant_id, sync_key, membership_role, created_at,
              updated_at)
          VALUES ('{conversation}', '{HELPER}', 'membership:helper', 'member', '{NOW}', '{NOW}');
          INSERT INTO chat_agent_channel_memberships
-            (conversation_id, agent_id, sync_key,
-             read_history, participate, history_boundary, created_at, updated_at)
-         VALUES ('{conversation}', '{HELPER}', 'channel-membership:helper',
-                 1, 1, 'entire', '{NOW}', '{NOW}');
-         INSERT INTO chat_agent_working_folder_grants
-            (conversation_id, agent_id, project_id, working_folder_id, sync_key,
-             capability, is_default, created_at)
-         VALUES
-            ('{conversation}', '{HELPER}', 'project-chat', 'workspace-1',
-             'grant:helper-1', 'execute', 1, '{NOW}'),
-            ('{conversation}', '{HELPER}', 'project-chat', 'workspace-2',
-             'grant:helper-2', 'edit', 0, '{NOW}'),
-            ('{conversation}', '{HELPER}', 'project-chat', 'workspace-3',
-             'grant:helper-3', 'edit', 0, '{NOW}');
+            (conversation_id, agent_id, sync_key, created_at, updated_at)
+         VALUES ('{conversation}', '{HELPER}', 'channel-membership:helper', '{NOW}', '{NOW}');
          INSERT INTO chat_assignment_authorized_folder_sources
             (authorization_revision_id, root_handle, working_folder_id, capability,
              is_execution_target, created_at, resolved_runtime_approval_policy)
@@ -121,7 +106,7 @@ async fn delegate_with(
     client_request_id: &str,
     objective: &str,
 ) -> Result<CreatedChild, DelegationRefusal> {
-    let writers = ChatWriters::new([DEVICE.to_owned()]);
+    let writers = crate::chat::organization::tests::chat_writers_of(&[DEVICE]);
     let conversation = conversation_id();
     let agent = ChatParticipantId::new(agent).unwrap();
     persist_delegation(
@@ -208,6 +193,7 @@ async fn claim(pool: &SqlitePool, child: &ChatWorkAssignmentId) -> bool {
         pool,
         child,
         DEVICE,
+        &crate::chat::organization::tests::test_providers(),
         &UtcTimestamp::new("2030-01-01T00:00:00.000Z").unwrap(),
     )
     .await
@@ -533,11 +519,14 @@ async fn revocation_of_the_parent_cancels_the_child_at_freeze() {
     let mut transaction = pool.begin().await.unwrap();
     let outcome = super::super::context::freeze_context_package(
         &mut transaction,
-        child,
-        &created.child.reply_thread_id,
-        &trigger,
-        &ChatParticipantId::new(HELPER).unwrap(),
+        super::super::context::WorkToFreeze {
+            assignment_id: child,
+            reply_thread_id: &created.child.reply_thread_id,
+            triggering_message_item_id: &trigger,
+            agent_id: &ChatParticipantId::new(HELPER).unwrap(),
+        },
         None,
+        &crate::chat::organization::tests::test_providers(),
         &UtcTimestamp::new(NOW).unwrap(),
     )
     .await
@@ -811,7 +800,8 @@ async fn delegation_bound_narrows_a_broader_frozen_child_at_claim() {
 #[test]
 fn delegation_approval_clamp_steps_unranked_policies_down_to_ask() {
     assert_eq!(clamp_approval("provider_custom", 2), "ask");
-    assert_eq!(clamp_approval("unattended", 1), "auto_approve");
+    assert_eq!(clamp_approval("unattended", 1), "ask");
+    assert_eq!(clamp_approval("auto_approve", 1), "auto_approve");
     assert_eq!(clamp_approval("auto_approve", 2), "auto_approve");
     assert_eq!(clamp_approval("unattended", 0), "ask");
 }
@@ -910,7 +900,7 @@ async fn delegation_survives_a_reroute_so_the_successor_stays_under_the_parent_c
     let assignment = super::super::reads::read_assignment(&pool, child)
         .await
         .unwrap();
-    let writers = ChatWriters::new([DEVICE.to_owned()]);
+    let writers = crate::chat::organization::tests::chat_writers_of(&[DEVICE]);
     let mut transaction = pool.begin().await.unwrap();
     let successor = super::super::assignments::reroute_assignment(
         &mut transaction,

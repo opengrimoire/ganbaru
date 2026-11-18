@@ -3,24 +3,19 @@ use crate::chat::revocation::tests::pool_with_folder_runs;
 
 const AGENT: &str = "participant:folder-agent";
 
-/// Approves the fixture agent's pushes from `folder` to `branch` under key `key`.
+/// Approves the fixture agent's pushes from `folder` to `branch` under key `key` in the fixture
+/// channel.
 async fn approve(pool: &SqlitePool, key: &str, folder: &str, branch: &str) {
-    sqlx::query(
-        "UPDATE chat_agents SET current_policy_revision_id = 'policy:folders',
-             current_policy_safety_mode = 'ask_for_approval'
-         WHERE participant_id = ? AND current_policy_safety_mode IS NULL",
-    )
-    .bind(AGENT)
-    .execute(pool)
-    .await
-    .unwrap();
+    let (conversation, _) =
+        ganbaru_chat::project_defaults::default_channel_ids("project-chat").unwrap();
     sqlx::query(
         "INSERT INTO chat_push_approvals
-            (agent_id, working_folder_id, push_url, destination_branch, sync_key,
-             runtime_approval_policy, safety_mode, approved_by_participant_id, approved_at)
-         VALUES (?, ?, 'git@example.invalid:org/repo.git', ?, ?, 'ask', 'ask_for_approval',
+            (conversation_id, agent_id, working_folder_id, push_url, destination_branch, sync_key,
+             approved_by_participant_id, approved_at)
+         VALUES (?, ?, ?, 'git@example.invalid:org/repo.git', ?, ?,
                  'participant:local-owner', '2026-10-20T12:00:00.000Z')",
     )
+    .bind(conversation.as_str())
     .bind(AGENT)
     .bind(folder)
     .bind(branch)
@@ -30,7 +25,7 @@ async fn approve(pool: &SqlitePool, key: &str, folder: &str, branch: &str) {
     .unwrap();
 }
 
-fn listed_keys(approvals: &[ChatPushApprovalRead]) -> Vec<&str> {
+fn listed_keys(approvals: &[ChatChannelPushApprovalRead]) -> Vec<&str> {
     approvals
         .iter()
         .map(|approval| approval.approval_id.as_str())
@@ -38,14 +33,16 @@ fn listed_keys(approvals: &[ChatPushApprovalRead]) -> Vec<&str> {
 }
 
 #[tokio::test]
-async fn listing_shows_active_approvals_by_folder_name_and_revoking_hides_one() {
+async fn listing_shows_the_channel_approvals_by_folder_name_and_revoking_hides_one() {
     let pool = pool_with_folder_runs().await;
     approve(&pool, "push-approval-unrelated", "workspace-3", "main").await;
     approve(&pool, "push-approval-reference", "workspace-2", "main").await;
     approve(&pool, "push-approval-release", "workspace-2", "release").await;
-    let agent = ChatParticipantId::new(AGENT).unwrap();
+    let (conversation, _) =
+        ganbaru_chat::project_defaults::default_channel_ids("project-chat").unwrap();
+    let conversation = ChatConversationId::new(conversation).unwrap();
 
-    let approvals = list_push_approvals(&pool, &agent).await.unwrap();
+    let approvals = list_push_approvals(&pool, &conversation).await.unwrap();
     assert_eq!(
         listed_keys(&approvals),
         [
@@ -71,7 +68,7 @@ async fn listing_shows_active_approvals_by_folder_name_and_revoking_hides_one() 
     revoke_push_approval(&pool, &revoke("push-approval-missing"))
         .await
         .unwrap();
-    let approvals = list_push_approvals(&pool, &agent).await.unwrap();
+    let approvals = list_push_approvals(&pool, &conversation).await.unwrap();
     assert_eq!(
         listed_keys(&approvals),
         ["push-approval-reference", "push-approval-unrelated"]
@@ -93,6 +90,6 @@ async fn listing_shows_active_approvals_by_folder_name_and_revoking_hides_one() 
             ChatErrorCode::Validation
         );
     }
-    let other = ChatParticipantId::new("participant:local-owner").unwrap();
+    let other = ChatConversationId::new("conversation:other").unwrap();
     assert!(list_push_approvals(&pool, &other).await.unwrap().is_empty());
 }

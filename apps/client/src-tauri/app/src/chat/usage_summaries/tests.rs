@@ -18,18 +18,19 @@ async fn migrated_pool() -> SqlitePool {
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "PRAGMA foreign_keys=OFF;
          UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
-         INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
-         VALUES ('{AGENT}', 'Counts', '2026-11-12T23:00:00.000Z', '2026-11-12T23:00:00.000Z');
+         INSERT INTO chat_agents (participant_id, provider_family_id, created_at, updated_at)
+         VALUES ('{AGENT}', 'codex', '2026-11-12T23:00:00.000Z', '2026-11-12T23:00:00.000Z');
          INSERT INTO chat_work_assignments
-            (id, reply_thread_id, agent_id, triggering_message_item_id, state, created_at,
+            (id, reply_thread_id, agent_id, triggering_message_item_id,
+                 model_selection_schema_version, model_selection_data, state, created_at,
              updated_at)
-         VALUES ('{ASSIGNMENT}', 'reply-thread:usage', '{AGENT}', 'item:usage', 'working',
+         VALUES ('{ASSIGNMENT}', 'reply-thread:usage', '{AGENT}', 'item:usage', 1, json_object('providerManagedModel', json('true')), 'working',
                  '2026-11-12T23:00:00.000Z', '2026-11-12T23:00:00.000Z');
          INSERT INTO chat_agent_runs
-            (id, assignment_id, project_id, agent_policy_revision_id,
+            (id, assignment_id, project_id,
              authorization_revision_id, authorization_scope_digest, provider_turn_id,
              provider_thread_id, state, run_ordinal, started_at, created_at, updated_at)
-         VALUES ('run:usage', '{ASSIGNMENT}', 'project-usage', 'policy:usage',
+         VALUES ('run:usage', '{ASSIGNMENT}', 'project-usage',
                  'authorization:usage', '{digest}', 'turn:usage', 'thread:usage', 'completed',
                  1, '2026-11-12T23:00:00.000Z', '2026-11-12T23:00:00.000Z',
                  '2026-11-12T23:00:00.000Z');

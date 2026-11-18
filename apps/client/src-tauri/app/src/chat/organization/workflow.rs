@@ -2,6 +2,8 @@
 
 #[cfg(desktop)]
 use super::assignments::read_assignment_subject;
+#[cfg(desktop)]
+use super::common::wire_work_state;
 use super::common::{
     AttachmentSource, ScheduledPostIds, assignment_input_id, conversation_item_id,
     has_thread_eligible_mention, insert_revision_attachments, json_object, message_revision_id,
@@ -9,9 +11,7 @@ use super::common::{
     wire_review_outcome, work_assignment_id,
 };
 #[cfg(desktop)]
-use super::common::{wire_approval_policy, wire_work_state};
-#[cfg(desktop)]
-use super::context::{FreezeOutcome, freeze_context_package};
+use super::context::{FreezeOutcome, WorkToFreeze, freeze_context_package};
 use super::inputs::place_delivered_reply;
 #[cfg(desktop)]
 use super::now_timestamp;
@@ -24,8 +24,7 @@ use super::{
 };
 use ganbaru_chat::coordination::contracts::*;
 use ganbaru_chat_contracts::models::*;
-use serde::{Deserialize, Serialize};
-use sqlx::{Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{Row, Sqlite, SqliteConnection, SqlitePool, Transaction};
 
 #[derive(Clone, Debug)]
 pub(super) struct ResolvedInvocation {
@@ -157,7 +156,8 @@ pub(super) async fn resolve_invoked_agent(
             "This reply thread already has an active AI agent",
         ));
     }
-    require_participating_agent(pool, conversation_id, &agent_id).await?;
+    let mut connection = pool.acquire().await.map_err(persistence_error)?;
+    require_participating_agent(&mut connection, conversation_id, &agent_id).await?;
     Ok(Some(ResolvedInvocation {
         agent_id,
         active_assignment,
@@ -165,25 +165,57 @@ pub(super) async fn resolve_invoked_agent(
     }))
 }
 
-/// The devices that can write Chat. An assignment writes its states, messages, and runs into
-/// Chat, so only these devices execute assignments: this device and the linked devices that
-/// hold an active sync writer.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// The devices that can write Chat, and the providers configured on this device. An assignment
+/// writes its states, messages, and runs into Chat, so only these devices execute assignments:
+/// this device and the linked devices that hold an active sync writer.
+#[derive(Clone, Debug, Default)]
 pub(super) struct ChatWriters {
     devices: std::collections::BTreeSet<String>,
+    #[cfg(desktop)]
+    providers: super::provider_agents::DeviceProviders,
 }
 
 impl ChatWriters {
-    /// The writers `devices`.
+    /// The writers `devices`, with no provider configured on this device.
     pub(super) fn new(devices: impl IntoIterator<Item = String>) -> Self {
         Self {
             devices: devices.into_iter().collect(),
+            #[cfg(desktop)]
+            providers: super::provider_agents::DeviceProviders::default(),
         }
+    }
+
+    /// These writers with `providers` configured on this device.
+    #[cfg(desktop)]
+    pub(super) fn with_providers(self, providers: super::provider_agents::DeviceProviders) -> Self {
+        Self { providers, ..self }
+    }
+
+    /// The providers configured on this device.
+    #[cfg(desktop)]
+    pub(super) fn providers(&self) -> &super::provider_agents::DeviceProviders {
+        &self.providers
     }
 
     /// Whether the device `device_id` can write Chat.
     pub(super) fn includes(&self, device_id: &str) -> bool {
         self.devices.contains(device_id)
+    }
+
+    /// Whether the provider of `family` can start new work on this device. Android runs no
+    /// provider.
+    pub(super) fn provider_ready_here(&self, family: &str) -> bool {
+        #[cfg(desktop)]
+        {
+            self.providers
+                .get(family)
+                .is_some_and(|provider| provider.ready)
+        }
+        #[cfg(mobile)]
+        {
+            let _ = family;
+            false
+        }
     }
 
     /// The writer ids as a JSON array, for queries that read them with `json_each`.
@@ -245,26 +277,26 @@ impl<'a> PostingDevice<'a> {
     }
 }
 
-/// The device an assignment of `agent_id` runs on when `device` creates it: the agent's
-/// home device when it can write Chat, else the posting device when it can run the work, else
-/// none, so the post records the mention only and a desktop starts the work later. A home
-/// device that a handoff turned into a replica, or that was unlinked, is passed over, since an
-/// assignment it executes would stay queued forever.
+/// The device an assignment of `agent_id` runs on when `device` creates it: the posting device
+/// when it can run new work and the agent's provider is ready there, else none, so the post
+/// records the mention only and a person starts the work later on a device that can run it.
 pub(super) async fn new_assignment_executing_device(
     transaction: &mut Transaction<'_, Sqlite>,
     agent_id: &ChatParticipantId,
     device: PostingDevice<'_>,
 ) -> ChatResult<Option<String>> {
-    let home_device_id: Option<Option<String>> =
-        sqlx::query_scalar("SELECT home_device_id FROM chat_agents WHERE participant_id = ?")
+    if !device.runs_new_work() {
+        return Ok(None);
+    }
+    let family: Option<String> =
+        sqlx::query_scalar("SELECT provider_family_id FROM chat_agents WHERE participant_id = ?")
             .bind(agent_id.as_str())
             .fetch_optional(&mut **transaction)
             .await
             .map_err(persistence_error)?;
-    Ok(home_device_id
-        .flatten()
-        .filter(|home| device.chat_writers.includes(home))
-        .or_else(|| device.runs_new_work().then(|| device.id.to_owned())))
+    Ok(family
+        .filter(|family| device.chat_writers.provider_ready_here(family))
+        .map(|_| device.id.to_owned()))
 }
 
 /// The executing device of assignment `assignment_id`, if it names one.
@@ -608,13 +640,15 @@ pub(super) async fn create_assignment(
             ));
         }
     }
+    let settings = read_new_work_settings(transaction, &assignment, previous_id).await?;
     sqlx::query(
         "INSERT INTO chat_work_assignments
             (id, reply_thread_id, agent_id, triggering_message_item_id,
              previous_assignment_id, executing_device_id, state,
+             model_selection_schema_version, model_selection_data, instructions,
              created_at, updated_at, parent_assignment_id, delegation_depth,
              delegation_objective, delegation_expected_result, delegation_folder_ceiling)
-         VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, 'queued', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(assignment_id.as_str())
     .bind(assignment.reply_thread_id.as_str())
@@ -622,6 +656,8 @@ pub(super) async fn create_assignment(
     .bind(assignment.message_item_id.as_str())
     .bind(previous_id.map(ChatWorkAssignmentId::as_str))
     .bind(assignment.executing_device_id)
+    .bind(serde_json::to_string(&settings.model_selection).map_err(serialization_error)?)
+    .bind(&settings.instructions)
     .bind(now.as_str())
     .bind(now.as_str())
     .bind(delegation.map(|delegation| delegation.parent_assignment_id.as_str()))
@@ -700,11 +736,14 @@ pub(super) async fn create_assignment(
         } else {
             queue_assignment_dispatch(
                 transaction,
-                &assignment_id,
-                assignment.reply_thread_id,
-                assignment.message_item_id,
-                assignment.agent_id,
+                WorkToFreeze {
+                    assignment_id: &assignment_id,
+                    reply_thread_id: assignment.reply_thread_id,
+                    triggering_message_item_id: assignment.message_item_id,
+                    agent_id: assignment.agent_id,
+                },
                 assignment.execution_target,
+                device.chat_writers.providers(),
                 now,
             )
             .await?;
@@ -715,11 +754,41 @@ pub(super) async fn create_assignment(
     Ok(assignment_id)
 }
 
+/// Resolves the model and instructions `assignment` freezes from its trigger and its channel.
+async fn read_new_work_settings(
+    transaction: &mut Transaction<'_, Sqlite>,
+    assignment: &NewAssignment<'_>,
+    previous_id: Option<&ChatWorkAssignmentId>,
+) -> ChatResult<super::model_choice::FrozenWorkSettings> {
+    let (conversation_id, trigger_text): (String, String) = sqlx::query_as(
+        "SELECT thread.conversation_id, coalesce(revision.normalized_markdown, '')
+         FROM chat_reply_threads thread
+         LEFT JOIN chat_communication_messages message ON message.item_id = ?
+         LEFT JOIN chat_communication_message_revisions revision
+           ON revision.id = message.current_revision_id
+         WHERE thread.id = ?",
+    )
+    .bind(assignment.message_item_id.as_str())
+    .bind(assignment.reply_thread_id.as_str())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    super::model_choice::resolve_frozen_work_settings(
+        transaction,
+        &conversation_id,
+        assignment.agent_id.as_str(),
+        &trigger_text,
+        previous_id.map(ChatWorkAssignmentId::as_str),
+    )
+    .await
+}
+
 /// A pending input and the message it delivers.
 pub(super) struct PendingInput {
     pub(super) id: String,
     pub(super) message_item_id: String,
     /// Whether a person holds it back from delivery.
+    #[cfg(desktop)]
     pub(super) held: bool,
 }
 
@@ -754,6 +823,7 @@ pub(super) async fn pending_thread_inputs(
             Ok(PendingInput {
                 id: row.try_get("id").map_err(persistence_error)?,
                 message_item_id: row.try_get("message_item_id").map_err(persistence_error)?,
+                #[cfg(desktop)]
                 held: row.try_get::<i64, _>("held").map_err(persistence_error)? != 0,
             })
         })
@@ -924,27 +994,18 @@ pub(super) async fn drop_input_requested_targets(
 #[cfg(desktop)]
 pub(super) async fn queue_assignment_dispatch(
     transaction: &mut Transaction<'_, Sqlite>,
-    assignment_id: &ChatWorkAssignmentId,
-    reply_thread_id: &ChatReplyThreadId,
-    message_item_id: &ChatConversationItemId,
-    agent_id: &ChatParticipantId,
+    work: WorkToFreeze<'_>,
     execution_target: Option<&ChatExecutionTarget>,
+    providers: &super::provider_agents::DeviceProviders,
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
-    let outcome = freeze_context_package(
-        transaction,
-        assignment_id,
-        reply_thread_id,
-        message_item_id,
-        agent_id,
-        execution_target,
-        now,
-    )
-    .await?;
+    let assignment_id = work.assignment_id;
+    let outcome =
+        freeze_context_package(transaction, work, execution_target, providers, now).await?;
     if outcome == FreezeOutcome::ParentAuthorityRevoked {
         return Ok(());
     }
-    let consented_digest = read_assignment_subject(transaction, assignment_id)
+    let consented_digest = read_assignment_subject(transaction, assignment_id, providers)
         .await?
         .digest();
     sqlx::query(
@@ -1180,7 +1241,7 @@ async fn insert_message_reference(
                    AND (
                      participant.participant_kind != 'ai_agent'
                      OR (
-                       destination_ai.read_history = 1
+                       destination_ai.agent_id IS NOT NULL
                      )
                    )
                    AND NOT EXISTS (
@@ -1196,7 +1257,7 @@ async fn insert_message_reference(
                        AND (
                          participant.participant_kind != 'ai_agent'
                          OR (
-                           source_ai.read_history = 1
+                           source_ai.agent_id IS NOT NULL
                          )
                        )
                    )",
@@ -1213,9 +1274,8 @@ async fn insert_message_reference(
                     true,
                 ));
             }
-            // Entire history starts at the first root item; an unstamped grant boundary sorts
-            // after the high bound and leaves the range empty.
-            let first_root_order_key: String = sqlx::query_scalar(
+            // A channel member reads the entire history, which starts at the first root item.
+            let source_lower_order_key: String = sqlx::query_scalar(
                 "SELECT min(order_key) FROM chat_conversation_items
                  WHERE conversation_id = ? AND reply_thread_id IS NULL",
             )
@@ -1223,80 +1283,32 @@ async fn insert_message_reference(
             .fetch_one(&mut **transaction)
             .await
             .map_err(persistence_error)?;
-            let after_high_order_key =
-                ganbaru_chat::timeline::order_key_after(Some(&source_high_order_key))?;
-            let mut source_lower_order_key: String = sqlx::query_scalar(
-                "SELECT coalesce(max(
-                   CASE
-                     WHEN participant.participant_kind = 'ai_agent'
-                       AND source_ai.history_boundary = 'from_grant'
-                     THEN coalesce(source_ai.history_from_order_key, ?)
-                     ELSE ?
-                   END
-                 ), ?)
-                 FROM chat_conversation_memberships destination
-                 JOIN chat_participants participant ON participant.id = destination.participant_id
-                 LEFT JOIN chat_agent_channel_memberships destination_ai
-                   ON destination_ai.conversation_id = destination.conversation_id
-                  AND destination_ai.agent_id = destination.participant_id
-                  AND destination_ai.removed_at IS NULL
-                 JOIN chat_conversation_memberships source_membership
-                   ON source_membership.participant_id = destination.participant_id
-                  AND source_membership.conversation_id = ?
-                  AND source_membership.removed_at IS NULL
-                 LEFT JOIN chat_agent_channel_memberships source_ai
-                   ON source_ai.conversation_id = source_membership.conversation_id
-                  AND source_ai.agent_id = source_membership.participant_id
-                  AND source_ai.removed_at IS NULL
-                 WHERE destination.conversation_id = ?
-                   AND destination.removed_at IS NULL
-                   AND (
-                     participant.participant_kind != 'ai_agent'
-                     OR (
-                       destination_ai.read_history = 1
-                     )
-                   )",
-            )
-            .bind(&after_high_order_key)
-            .bind(&first_root_order_key)
-            .bind(&first_root_order_key)
-            .bind(&source_conversation_id)
-            .bind(destination_conversation_id.as_str())
-            .fetch_one(&mut **transaction)
-            .await
-            .map_err(persistence_error)?;
             if let Some(agent_id) = invoked_agent_id {
-                let agent_lower_order_key = sqlx::query_scalar::<_, String>(
-                    "SELECT CASE
-                              WHEN ai_membership.history_boundary = 'from_grant'
-                              THEN coalesce(ai_membership.history_from_order_key, ?)
-                              ELSE ?
-                            END
-                        FROM chat_conversation_memberships membership
-                        JOIN chat_agent_channel_memberships ai_membership
-                          ON ai_membership.conversation_id = membership.conversation_id
-                         AND ai_membership.agent_id = membership.participant_id
-                         AND ai_membership.removed_at IS NULL
-                        WHERE membership.conversation_id = ?
-                          AND membership.participant_id = ?
-                          AND membership.removed_at IS NULL
-                          AND ai_membership.read_history = 1",
+                let agent_in_source: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (
+                       SELECT 1
+                       FROM chat_conversation_memberships membership
+                       JOIN chat_agent_channel_memberships ai_membership
+                         ON ai_membership.conversation_id = membership.conversation_id
+                        AND ai_membership.agent_id = membership.participant_id
+                        AND ai_membership.removed_at IS NULL
+                       WHERE membership.conversation_id = ?
+                         AND membership.participant_id = ?
+                         AND membership.removed_at IS NULL
+                     )",
                 )
-                .bind(&after_high_order_key)
-                .bind(&first_root_order_key)
                 .bind(&source_conversation_id)
                 .bind(agent_id.as_str())
-                .fetch_optional(&mut **transaction)
+                .fetch_one(&mut **transaction)
                 .await
                 .map_err(persistence_error)?;
-                let Some(agent_lower_order_key) = agent_lower_order_key else {
+                if !agent_in_source {
                     return Err(ChatError::new(
                         ChatErrorCode::Conflict,
                         "The assigned agent cannot read the referenced channel history",
                         true,
                     ));
-                };
-                source_lower_order_key = source_lower_order_key.max(agent_lower_order_key);
+                }
             }
             if source_lower_order_key > source_high_order_key {
                 return Err(ChatError::new(
@@ -1557,60 +1569,47 @@ pub(super) async fn require_reply_thread(
     Ok(reply_thread_id.clone())
 }
 
-pub(super) async fn require_participating_agent<'e, E>(
-    executor: E,
+/// Requires `agent_id` to be a present, unarchived AI agent member of the conversation, which
+/// is all an agent needs to take work there: without a default model it starts on the
+/// provider's default. An agent that left the channel is a conflict, and one that never
+/// joined it is a validation error.
+pub(super) async fn require_participating_agent(
+    connection: &mut SqliteConnection,
     conversation_id: &ChatConversationId,
     agent_id: &ChatParticipantId,
-) -> ChatResult<()>
-where
-    E: sqlx::Executor<'e, Database = Sqlite>,
-{
-    let row = sqlx::query(
-        "SELECT membership.removed_at, participant.archived_at,
-                policy.id AS policy_revision_id, ai_membership.participate
-         FROM chat_conversation_memberships membership
-         JOIN chat_participants participant ON participant.id = membership.participant_id
-         JOIN chat_agents agent ON agent.participant_id = membership.participant_id
-         LEFT JOIN chat_agent_effective_policies policy
-           ON policy.agent_id = agent.participant_id
-         JOIN chat_agent_channel_memberships ai_membership
-           ON ai_membership.conversation_id = membership.conversation_id
-          AND ai_membership.agent_id = membership.participant_id
-          AND ai_membership.removed_at IS NULL
-         WHERE membership.conversation_id = ? AND membership.participant_id = ?",
+) -> ChatResult<()> {
+    if ganbaru_chat::coordination::agent_settings::agent_is_present(
+        connection,
+        conversation_id.as_str(),
+        agent_id.as_str(),
+    )
+    .await?
+    {
+        return Ok(());
+    }
+    let was_member: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1 FROM chat_agent_channel_memberships
+             WHERE conversation_id = ? AND agent_id = ?
+         )",
     )
     .bind(conversation_id.as_str())
     .bind(agent_id.as_str())
-    .fetch_optional(executor)
+    .fetch_one(&mut *connection)
     .await
-    .map_err(persistence_error)?
-    .ok_or_else(|| {
-        ChatError::validation("references", "The AI agent is not a member of this channel")
-    })?;
-    let available = row
-        .try_get::<Option<String>, _>("removed_at")
-        .map_err(persistence_error)?
-        .is_none()
-        && row
-            .try_get::<Option<String>, _>("archived_at")
-            .map_err(persistence_error)?
-            .is_none()
-        && row
-            .try_get::<Option<String>, _>("policy_revision_id")
-            .map_err(persistence_error)?
-            .is_some()
-        && row
-            .try_get::<i64, _>("participate")
-            .map_err(persistence_error)?
-            != 0;
-    if !available {
-        return Err(ChatError::new(
+    .map_err(persistence_error)?;
+    if was_member {
+        Err(ChatError::new(
             ChatErrorCode::Conflict,
-            "The AI agent needs setup before it can be assigned",
+            "The AI agent no longer participates in this channel",
             true,
-        ));
+        ))
+    } else {
+        Err(ChatError::validation(
+            "references",
+            "The AI agent is not a member of this channel",
+        ))
     }
-    Ok(())
 }
 
 /// Appends an agent policy revision and points the agent's current policy at it.
@@ -1620,31 +1619,20 @@ pub(super) async fn insert_policy_revision(
     agent_id: &ChatParticipantId,
     policy: &ChatAgentPolicyInput,
     now: &UtcTimestamp,
-) -> ChatResult<()> {
-    let selection = serde_json::to_string(&StoredModelSelection {
-        provider_managed_model: policy.provider_managed_model,
-        model_id: policy.model_id.clone(),
-        model_options: policy.model_options.clone(),
-    })
-    .map_err(serialization_error)?;
+) -> ChatResult<ChatAgentPolicyRevisionId> {
+    let selection =
+        serde_json::to_string(&policy.model_selection()).map_err(serialization_error)?;
     let policy_revision_id = new_id("agent-policy")?;
-    let safety_mode = wire_approval_policy(policy.safety_mode);
     sqlx::query(
         "INSERT INTO chat_agent_policy_revisions
-            (id, agent_id, provider_instance_id,
-             safety_mode,
-             model_selection_schema_version, model_selection_data, effort, speed,
+            (id, agent_id, model_selection_schema_version, model_selection_data,
              provider_options_schema_version, provider_options_data,
              interaction_mode, created_at)
-         VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 'build', ?)",
+         VALUES (?, ?, 1, ?, ?, ?, 'build', ?)",
     )
     .bind(policy_revision_id.as_str())
     .bind(agent_id.as_str())
-    .bind(policy.provider_instance_id.as_str())
-    .bind(safety_mode)
     .bind(selection)
-    .bind(policy.effort.as_deref())
-    .bind(policy.speed.as_deref())
     .bind(i64::from(policy.provider_options.schema_version))
     .bind(json_object(&policy.provider_options, "providerOptions")?)
     .bind(now.as_str())
@@ -1652,18 +1640,16 @@ pub(super) async fn insert_policy_revision(
     .await
     .map_err(persistence_error)?;
     sqlx::query(
-        "UPDATE chat_agents
-         SET current_policy_revision_id = ?, current_policy_safety_mode = ?, updated_at = ?
+        "UPDATE chat_agents SET current_policy_revision_id = ?, updated_at = ?
          WHERE participant_id = ?",
     )
     .bind(policy_revision_id.as_str())
-    .bind(safety_mode)
     .bind(now.as_str())
     .bind(agent_id.as_str())
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
-    Ok(())
+    ChatAgentPolicyRevisionId::new(policy_revision_id).map_err(identifier_error)
 }
 
 pub(super) async fn read_message_references(
@@ -2092,14 +2078,6 @@ pub(super) async fn end_assignment_dispatch_jobs(
     drop_input_requested_targets(connection, assignment_id).await
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct StoredModelSelection {
-    pub(super) provider_managed_model: bool,
-    pub(super) model_id: Option<ModelId>,
-    pub(super) model_options: Vec<ModelOptionSelection>,
-}
-
-pub(super) fn parse_model_selection(data: String) -> ChatResult<StoredModelSelection> {
+pub(super) fn parse_model_selection(data: String) -> ChatResult<ChatModelSelection> {
     serde_json::from_str(&data).map_err(serialization_error)
 }

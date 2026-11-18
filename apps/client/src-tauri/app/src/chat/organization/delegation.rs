@@ -141,7 +141,7 @@ pub(super) async fn persist_delegation(
     if request.agent_id == &parent.agent_id {
         return Ok(Err(DelegationRefusal::TargetUnavailable));
     }
-    match require_participating_agent(&mut *transaction, request.conversation_id, request.agent_id)
+    match require_participating_agent(&mut transaction, request.conversation_id, request.agent_id)
         .await
     {
         Ok(()) => {}
@@ -186,11 +186,6 @@ pub(super) async fn persist_delegation(
     .await?;
     open_reply_thread(&mut transaction, &request, &item_id, &thread_id, &now).await?;
     let device = PostingDevice::this_device(device_id, writers);
-    let device = if parent.unattended {
-        device.unattended()
-    } else {
-        device
-    };
     let Some(executing_device_id) =
         new_assignment_executing_device(&mut transaction, request.agent_id, device).await?
     else {
@@ -413,9 +408,6 @@ enum PriorRequest {
 struct WorkingParent {
     agent_id: ChatParticipantId,
     depth: u8,
-    /// Whether the parent runs without approval prompts, so no person on this device consents
-    /// to what its child runs and the child waits for a local acceptance.
-    unattended: bool,
 }
 
 /// The parent of `request` when it is working in the request's conversation under the run's
@@ -427,8 +419,7 @@ async fn read_working_parent(
     let row = sqlx::query(
         "SELECT assignment.state, assignment.delegation_depth, assignment.agent_id,
                 thread.conversation_id,
-                authorization.decision_state, authorization.revoked_at,
-                authorization.resolved_runtime_approval_policy
+                authorization.decision_state, authorization.revoked_at
          FROM chat_work_assignments assignment
          JOIN chat_reply_threads thread ON thread.id = assignment.reply_thread_id
          LEFT JOIN chat_assignment_authorization_revisions authorization
@@ -447,9 +438,6 @@ async fn read_working_parent(
     let conversation_id: String = row.try_get("conversation_id").map_err(persistence_error)?;
     let decision: Option<String> = row.try_get("decision_state").map_err(persistence_error)?;
     let revoked_at: Option<String> = row.try_get("revoked_at").map_err(persistence_error)?;
-    let approval: Option<String> = row
-        .try_get("resolved_runtime_approval_policy")
-        .map_err(persistence_error)?;
     if state != "working"
         || conversation_id != request.conversation_id.as_str()
         || decision.as_deref() != Some("allowed")
@@ -470,7 +458,6 @@ async fn read_working_parent(
         )
         .map_err(identifier_error)?,
         depth: u8::try_from(depth).map_err(|_| stored_value_error("delegation depth"))?,
-        unattended: approval.as_deref() == Some("unattended"),
     }))
 }
 
@@ -657,8 +644,8 @@ pub(super) struct FolderBound {
     pub(super) approval_rank: u8,
 }
 
-/// Rank of the broadest approval: work may run unattended unless an ancestor narrows it.
-const BROADEST_APPROVAL_RANK: u8 = 2;
+/// Rank of the broadest approval: work may run without asking unless an ancestor narrows it.
+const BROADEST_APPROVAL_RANK: u8 = 1;
 
 /// Reads the bound of `assignment_id` by walking its ancestors.
 ///
@@ -862,8 +849,7 @@ async fn read_ancestor(
     }))
 }
 
-/// The rank of `policy`, counting a policy that cannot be ranked, such as provider-custom
-/// approval, as asking.
+/// The rank of `policy`, counting a policy that cannot be ranked as asking.
 fn approval_rank_or_ask(policy: &str) -> u8 {
     approval_rank(policy).unwrap_or(0)
 }
@@ -872,11 +858,7 @@ fn approval_rank_or_ask(policy: &str) -> u8 {
 /// since nothing here can show it stays within the bound.
 pub(super) fn clamp_approval(policy: &str, bound_rank: u8) -> &'static str {
     let rank = approval_rank(policy).map_or(0, |rank| rank.min(bound_rank));
-    match rank {
-        0 => "ask",
-        1 => "auto_approve",
-        _ => "unattended",
-    }
+    if rank == 0 { "ask" } else { "auto_approve" }
 }
 
 /// Cancels delegated work whose parent lost its authority, before it starts, and reports the

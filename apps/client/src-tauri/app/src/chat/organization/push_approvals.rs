@@ -1,47 +1,31 @@
-//! Standing push approvals a person lists and revokes in agent settings.
+//! Standing push approvals a person lists and revokes in a channel's Agents section.
 //!
 //! Approvals are made only by the confirm path when a person pushes and chooses not to be asked
 //! again, so this module only reads and revokes them. A revocation keeps the row with its time,
 //! which wins over a concurrent approval made on another device.
 
-use super::{identifier_error, persistence_error};
+use super::persistence_error;
 use crate::chat::channels::now_timestamp;
-use ganbaru_chat::coordination::contracts::{ChatPushApprovalRead, RevokeChatPushApprovalCommand};
+use ganbaru_chat::coordination::agent_settings::read_channel_push_approvals;
+use ganbaru_chat::coordination::contracts::RevokeChatPushApprovalCommand;
 use ganbaru_chat_contracts::models::*;
-use sqlx::{Row, SqlitePool};
-
-/// Most approvals one list returns.
-const MAX_LISTED_PUSH_APPROVALS: i64 = 200;
+use sqlx::SqlitePool;
 
 /// Longest approval id, in bytes, matching the replicated key bound.
 const MAX_APPROVAL_ID_BYTES: usize = 128;
 
-/// Lists `agent_id`'s active approvals by folder name, push URL, and branch.
+/// Lists the active approvals of the channel whose conversation is `conversation_id`, newest
+/// first.
 ///
 /// # Errors
 ///
 /// Returns a persistence error when the read fails.
 pub(super) async fn list_push_approvals(
     pool: &SqlitePool,
-    agent_id: &ChatParticipantId,
-) -> ChatResult<Vec<ChatPushApprovalRead>> {
-    let rows = sqlx::query(
-        "SELECT approval.sync_key, approval.agent_id, approval.working_folder_id,
-                folder.display_name, approval.push_url, approval.destination_branch,
-                approval.approved_at
-         FROM chat_push_approvals approval
-         JOIN project_working_folders folder ON folder.id = approval.working_folder_id
-         WHERE approval.agent_id = ? AND approval.revoked_at IS NULL
-         ORDER BY folder.display_name COLLATE NOCASE, approval.push_url,
-                  approval.destination_branch
-         LIMIT ?",
-    )
-    .bind(agent_id.as_str())
-    .bind(MAX_LISTED_PUSH_APPROVALS)
-    .fetch_all(pool)
-    .await
-    .map_err(persistence_error)?;
-    rows.iter().map(approval_read).collect()
+    conversation_id: &ChatConversationId,
+) -> ChatResult<Vec<ChatChannelPushApprovalRead>> {
+    let mut connection = pool.acquire().await.map_err(persistence_error)?;
+    read_channel_push_approvals(&mut connection, conversation_id.as_str()).await
 }
 
 /// Revokes the approval `request.approval_id` names. Revoking one that is already revoked or
@@ -72,20 +56,6 @@ pub(super) async fn revoke_push_approval(
     .await
     .map_err(persistence_error)?;
     Ok(())
-}
-
-fn approval_read(row: &sqlx::sqlite::SqliteRow) -> ChatResult<ChatPushApprovalRead> {
-    let text = |column: &str| row.try_get::<String, _>(column).map_err(persistence_error);
-    Ok(ChatPushApprovalRead {
-        approval_id: text("sync_key")?,
-        agent_id: ChatParticipantId::new(text("agent_id")?).map_err(identifier_error)?,
-        working_folder_id: ProjectWorkingFolderId::new(text("working_folder_id")?)
-            .map_err(identifier_error)?,
-        working_folder_name: text("display_name")?,
-        push_url: text("push_url")?,
-        destination_branch: text("destination_branch")?,
-        approved_at: text("approved_at")?,
-    })
 }
 
 #[cfg(all(test, desktop))]

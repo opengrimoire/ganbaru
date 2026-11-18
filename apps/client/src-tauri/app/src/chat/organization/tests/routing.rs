@@ -383,9 +383,10 @@ fn reviewed_or_continued_work_does_not_continue_again() {
         sqlx::query(
             "INSERT INTO chat_work_assignments
                  (id, reply_thread_id, agent_id, triggering_message_item_id,
+                 model_selection_schema_version, model_selection_data,
                   executing_device_id, state, previous_assignment_id, created_at, updated_at)
              VALUES ('assignment:successor', 'reply-thread:review', 'participant:review-agent',
-                     'item:review-reply-1', 'device:desk', 'queued', ?1, ?2, ?2)",
+                     'item:review-reply-1', 1, json_object('providerManagedModel', json('true')), 'device:desk', 'queued', ?1, ?2, ?2)",
         )
         .bind(ROUTED_ASSIGNMENT_ID)
         .bind(ROUTING_TIME)

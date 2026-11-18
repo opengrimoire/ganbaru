@@ -44,8 +44,11 @@ mod dispatch;
 mod inputs;
 #[cfg(desktop)]
 mod instruction_files;
+mod model_choice;
 #[cfg(desktop)]
 mod primary_folder;
+#[cfg(desktop)]
+mod provider_agents;
 mod push_approvals;
 #[cfg(desktop)]
 mod push_requests;
@@ -62,6 +65,8 @@ pub(crate) use assignments::{
     deliver_delegation_outcomes_of_thread, resume_answered_work_of_thread,
     start_synced_assignment_work,
 };
+#[cfg(desktop)]
+use common::validate_policy;
 use common::{
     AttachmentSource, PageCursor, ScheduledPostTarget, chat_writers, conversation_item_id,
     has_thread_eligible_mention, map_command_receipt_error, message_revision_id,
@@ -69,15 +74,7 @@ use common::{
     scheduled_post_ids, serialization_error, this_device_id, validate_message_request,
 };
 #[cfg(desktop)]
-pub(crate) use common::{
-    agent_runtime_approval, effective_runtime_approval, native_assignment_safety_mode,
-    parse_approval_policy, parse_runtime_approval_policy, wire_runtime_approval_policy,
-};
-#[cfg(desktop)]
-use common::{
-    json_object, require_unused_agent_name, validate_agent_role, validate_display_name,
-    validate_policy, validate_profile_text,
-};
+pub(crate) use common::{native_assignment_safety_mode, parse_runtime_approval_policy};
 #[cfg(desktop)]
 pub(crate) use delegation::{
     DelegatedFolder, DelegationRequest, delegate_assignment, is_lifecycle_revocation,
@@ -125,7 +122,14 @@ pub async fn chat_list_agents(
     db_url: String,
     archived: bool,
 ) -> ChatResult<Vec<ChatAiAgentRead>> {
-    let pool = chat_pool(app, db_url).await?;
+    let local_instances = local_provider_instances(&app);
+    let pool = chat_pool(app.clone(), db_url).await?;
+    #[cfg(desktop)]
+    provider_agents::ensure_device_provider_agents(
+        &pool,
+        &provider_agents::read_device_providers(&app),
+    )
+    .await?;
     let rows = sqlx::query(
         "SELECT participant_id
          FROM chat_agents agent
@@ -144,7 +148,7 @@ pub async fn chat_list_agents(
                 .map_err(persistence_error)?,
         )
         .map_err(identifier_error)?;
-        agents.push(read_agent(&pool, &id).await?);
+        agents.push(read_agent(&pool, &id, &local_instances).await?);
     }
     Ok(agents)
 }
@@ -155,74 +159,65 @@ pub async fn chat_read_agent(
     db_url: String,
     agent_id: ChatParticipantId,
 ) -> ChatResult<ChatAiAgentRead> {
-    read_agent(&chat_pool(app, db_url).await?, &agent_id).await
+    let local_instances = local_provider_instances(&app);
+    read_agent(&chat_pool(app, db_url).await?, &agent_id, &local_instances).await
 }
 
+/// The provider instance of each family on this device. Android runs no provider, so it has
+/// none.
+fn local_provider_instances(app: &tauri::AppHandle) -> reads::LocalProviderInstances {
+    #[cfg(desktop)]
+    {
+        provider_agents::read_device_providers(app).local_instances()
+    }
+    #[cfg(mobile)]
+    {
+        let _ = app;
+        reads::LocalProviderInstances::new()
+    }
+}
+
+/// Sets the default model and options of an agent as a new policy revision.
 #[tauri::command]
 #[cfg(desktop)]
-pub async fn chat_create_agent(
+pub async fn chat_set_agent_policy(
     app: tauri::AppHandle,
     db_url: String,
-    request: CreateChatAgentCommand,
+    request: SetChatAgentPolicyCommand,
 ) -> ChatResult<ChatAiAgentRead> {
-    validate_policy(&app, &request.policy)?;
-    let home_device_id = crate::sync::devices::stable_device_id(&app)
-        .map_err(crate::chat::settings::device_state_error)?;
+    validate_policy(&request.policy)?;
+    let local_instances = local_provider_instances(&app);
     let pool = chat_pool(app, db_url).await?;
-    create_agent(&pool, &request, &home_device_id).await
+    set_agent_policy(&pool, &request).await?;
+    read_agent(&pool, &request.agent_id, &local_instances).await
 }
 
-/// Stores the agent of `request`, with `home_device_id` as its home device, and its first
-/// policy revision. The caller has checked the policy against this device's providers.
+/// Stores the policy of `request` as the newest revision of a non-archived agent.
 #[cfg(desktop)]
-async fn create_agent(
+async fn set_agent_policy(
     pool: &SqlitePool,
-    request: &CreateChatAgentCommand,
-    home_device_id: &str,
-) -> ChatResult<ChatAiAgentRead> {
-    let display_name = validate_display_name(&request.display_name)?;
-    let role = validate_agent_role(&request.role)?;
-    validate_profile_text(
-        &request.instructions,
-        continuation::MAX_AGENT_INSTRUCTIONS_BYTES,
-        "instructions",
-    )?;
-    let avatar_data = json_object(&request.avatar, "avatar")?;
+    request: &SetChatAgentPolicyCommand,
+) -> ChatResult<()> {
     let now = now_timestamp()?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
-    require_unused_agent_name(&mut transaction, &display_name, request.agent_id.as_str()).await?;
-    sqlx::query(
-        "INSERT INTO chat_participants
-            (id, participant_kind, display_name, avatar_schema_version,
-             avatar_data, created_at, updated_at)
-         VALUES (?, 'ai_agent', ?, ?, ?, ?, ?)",
+    let exists: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM chat_agents agent
+         JOIN chat_participants participant ON participant.id = agent.participant_id
+         WHERE agent.participant_id = ? AND participant.archived_at IS NULL",
     )
     .bind(request.agent_id.as_str())
-    .bind(display_name)
-    .bind(i64::from(request.avatar.schema_version))
-    .bind(avatar_data)
-    .bind(now.as_str())
-    .bind(now.as_str())
-    .execute(&mut *transaction)
+    .fetch_optional(&mut *transaction)
     .await
     .map_err(persistence_error)?;
-    sqlx::query(
-        "INSERT INTO chat_agents
-            (participant_id, role, instructions, home_device_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)",
-    )
-    .bind(request.agent_id.as_str())
-    .bind(role)
-    .bind(request.instructions.trim())
-    .bind(home_device_id)
-    .bind(now.as_str())
-    .bind(now.as_str())
-    .execute(&mut *transaction)
-    .await
-    .map_err(persistence_error)?;
+    if exists.is_none() {
+        return Err(ChatError::new(
+            ChatErrorCode::NotFound,
+            "The AI agent was not found",
+            true,
+        ));
+    }
     insert_policy_revision(&mut transaction, &request.agent_id, &request.policy, &now).await?;
-    transaction.commit().await.map_err(persistence_error)?;
-    read_agent(pool, &request.agent_id).await
+    transaction.commit().await.map_err(persistence_error)
 }
 
 #[tauri::command]
@@ -234,8 +229,16 @@ pub async fn chat_archive_agent(
     expected_revision: u64,
     archived: bool,
 ) -> ChatResult<ChatAiAgentRead> {
+    let local_instances = local_provider_instances(&app);
     let pool = chat_pool(app, db_url).await?;
-    set_agent_archived(&pool, &agent_id, expected_revision, archived).await
+    set_agent_archived(
+        &pool,
+        &agent_id,
+        expected_revision,
+        archived,
+        &local_instances,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -951,15 +954,16 @@ pub async fn chat_read_push_request_states(
     push_requests::read_push_request_states(app, db_url, request_item_ids).await
 }
 
-/// Lists an agent's active standing push approvals.
+/// Lists the active standing push approvals of a channel.
 #[tauri::command]
 pub async fn chat_list_push_approvals(
     app: tauri::AppHandle,
     db_url: String,
-    agent_id: ChatParticipantId,
-) -> ChatResult<Vec<ChatPushApprovalRead>> {
+    channel_id: ChatChannelId,
+) -> ChatResult<Vec<ChatChannelPushApprovalRead>> {
     let pool = chat_pool(app, db_url).await?;
-    push_approvals::list_push_approvals(&pool, &agent_id).await
+    let channel = super::channels::read_channel(&pool, &channel_id).await?;
+    push_approvals::list_push_approvals(&pool, &channel.conversation_id).await
 }
 
 /// Revokes a standing push approval, so later matching push requests ask again.

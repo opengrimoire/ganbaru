@@ -44,8 +44,8 @@ pub(crate) async fn seed_agent(pool: &sqlx::SqlitePool, id: &str, display_name: 
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
-         VALUES (?, 'Reviewer', ?, ?)",
+        "INSERT INTO chat_agents (participant_id, provider_family_id, created_at, updated_at)
+         VALUES (?, 'codex', ?, ?)",
     )
     .bind(id)
     .bind(SEEDED_AT)
@@ -216,10 +216,11 @@ pub(crate) async fn seed_assignment(pool: &sqlx::SqlitePool, assignment: &SeedAs
     sqlx::query(
         "INSERT INTO chat_work_assignments
             (id, reply_thread_id, agent_id, triggering_message_item_id,
+                 model_selection_schema_version, model_selection_data,
              executing_device_id, previous_assignment_id, state, state_reason, settled_at,
              parent_assignment_id, delegation_depth, delegation_objective,
              delegation_expected_result, delegation_folder_ceiling, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, 1, json_object('providerManagedModel', json('true')), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(assignment.id)
     .bind(assignment.reply_thread_id)

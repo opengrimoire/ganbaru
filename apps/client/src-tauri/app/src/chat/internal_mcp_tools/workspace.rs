@@ -302,10 +302,7 @@ fn bounded_usize(arguments: &Map<String, Value>, name: &str) -> ChatResult<usize
 }
 
 fn require_resolved_mutation_approval(policy: ChatRuntimeApprovalPolicy) -> ChatResult<()> {
-    if matches!(
-        policy,
-        ChatRuntimeApprovalPolicy::AutoApprove | ChatRuntimeApprovalPolicy::Unattended
-    ) {
+    if policy == ChatRuntimeApprovalPolicy::AutoApprove {
         Ok(())
     } else {
         Err(ChatError::new(
@@ -433,15 +430,9 @@ mod tests {
     #[test]
     fn workspace_mutations_require_a_resolved_noninteractive_approval() {
         assert!(require_resolved_mutation_approval(ChatRuntimeApprovalPolicy::AutoApprove).is_ok());
-        assert!(require_resolved_mutation_approval(ChatRuntimeApprovalPolicy::Unattended).is_ok());
 
         let ask = require_resolved_mutation_approval(ChatRuntimeApprovalPolicy::Ask)
             .expect_err("ask must remain fail closed without a durable host-tool approval");
         assert_eq!(ask.code, ChatErrorCode::Permission);
-
-        let provider_custom =
-            require_resolved_mutation_approval(ChatRuntimeApprovalPolicy::ProviderCustom)
-                .expect_err("provider custom cannot widen a brokered folder grant");
-        assert_eq!(provider_custom.code, ChatErrorCode::Permission);
     }
 }

@@ -59,6 +59,7 @@ pub(super) async fn set_agent_archived(
     agent_id: &ChatParticipantId,
     expected_revision: u64,
     archived: bool,
+    local_instances: &reads::LocalProviderInstances,
 ) -> ChatResult<ChatAiAgentRead> {
     let now = now_timestamp()?;
     let archived_at = archived.then(|| now.as_str());
@@ -92,6 +93,8 @@ pub(super) async fn set_agent_archived(
             ));
         }
     }
+    ganbaru_chat::sync_effects::revoke_lapsed_push_approvals(&mut transaction, now.as_str())
+        .await?;
     transaction.commit().await.map_err(persistence_error)?;
-    read_agent(pool, agent_id).await
+    read_agent(pool, agent_id, local_instances).await
 }

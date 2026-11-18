@@ -138,7 +138,6 @@ async fn require_current_scratch_authority(
             AND access.removed_at IS NULL
            WHERE membership.conversation_id = ? AND membership.participant_id = ?
              AND membership.removed_at IS NULL
-             AND access.participate = 1
          )",
     )
     .bind(identity.conversation_id.as_str())

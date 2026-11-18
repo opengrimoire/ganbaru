@@ -168,72 +168,6 @@ pub(super) async fn insert_revision_copied_attachments(
     Ok(())
 }
 
-/// Active folder grants of one AI channel membership, bound to the conversation and agent.
-///
-/// Concurrent edits on two devices can each leave a default grant after sync merges them, so
-/// only the default grant with the lowest working folder id reads as the default. Execution
-/// context selection breaks the tie the same way.
-///
-/// A synced grant outside the conversation's project carries no authority, so it is left out as
-/// if revoked. Saving the membership's access revokes it, or rewrites its project to the
-/// conversation's when the user keeps that folder granted.
-pub(super) const ACTIVE_FOLDER_GRANTS_SQL: &str = "SELECT grant_row.working_folder_id,
-        folder.display_name, grant_row.capability,
-        (grant_row.is_default <> 0 AND NOT EXISTS (
-            SELECT 1 FROM chat_agent_working_folder_grants other
-            JOIN project_working_folders other_folder ON other_folder.id = other.working_folder_id
-            WHERE other.conversation_id = grant_row.conversation_id
-              AND other.agent_id = grant_row.agent_id
-              AND other.revoked_at IS NULL AND other.is_default <> 0
-              AND other.working_folder_id < grant_row.working_folder_id
-              AND other.project_id = conversation.project_id
-              AND other_folder.project_id = conversation.project_id
-        )) AS is_default,
-        grant_row.runtime_approval_policy, grant_row.revision, grant_row.revoked_at
- FROM chat_agent_working_folder_grants grant_row
- JOIN chat_conversations conversation ON conversation.id = grant_row.conversation_id
- JOIN project_working_folders folder ON folder.id = grant_row.working_folder_id
- WHERE grant_row.conversation_id = ? AND grant_row.agent_id = ?
-   AND grant_row.revoked_at IS NULL
-   AND grant_row.project_id = conversation.project_id
-   AND folder.project_id = conversation.project_id
- ORDER BY is_default DESC, folder.sort_order, folder.display_name, folder.id";
-
-/// One active folder grant, as the implied execution target sees it.
-#[cfg(desktop)]
-#[derive(Clone, Copy, Debug)]
-pub(super) struct ImpliedFolderCandidate<'a> {
-    pub(super) working_folder_id: &'a str,
-    pub(super) is_default: bool,
-}
-
-/// Picks the folder a membership's work runs in when nothing in the request names one: the
-/// default grant, else the channel project's working folder when it is granted, else the only
-/// granted folder. `None` means the work runs conversation only.
-///
-/// `candidates` must hold only grants that carry folder authority, so a grant with no capability
-/// never becomes the target.
-#[cfg(desktop)]
-pub(super) fn implied_working_folder<'a>(
-    candidates: &[ImpliedFolderCandidate<'a>],
-    project_working_folder_id: Option<&str>,
-) -> Option<&'a str> {
-    if let Some(default) = candidates.iter().find(|candidate| candidate.is_default) {
-        return Some(default.working_folder_id);
-    }
-    if let Some(project) = project_working_folder_id.and_then(|project_folder_id| {
-        candidates
-            .iter()
-            .find(|candidate| candidate.working_folder_id == project_folder_id)
-    }) {
-        return Some(project.working_folder_id);
-    }
-    match candidates {
-        [only] => Some(only.working_folder_id),
-        _ => None,
-    }
-}
-
 pub(super) fn has_thread_eligible_mention(request: &PostChatMessageCommand) -> bool {
     request.references.iter().any(|reference| {
         matches!(
@@ -246,37 +180,18 @@ pub(super) fn has_thread_eligible_mention(request: &PostChatMessageCommand) -> b
     })
 }
 
+/// Checks that an agent's default model names either the provider-managed model or one
+/// explicit model, and that its provider options are a JSON object.
 #[cfg(desktop)]
-pub(super) fn validate_policy(
-    app: &tauri::AppHandle,
-    policy: &ChatAgentPolicyInput,
-) -> ChatResult<()> {
+pub(super) fn validate_policy(policy: &ChatAgentPolicyInput) -> ChatResult<()> {
     if policy.provider_managed_model == policy.model_id.is_some() {
         return Err(ChatError::validation(
             "modelId",
             "Choose either provider-managed model selection or one explicit model",
         ));
     }
-    if let Some(effort) = policy.effort.as_deref() {
-        if !is_valid_agent_effort(effort) {
-            return Err(ChatError::validation("effort", "Agent effort is invalid"));
-        }
-    }
-    if let Some(speed) = policy.speed.as_deref() {
-        if !matches!(speed, "standard" | "fast") {
-            return Err(ChatError::validation("speed", "Agent speed is invalid"));
-        }
-    }
-    super::super::settings_commands::read_provider(app, &policy.provider_instance_id)?;
+    json_object(&policy.provider_options, "providerOptions")?;
     Ok(())
-}
-
-#[cfg(desktop)]
-pub(super) fn is_valid_agent_effort(effort: &str) -> bool {
-    matches!(
-        effort,
-        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
-    )
 }
 
 pub(super) fn validate_message_request(request: &PostChatMessageCommand) -> ChatResult<()> {
@@ -402,70 +317,6 @@ fn reference_semantic_key(reference: &ChatMessageReference) -> String {
             execution_environment_id.as_str()
         ),
     }
-}
-
-#[cfg(desktop)]
-pub(super) fn validate_display_name(value: &str) -> ChatResult<String> {
-    let value = value.trim();
-    if value.is_empty() || value.chars().count() > 160 || value.chars().any(char::is_control) {
-        return Err(ChatError::validation(
-            "displayName",
-            "Agent name must contain 1 to 160 characters",
-        ));
-    }
-    Ok(value.to_string())
-}
-
-#[cfg(desktop)]
-pub(super) fn validate_agent_role(value: &str) -> ChatResult<String> {
-    let value = value.trim();
-    if value.is_empty() || value.chars().count() > 1_000 || value.chars().any(char::is_control) {
-        return Err(ChatError::validation(
-            "role",
-            "Agent role must contain 1 to 1000 characters",
-        ));
-    }
-    Ok(value.to_string())
-}
-
-#[cfg(desktop)]
-pub(super) fn validate_profile_text(value: &str, maximum: usize, field: &str) -> ChatResult<()> {
-    if value.len() > maximum {
-        return Err(ChatError::validation(
-            field,
-            "Agent profile text is too long",
-        ));
-    }
-    Ok(())
-}
-
-/// Refuses an agent name that another agent, archived ones included, already uses, ignoring
-/// case and surrounding spaces.
-///
-/// The check covers the agents this device holds. Devices that create or rename agents
-/// concurrently can still end up with equal names, which readers tell apart by id.
-#[cfg(desktop)]
-pub(super) async fn require_unused_agent_name(
-    connection: &mut sqlx::SqliteConnection,
-    display_name: &str,
-    agent_id: &str,
-) -> ChatResult<()> {
-    let in_use: bool = sqlx::query_scalar(
-        "SELECT EXISTS(
-           SELECT 1 FROM chat_participants
-           WHERE participant_kind = 'ai_agent' AND id != ?
-             AND lower(trim(display_name)) = lower(trim(?))
-         )",
-    )
-    .bind(agent_id)
-    .bind(display_name)
-    .fetch_one(connection)
-    .await
-    .map_err(persistence_error)?;
-    if in_use {
-        return Err(ChatError::validation("displayName", "Name already in use"));
-    }
-    Ok(())
 }
 
 pub(super) fn json_object(value: &VersionedJson, field: &str) -> ChatResult<String> {
@@ -657,127 +508,23 @@ pub(super) fn parse_participant_kind(value: &str) -> ChatResult<ChatParticipantK
     }
 }
 
-pub(crate) fn parse_approval_policy(value: &str) -> ChatResult<ChatApprovalPolicy> {
-    match value {
-        "ask_for_approval" => Ok(ChatApprovalPolicy::AskForApproval),
-        "approve_for_me" => Ok(ChatApprovalPolicy::ApproveForMe),
-        "full_access" => Ok(ChatApprovalPolicy::FullAccess),
-        "custom" => Ok(ChatApprovalPolicy::Custom),
-        _ => Err(stored_value_error("approval policy")),
-    }
-}
-
-pub(crate) fn parse_runtime_approval_policy(value: &str) -> ChatResult<ChatRuntimeApprovalPolicy> {
-    match value {
-        "ask" => Ok(ChatRuntimeApprovalPolicy::Ask),
-        "auto_approve" => Ok(ChatRuntimeApprovalPolicy::AutoApprove),
-        "unattended" => Ok(ChatRuntimeApprovalPolicy::Unattended),
-        "provider_custom" => Ok(ChatRuntimeApprovalPolicy::ProviderCustom),
-        _ => Err(stored_value_error("runtime approval policy")),
-    }
-}
-
+/// Parses a stored runtime approval policy.
 #[cfg(desktop)]
-pub(crate) fn wire_runtime_approval_policy(value: ChatRuntimeApprovalPolicy) -> &'static str {
-    match value {
-        ChatRuntimeApprovalPolicy::Ask => "ask",
-        ChatRuntimeApprovalPolicy::AutoApprove => "auto_approve",
-        ChatRuntimeApprovalPolicy::Unattended => "unattended",
-        ChatRuntimeApprovalPolicy::ProviderCustom => "provider_custom",
-    }
+pub(crate) fn parse_runtime_approval_policy(value: &str) -> ChatResult<ChatRuntimeApprovalPolicy> {
+    ChatRuntimeApprovalPolicy::parse(value)
+        .ok_or_else(|| stored_value_error("runtime approval policy"))
 }
 
+/// Parses a stored folder capability.
+#[cfg(desktop)]
 pub(super) fn parse_folder_capability(value: &str) -> ChatResult<ChatFolderCapability> {
-    match value {
-        "none" => Ok(ChatFolderCapability::None),
-        "read" => Ok(ChatFolderCapability::Read),
-        "edit" => Ok(ChatFolderCapability::Edit),
-        "execute" => Ok(ChatFolderCapability::Execute),
-        "publish" => Ok(ChatFolderCapability::Publish),
-        _ => Err(stored_value_error("folder capability")),
-    }
+    ChatFolderCapability::parse(value).ok_or_else(|| stored_value_error("folder capability"))
 }
 
+/// The stored form of the folder capability `value`.
 #[cfg(desktop)]
 pub(super) fn wire_folder_capability(value: ChatFolderCapability) -> &'static str {
-    match value {
-        ChatFolderCapability::None => "none",
-        ChatFolderCapability::Read => "read",
-        ChatFolderCapability::Edit => "edit",
-        ChatFolderCapability::Execute => "execute",
-        ChatFolderCapability::Publish => "publish",
-    }
-}
-
-/// Order key a `from_grant` history boundary stamps when it is granted now: the first root
-/// position after the conversation's last root item, so only later root items are visible.
-pub(super) async fn from_grant_lower_order_key(
-    connection: &mut sqlx::SqliteConnection,
-    conversation_id: &str,
-) -> ChatResult<String> {
-    let last_key =
-        ganbaru_chat::timeline::last_order_key(connection, conversation_id, None).await?;
-    ganbaru_chat::timeline::order_key_after(last_key.as_deref())
-}
-
-pub(super) fn parse_history_boundary(
-    kind: &str,
-    lower_order_key: Option<String>,
-) -> ChatResult<ChatHistoryBoundary> {
-    match kind {
-        "entire" if lower_order_key.is_none() => Ok(ChatHistoryBoundary::Entire),
-        "from_grant" => Ok(ChatHistoryBoundary::FromGrant { lower_order_key }),
-        _ => Err(stored_value_error("history boundary")),
-    }
-}
-
-/// Channel history one agent membership may read, resolved from the membership.
-///
-/// Positions are root timeline order keys. A reply thread sits at its root's
-/// position, because reply order keys count within their thread.
-#[cfg(desktop)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct AgentHistoryAccess {
-    visible_from: Option<String>,
-}
-
-#[cfg(desktop)]
-impl AgentHistoryAccess {
-    /// Resolves effective history access. A `from_grant` boundary without a
-    /// lower order key admits nothing; entire history starts at the empty key,
-    /// which sorts before every order key.
-    pub(super) fn resolve(
-        read_history: bool,
-        from_grant: bool,
-        from_order_key: Option<String>,
-    ) -> Self {
-        let visible_from = match (read_history, from_grant) {
-            (false, _) => None,
-            (true, true) => from_order_key,
-            (true, false) => Some(String::new()),
-        };
-        Self { visible_from }
-    }
-
-    /// Returns the lowest readable order key, or `None` when no history is readable.
-    pub(super) fn visible_from(&self) -> Option<&str> {
-        self.visible_from.as_deref()
-    }
-
-    /// Returns whether the message or reply thread at `order_key` is readable.
-    pub(super) fn admits_position(&self, order_key: &str) -> bool {
-        self.visible_from
-            .as_deref()
-            .is_some_and(|lower| lower <= order_key)
-    }
-}
-
-#[cfg(desktop)]
-pub(super) fn wire_history_boundary(value: &ChatHistoryBoundary) -> &'static str {
-    match value {
-        ChatHistoryBoundary::Entire => "entire",
-        ChatHistoryBoundary::FromGrant { .. } => "from_grant",
-    }
+    value.as_str()
 }
 
 pub(super) fn parse_work_state(value: &str) -> ChatResult<ChatWorkAssignmentState> {
@@ -819,71 +566,13 @@ pub(super) fn wire_participant_kind(value: ChatParticipantKind) -> &'static str 
     }
 }
 
+/// Returns the provider safety mode a native assignment runs with for its frozen runtime
+/// approval: asking before each command, or approving commands inside the confined workspace.
 #[cfg(desktop)]
-pub(super) fn wire_approval_policy(value: ChatApprovalPolicy) -> &'static str {
-    match value {
-        ChatApprovalPolicy::AskForApproval => "ask_for_approval",
-        ChatApprovalPolicy::ApproveForMe => "approve_for_me",
-        ChatApprovalPolicy::FullAccess => "full_access",
-        ChatApprovalPolicy::Custom => "custom",
-    }
-}
-
-/// Returns the runtime approval an agent's approval behavior stands for when no channel,
-/// scratch, or folder override applies.
-#[cfg(desktop)]
-pub(crate) fn agent_runtime_approval(value: ChatApprovalPolicy) -> ChatRuntimeApprovalPolicy {
-    match value {
-        ChatApprovalPolicy::AskForApproval => ChatRuntimeApprovalPolicy::Ask,
-        ChatApprovalPolicy::ApproveForMe => ChatRuntimeApprovalPolicy::AutoApprove,
-        ChatApprovalPolicy::FullAccess => ChatRuntimeApprovalPolicy::Unattended,
-        ChatApprovalPolicy::Custom => ChatRuntimeApprovalPolicy::ProviderCustom,
-    }
-}
-
-/// Orders runtime approval policies from narrowest to broadest. Provider-custom approval has no
-/// rank because the provider's own configuration decides it.
-#[cfg(desktop)]
-pub(crate) fn runtime_approval_rank(policy: ChatRuntimeApprovalPolicy) -> Option<u8> {
-    ganbaru_chat::coordination::reductions::approval_rank(wire_runtime_approval_policy(policy))
-}
-
-/// Returns the runtime approval that applies to an agent's work: the narrower of the runtime
-/// approval its approval behavior stands for and the policy resolved from its grants. A Custom
-/// agent cannot be ranked against a grant, so the grant policy alone governs host tools while
-/// the provider keeps its own configuration; an unranked grant is returned unchanged so native
-/// execution can refuse it.
-#[cfg(desktop)]
-pub(crate) fn effective_runtime_approval(
-    agent_default: ChatRuntimeApprovalPolicy,
-    granted: ChatRuntimeApprovalPolicy,
-) -> ChatRuntimeApprovalPolicy {
-    match (
-        runtime_approval_rank(agent_default),
-        runtime_approval_rank(granted),
-    ) {
-        (Some(agent_rank), Some(granted_rank)) if agent_rank < granted_rank => agent_default,
-        _ => granted,
-    }
-}
-
-/// Returns the provider safety mode a native assignment runs with for an agent and its frozen
-/// effective runtime approval. Only a Custom agent runs with the provider's own
-/// configuration; an unranked grant on a ranked agent falls back to asking.
-#[cfg(desktop)]
-pub(crate) fn native_assignment_safety_mode(
-    agent: ChatApprovalPolicy,
-    effective: ChatRuntimeApprovalPolicy,
-) -> SafetyMode {
-    if agent == ChatApprovalPolicy::Custom {
-        return SafetyMode::Custom;
-    }
-    match effective {
-        ChatRuntimeApprovalPolicy::Ask | ChatRuntimeApprovalPolicy::ProviderCustom => {
-            SafetyMode::AskForApproval
-        }
+pub(crate) fn native_assignment_safety_mode(approval: ChatRuntimeApprovalPolicy) -> SafetyMode {
+    match approval {
+        ChatRuntimeApprovalPolicy::Ask => SafetyMode::AskForApproval,
         ChatRuntimeApprovalPolicy::AutoApprove => SafetyMode::ApproveForMe,
-        ChatRuntimeApprovalPolicy::Unattended => SafetyMode::FullAccess,
     }
 }
 
@@ -951,16 +640,17 @@ pub(super) fn this_device_id<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Ch
 
 /// The devices that can write Chat in the active vault of `pool`: this device and the linked
 /// devices with an active sync writer, so work another linked device executes is not taken for
-/// stranded.
-pub(super) async fn chat_writers<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+/// stranded. On desktop it also carries the providers configured on this device.
+pub(super) async fn chat_writers(
+    app: &tauri::AppHandle,
     pool: &sqlx::SqlitePool,
 ) -> ChatResult<super::workflow::ChatWriters> {
     let device_id = this_device_id(app)?;
     let linked = active_writer_devices(pool).await?;
-    Ok(super::workflow::ChatWriters::new(
-        std::iter::once(device_id).chain(linked),
-    ))
+    let writers = super::workflow::ChatWriters::new(std::iter::once(device_id).chain(linked));
+    #[cfg(desktop)]
+    let writers = writers.with_providers(super::provider_agents::read_device_providers(app));
+    Ok(writers)
 }
 
 /// The devices with an active sync writer in the vault of `pool` that the authorization log
@@ -994,57 +684,5 @@ pub(super) fn map_command_receipt_error(error: sqlx::Error) -> ChatError {
         )
     } else {
         persistence_error(error)
-    }
-}
-
-#[cfg(all(test, desktop))]
-mod implied_folder_tests {
-    use super::{ImpliedFolderCandidate, implied_working_folder};
-
-    fn grant(working_folder_id: &str, is_default: bool) -> ImpliedFolderCandidate<'_> {
-        ImpliedFolderCandidate {
-            working_folder_id,
-            is_default,
-        }
-    }
-
-    #[test]
-    fn the_default_grant_wins_over_the_project_folder() {
-        let grants = [grant("project", false), grant("docs", true)];
-
-        assert_eq!(
-            implied_working_folder(&grants, Some("project")),
-            Some("docs")
-        );
-    }
-
-    #[test]
-    fn the_granted_project_folder_is_used_without_a_default() {
-        let grants = [grant("docs", false), grant("project", false)];
-
-        assert_eq!(
-            implied_working_folder(&grants, Some("project")),
-            Some("project")
-        );
-    }
-
-    #[test]
-    fn an_ungranted_project_folder_falls_back_to_the_only_grant() {
-        let grants = [grant("docs", false)];
-
-        assert_eq!(
-            implied_working_folder(&grants, Some("project")),
-            Some("docs")
-        );
-        assert_eq!(implied_working_folder(&grants, None), Some("docs"));
-    }
-
-    #[test]
-    fn several_grants_without_a_default_or_project_folder_run_conversation_only() {
-        let grants = [grant("docs", false), grant("site", false)];
-
-        assert_eq!(implied_working_folder(&grants, Some("project")), None);
-        assert_eq!(implied_working_folder(&grants, None), None);
-        assert_eq!(implied_working_folder(&[], Some("project")), None);
     }
 }

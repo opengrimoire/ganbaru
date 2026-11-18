@@ -10,12 +10,13 @@ use super::continuation::{self, CandidateRun, ContinuationKey, TransitionInput};
 use super::delegation;
 use super::inputs::place_delivered_reply;
 use super::instruction_files;
-use super::reads::read_policy;
+use super::provider_agents::{DeviceProviders, read_device_providers};
 use super::{chat_pool, identifier_error, now_timestamp, persistence_error, u64_value};
 use ganbaru_chat::agent_runs::{
     AttemptReason, ContextDelivery, DeliveredSource, DeliveryKind, FullPackage, LaunchSettlement,
     RunAttempt, RunLaunch,
 };
+use ganbaru_chat::coordination::access::{access_ceiling, effective_access_level_sql};
 use ganbaru_chat::coordination::reports::{AnsweredQuestion, read_answered_question};
 use ganbaru_chat::coordination::revocation::PARENT_AUTHORITY_REVOKED_REASON;
 use ganbaru_chat_contracts::models::*;
@@ -47,7 +48,15 @@ async fn claim_and_dispatch(
 ) -> ChatResult<()> {
     let device_id = this_device_id(&app)?;
     let now = now_timestamp()?;
-    let Some(claim) = claim_dispatch_job(pool, assignment_id, &device_id, &now).await? else {
+    let Some(claim) = claim_dispatch_job(
+        pool,
+        assignment_id,
+        &device_id,
+        &read_device_providers(&app),
+        &now,
+    )
+    .await?
+    else {
         return Ok(());
     };
     let mut result = dispatch_claimed_assignment(
@@ -108,8 +117,12 @@ pub(super) struct AssignmentLaunch {
 #[derive(Debug)]
 pub(super) struct ClaimedDispatch {
     pub(super) token: String,
-    /// The agent framing, the context package format, and the agent's instructions.
+    /// The agent framing and the instructions the assignment froze.
     pub(super) instructions: String,
+    /// The model the assignment froze.
+    pub(super) model_selection: ChatModelSelection,
+    /// The provider installation that runs the agent on this device.
+    pub(super) provider_instance_id: ProviderInstanceId,
 }
 
 /// Claims the queued dispatch job of `assignment_id` when the device `device_id` executes the
@@ -123,6 +136,7 @@ pub(super) async fn claim_dispatch_job(
     pool: &SqlitePool,
     assignment_id: &ChatWorkAssignmentId,
     device_id: &str,
+    providers: &DeviceProviders,
     now: &UtcTimestamp,
 ) -> ChatResult<Option<ClaimedDispatch>> {
     let mut transaction = pool
@@ -145,13 +159,17 @@ pub(super) async fn claim_dispatch_job(
     else {
         return Ok(None);
     };
-    let subject = match read_assignment_subject(&mut transaction, assignment_id).await {
+    let subject = match read_assignment_subject(&mut transaction, assignment_id, providers).await {
         Ok(subject) => Some(subject),
         Err(error) if error.code == ChatErrorCode::Persistence => return Err(error),
         Err(_) => None,
     };
-    let Some(subject) =
-        subject.filter(|subject| consented_digest.as_deref() == Some(subject.digest().as_str()))
+    let Some((subject, provider_instance_id)) = subject
+        .filter(|subject| consented_digest.as_deref() == Some(subject.digest().as_str()))
+        .and_then(|subject| {
+            let instance = ProviderInstanceId::new(subject.provider_instance_id()).ok()?;
+            Some((subject, instance))
+        })
     else {
         sqlx::query("DELETE FROM chat_assignment_dispatch_jobs WHERE assignment_id = ?")
             .bind(assignment_id.as_str())
@@ -197,9 +215,10 @@ pub(super) async fn claim_dispatch_job(
         token: claim_token,
         instructions: continuation::compose_system_instructions(
             &subject.display_name,
-            &subject.role,
             &subject.instructions,
         ),
+        model_selection: subject.model_selection,
+        provider_instance_id,
     }))
 }
 
@@ -409,10 +428,6 @@ async fn dispatch_claimed_assignment(
             .map_err(persistence_error)?,
     )
     .map_err(identifier_error)?;
-    let policy_revision_id: String = row
-        .try_get("agent_policy_revision_id")
-        .map_err(persistence_error)?;
-    let policy = read_policy(pool, &agent_id, &policy_revision_id).await?;
     let frozen_runtime_approval: String = row
         .try_get("resolved_runtime_approval_policy")
         .map_err(persistence_error)?;
@@ -502,24 +517,37 @@ async fn dispatch_claimed_assignment(
     .fetch_one(pool)
     .await
     .map_err(persistence_error)?;
+    let catalog = crate::chat::device_state::read_active_device_scope(&app)
+        .ok()
+        .and_then(|scope| {
+            scope
+                .provider_instances
+                .get(&claim.provider_instance_id)
+                .and_then(|device| device.model_catalog.clone())
+        });
+    let model = dispatch_model(&claim.model_selection, catalog.as_ref());
     // Instruction files join before the key is computed, so a changed file starts a fresh
-    // native session that receives it.
-    let instructions = instruction_files::with_instruction_files(
-        &app,
-        pool,
-        &policy.provider_instance_id,
-        working_folder_id.as_ref(),
-        execution_environment_id.as_deref(),
-        &claim.instructions,
-    )
-    .await;
+    // native session that receives it. Talk work reads no files, so it joins none.
+    let instructions = if has_native_target {
+        instruction_files::with_instruction_files(
+            &app,
+            pool,
+            &claim.provider_instance_id,
+            working_folder_id.as_ref(),
+            execution_environment_id.as_deref(),
+            &claim.instructions,
+        )
+        .await
+    } else {
+        claim.instructions.clone()
+    };
     let key = ContinuationKey {
         authorization_scope_digest: authorization_scope_digest.clone(),
-        provider_instance_id: policy.provider_instance_id.as_str().to_string(),
+        provider_instance_id: claim.provider_instance_id.as_str().to_string(),
         model_selection_sha256: continuation::model_selection_sha256(
-            policy.provider_managed_model,
-            policy.model_id.as_ref(),
-            &policy.model_options,
+            model.selection.provider_managed_model,
+            model.selection.model_id.as_ref(),
+            &model.selection.model_options,
         )?,
         instructions_sha256: continuation::instructions_sha256(&instructions),
     };
@@ -672,15 +700,11 @@ async fn dispatch_claimed_assignment(
         scratch_generation_id: scratch_generation_id.clone(),
         turn_id: ChatTurnId::new(new_id("provider-turn")?).map_err(identifier_error)?,
         message_id: ChatMessageId::new(new_id("provider-message")?).map_err(identifier_error)?,
-        provider_instance_id: policy.provider_instance_id,
-        provider_managed_model: policy.provider_managed_model,
-        model_id: policy.model_id,
-        model_options: policy.model_options,
-        modes: assignment_turn_modes(
-            policy.safety_mode,
-            resolved_runtime_approval,
-            has_native_target,
-        ),
+        provider_instance_id: claim.provider_instance_id.clone(),
+        provider_managed_model: model.selection.provider_managed_model,
+        model_id: model.selection.model_id,
+        model_options: model.selection.model_options,
+        modes: assignment_turn_modes(resolved_runtime_approval, has_native_target),
         prompt: delivery.prompt,
         attachment_ids,
         mentions,
@@ -697,6 +721,7 @@ async fn dispatch_claimed_assignment(
             delivered_sources: delivery.delivered_sources,
         },
         full_prompt_on_fresh_session: delivery.full_prompt_on_fresh_session,
+        model_label: Some(model.label),
     };
     let run_id = ChatAgentRunId::new(new_id("agent-run")?).map_err(identifier_error)?;
     let sent = super::super::turns::send_turn(
@@ -710,7 +735,6 @@ async fn dispatch_claimed_assignment(
                     run_id: run_id.clone(),
                     assignment_id: assignment_id.clone(),
                     project_id,
-                    agent_policy_revision_id: policy.id,
                     authorization_revision_id,
                     authorization_scope_digest,
                     working_folder_id: working_folder_id
@@ -749,7 +773,6 @@ pub(super) async fn read_dispatch_row(
             context.id AS context_package_id,
             context.serialized_text,
             authorization.id AS authorization_revision_id,
-            authorization.agent_policy_revision_id,
             authorization.requester_participant_id,
             authorization.destination_conversation_id,
             authorization.working_folder_id,
@@ -773,8 +796,6 @@ pub(super) async fn read_dispatch_row(
             FROM chat_assignment_authorization_revisions candidate
             WHERE candidate.assignment_id = assignment.id
           )
-         JOIN chat_agent_policy_revisions policy
-           ON policy.id = authorization.agent_policy_revision_id
          JOIN chat_agents agent ON agent.participant_id = assignment.agent_id
          JOIN chat_participants participant ON participant.id = assignment.agent_id
          JOIN chat_channels channel
@@ -794,8 +815,7 @@ pub(super) async fn read_dispatch_row(
           AND channel_access.removed_at IS NULL
          JOIN chat_assignment_dispatch_jobs job ON job.assignment_id = assignment.id
          WHERE assignment.id = ?
-           AND (authorization.execution_environment_id IS NULL OR environment.id IS NOT NULL)
-           AND channel_access.participate = 1",
+           AND (authorization.execution_environment_id IS NULL OR environment.id IS NOT NULL)",
     )
     .bind(assignment_id.as_str())
     .fetch_optional(pool)
@@ -1078,6 +1098,9 @@ fn stored_candidate(row: &sqlx::sqlite::SqliteRow) -> ChatResult<StoredCandidate
     })
 }
 
+/// Requires the execution folder `working_folder_id` the authorization froze to still be
+/// covered: the agent is still in the channel, the folder is still one of the channel's project
+/// folders, and the channel's effective access still allows the frozen capability.
 async fn require_live_folder_target(
     pool: &SqlitePool,
     authorization_revision_id: &str,
@@ -1085,39 +1108,42 @@ async fn require_live_folder_target(
     agent_id: &str,
     working_folder_id: &str,
 ) -> ChatResult<()> {
-    let valid: bool = sqlx::query_scalar(
-        "SELECT EXISTS(
-           SELECT 1
-           FROM chat_assignment_authorized_folder_sources frozen
-           JOIN chat_agent_working_folder_grants live
-             ON live.conversation_id = ?
-            AND live.agent_id = ?
-            AND live.working_folder_id = frozen.working_folder_id
-            AND live.revoked_at IS NULL
-           JOIN chat_agent_channel_memberships channel_access
-             ON channel_access.conversation_id = live.conversation_id
-            AND channel_access.agent_id = live.agent_id
-            AND channel_access.removed_at IS NULL
-           WHERE frozen.authorization_revision_id = ?
-             AND frozen.working_folder_id = ?
-             AND frozen.is_execution_target = 1
-             AND CASE frozen.capability
-                   WHEN 'read' THEN 1 WHEN 'edit' THEN 2
-                   WHEN 'execute' THEN 3 WHEN 'publish' THEN 4 ELSE 5
-                 END <= CASE live.capability
-                   WHEN 'none' THEN 0 WHEN 'read' THEN 1 WHEN 'edit' THEN 2
-                   WHEN 'execute' THEN 3 WHEN 'publish' THEN 4 ELSE 0
-                 END
-         )",
-    )
+    let row: Option<(String, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT frozen.capability, {} AS access_level
+         FROM chat_assignment_authorized_folder_sources frozen
+         JOIN chat_conversations conversation ON conversation.id = ?
+         JOIN project_working_folders folder
+           ON folder.id = frozen.working_folder_id
+          AND folder.project_id = conversation.project_id
+          AND folder.archived_at IS NULL
+         JOIN chat_agent_channel_memberships channel_access
+           ON channel_access.conversation_id = conversation.id
+          AND channel_access.agent_id = ?
+          AND channel_access.removed_at IS NULL
+         WHERE frozen.authorization_revision_id = ?
+           AND frozen.working_folder_id = ?
+           AND frozen.is_execution_target = 1",
+        effective_access_level_sql("conversation.id"),
+    )))
     .bind(destination_conversation_id)
     .bind(agent_id)
     .bind(authorization_revision_id)
     .bind(working_folder_id)
-    .fetch_one(pool)
+    .fetch_optional(pool)
     .await
     .map_err(persistence_error)?;
-    if valid {
+    let covered = row.is_some_and(|(capability, level)| {
+        match (
+            ChatFolderCapability::parse(&capability),
+            ChatAgentAccess::parse(&level),
+        ) {
+            (Some(capability), Some(level)) => {
+                capability.rank() <= access_ceiling(level).folder_capability.rank()
+            }
+            _ => false,
+        }
+    });
+    if covered {
         Ok(())
     } else {
         Err(ChatError::new(
@@ -1311,7 +1337,6 @@ async fn prepare_assignment_input(
          WHERE run.assignment_id = ? AND input.message_item_id = ?
            AND run.state = 'working' AND input.delivery_state = 'pending' AND input.held = 0
            AND input.routing_kind = 'steer'
-           AND channel_access.participate = 1
          ORDER BY run.run_ordinal DESC LIMIT 1",
     )
     .bind(assignment_id.as_str())
@@ -1449,22 +1474,63 @@ pub(super) async fn deliver_assignment_input(
     record_assignment_input_delivered(&pool, &assignment_id, &message_item_id, &prepared).await
 }
 
-/// Chooses the turn modes for an organizational assignment. Native targets run
-/// with the frozen effective runtime approval, which is never broader than the
-/// agent's own approval behavior; targetless assignments stay conversational.
+/// The model a dispatch runs and the label its assignment shows.
+#[derive(Debug, PartialEq)]
+struct DispatchModel {
+    selection: ChatModelSelection,
+    label: String,
+}
+
+/// Label of a run on the model the provider chooses.
+const PROVIDER_DEFAULT_LABEL: &str = "Provider default";
+
+/// Chooses the model a dispatch runs from the `frozen` selection of its assignment and the
+/// `catalog` this device last discovered for the provider. A named model the catalog does not
+/// offer runs on the provider default instead, and the label says so; without a catalog the
+/// named model runs as frozen, since the provider is the only authority on what it offers.
+fn dispatch_model(
+    frozen: &ChatModelSelection,
+    catalog: Option<&ProviderModelCatalog>,
+) -> DispatchModel {
+    let Some(model_id) = frozen.model_id.as_ref() else {
+        return DispatchModel {
+            selection: frozen.clone(),
+            label: PROVIDER_DEFAULT_LABEL.to_string(),
+        };
+    };
+    let Some(catalog) = catalog else {
+        return DispatchModel {
+            selection: frozen.clone(),
+            label: model_id.as_str().to_string(),
+        };
+    };
+    match catalog.models.iter().find(|model| &model.id == model_id) {
+        Some(model) => DispatchModel {
+            selection: frozen.clone(),
+            label: model.display_name.clone(),
+        },
+        None => DispatchModel {
+            selection: ChatModelSelection::provider_default(),
+            label: format!(
+                "{PROVIDER_DEFAULT_LABEL}, {} is not available",
+                model_id.as_str()
+            ),
+        },
+    }
+}
+
+/// Chooses the turn modes for an organizational assignment. Native targets run with the frozen
+/// runtime approval its channel access resolved to; work without a target stays conversational.
 fn assignment_turn_modes(
-    agent_approval: ChatApprovalPolicy,
     resolved_runtime_approval: ChatRuntimeApprovalPolicy,
     has_native_target: bool,
 ) -> TurnModeSnapshot {
-    if has_native_target {
-        return TurnModeSnapshot {
-            safety_mode: native_assignment_safety_mode(agent_approval, resolved_runtime_approval),
-            interaction_mode: InteractionMode::Build,
-        };
-    }
     TurnModeSnapshot {
-        safety_mode: SafetyMode::AskForApproval,
+        safety_mode: if has_native_target {
+            native_assignment_safety_mode(resolved_runtime_approval)
+        } else {
+            SafetyMode::AskForApproval
+        },
         interaction_mode: InteractionMode::Build,
     }
 }
@@ -1472,70 +1538,102 @@ fn assignment_turn_modes(
 #[cfg(test)]
 mod tests {
     use super::{
-        ChatApprovalPolicy, ChatRuntimeApprovalPolicy, InteractionMode, SafetyMode,
-        assignment_turn_modes,
+        ChatModelSelection, ChatRuntimeApprovalPolicy, DispatchModel, InteractionMode,
+        ModelAvailability, ModelCatalogSource, ModelId, PROVIDER_DEFAULT_LABEL, ProviderInstanceId,
+        ProviderModel, ProviderModelCatalog, SafetyMode, UtcTimestamp, assignment_turn_modes,
+        dispatch_model,
     };
 
     #[test]
     fn targetless_assignments_use_a_narrow_conversation_mode() {
-        let modes = assignment_turn_modes(
-            ChatApprovalPolicy::FullAccess,
-            ChatRuntimeApprovalPolicy::Unattended,
-            false,
-        );
+        let modes = assignment_turn_modes(ChatRuntimeApprovalPolicy::AutoApprove, false);
         assert_eq!(modes.safety_mode, SafetyMode::AskForApproval);
         assert_eq!(modes.interaction_mode, InteractionMode::Build);
     }
 
     #[test]
-    fn native_assignments_run_with_the_frozen_effective_approval() {
-        let cases = [
+    fn native_assignments_run_with_the_frozen_runtime_approval() {
+        for (resolved, expected) in [
+            (ChatRuntimeApprovalPolicy::Ask, SafetyMode::AskForApproval),
             (
-                ChatApprovalPolicy::FullAccess,
-                ChatRuntimeApprovalPolicy::Unattended,
-                SafetyMode::FullAccess,
-            ),
-            (
-                ChatApprovalPolicy::FullAccess,
                 ChatRuntimeApprovalPolicy::AutoApprove,
                 SafetyMode::ApproveForMe,
             ),
-            (
-                ChatApprovalPolicy::FullAccess,
-                ChatRuntimeApprovalPolicy::Ask,
-                SafetyMode::AskForApproval,
-            ),
-            (
-                ChatApprovalPolicy::ApproveForMe,
-                ChatRuntimeApprovalPolicy::AutoApprove,
-                SafetyMode::ApproveForMe,
-            ),
-            (
-                ChatApprovalPolicy::AskForApproval,
-                ChatRuntimeApprovalPolicy::Ask,
-                SafetyMode::AskForApproval,
-            ),
-            (
-                ChatApprovalPolicy::AskForApproval,
-                ChatRuntimeApprovalPolicy::ProviderCustom,
-                SafetyMode::AskForApproval,
-            ),
-            (
-                ChatApprovalPolicy::Custom,
-                ChatRuntimeApprovalPolicy::ProviderCustom,
-                SafetyMode::Custom,
-            ),
-            (
-                ChatApprovalPolicy::Custom,
-                ChatRuntimeApprovalPolicy::Ask,
-                SafetyMode::Custom,
-            ),
-        ];
-        for (agent, resolved, expected) in cases {
-            let modes = assignment_turn_modes(agent, resolved, true);
-            assert_eq!(modes.safety_mode, expected, "{agent:?} with {resolved:?}");
+        ] {
+            let modes = assignment_turn_modes(resolved, true);
+            assert_eq!(modes.safety_mode, expected, "{resolved:?}");
             assert_eq!(modes.interaction_mode, InteractionMode::Build);
         }
+    }
+
+    fn named(model: &str) -> ChatModelSelection {
+        ChatModelSelection {
+            provider_managed_model: false,
+            model_id: Some(ModelId::new(model).unwrap()),
+            model_options: Vec::new(),
+        }
+    }
+
+    fn catalog(models: &[(&str, &str)]) -> ProviderModelCatalog {
+        ProviderModelCatalog {
+            instance_id: ProviderInstanceId::new("codex").unwrap(),
+            models: models
+                .iter()
+                .map(|(id, display_name)| ProviderModel {
+                    id: ModelId::new(*id).unwrap(),
+                    display_name: (*display_name).to_string(),
+                    description: None,
+                    context_limit: None,
+                    availability: ModelAvailability::Available,
+                    capabilities: Vec::new(),
+                    options: Vec::new(),
+                    custom: false,
+                })
+                .collect(),
+            source: ModelCatalogSource::Provider,
+            discovered_at: UtcTimestamp::new("2026-11-18T00:00:00.000Z").unwrap(),
+            stale: false,
+        }
+    }
+
+    #[test]
+    fn a_model_the_catalog_offers_runs_under_its_display_name() {
+        let catalog = catalog(&[("gpt-5", "GPT-5")]);
+        assert_eq!(
+            dispatch_model(&named("gpt-5"), Some(&catalog)),
+            DispatchModel {
+                selection: named("gpt-5"),
+                label: "GPT-5".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn an_unknown_model_falls_back_to_the_provider_default_and_says_so() {
+        let catalog = catalog(&[("gpt-5", "GPT-5")]);
+        let model = dispatch_model(&named("gpt-9"), Some(&catalog));
+        assert_eq!(model.selection, ChatModelSelection::provider_default());
+        assert!(model.label.starts_with(PROVIDER_DEFAULT_LABEL));
+        assert!(model.label.contains("gpt-9"));
+    }
+
+    #[test]
+    fn without_a_catalog_the_named_model_runs_as_frozen() {
+        assert_eq!(
+            dispatch_model(&named("gpt-9"), None),
+            DispatchModel {
+                selection: named("gpt-9"),
+                label: "gpt-9".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn the_provider_default_keeps_its_selection() {
+        let default = ChatModelSelection::provider_default();
+        let model = dispatch_model(&default, Some(&catalog(&[])));
+        assert_eq!(model.selection, default);
+        assert_eq!(model.label, PROVIDER_DEFAULT_LABEL);
     }
 
     /// Which earlier run a later assignment of the fixture's reply thread could continue.
@@ -1822,7 +1920,6 @@ mod tests {
                 run_id: ChatAgentRunId::new("run:working").unwrap(),
                 assignment_id: assignment(),
                 project_id: "project-chat".to_string(),
-                agent_policy_revision_id: ChatAgentPolicyRevisionId::new("policy:folders").unwrap(),
                 authorization_revision_id: ChatAuthorizationRevisionId::new(
                     "authorization:working",
                 )
@@ -1859,6 +1956,7 @@ mod tests {
                     ],
                 },
                 full_prompt_on_fresh_session: None,
+                model_label: None,
             }
         }
 

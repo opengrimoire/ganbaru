@@ -16,11 +16,10 @@ use ganbaru_chat::repository::events::AppendCanonicalEventRequest;
 use ganbaru_chat::runtime::ThreadRuntimeOwner;
 use ganbaru_chat_contracts::events::{CanonicalEvent, CanonicalRuntimeEvent, ChangedFileSummary};
 use ganbaru_chat_contracts::models::{
-    ChatAgentPolicyRevisionId, ChatAgentRunId, ChatAuthorizationRevisionId, ChatError,
-    ChatErrorCode, ChatResult, ChatThreadId, ChatTurnId, ChatWorkAssignmentId, ContinuationGroupId,
-    ProviderInstanceConfig, ProviderInternalMcpConfig, ProviderOrganizationalScope,
-    ProviderSessionSnapshot, ProviderSessionState, ResumeSessionRequest, StartSessionRequest,
-    VerifiedWorkspaceContext,
+    ChatAgentRunId, ChatAuthorizationRevisionId, ChatError, ChatErrorCode, ChatResult,
+    ChatThreadId, ChatTurnId, ChatWorkAssignmentId, ContinuationGroupId, ProviderInstanceConfig,
+    ProviderInternalMcpConfig, ProviderOrganizationalScope, ProviderSessionSnapshot,
+    ProviderSessionState, ResumeSessionRequest, StartSessionRequest, VerifiedWorkspaceContext,
 };
 use ganbaru_chat_providers::{
     DriverFuture, ProviderDriver, ProviderDriverFactory, ProviderDriverRegistry, ProviderEventSink,
@@ -693,8 +692,7 @@ pub(super) async fn require_live_authorization(
     let active = sqlx::query(
         "SELECT run.id, run.assignment_id, run.project_id, run.working_folder_id,
                 run.execution_environment_id, run.scratch_generation_id,
-                run.agent_policy_revision_id, run.authorization_revision_id,
-                run.authorization_scope_digest, run.run_ordinal
+                run.authorization_revision_id, run.authorization_scope_digest, run.run_ordinal
          FROM chat_agent_runs run
          JOIN chat_assignment_authorization_revisions authorization
            ON authorization.id = run.authorization_revision_id
@@ -715,7 +713,6 @@ pub(super) async fn require_live_authorization(
            AND run.state IN ('starting', 'working', 'waiting')
            AND authorization.decision_state = 'allowed'
            AND authorization.revoked_at IS NULL
-           AND channel_access.participate = 1
          ORDER BY run.created_at DESC, run.id DESC
          LIMIT 1",
     )
@@ -742,12 +739,6 @@ pub(super) async fn require_live_authorization(
         project_id: active
             .try_get("project_id")
             .map_err(|_| live_authorization_error())?,
-        agent_policy_revision_id: ChatAgentPolicyRevisionId::new(
-            active
-                .try_get::<String, _>("agent_policy_revision_id")
-                .map_err(|_| live_authorization_error())?,
-        )
-        .map_err(|_| live_authorization_error())?,
         authorization_revision_id: ChatAuthorizationRevisionId::new(
             active
                 .try_get::<String, _>("authorization_revision_id")

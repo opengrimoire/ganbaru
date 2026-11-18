@@ -158,14 +158,12 @@ pub(super) fn decide_session_transition(input: &TransitionInput<'_>) -> SessionD
 
 /// Placeholder in `AGENT_FRAMING_TEMPLATE` for the agent's display name.
 const NAME_PLACEHOLDER: &str = "{display_name}";
-/// Placeholder in `AGENT_FRAMING_TEMPLATE` for the agent's role.
-const ROLE_PLACEHOLDER: &str = "{role}";
 
 /// Tells the session who it is and where its reply goes. The context package format follows
-/// it, then the agent's own instructions.
+/// it, then the instructions the assignment froze.
 const AGENT_FRAMING_TEMPLATE: &str = "You are {display_name}, an AI agent in a Ganbaru \
-channel, with this role: {role}. Your reply is posted in the reply thread that assigned the \
-work, so report your results there.";
+channel. Your reply is posted in the reply thread that assigned the work, so report your \
+results there.";
 
 /// Largest framing template, in UTF-8 bytes, with its placeholders unfilled.
 pub(super) const MAX_AGENT_FRAMING_BYTES: usize = 1536;
@@ -174,27 +172,22 @@ pub(super) const MAX_AGENT_FRAMING_BYTES: usize = 1536;
 /// bytes each, the stored bound on the trimmed name.
 const MAX_FRAMED_NAME_BYTES: usize = 160 * 4;
 
-/// Largest role, in UTF-8 bytes, the framing carries. A longer role is cut on a character
-/// boundary and marked, so the framing stays within its reserve.
-const MAX_FRAMED_ROLE_BYTES: usize = 1536;
-
 /// Separates the framing, the context package format, and the agent's instructions.
 const INSTRUCTIONS_SEPARATOR: &str = "\n\n";
 
-/// Room in the provider developer instruction cap kept for everything dispatch puts before a
-/// agent's instructions. It is fixed rather than measured so the agent limit, which the
-/// settings editor mirrors, stays put when the framing grows.
+/// Room in the provider developer instruction cap kept for everything dispatch puts before
+/// the frozen instructions.
 pub(super) const INSTRUCTIONS_FRAMING_RESERVE_BYTES: usize = 4 * 1024;
 
-/// Largest agent instructions, in UTF-8 bytes, that still fit the provider developer
-/// instruction cap once dispatch adds the framing and the context package format.
+/// Largest frozen instructions, in UTF-8 bytes, a run carries so they still fit the provider
+/// developer instruction cap once dispatch adds the framing and the context package format.
+/// Longer instructions are cut on a character boundary and marked.
 pub(super) const MAX_AGENT_INSTRUCTIONS_BYTES: usize =
     MAX_DEVELOPER_INSTRUCTIONS_BYTES - INSTRUCTIONS_FRAMING_RESERVE_BYTES;
 
-/// Largest framing and format text dispatch puts before an agent's instructions.
+/// Largest framing and format text dispatch puts before the frozen instructions.
 const MAX_FRAMING_BYTES: usize = AGENT_FRAMING_TEMPLATE.len()
     + MAX_FRAMED_NAME_BYTES
-    + MAX_FRAMED_ROLE_BYTES
     + INSTRUCTIONS_SEPARATOR.len()
     + super::context::CONTEXT_PACKAGE_FORMAT_INSTRUCTIONS.len()
     + INSTRUCTIONS_SEPARATOR.len();
@@ -217,44 +210,25 @@ fn bounded(value: &str, maximum: usize) -> String {
     format!("{kept}{SHORTENED_MARKER}")
 }
 
-/// Fills the framing template in one pass with the trimmed name and role, so a name or role
-/// that contains a placeholder is never filled again.
-fn agent_framing(display_name: &str, role: &str) -> String {
+/// Fills the framing template in one pass with the trimmed name, so a name that contains the
+/// placeholder is never filled again.
+fn agent_framing(display_name: &str) -> String {
     let display_name = bounded(display_name.trim(), MAX_FRAMED_NAME_BYTES);
-    let role = bounded(role.trim(), MAX_FRAMED_ROLE_BYTES);
-    let mut framing =
-        String::with_capacity(AGENT_FRAMING_TEMPLATE.len() + display_name.len() + role.len());
-    let mut rest = AGENT_FRAMING_TEMPLATE;
-    while let Some(start) = rest.find('{') {
-        framing.push_str(&rest[..start]);
-        let placeholder = &rest[start..];
-        if let Some(after) = placeholder.strip_prefix(NAME_PLACEHOLDER) {
-            framing.push_str(&display_name);
-            rest = after;
-        } else if let Some(after) = placeholder.strip_prefix(ROLE_PLACEHOLDER) {
-            framing.push_str(&role);
-            rest = after;
-        } else {
-            framing.push('{');
-            rest = &placeholder[1..];
-        }
+    match AGENT_FRAMING_TEMPLATE.split_once(NAME_PLACEHOLDER) {
+        Some((before, after)) => format!("{before}{display_name}{after}"),
+        None => AGENT_FRAMING_TEMPLATE.to_string(),
     }
-    framing.push_str(rest);
-    framing
 }
 
 /// Composes the system-level instructions of an assignment run: the agent framing, then the
-/// context package format, then the agent's own instructions when it has any.
-pub(super) fn compose_system_instructions(
-    display_name: &str,
-    role: &str,
-    instructions: &str,
-) -> String {
-    let framing = agent_framing(display_name, role);
+/// context package format, then the instructions the assignment froze when it has any.
+pub(super) fn compose_system_instructions(display_name: &str, instructions: &str) -> String {
+    let framing = agent_framing(display_name);
     let format = super::context::CONTEXT_PACKAGE_FORMAT_INSTRUCTIONS;
     if instructions.trim().is_empty() {
         format!("{framing}{INSTRUCTIONS_SEPARATOR}{format}")
     } else {
+        let instructions = bounded(instructions, MAX_AGENT_INSTRUCTIONS_BYTES);
         format!("{framing}{INSTRUCTIONS_SEPARATOR}{format}{INSTRUCTIONS_SEPARATOR}{instructions}")
     }
 }
@@ -725,97 +699,57 @@ mod tests {
     #[test]
     fn instructions_put_framing_and_format_before_the_agent_instructions() {
         let format = super::super::context::CONTEXT_PACKAGE_FORMAT_INSTRUCTIONS;
-        let framing = agent_framing("Reviewer", "Reviews pull requests");
-        assert!(framing.contains("You are Reviewer,"));
-        assert!(framing.contains("with this role: Reviews pull requests."));
+        let framing = agent_framing("Codex");
+        assert!(framing.starts_with("You are Codex, an AI agent"));
         assert_eq!(
-            compose_system_instructions("Reviewer", "Reviews pull requests", "  \n"),
+            compose_system_instructions("Codex", "  \n"),
             format!("{framing}\n\n{format}")
         );
         assert_eq!(
-            compose_system_instructions("Reviewer", "Reviews pull requests", "Be brief."),
+            compose_system_instructions("Codex", "Be brief."),
             format!("{framing}\n\n{format}\n\nBe brief.")
         );
     }
 
     #[test]
-    fn a_name_or_role_holding_a_placeholder_is_not_filled_again() {
-        let framing = agent_framing("{role}", "{display_name}");
-        assert!(framing.starts_with("You are {role}, "));
-        assert!(framing.contains("with this role: {display_name}."));
+    fn a_name_holding_the_placeholder_is_not_filled_again() {
+        let framing = agent_framing("{display_name}");
+        assert!(framing.starts_with("You are {display_name}, "));
+        assert_eq!(framing.matches("{display_name}").count(), 1);
     }
 
     #[test]
     fn a_framing_change_changes_the_instructions_digest() {
-        let original = compose_system_instructions("Reviewer", "Reviews", "Be brief.");
+        let original = compose_system_instructions("Codex", "Be brief.");
         assert_ne!(
             instructions_sha256(&original),
-            instructions_sha256(&compose_system_instructions(
-                "Editor",
-                "Reviews",
-                "Be brief."
-            ))
+            instructions_sha256(&compose_system_instructions("Claude", "Be brief."))
         );
         assert_ne!(
             instructions_sha256(&original),
-            instructions_sha256(&compose_system_instructions(
-                "Reviewer",
-                "Edits",
-                "Be brief."
-            ))
-        );
-        assert_ne!(
-            instructions_sha256(&original),
-            instructions_sha256(&compose_system_instructions(
-                "Reviewer", "Reviews", "Be kind."
-            ))
+            instructions_sha256(&compose_system_instructions("Codex", "Be kind."))
         );
     }
 
     #[test]
-    fn the_longest_valid_agent_instructions_fit_the_provider_cap_after_framing() {
-        use super::super::common::validate_profile_text;
-        let ascii = "a".repeat(MAX_AGENT_INSTRUCTIONS_BYTES);
-        let multibyte = "é".repeat(MAX_AGENT_INSTRUCTIONS_BYTES / 'é'.len_utf8());
-        for instructions in [&ascii, &multibyte] {
-            validate_profile_text(instructions, MAX_AGENT_INSTRUCTIONS_BYTES, "instructions")
-                .unwrap();
-            assert!(
-                compose_system_instructions("Reviewer", "Reviews", instructions).len()
-                    <= MAX_DEVELOPER_INSTRUCTIONS_BYTES
-            );
-        }
-        let over = format!("{multibyte}é");
-        let refused = validate_profile_text(&over, MAX_AGENT_INSTRUCTIONS_BYTES, "instructions")
-            .expect_err("one character over the byte bound is refused");
-        assert_eq!(refused.code, ChatErrorCode::Validation);
-    }
-
-    #[test]
-    fn the_settings_editor_mirrors_the_agent_instruction_bound() {
-        let editor = include_str!("../../../../../src/lib/chat/agents/draft.ts");
-        let mirrored = editor
-            .lines()
-            .find_map(|line| line.strip_prefix("export const AGENT_INSTRUCTIONS_MAX_BYTES = "))
-            .and_then(|value| value.strip_suffix(';'))
-            .map(|value| value.replace('_', ""))
-            .and_then(|value| value.parse::<usize>().ok());
-        assert_eq!(mirrored, Some(MAX_AGENT_INSTRUCTIONS_BYTES));
-    }
-
-    #[test]
-    fn the_longest_name_and_role_fit_the_framing_reserve() {
+    fn the_longest_frozen_instructions_fit_the_provider_cap_after_framing() {
         let name = "\u{1F600}".repeat(160);
-        let role = "\u{1F600}".repeat(1_000);
-        let agent = "a".repeat(MAX_AGENT_INSTRUCTIONS_BYTES);
-        let composed = compose_system_instructions(&name, &role, &agent);
+        let fitting = "a".repeat(MAX_AGENT_INSTRUCTIONS_BYTES);
+        let composed = compose_system_instructions(&name, &fitting);
         assert!(composed.len() <= MAX_DEVELOPER_INSTRUCTIONS_BYTES);
-        assert!(composed.len() - agent.len() <= INSTRUCTIONS_FRAMING_RESERVE_BYTES);
-        let framing = agent_framing(&name, &role);
-        assert!(framing.contains(&name), "a valid name is never cut");
-        assert!(framing.contains(SHORTENED_MARKER.trim_start()));
-        let short_role = "\u{1F600}".repeat(MAX_FRAMED_ROLE_BYTES / 4);
-        assert!(!agent_framing(&name, &short_role).contains(SHORTENED_MARKER.trim_start()));
+        assert!(
+            composed.ends_with(&fitting),
+            "fitting instructions are never cut"
+        );
+        // Three scopes of 16384 four-byte characters each exceed the cap and are cut.
+        let longest = "\u{1F600}".repeat(3 * 16_384);
+        let composed = compose_system_instructions(&name, &longest);
+        assert!(composed.len() <= MAX_DEVELOPER_INSTRUCTIONS_BYTES);
+        assert!(composed.ends_with(SHORTENED_MARKER));
+        assert!(
+            agent_framing(&name).contains(&name),
+            "a valid name is never cut"
+        );
     }
 
     /// Delta selection over packed test packages and over a stored package.
@@ -1219,12 +1153,11 @@ mod tests {
                          '2026-10-20T12:30:00.000Z', '2026-10-20T12:30:00.000Z');
                  INSERT INTO chat_agent_runs
                     (id, assignment_id, project_id, working_folder_id, execution_environment_id,
-                     agent_policy_revision_id, authorization_revision_id,
+                     authorization_revision_id,
                      authorization_scope_digest, provider_turn_id, provider_thread_id, state,
                      run_ordinal, attempt_reason, handoff_reason, created_at, updated_at)
                  SELECT 'run:later', assignment_id, project_id, working_folder_id,
-                        execution_environment_id, agent_policy_revision_id,
-                        authorization_revision_id, authorization_scope_digest, 'turn:later',
+                        execution_environment_id, authorization_revision_id, authorization_scope_digest, 'turn:later',
                         provider_thread_id, 'working', 3, 'handoff', 'native_session_lost',
                         '2026-10-20T12:30:00.000Z', '2026-10-20T12:30:00.000Z'
                  FROM chat_agent_runs WHERE id = 'run:working';

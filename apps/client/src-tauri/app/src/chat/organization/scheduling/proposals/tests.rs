@@ -56,8 +56,8 @@ async fn seed_proposal(pool: &SqlitePool, agent_name: &str) -> ChatConversationI
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
          VALUES ('{AGENT}', 'ai_agent', '{agent_name}', '{NOW}', '{NOW}');
-         INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
-         VALUES ('{AGENT}', 'Helper', '{NOW}', '{NOW}');
+         INSERT INTO chat_agents (participant_id, provider_family_id, created_at, updated_at)
+         VALUES ('{AGENT}', 'codex', '{NOW}', '{NOW}');
          INSERT INTO chat_conversation_items (id, conversation_id, item_kind, order_key, created_at)
          VALUES ('item:root', '{conversation}', 'message', 'c000', '{NOW}');
          INSERT INTO chat_communication_messages (item_id, author_participant_id, created_at)
@@ -66,15 +66,16 @@ async fn seed_proposal(pool: &SqlitePool, agent_name: &str) -> ChatConversationI
             (id, conversation_id, root_item_id, last_activity_at, created_at, updated_at)
          VALUES ('{THREAD}', '{conversation}', 'item:root', '{NOW}', '{NOW}', '{NOW}');
          INSERT INTO chat_work_assignments
-            (id, reply_thread_id, agent_id, triggering_message_item_id, state,
+            (id, reply_thread_id, agent_id, triggering_message_item_id,
+                 model_selection_schema_version, model_selection_data, state,
              created_at, updated_at)
-         VALUES ('{ASSIGNMENT}', '{THREAD}', '{AGENT}', 'item:root', 'working', '{NOW}', '{NOW}');
+         VALUES ('{ASSIGNMENT}', '{THREAD}', '{AGENT}', 'item:root', 1, json_object('providerManagedModel', json('true')), 'working', '{NOW}', '{NOW}');
          UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
          INSERT INTO chat_agent_runs
-            (id, assignment_id, project_id, agent_policy_revision_id,
+            (id, assignment_id, project_id,
              authorization_revision_id, authorization_scope_digest, provider_turn_id,
              provider_thread_id, state, run_ordinal, created_at, updated_at)
-         VALUES ('{RUN}', '{ASSIGNMENT}', '{PROJECT_ID}', 'policy:proposals',
+         VALUES ('{RUN}', '{ASSIGNMENT}', '{PROJECT_ID}',
                  'authorization:proposals', '{digest}', 'turn:proposals', 'thread:proposals',
                  'working', 1, '{NOW}', '{NOW}');
          UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1;"

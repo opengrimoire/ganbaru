@@ -1,16 +1,13 @@
 //! Frozen assignment context and authorization snapshots.
 
 use super::super::internal_mcp::generate_opaque_handle;
-use super::common::{
-    AgentHistoryAccess, ImpliedFolderCandidate, MAX_MESSAGE_BYTES, agent_runtime_approval,
-    effective_runtime_approval as narrower_runtime_approval, implied_working_folder, new_id,
-    parse_approval_policy, parse_runtime_approval_policy, sha256_hex, truncate_utf8,
-    wire_runtime_approval_policy,
-};
+use super::access::{ChannelAgentAccess, read_reached_folders, require_working_agent_access};
+use super::common::{MAX_MESSAGE_BYTES, new_id, sha256_hex, truncate_utf8};
 use super::delegation::{
     DelegationBound, DelegationCeiling, cancel_for_revoked_parent, clamp_approval,
     read_delegation_bound,
 };
+use super::provider_agents::DeviceProviders;
 use super::{
     MAX_CHANNEL_CONTEXT_MESSAGES, MAX_THREAD_CONTEXT_REPLIES, i64_value, identifier_error,
     persistence_error, u64_value,
@@ -23,15 +20,29 @@ use ganbaru_chat::project_defaults::{
 use ganbaru_chat_contracts::models::*;
 use sqlx::{Row, Sqlite, Transaction};
 
+/// The assignment whose context a freeze packs, with the thread, trigger, and agent it was
+/// created for.
+#[derive(Clone, Copy)]
+pub(super) struct WorkToFreeze<'a> {
+    pub(super) assignment_id: &'a ChatWorkAssignmentId,
+    pub(super) reply_thread_id: &'a ChatReplyThreadId,
+    pub(super) triggering_message_item_id: &'a ChatConversationItemId,
+    pub(super) agent_id: &'a ChatParticipantId,
+}
+
 pub(super) async fn freeze_context_package(
     transaction: &mut Transaction<'_, Sqlite>,
-    assignment_id: &ChatWorkAssignmentId,
-    reply_thread_id: &ChatReplyThreadId,
-    triggering_message_item_id: &ChatConversationItemId,
-    agent_id: &ChatParticipantId,
+    work: WorkToFreeze<'_>,
     explicit_execution_target: Option<&ChatExecutionTarget>,
+    providers: &DeviceProviders,
     now: &UtcTimestamp,
 ) -> ChatResult<FreezeOutcome> {
+    let WorkToFreeze {
+        assignment_id,
+        reply_thread_id,
+        triggering_message_item_id,
+        agent_id,
+    } = work;
     let bound = match read_delegation_bound(transaction, assignment_id.as_str()).await? {
         DelegationBound::Revoked => {
             cancel_for_revoked_parent(transaction, assignment_id.as_str(), now).await?;
@@ -70,19 +81,16 @@ pub(super) async fn freeze_context_package(
             .map_err(persistence_error)?,
     )
     .map_err(identifier_error)?;
-    let root_order_key: String = thread_row
-        .try_get("root_order_key")
-        .map_err(persistence_error)?;
     let access = read_assignment_access(
         transaction,
         &conversation_id,
         triggering_message_item_id,
         agent_id,
+        providers,
     )
     .await?;
-    // The trigger is addressed to the agent; the rest of the thread is
-    // channel history at the root's position.
-    let thread_visible = access.history.admits_position(&root_order_key);
+    // An agent reads its channel like a member who joined it: the whole thread and the
+    // channel's recent top-level messages.
     let source_rows = sqlx::query(
         "SELECT item.id, revision.revision, revision.normalized_markdown,
                 CASE
@@ -97,7 +105,7 @@ pub(super) async fn freeze_context_package(
            ON revision.id = message.current_revision_id
          LEFT JOIN chat_participants author ON author.id = message.author_participant_id
          WHERE message.deleted_at IS NULL
-           AND (item.id = ? OR (? AND (item.reply_thread_id = ? OR item.id = ?)))
+           AND (item.id = ? OR item.reply_thread_id = ? OR item.id = ?)
          ORDER BY CASE WHEN item.id = ? THEN 0 WHEN item.id = ? THEN 1 ELSE 2 END,
                   item.order_key DESC, item.id DESC
          LIMIT ?",
@@ -105,7 +113,6 @@ pub(super) async fn freeze_context_package(
     .bind(triggering_message_item_id.as_str())
     .bind(root_item_id.as_str())
     .bind(triggering_message_item_id.as_str())
-    .bind(thread_visible)
     .bind(reply_thread_id.as_str())
     .bind(root_item_id.as_str())
     .bind(triggering_message_item_id.as_str())
@@ -114,10 +121,8 @@ pub(super) async fn freeze_context_package(
     .fetch_all(&mut **transaction)
     .await
     .map_err(persistence_error)?;
-    let channel_visible_from = access.history.visible_from();
-    let channel_rows = if let Some(visible_from) = channel_visible_from {
-        sqlx::query(
-            "SELECT item.id, revision.revision, revision.normalized_markdown
+    let channel_rows = sqlx::query(
+        "SELECT item.id, revision.revision, revision.normalized_markdown
          FROM chat_conversation_items item
          JOIN chat_communication_messages message ON message.item_id = item.id
          JOIN chat_communication_message_revisions_numbered revision
@@ -125,50 +130,35 @@ pub(super) async fn freeze_context_package(
          WHERE item.conversation_id = ? AND item.reply_thread_id IS NULL
            AND item.id != ?
            AND message.deleted_at IS NULL
-           AND item.order_key >= ?
          ORDER BY item.order_key DESC, item.id DESC LIMIT ?",
-        )
-        .bind(conversation_id.as_str())
-        .bind(root_item_id.as_str())
-        .bind(visible_from)
-        .bind(i64::try_from(MAX_CHANNEL_CONTEXT_MESSAGES).unwrap_or(20))
-        .fetch_all(&mut **transaction)
-        .await
-        .map_err(persistence_error)?
-    } else {
-        Vec::new()
-    };
-    let reply_total: i64 = if thread_visible {
-        sqlx::query_scalar(
-            "SELECT count(*) FROM chat_conversation_items item
-             JOIN chat_communication_messages message ON message.item_id = item.id
-             WHERE item.reply_thread_id = ? AND item.id != ? AND message.deleted_at IS NULL",
-        )
-        .bind(reply_thread_id.as_str())
-        .bind(triggering_message_item_id.as_str())
-        .fetch_one(&mut **transaction)
-        .await
-        .map_err(persistence_error)?
-    } else {
-        0
-    };
-    let channel_total: i64 = if let Some(visible_from) = channel_visible_from {
-        sqlx::query_scalar(
-            "SELECT count(*) FROM chat_conversation_items item
-             JOIN chat_communication_messages message ON message.item_id = item.id
-             WHERE item.conversation_id = ? AND item.reply_thread_id IS NULL
-               AND item.id != ? AND message.deleted_at IS NULL
-               AND item.order_key >= ?",
-        )
-        .bind(conversation_id.as_str())
-        .bind(root_item_id.as_str())
-        .bind(visible_from)
-        .fetch_one(&mut **transaction)
-        .await
-        .map_err(persistence_error)?
-    } else {
-        0
-    };
+    )
+    .bind(conversation_id.as_str())
+    .bind(root_item_id.as_str())
+    .bind(i64::try_from(MAX_CHANNEL_CONTEXT_MESSAGES).unwrap_or(20))
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    let reply_total: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM chat_conversation_items item
+         JOIN chat_communication_messages message ON message.item_id = item.id
+         WHERE item.reply_thread_id = ? AND item.id != ? AND message.deleted_at IS NULL",
+    )
+    .bind(reply_thread_id.as_str())
+    .bind(triggering_message_item_id.as_str())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    let channel_total: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM chat_conversation_items item
+         JOIN chat_communication_messages message ON message.item_id = item.id
+         WHERE item.conversation_id = ? AND item.reply_thread_id IS NULL
+           AND item.id != ? AND message.deleted_at IS NULL",
+    )
+    .bind(conversation_id.as_str())
+    .bind(root_item_id.as_str())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
     let mut trigger = None;
     let mut root = None;
     let mut replies = Vec::new();
@@ -185,7 +175,12 @@ pub(super) async fn freeze_context_package(
             note: None,
         };
         match source.kind.as_str() {
-            "trigger" => trigger = Some(source),
+            "trigger" => {
+                trigger = Some(ContextSource {
+                    text: super::model_choice::strip_model_command(&source.text),
+                    ..source
+                })
+            }
             "thread_root" => root = Some(source),
             _ => replies.push(source),
         }
@@ -263,15 +258,24 @@ pub(super) async fn freeze_context_package(
         .await
         .map_err(persistence_error)?;
     }
-    let grants = read_folder_grants(transaction, &conversation_id, agent_id).await?;
+    let grants = folder_grants(transaction, &access.channel).await?;
     let grants = match &bound {
         Some(ceiling) => bounded_grants(grants, ceiling)?,
         None => grants,
     };
-    let mut referenced_folder_ids =
-        read_referenced_folder_ids(transaction, triggering_message_item_id).await?;
-    let referenced_execution_environments =
-        read_referenced_execution_environments(transaction, triggering_message_item_id).await?;
+    let reaches_folders = access.channel.resolved.folder_capability != ChatFolderCapability::None;
+    // Under Talk the agent has no folder, so references to folders and environments in the
+    // message do not select or authorize one.
+    let mut referenced_folder_ids = if reaches_folders {
+        read_referenced_folder_ids(transaction, triggering_message_item_id).await?
+    } else {
+        Vec::new()
+    };
+    let referenced_execution_environments = if reaches_folders {
+        read_referenced_execution_environments(transaction, triggering_message_item_id).await?
+    } else {
+        Vec::new()
+    };
     for working_folder_id in &referenced_folder_ids {
         require_granted_folder(&grants, working_folder_id)?;
     }
@@ -282,13 +286,19 @@ pub(super) async fn freeze_context_package(
             }
         }
     }
-    let project_working_folder_id =
-        ganbaru_chat::repository::workspaces::resolve_primary_workspace(
-            &mut **transaction,
-            &project_id,
-        )
-        .await?
-        .map(|folder| folder.id.as_str().to_string());
+    if matches!(
+        explicit_execution_target,
+        Some(ChatExecutionTarget::Scratch { .. })
+    ) && !access.channel.resolved.scratch_allowed
+    {
+        return Err(ChatError::new(
+            ChatErrorCode::Permission,
+            "The agent's access in this channel does not include private scratch",
+            true,
+        ));
+    }
+    let thread_folder =
+        read_thread_folder(transaction, reply_thread_id, assignment_id, &grants, now).await?;
     let requester_participant_id = bound
         .as_ref()
         .and_then(|ceiling| ceiling.requester_participant_id.clone())
@@ -304,7 +314,7 @@ pub(super) async fn freeze_context_package(
             grants: &grants,
             referenced_folder_ids: &referenced_folder_ids,
             referenced_execution_environments: &referenced_execution_environments,
-            project_working_folder_id: project_working_folder_id.as_deref(),
+            thread_folder: thread_folder.as_ref(),
             now,
         },
     )
@@ -326,35 +336,24 @@ pub(super) async fn freeze_context_package(
         .cloned()
         .collect::<Vec<_>>();
     authorized_folders.sort_by(|left, right| left.working_folder_id.cmp(&right.working_folder_id));
-    let granted_runtime_approval_policy = target
-        .working_folder_id
-        .as_deref()
-        .and_then(|working_folder_id| {
-            grants
-                .iter()
-                .find(|grant| grant.working_folder_id == working_folder_id)
-                .and_then(|grant| grant.runtime_approval_policy.as_ref())
-        })
-        .or_else(|| {
-            target
-                .scratch_generation_id
-                .as_ref()
-                .and(access.scratch_runtime_approval_policy.as_ref())
-        })
-        .or(access.channel_runtime_approval_policy.as_ref());
-    let mut resolved_runtime_approval_policy =
-        access.effective_runtime_approval(granted_runtime_approval_policy)?;
+    let resolved = access.channel.resolved;
+    let mut resolved_runtime_approval_policy = match (
+        target.working_folder_id.as_deref(),
+        target.scratch_generation_id.as_ref(),
+    ) {
+        (Some(working_folder_id), _) => grants
+            .iter()
+            .find(|grant| grant.working_folder_id == working_folder_id)
+            .map_or(resolved.runtime_approval.as_str(), |grant| {
+                grant.runtime_approval
+            }),
+        (None, Some(_)) => resolved.scratch_approval.as_str(),
+        (None, None) => resolved.runtime_approval.as_str(),
+    };
     let mut folder_runtime_approval_policies = authorized_folders
         .iter()
-        .map(|grant| {
-            access.effective_runtime_approval(
-                grant
-                    .runtime_approval_policy
-                    .as_ref()
-                    .or(access.channel_runtime_approval_policy.as_ref()),
-            )
-        })
-        .collect::<ChatResult<Vec<_>>>()?;
+        .map(|grant| grant.runtime_approval)
+        .collect::<Vec<_>>();
     if let Some(ceiling) = &bound {
         let target_rank = target
             .working_folder_id
@@ -376,12 +375,21 @@ pub(super) async fn freeze_context_package(
             *policy = clamp_approval(policy, rank);
         }
     }
+    let instructions: String =
+        sqlx::query_scalar("SELECT instructions FROM chat_work_assignments WHERE id = ?")
+            .bind(assignment_id.as_str())
+            .fetch_one(&mut **transaction)
+            .await
+            .map_err(persistence_error)?;
     let scope_data = serde_json::json!({
         "destinationConversationId": conversation_id.as_str(),
         "requesterParticipantId": requester_participant_id.as_str(),
         "agentId": agent_id.as_str(),
-        "agentAccessRevision": access.access_revision,
-        "agentPolicyRevisionId": access.policy_revision_id.as_str(),
+        "accessLevel": access.channel.level.as_str(),
+        "effectiveAccess": access.channel.effective_access_name(),
+        "folderCapability": resolved.folder_capability.as_str(),
+        "runtimeApproval": resolved.runtime_approval.as_str(),
+        "instructionsSha256": sha256_hex(instructions.as_bytes()),
         "executionEnvironmentId": &target.execution_environment_id,
         "workingFolderId": &target.working_folder_id,
         "scratchGenerationId": &target.scratch_generation_id,
@@ -415,18 +423,15 @@ pub(super) async fn freeze_context_package(
     sqlx::query(
         "INSERT INTO chat_assignment_authorization_revisions
             (id, assignment_id, revision, requester_participant_id,
-             agent_policy_revision_id, agent_access_revision,
              destination_conversation_id,
              execution_environment_id, working_folder_id,
              resolved_runtime_approval_policy, scope_digest, decision_state,
              reason, created_at)
-         VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 'allowed', '', ?)",
+         VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, 'allowed', '', ?)",
     )
     .bind(authorization_id.as_str())
     .bind(assignment_id.as_str())
     .bind(requester_participant_id.as_str())
-    .bind(access.policy_revision_id.as_str())
-    .bind(i64_value(access.access_revision)?)
     .bind(conversation_id.as_str())
     .bind(&target.execution_environment_id)
     .bind(&target.working_folder_id)
@@ -1092,37 +1097,23 @@ fn context_encoding_error() -> ChatError {
     ChatError::new(ChatErrorCode::Internal, "encode Chat context source", false)
 }
 
+/// Who asked for an assignment and what the agent may do for it on this device.
 struct AssignmentAccess {
     requester_participant_id: ChatParticipantId,
-    policy_revision_id: ChatAgentPolicyRevisionId,
-    access_revision: u64,
-    history: AgentHistoryAccess,
-    channel_runtime_approval_policy: Option<String>,
-    scratch_runtime_approval_policy: Option<String>,
-    agent_runtime_approval_policy: ChatRuntimeApprovalPolicy,
+    channel: ChannelAgentAccess,
 }
 
-impl AssignmentAccess {
-    /// Returns the wire runtime approval an assignment may use: the granted
-    /// policy, or the agent default when nothing is granted, never broader
-    /// than the agent's own approval behavior.
-    fn effective_runtime_approval(&self, granted: Option<&String>) -> ChatResult<&'static str> {
-        let granted = granted
-            .map(|value| parse_runtime_approval_policy(value))
-            .transpose()?
-            .unwrap_or(self.agent_runtime_approval_policy);
-        Ok(wire_runtime_approval_policy(narrower_runtime_approval(
-            self.agent_runtime_approval_policy,
-            granted,
-        )))
-    }
-}
-
-/// The access an agent would hold if an assignment ran now.
+/// The access an agent would hold if an assignment ran now on this device.
 pub(super) struct GrantedAccess {
-    pub(super) policy_revision_id: ChatAgentPolicyRevisionId,
+    /// Stored spelling of the effective access the device resolved for the channel.
+    pub(super) access_level: &'static str,
+    /// The access the agent runs under here, `None` when it cannot work on this device.
+    pub(super) effective: Option<ChatEffectiveAgentAccess>,
     pub(super) grants: Vec<AcceptanceGrant>,
+    /// Stored approval in the agent's scratch, empty when the access allows no scratch.
     pub(super) scratch_runtime_approval: &'static str,
+    /// The provider installation that runs the agent here, empty when none is configured.
+    pub(super) provider_instance_id: String,
 }
 
 /// Reads the access `agent_id` would hold running the message `triggering_message_item_id`
@@ -1132,48 +1123,52 @@ pub(super) async fn read_granted_access(
     conversation_id: &ChatConversationId,
     triggering_message_item_id: &ChatConversationItemId,
     agent_id: &ChatParticipantId,
+    providers: &DeviceProviders,
 ) -> ChatResult<GrantedAccess> {
     let access = read_assignment_access(
         transaction,
         conversation_id,
         triggering_message_item_id,
         agent_id,
+        providers,
     )
     .await?;
-    let folder_grants = read_folder_grants(transaction, conversation_id, agent_id).await?;
-    let channel_approval = access.channel_runtime_approval_policy.as_ref();
-    let grants = folder_grants
+    let grants = folder_grants(transaction, &access.channel)
+        .await?
         .into_iter()
-        .map(|grant| {
-            let runtime_approval = access.effective_runtime_approval(
-                grant.runtime_approval_policy.as_ref().or(channel_approval),
-            )?;
-            Ok(AcceptanceGrant {
-                working_folder_id: grant.working_folder_id,
-                capability: grant.capability,
-                runtime_approval: runtime_approval.to_owned(),
-            })
+        .map(|grant| AcceptanceGrant {
+            working_folder_id: grant.working_folder_id,
+            capability: grant.capability,
+            runtime_approval: grant.runtime_approval.to_owned(),
         })
-        .collect::<ChatResult<Vec<_>>>()?;
-    let scratch_runtime_approval = access.effective_runtime_approval(
-        access
-            .scratch_runtime_approval_policy
-            .as_ref()
-            .or(channel_approval),
-    )?;
+        .collect();
+    let resolved = access.channel.resolved;
     Ok(GrantedAccess {
-        policy_revision_id: access.policy_revision_id,
+        access_level: access.channel.effective_access_name(),
+        effective: resolved.effective,
         grants,
-        scratch_runtime_approval,
+        scratch_runtime_approval: if resolved.scratch_allowed {
+            resolved.scratch_approval.as_str()
+        } else {
+            ""
+        },
+        provider_instance_id: access
+            .channel
+            .provider_instance_id
+            .as_ref()
+            .map(|instance| instance.as_str().to_owned())
+            .unwrap_or_default(),
     })
 }
 
+/// One project folder the agent's access reaches, with what the agent may do in it.
 #[derive(Clone)]
 struct FolderGrant {
     working_folder_id: String,
     capability: String,
+    /// Whether the folder is the project's primary folder.
     is_default: bool,
-    runtime_approval_policy: Option<String>,
+    runtime_approval: &'static str,
 }
 
 struct FrozenChannelSource {
@@ -1201,6 +1196,13 @@ struct ReferencedExecutionEnvironment {
     working_folder_id: String,
 }
 
+/// The folder earlier work in a reply thread ran in, with the environment it ran in.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ThreadFolder {
+    working_folder_id: String,
+    execution_environment_id: String,
+}
+
 struct ResolveExecutionTargetInput<'a> {
     reply_thread_id: &'a ChatReplyThreadId,
     destination_conversation_id: &'a ChatConversationId,
@@ -1210,8 +1212,8 @@ struct ResolveExecutionTargetInput<'a> {
     grants: &'a [FolderGrant],
     referenced_folder_ids: &'a [String],
     referenced_execution_environments: &'a [ReferencedExecutionEnvironment],
-    /// The channel project's effective primary working folder, when this replica has one.
-    project_working_folder_id: Option<&'a str>,
+    /// The folder the reply thread already works in, when it still reaches one.
+    thread_folder: Option<&'a ThreadFolder>,
     now: &'a UtcTimestamp,
 }
 
@@ -1219,153 +1221,142 @@ struct ChannelDisclosureInput<'a> {
     destination_id: &'a ChatConversationId,
     destination_message_item_id: &'a ChatConversationItemId,
     source_id: &'a str,
-    lower_order_key: &'a str,
     frozen_audience_revision: u64,
     requester_id: &'a ChatParticipantId,
     agent_id: &'a ChatParticipantId,
 }
 
+/// Resolves the access of the agent for the message that asks for work: the agent must be a
+/// present member able to work on this device, and the message author a present member.
 async fn read_assignment_access(
     transaction: &mut Transaction<'_, Sqlite>,
     conversation_id: &ChatConversationId,
     triggering_message_item_id: &ChatConversationItemId,
     agent_id: &ChatParticipantId,
+    providers: &DeviceProviders,
 ) -> ChatResult<AssignmentAccess> {
-    let row = sqlx::query(
-        "SELECT message.author_participant_id AS requester_participant_id,
-                policy.id AS policy_revision_id, access_state.access_revision,
-                channel_access.read_history, channel_access.history_boundary,
-                channel_access.history_from_order_key,
-                channel_access.runtime_approval_policy AS channel_runtime_approval_policy,
-                channel_access.scratch_runtime_approval_policy,
-                policy.safety_mode AS agent_safety_mode
-         FROM chat_conversation_memberships membership
-         JOIN chat_agent_channel_memberships channel_access
-           ON channel_access.conversation_id = membership.conversation_id
-          AND channel_access.agent_id = membership.participant_id
-          AND channel_access.removed_at IS NULL
-         JOIN chat_agent_access_state access_state
-           ON access_state.agent_id = membership.participant_id
-          AND access_state.access_revision >= 1
-         JOIN chat_agents agent
-           ON agent.participant_id = membership.participant_id
-         JOIN chat_agent_effective_policies policy
-           ON policy.agent_id = agent.participant_id
-         JOIN chat_communication_messages message ON message.item_id = ?
-         JOIN chat_conversation_memberships requester_membership
-           ON requester_membership.conversation_id = membership.conversation_id
-          AND requester_membership.participant_id = message.author_participant_id
-          AND requester_membership.removed_at IS NULL
-         JOIN chat_participants participant ON participant.id = membership.participant_id
-         WHERE membership.conversation_id = ?
-          AND membership.participant_id = ?
-          AND membership.removed_at IS NULL
-           AND channel_access.participate = 1
-           AND participant.archived_at IS NULL",
-    )
-    .bind(triggering_message_item_id.as_str())
-    .bind(conversation_id.as_str())
-    .bind(agent_id.as_str())
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(persistence_error)?
-    .ok_or_else(|| {
+    let not_allowed = || {
         ChatError::new(
             ChatErrorCode::Permission,
             "The agent cannot participate in this channel",
             true,
         )
-    })?;
-    let history_from_order_key = row
-        .try_get::<Option<String>, _>("history_from_order_key")
-        .map_err(persistence_error)?;
-    let read_history = row
-        .try_get::<i64, _>("read_history")
-        .map_err(persistence_error)?
-        == 1;
-    let history_boundary: String = row.try_get("history_boundary").map_err(persistence_error)?;
-    let history = AgentHistoryAccess::resolve(
-        read_history,
-        history_boundary == "from_grant",
-        history_from_order_key,
-    );
+    };
+    let agent_active: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM chat_participants WHERE id = ? AND archived_at IS NULL)",
+    )
+    .bind(agent_id.as_str())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    if !agent_active {
+        return Err(not_allowed());
+    }
+    let requester: String = sqlx::query_scalar(
+        "SELECT message.author_participant_id
+         FROM chat_communication_messages message
+         JOIN chat_conversation_memberships membership
+           ON membership.conversation_id = ?
+          AND membership.participant_id = message.author_participant_id
+          AND membership.removed_at IS NULL
+         WHERE message.item_id = ?",
+    )
+    .bind(conversation_id.as_str())
+    .bind(triggering_message_item_id.as_str())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(persistence_error)?
+    .ok_or_else(not_allowed)?;
+    let channel = require_working_agent_access(
+        transaction,
+        conversation_id.as_str(),
+        agent_id.as_str(),
+        providers,
+    )
+    .await?;
     Ok(AssignmentAccess {
-        requester_participant_id: ChatParticipantId::new(
-            row.try_get::<String, _>("requester_participant_id")
-                .map_err(persistence_error)?,
-        )
-        .map_err(identifier_error)?,
-        policy_revision_id: ChatAgentPolicyRevisionId::new(
-            row.try_get::<String, _>("policy_revision_id")
-                .map_err(persistence_error)?,
-        )
-        .map_err(identifier_error)?,
-        access_revision: u64_value(row.try_get("access_revision").map_err(persistence_error)?)?,
-        history,
-        channel_runtime_approval_policy: row
-            .try_get("channel_runtime_approval_policy")
-            .map_err(persistence_error)?,
-        scratch_runtime_approval_policy: row
-            .try_get("scratch_runtime_approval_policy")
-            .map_err(persistence_error)?,
-        agent_runtime_approval_policy: agent_runtime_approval(parse_approval_policy(
-            &row.try_get::<String, _>("agent_safety_mode")
-                .map_err(persistence_error)?,
-        )?),
+        requester_participant_id: ChatParticipantId::new(requester).map_err(identifier_error)?,
+        channel,
     })
 }
 
-/// Reads the agent's active grants that carry authority in the conversation.
-///
-/// Sync applies a grant row without the project triggers, since refusing one would stop the
-/// apply, so the match is enforced on read: a grant naming another project, or a folder of
-/// another project, reads as revoked.
-async fn read_folder_grants(
+/// Lists the folders the agent's channel access reaches, each at the capability and approval
+/// the access resolves to.
+async fn folder_grants(
     transaction: &mut Transaction<'_, Sqlite>,
-    conversation_id: &ChatConversationId,
-    agent_id: &ChatParticipantId,
+    access: &ChannelAgentAccess,
 ) -> ChatResult<Vec<FolderGrant>> {
-    let rows = sqlx::query(
-        "SELECT grant_row.working_folder_id, grant_row.capability, grant_row.is_default,
-                grant_row.runtime_approval_policy
-         FROM chat_agent_working_folder_grants grant_row
-         JOIN chat_conversations conversation ON conversation.id = grant_row.conversation_id
-         JOIN project_working_folders folder ON folder.id = grant_row.working_folder_id
-         WHERE grant_row.conversation_id = ? AND grant_row.agent_id = ?
-           AND grant_row.revoked_at IS NULL
-           AND grant_row.project_id = conversation.project_id
-           AND folder.project_id = conversation.project_id
-         ORDER BY grant_row.working_folder_id",
+    let capability = access.resolved.folder_capability.as_str();
+    let runtime_approval = access.resolved.runtime_approval.as_str();
+    Ok(read_reached_folders(transaction, access)
+        .await?
+        .into_iter()
+        .map(|folder| FolderGrant {
+            working_folder_id: folder.working_folder_id,
+            capability: capability.to_owned(),
+            is_default: folder.is_primary,
+            runtime_approval,
+        })
+        .collect())
+}
+
+/// Reads the folder the latest earlier work in the reply thread ran in, when the agent's
+/// access still reaches it. Its environment is kept while it is still available, else the
+/// folder's current folder environment is used.
+async fn read_thread_folder(
+    transaction: &mut Transaction<'_, Sqlite>,
+    reply_thread_id: &ChatReplyThreadId,
+    assignment_id: &ChatWorkAssignmentId,
+    grants: &[FolderGrant],
+    now: &UtcTimestamp,
+) -> ChatResult<Option<ThreadFolder>> {
+    let row = sqlx::query(
+        "SELECT authorization.working_folder_id, authorization.execution_environment_id
+         FROM chat_assignment_authorization_revisions authorization
+         JOIN chat_work_assignments assignment ON assignment.id = authorization.assignment_id
+         WHERE assignment.reply_thread_id = ? AND assignment.id != ?
+           AND authorization.working_folder_id IS NOT NULL
+           AND authorization.decision_state = 'allowed'
+         ORDER BY authorization.created_at DESC, authorization.id DESC
+         LIMIT 1",
     )
-    .bind(conversation_id.as_str())
-    .bind(agent_id.as_str())
-    .fetch_all(&mut **transaction)
+    .bind(reply_thread_id.as_str())
+    .bind(assignment_id.as_str())
+    .fetch_optional(&mut **transaction)
     .await
     .map_err(persistence_error)?;
-    let grants = rows
-        .into_iter()
-        .map(|row| {
-            let capability: String = row.try_get("capability").map_err(persistence_error)?;
-            capability_rank(&capability)?;
-            Ok(FolderGrant {
-                working_folder_id: row
-                    .try_get("working_folder_id")
-                    .map_err(persistence_error)?,
-                capability,
-                is_default: row
-                    .try_get::<i64, _>("is_default")
-                    .map_err(persistence_error)?
-                    == 1,
-                runtime_approval_policy: row
-                    .try_get("runtime_approval_policy")
-                    .map_err(persistence_error)?,
-            })
-        })
-        .collect::<ChatResult<Vec<_>>>()?;
-    Ok(grants
-        .into_iter()
-        .filter(|grant| grant.capability != "none")
-        .collect())
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let working_folder_id: String = row
+        .try_get("working_folder_id")
+        .map_err(persistence_error)?;
+    if !grants
+        .iter()
+        .any(|grant| grant.working_folder_id == working_folder_id)
+    {
+        return Ok(None);
+    }
+    let previous_environment: Option<String> = row
+        .try_get("execution_environment_id")
+        .map_err(persistence_error)?;
+    let execution_environment_id = match previous_environment {
+        Some(environment)
+            if folder_environment_available(transaction, &working_folder_id, &environment)
+                .await? =>
+        {
+            environment
+        }
+        _ => {
+            let current = current_folder_environment_id(&working_folder_id);
+            ensure_working_folder_chat_defaults(transaction, &working_folder_id, now).await?;
+            current
+        }
+    };
+    Ok(Some(ThreadFolder {
+        working_folder_id,
+        execution_environment_id,
+    }))
 }
 
 async fn read_referenced_folder_ids(
@@ -1443,6 +1434,9 @@ async fn read_referenced_execution_environments(
         .collect()
 }
 
+/// Chooses where the work runs: an explicitly chosen target, else the folder the reply thread
+/// already works in, else a folder or environment the message names, else the project's
+/// primary folder. Work whose access reaches no folder has no target.
 async fn resolve_execution_target(
     transaction: &mut Transaction<'_, Sqlite>,
     input: ResolveExecutionTargetInput<'_>,
@@ -1456,7 +1450,7 @@ async fn resolve_execution_target(
         grants,
         referenced_folder_ids,
         referenced_execution_environments,
-        project_working_folder_id,
+        thread_folder,
         now,
     } = input;
     let referenced_execution_environment =
@@ -1519,6 +1513,20 @@ async fn resolve_execution_target(
             }
         };
     }
+    if let Some(thread_folder) = thread_folder {
+        verify_folder_environment(
+            transaction,
+            &thread_folder.working_folder_id,
+            &thread_folder.execution_environment_id,
+            now,
+        )
+        .await?;
+        return Ok(ResolvedExecutionTarget {
+            execution_environment_id: Some(thread_folder.execution_environment_id.clone()),
+            working_folder_id: Some(thread_folder.working_folder_id.clone()),
+            scratch_generation_id: None,
+        });
+    }
     if let Some(environment) = referenced_execution_environment {
         let grant = require_granted_folder(grants, &environment.working_folder_id)?;
         if capability_can_select_native_target(&grant.capability) {
@@ -1551,14 +1559,10 @@ async fn resolve_execution_target(
     let selected = if inferred.len() == 1 {
         inferred.pop()
     } else {
-        let candidates = grants
+        grants
             .iter()
-            .map(|grant| ImpliedFolderCandidate {
-                working_folder_id: &grant.working_folder_id,
-                is_default: grant.is_default,
-            })
-            .collect::<Vec<_>>();
-        implied_working_folder(&candidates, project_working_folder_id).map(str::to_string)
+            .find(|grant| grant.is_default)
+            .map(|grant| grant.working_folder_id.clone())
     };
     if let Some(working_folder_id) = selected {
         let execution_environment_id = current_folder_environment_id(&working_folder_id);
@@ -1652,7 +1656,27 @@ async fn verify_folder_environment(
     if execution_environment_id == current_folder_environment_id(working_folder_id) {
         ensure_working_folder_chat_defaults(transaction, working_folder_id, now).await?;
     }
-    let valid: bool = sqlx::query_scalar(
+    if folder_environment_available(transaction, working_folder_id, execution_environment_id)
+        .await?
+    {
+        Ok(())
+    } else {
+        Err(ChatError::new(
+            ChatErrorCode::Permission,
+            "The selected execution target is unavailable",
+            true,
+        ))
+    }
+}
+
+/// Whether `execution_environment_id` is an available, non-scratch environment of the
+/// working folder.
+async fn folder_environment_available(
+    transaction: &mut Transaction<'_, Sqlite>,
+    working_folder_id: &str,
+    execution_environment_id: &str,
+) -> ChatResult<bool> {
+    sqlx::query_scalar(
         "SELECT EXISTS(
            SELECT 1 FROM chat_execution_environments environment
            JOIN project_working_folders folder ON folder.id = environment.working_folder_id
@@ -1667,16 +1691,7 @@ async fn verify_folder_environment(
     .bind(working_folder_id)
     .fetch_one(&mut **transaction)
     .await
-    .map_err(persistence_error)?;
-    if valid {
-        Ok(())
-    } else {
-        Err(ChatError::new(
-            ChatErrorCode::Permission,
-            "The selected execution target is unavailable",
-            true,
-        ))
-    }
+    .map_err(persistence_error)
 }
 
 fn require_granted_folder<'a>(
@@ -1743,7 +1758,6 @@ async fn read_channel_sources(
                 destination_id: destination_conversation_id,
                 destination_message_item_id: triggering_message_item_id,
                 source_id: &conversation_id,
-                lower_order_key: &lower_order_key,
                 frozen_audience_revision: destination_audience_revision,
                 requester_id,
                 agent_id,
@@ -1774,6 +1788,10 @@ async fn read_channel_sources(
     Ok(result)
 }
 
+/// Verifies that a channel the message references may be disclosed in the destination: the
+/// requester and the agent are present members of the source, and every present member of the
+/// destination is a present member of the source, so the reference shows nobody anything new.
+/// Agents read a channel like members who joined it, so membership alone decides.
 async fn verify_channel_disclosure(
     transaction: &mut Transaction<'_, Sqlite>,
     input: ChannelDisclosureInput<'_>,
@@ -1782,7 +1800,6 @@ async fn verify_channel_disclosure(
         destination_id,
         destination_message_item_id,
         source_id,
-        lower_order_key,
         frozen_audience_revision,
         requester_id,
         agent_id,
@@ -1807,14 +1824,6 @@ async fn verify_channel_disclosure(
             AND agent_access.agent_id = agent.participant_id
             AND agent_access.removed_at IS NULL
            WHERE audience.conversation_id = ? AND audience.revision >= ?
-             AND agent_access.read_history = 1
-             AND (
-               agent_access.history_boundary = 'entire'
-               OR (
-                 agent_access.history_from_order_key IS NOT NULL
-                 AND agent_access.history_from_order_key <= ?
-               )
-             )
              AND (
                requester_participant.participant_kind != 'ai_agent'
                OR EXISTS (
@@ -1823,14 +1832,6 @@ async fn verify_channel_disclosure(
                  WHERE requester_access.conversation_id = ?
                    AND requester_access.agent_id = ?
                    AND requester_access.removed_at IS NULL
-                   AND requester_access.read_history = 1
-                   AND (
-                     requester_access.history_boundary = 'entire'
-                     OR (
-                       requester_access.history_from_order_key IS NOT NULL
-                       AND requester_access.history_from_order_key <= ?
-                     )
-                   )
                )
              )
              AND NOT EXISTS (
@@ -1848,21 +1849,6 @@ async fn verify_channel_disclosure(
                      WHERE destination_ai.conversation_id = ?
                        AND destination_ai.agent_id = destination_member.participant_id
                        AND destination_ai.removed_at IS NULL
-                       AND destination_ai.read_history = 1
-                       AND (
-                         destination_ai.history_boundary = 'entire'
-                         OR (
-                           destination_ai.history_from_order_key IS NOT NULL
-                           AND destination_ai.history_from_order_key <= coalesce(
-                             (SELECT root_item.order_key
-                              FROM chat_reply_threads destination_thread
-                              JOIN chat_conversation_items root_item
-                                ON root_item.id = destination_thread.root_item_id
-                              WHERE destination_thread.id = destination_item.reply_thread_id),
-                             destination_item.order_key
-                           )
-                         )
-                       )
                    )
                  )
                  AND (
@@ -1880,14 +1866,6 @@ async fn verify_channel_disclosure(
                        WHERE source_ai.conversation_id = ?
                          AND source_ai.agent_id = destination_member.participant_id
                          AND source_ai.removed_at IS NULL
-                         AND source_ai.read_history = 1
-                         AND (
-                           source_ai.history_boundary = 'entire'
-                           OR (
-                             source_ai.history_from_order_key IS NOT NULL
-                             AND source_ai.history_from_order_key <= ?
-                           )
-                         )
                      )
                    )
                  )
@@ -1901,15 +1879,12 @@ async fn verify_channel_disclosure(
     .bind(agent_id.as_str())
     .bind(destination_id.as_str())
     .bind(i64_value(frozen_audience_revision)?)
-    .bind(lower_order_key)
     .bind(source_id)
     .bind(requester_id.as_str())
-    .bind(lower_order_key)
     .bind(destination_id.as_str())
     .bind(destination_id.as_str())
     .bind(source_id)
     .bind(source_id)
-    .bind(lower_order_key)
     .fetch_one(&mut **transaction)
     .await
     .map_err(persistence_error)?;

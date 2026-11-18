@@ -827,7 +827,6 @@ async fn working_run_binding(pool: &sqlx::SqlitePool) -> ganbaru_chat::agent_run
         run_id: ChatAgentRunId::new("run:working").unwrap(),
         assignment_id: ChatWorkAssignmentId::new("assignment:folders").unwrap(),
         project_id: "project-chat".to_string(),
-        agent_policy_revision_id: ChatAgentPolicyRevisionId::new("policy:folders").unwrap(),
         authorization_revision_id: ChatAuthorizationRevisionId::new("authorization:working")
             .unwrap(),
         authorization_scope_digest: format!("{:064}", 0),
@@ -854,6 +853,7 @@ fn folder_launch() -> ganbaru_chat::agent_runs::RunLaunch {
             delivered_sources: Vec::new(),
         },
         full_prompt_on_fresh_session: None,
+        model_label: None,
     }
 }
 
@@ -1392,6 +1392,11 @@ async fn organizational_sends_admit_person_approved_commands_only_with_ask_appro
     ] {
         sqlx::query(statement).execute(&pool).await.unwrap();
     }
+    // At own, the channel access covers every approval the cases freeze.
+    sqlx::query("UPDATE chat_channels SET agent_access = 'own'")
+        .execute(&pool)
+        .await
+        .unwrap();
     let set_target = |capability: &'static str, runtime: &'static str| {
         let pool = pool.clone();
         async move {

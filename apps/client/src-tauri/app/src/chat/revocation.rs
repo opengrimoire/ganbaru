@@ -885,29 +885,20 @@ pub(crate) mod tests {
              INSERT INTO chat_participants
                 (id, participant_kind, display_name, created_at, updated_at)
              VALUES ('{AGENT}', 'ai_agent', 'Folder agent', '{NOW}', '{NOW}');
-             INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
-             VALUES ('{AGENT}', 'Test', '{NOW}', '{NOW}');
+             INSERT INTO chat_agents (participant_id, provider_family_id, created_at, updated_at)
+             VALUES ('{AGENT}', 'codex', '{NOW}', '{NOW}');
              INSERT INTO chat_agent_policy_revisions
-                (id, agent_id, provider_instance_id, model_selection_data, created_at)
-             VALUES ('policy:folders', '{AGENT}', 'codex-personal', '{{}}', '{NOW}');
+                (id, agent_id, model_selection_data, created_at)
+             VALUES ('policy:folders', '{AGENT}', '{{}}', '{NOW}');
              INSERT INTO chat_conversation_memberships
                 (conversation_id, participant_id, sync_key, membership_role, created_at,
                  updated_at)
              VALUES ('{conversation}', '{AGENT}', 'membership:folders', 'member',
                      '{NOW}', '{NOW}');
              INSERT INTO chat_agent_channel_memberships
-                (conversation_id, agent_id, sync_key,
-                 read_history, participate, history_boundary, created_at, updated_at)
+                (conversation_id, agent_id, sync_key, created_at, updated_at)
              VALUES ('{conversation}', '{AGENT}', 'channel-membership:folders',
-                     1, 1, 'entire', '{NOW}', '{NOW}');
-             INSERT INTO chat_agent_working_folder_grants
-                (conversation_id, agent_id, project_id, working_folder_id, sync_key,
-                 capability, is_default, created_at)
-             VALUES
-                ('{conversation}', '{AGENT}', 'project-chat', 'workspace-1',
-                 'grant:folders-1', 'execute', 1, '{NOW}'),
-                ('{conversation}', '{AGENT}', 'project-chat', 'workspace-2',
-                 'grant:folders-2', 'read', 0, '{NOW}');
+                     '{NOW}', '{NOW}');
              INSERT INTO chat_conversation_items
                 (id, conversation_id, item_kind, order_key, created_at)
              VALUES ('item:folders', '{conversation}', 'message', 'a1', '{NOW}');
@@ -919,23 +910,24 @@ pub(crate) mod tests {
              VALUES ('reply:folders', '{conversation}', 'item:folders',
                      '{NOW}', '{NOW}', '{NOW}');
              INSERT INTO chat_work_assignments
-                (id, reply_thread_id, agent_id, triggering_message_item_id, state,
+                (id, reply_thread_id, agent_id, triggering_message_item_id,
+                 model_selection_schema_version, model_selection_data, state,
                  created_at, updated_at)
              VALUES ('assignment:folders', 'reply:folders', '{AGENT}', 'item:folders',
+                     1, '{{\"providerManagedModel\":true,\"modelId\":null,\"modelOptions\":[]}}',
                      'working', '{NOW}', '{NOW}');
              INSERT INTO chat_assignment_authorization_revisions
                 (id, assignment_id, revision, requester_participant_id,
-                 agent_policy_revision_id, agent_access_revision,
                  destination_conversation_id,
                  execution_environment_id, working_folder_id,
                  resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
              VALUES
                 ('authorization:working', 'assignment:folders', 1, 'participant:local-owner',
-                 'policy:folders', 1, '{conversation}',
+                 '{conversation}',
                  (SELECT id FROM chat_execution_environments WHERE working_folder_id = 'workspace-1'),
                  'workspace-1', 'ask', printf('%064d', 0), 'allowed', '{NOW}'),
                 ('authorization:queued', 'assignment:folders', 2, 'participant:local-owner',
-                 'policy:folders', 1, '{conversation}',
+                 '{conversation}',
                  (SELECT id FROM chat_execution_environments WHERE working_folder_id = 'workspace-1'),
                  'workspace-1', 'ask', printf('%064d', 0), 'allowed', '{NOW}');
              INSERT INTO chat_assignment_authorized_folder_sources
@@ -954,15 +946,15 @@ pub(crate) mod tests {
                  '{NOW}', '{NOW}');
              INSERT INTO chat_agent_runs
                 (id, assignment_id, project_id, working_folder_id, execution_environment_id,
-                 agent_policy_revision_id, authorization_revision_id,
+                 authorization_revision_id,
                  authorization_scope_digest, provider_turn_id, provider_thread_id, state,
                  run_ordinal, created_at, updated_at)
              VALUES
                 ('run:working', 'assignment:folders', 'project-chat', 'workspace-1',
-                 (SELECT id FROM chat_execution_environments WHERE working_folder_id = 'workspace-1'), 'policy:folders', 'authorization:working',
+                 (SELECT id FROM chat_execution_environments WHERE working_folder_id = 'workspace-1'), 'authorization:working',
                  printf('%064d', 0), 'turn:working', 'thread-1', 'working', 1, '{NOW}', '{NOW}'),
                 ('run:queued', 'assignment:folders', 'project-chat', 'workspace-1',
-                 (SELECT id FROM chat_execution_environments WHERE working_folder_id = 'workspace-1'), 'policy:folders', 'authorization:queued',
+                 (SELECT id FROM chat_execution_environments WHERE working_folder_id = 'workspace-1'), 'authorization:queued',
                  printf('%064d', 0), 'turn:queued', 'thread-1', 'queued', 2, '{NOW}', '{NOW}');"
         )))
         .execute(&pool)

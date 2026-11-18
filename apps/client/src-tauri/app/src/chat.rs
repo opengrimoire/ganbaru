@@ -2,7 +2,6 @@
 //! mobile exposes provider-free channels, coordination, and preferences.
 
 pub(crate) mod authority_epoch;
-#[cfg(desktop)]
 pub mod channels;
 #[cfg(desktop)]
 pub mod checkpoint_commands;

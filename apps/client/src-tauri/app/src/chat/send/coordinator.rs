@@ -701,17 +701,17 @@ pub(super) async fn validate_organizational_authority(
     support: ProviderAuthoritySupport,
     requested_safety_mode: SafetyMode,
 ) -> ChatResult<ProviderOrganizationalScope> {
-    let authorization = sqlx::query(
+    let authorization = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT authorization.resolved_runtime_approval_policy, authorization.working_folder_id,
-                authorization.execution_environment_id,
-                policy.safety_mode AS agent_safety_mode
+                authorization.execution_environment_id, {} AS access_level
          FROM chat_assignment_authorization_revisions authorization
-         JOIN chat_agent_policy_revisions policy
-           ON policy.id = authorization.agent_policy_revision_id
          WHERE authorization.id = ? AND authorization.assignment_id = ?
            AND authorization.scope_digest = ?
            AND authorization.decision_state = 'allowed' AND authorization.revoked_at IS NULL",
-    )
+        ganbaru_chat::coordination::access::effective_access_level_sql(
+            "authorization.destination_conversation_id"
+        ),
+    )))
     .bind(binding.authorization_revision_id.as_str())
     .bind(binding.assignment_id.as_str())
     .bind(&binding.authorization_scope_digest)
@@ -749,24 +749,16 @@ pub(super) async fn validate_organizational_authority(
             "Assignment execution target does not match its authorization",
         ));
     }
-    let agent_approval = crate::chat::organization::parse_approval_policy(
-        &authorization
-            .try_get::<String, _>("agent_safety_mode")
-            .map_err(|_| provider_authority_error("Assignment authority is invalid"))?,
-    )
-    .map_err(|_| provider_authority_error("Assignment authority is invalid"))?;
     let runtime_approval = parse_runtime_approval(&runtime_approval_policy)
         .map_err(|_| provider_authority_error("Assignment authority is invalid"))?;
-    if has_native_target
-        && runtime_approval == ChatRuntimeApprovalPolicy::ProviderCustom
-        && agent_approval != ChatApprovalPolicy::Custom
-    {
-        return Err(provider_authority_error(
-            "Provider-custom approval cannot prove this assignment's exact authority",
-        ));
-    }
+    let access_level = authorization
+        .try_get::<String, _>("access_level")
+        .ok()
+        .as_deref()
+        .and_then(ChatAgentAccess::parse)
+        .ok_or_else(|| provider_authority_error("Assignment authority is invalid"))?;
     let permitted_safety_mode = if has_native_target {
-        crate::chat::organization::native_assignment_safety_mode(agent_approval, runtime_approval)
+        crate::chat::organization::native_assignment_safety_mode(runtime_approval)
     } else {
         SafetyMode::AskForApproval
     };
@@ -814,6 +806,22 @@ pub(super) async fn validate_organizational_authority(
         binding.scratch_generation_id.is_some(),
         target_capability.as_deref(),
     )?;
+    let frozen_capability = target_capability
+        .as_deref()
+        .map(parse_folder_capability)
+        .transpose()
+        .map_err(|_| provider_authority_error("Assignment authority is invalid"))?
+        .unwrap_or(ChatFolderCapability::None);
+    if ganbaru_chat::coordination::access::exceeds_access(
+        access_level,
+        frozen_capability,
+        runtime_approval,
+        binding.scratch_generation_id.is_some(),
+    ) {
+        return Err(provider_authority_error(
+            "The channel's agent access no longer covers this assignment",
+        ));
+    }
     if !provider_enforces_scope(support, scope, commands_person_approved) {
         return Err(provider_authority_error(match scope {
             ProviderOrganizationalScope::Scratch => {
@@ -935,31 +943,39 @@ pub(super) async fn load_internal_mcp_scope(
     .fetch_all(pool)
     .await
     .map_err(|_| provider_authority_unavailable("Channel authority could not be loaded"))?;
-    let folder_rows = sqlx::query(
+    let folder_rows = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT frozen.root_handle, frozen.working_folder_id, frozen.capability,
                 frozen.is_execution_target,
-                frozen.resolved_runtime_approval_policy
+                frozen.resolved_runtime_approval_policy, {} AS access_level
          FROM chat_assignment_authorized_folder_sources frozen
          JOIN chat_assignment_authorization_revisions authorization
            ON authorization.id = frozen.authorization_revision_id
          JOIN chat_work_assignments assignment
            ON assignment.id = authorization.assignment_id
-         JOIN chat_agent_working_folder_grants live
-           ON live.conversation_id = authorization.destination_conversation_id
-          AND live.agent_id = assignment.agent_id
-          AND live.working_folder_id = frozen.working_folder_id
-          AND live.revoked_at IS NULL
+         JOIN chat_conversations conversation
+           ON conversation.id = authorization.destination_conversation_id
+         JOIN project_working_folders folder
+           ON folder.id = frozen.working_folder_id
+          AND folder.project_id = conversation.project_id
+          AND folder.archived_at IS NULL
          JOIN chat_agent_channel_memberships channel_access
-           ON channel_access.conversation_id = live.conversation_id
-          AND channel_access.agent_id = live.agent_id
+           ON channel_access.conversation_id = authorization.destination_conversation_id
+          AND channel_access.agent_id = assignment.agent_id
           AND channel_access.removed_at IS NULL
          WHERE frozen.authorization_revision_id = ?
          ORDER BY frozen.working_folder_id",
-    )
+        ganbaru_chat::coordination::access::effective_access_level_sql(
+            "authorization.destination_conversation_id"
+        ),
+    )))
     .bind(binding.authorization_revision_id.as_str())
     .fetch_all(pool)
     .await
     .map_err(|_| provider_authority_unavailable("Folder authority could not be loaded"))?;
+    let folder_rows = folder_rows
+        .into_iter()
+        .filter(folder_row_is_covered)
+        .collect::<Vec<_>>();
     let expected_folder_count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM chat_assignment_authorized_folder_sources
          WHERE authorization_revision_id = ?",
@@ -1054,12 +1070,34 @@ pub(super) async fn load_internal_mcp_scope(
     })
 }
 
+/// Whether the channel's current access level still allows the frozen capability and approval
+/// of a folder source row. A row that cannot be read is not covered.
+fn folder_row_is_covered(row: &sqlx::sqlite::SqliteRow) -> bool {
+    let level = row
+        .try_get::<String, _>("access_level")
+        .ok()
+        .as_deref()
+        .and_then(ChatAgentAccess::parse);
+    let capability = row
+        .try_get::<String, _>("capability")
+        .ok()
+        .and_then(|value| parse_folder_capability(&value).ok());
+    let approval = row
+        .try_get::<String, _>("resolved_runtime_approval_policy")
+        .ok()
+        .and_then(|value| parse_runtime_approval(&value).ok());
+    match (level, capability, approval) {
+        (Some(level), Some(capability), Some(approval)) => {
+            !ganbaru_chat::coordination::access::exceeds_access(level, capability, approval, false)
+        }
+        _ => false,
+    }
+}
+
 fn parse_runtime_approval(value: &str) -> ChatResult<ChatRuntimeApprovalPolicy> {
     match value {
         "ask" => Ok(ChatRuntimeApprovalPolicy::Ask),
         "auto_approve" => Ok(ChatRuntimeApprovalPolicy::AutoApprove),
-        "unattended" => Ok(ChatRuntimeApprovalPolicy::Unattended),
-        "provider_custom" => Ok(ChatRuntimeApprovalPolicy::ProviderCustom),
         _ => Err(scope_row_error(())),
     }
 }

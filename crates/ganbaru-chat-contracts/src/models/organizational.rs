@@ -287,6 +287,9 @@ pub struct ChatAgentResolvedAccessRead {
     pub downgrade_reason: Option<ChatAccessDowngradeReason>,
     /// Whether this device has a provider installation for the agent.
     pub installed: bool,
+    /// Whether the agent's provider on this device can work on its own, which decides whether
+    /// that level is offered for the agent here.
+    pub own_offered: bool,
 }
 
 /// The app scope of agent settings, which every project and channel inherits.

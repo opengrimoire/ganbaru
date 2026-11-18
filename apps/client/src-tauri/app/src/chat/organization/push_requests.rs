@@ -13,6 +13,7 @@ use crate::chat::internal_mcp::InternalMcpFolderSource;
 use crate::chat::internal_mcp_tools::verify_authorized_folder_source;
 use crate::chat::workspace::WorkingFolderAuthorizationOperation;
 use crate::chat::workspace::mutation::ChatWorkspaceMutationRegistry;
+use ganbaru_chat::coordination::access::effective_access_level_sql;
 use ganbaru_chat::coordination::contracts::*;
 use ganbaru_chat::coordination::push_requests::claims::{
     PushClaim, claim_push_request, mark_push_request_pushed, record_push_object,
@@ -45,26 +46,21 @@ const PUSH_CLAIM_TOKEN_PREFIX: &str = "push-claim";
 /// Reply a push made under a person's standing approval posts.
 const STANDING_APPROVAL_REPLY: &str = "Pushed automatically under your standing approval.";
 
-/// Reply a push made because the asking turn ran with full access posts.
-const FULL_ACCESS_REPLY: &str = "Pushed automatically because this turn ran with full access.";
-
 /// Who lets a push request push.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PushAuthority {
     /// A person confirmed the request, and approves later matching pushes when `remember`.
     Person { remember: bool },
-    /// Nobody confirmed it, so a standing approval or a full access turn must let it push.
+    /// Nobody confirmed it, so a standing approval must let it push.
     Standing,
 }
 
 /// What lets a push request push without a person confirming it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StandingPermission {
-    /// An active approval names the agent, folder, push URL, and destination branch, and
-    /// still records the run's approval policy and the agent's safety mode.
+    /// An active approval in the channel names the agent, folder, push URL, and destination
+    /// branch.
     Approval,
-    /// The asking run's grant resolved to the unattended approval policy.
-    FullAccess,
 }
 
 impl StandingPermission {
@@ -72,7 +68,6 @@ impl StandingPermission {
     const fn reply(self) -> &'static str {
         match self {
             Self::Approval => STANDING_APPROVAL_REPLY,
-            Self::FullAccess => FULL_ACCESS_REPLY,
         }
     }
 }
@@ -107,7 +102,7 @@ pub(in crate::chat::organization) async fn confirm_push_request(
 }
 
 /// Pushes, once the organizational provider turn `turn_id` ended, each open push request its
-/// run asked that a standing approval or a full access turn lets push, through the checks a
+/// run asked that a standing approval lets push, through the checks a
 /// person's confirmation runs. A request nothing lets push stays open for a person. Call it
 /// after the turn's settlement committed and its workspace mutation ended.
 pub(crate) fn push_standing_requests_after_turn(app: &tauri::AppHandle, turn_id: &ChatTurnId) {
@@ -195,7 +190,7 @@ async fn answer_push_request(
     verify_authorized_folder_source(&pool, authorization_revision_id, &source).await?;
     let text = match authority {
         PushAuthority::Person { .. } => text.unwrap_or_default(),
-        PushAuthority::Standing => standing_permission(&pool, &stored, &source)
+        PushAuthority::Standing => standing_permission(&pool, &stored)
             .await?
             .ok_or_else(confirmation_needed)?
             .reply(),
@@ -217,7 +212,7 @@ async fn answer_push_request(
         if let Some(interrupted) = interrupted {
             push_confirmed(&app, &pool, &stored.request, &claim, interrupted).await?;
             if authority == (PushAuthority::Person { remember: true })
-                && let Err(error) = remember_push_approval(&pool, &stored, &source).await
+                && let Err(error) = remember_push_approval(&pool, &stored).await
             {
                 eprintln!("The standing push approval was not saved: {error}");
             }
@@ -267,9 +262,10 @@ async fn release_claim(pool: &SqlitePool, claim: &ClaimedPush<'_>) {
     }
 }
 
-/// What lets the open request `stored` push without a person, given the asking run's publish
-/// `source`, or `None` when a person must confirm it. An archived or removed agent never
-/// pushes on its own.
+/// What lets the open request `stored` push without a person, or `None` when a person must
+/// confirm it: an active approval of the agent's push from the folder to the same push URL and
+/// destination branch, given in the request's channel while the channel lets agents ask or own.
+/// An archived or removed agent never pushes on its own.
 ///
 /// # Errors
 ///
@@ -277,56 +273,54 @@ async fn release_claim(pool: &SqlitePool, claim: &ClaimedPush<'_>) {
 async fn standing_permission(
     pool: &SqlitePool,
     stored: &StoredPushRequest,
-    source: &InternalMcpFolderSource,
 ) -> ChatResult<Option<StandingPermission>> {
     if stored.agent_name.is_none() {
         return Ok(None);
     }
-    if source.runtime_approval_policy == ChatRuntimeApprovalPolicy::Unattended {
-        return Ok(Some(StandingPermission::FullAccess));
-    }
-    let approved: bool = sqlx::query_scalar(
+    let approved: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "SELECT EXISTS(
            SELECT 1 FROM chat_push_approvals approval
-           JOIN chat_agents agent ON agent.participant_id = approval.agent_id
-           WHERE approval.agent_id = ? AND approval.working_folder_id = ?
+           JOIN chat_channels channel ON channel.conversation_id = approval.conversation_id
+           WHERE channel.id = ? AND approval.agent_id = ? AND approval.working_folder_id = ?
              AND approval.push_url = ? AND approval.destination_branch = ?
-             AND approval.revoked_at IS NULL AND approval.runtime_approval_policy = ?
-             AND approval.safety_mode = agent.current_policy_safety_mode
+             AND approval.revoked_at IS NULL
+             AND {} IN ('{ask}', '{own}')
          )",
-    )
+        effective_access_level_sql("approval.conversation_id"),
+        ask = ChatAgentAccess::Ask.as_str(),
+        own = ChatAgentAccess::Own.as_str(),
+    )))
+    .bind(&stored.channel_id)
     .bind(&stored.agent_id)
     .bind(&stored.request.working_folder_id)
     .bind(&stored.request.target.push_url)
     .bind(&stored.request.target.destination_branch)
-    .bind(super::wire_runtime_approval_policy(
-        source.runtime_approval_policy,
-    ))
     .fetch_one(pool)
     .await
     .map_err(persistence_error)?;
     Ok(approved.then_some(StandingPermission::Approval))
 }
 
-/// Records, after a person's confirmed push succeeded, that later pushes of the agent from
-/// the folder to the same push URL and destination branch need no confirmation while the run's
-/// approval policy `source` resolved to and the agent's current safety mode stay the same.
-/// Approving again clears an earlier revocation. An agent without a current policy gets no
-/// approval.
+/// Records, after a person's confirmed push succeeded, that later pushes of the agent in the
+/// request's channel from the folder to the same push URL and destination branch need no
+/// confirmation. Approving again clears an earlier revocation.
 ///
 /// # Errors
 ///
 /// Returns a validation error when the key cannot be derived and a persistence error when the
-/// write fails.
-async fn remember_push_approval(
-    pool: &SqlitePool,
-    stored: &StoredPushRequest,
-    source: &InternalMcpFolderSource,
-) -> ChatResult<()> {
+/// read or write fails.
+async fn remember_push_approval(pool: &SqlitePool, stored: &StoredPushRequest) -> ChatResult<()> {
     let request = &stored.request;
+    let conversation_id: String =
+        sqlx::query_scalar("SELECT conversation_id FROM chat_channels WHERE id = ?")
+            .bind(&stored.channel_id)
+            .fetch_one(pool)
+            .await
+            .map_err(persistence_error)?;
     let sync_key = derived_id(
         PUSH_APPROVAL_KEY_PREFIX,
         &[
+            &conversation_id,
             &stored.agent_id,
             &request.working_folder_id,
             &request.target.push_url,
@@ -336,27 +330,22 @@ async fn remember_push_approval(
     let now = now_timestamp()?;
     sqlx::query(
         "INSERT INTO chat_push_approvals
-            (agent_id, working_folder_id, push_url, destination_branch, sync_key,
-             runtime_approval_policy, safety_mode, approved_by_participant_id, approved_at)
-         SELECT agent.participant_id, ?, ?, ?, ?, ?, agent.current_policy_safety_mode, ?, ?
-         FROM chat_agents agent
-         WHERE agent.participant_id = ? AND agent.current_policy_safety_mode IS NOT NULL
-         ON CONFLICT (agent_id, working_folder_id, push_url, destination_branch) DO UPDATE SET
-             runtime_approval_policy = excluded.runtime_approval_policy,
-             safety_mode = excluded.safety_mode,
+            (conversation_id, agent_id, working_folder_id, push_url, destination_branch,
+             sync_key, approved_by_participant_id, approved_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (conversation_id, agent_id, working_folder_id, push_url, destination_branch)
+         DO UPDATE SET
              approved_by_participant_id = excluded.approved_by_participant_id,
              approved_at = excluded.approved_at, revoked_at = NULL, revision = revision + 1",
     )
+    .bind(&conversation_id)
+    .bind(&stored.agent_id)
     .bind(&request.working_folder_id)
     .bind(&request.target.push_url)
     .bind(&request.target.destination_branch)
     .bind(&sync_key)
-    .bind(super::wire_runtime_approval_policy(
-        source.runtime_approval_policy,
-    ))
     .bind(super::LOCAL_PARTICIPANT_ID)
     .bind(now.as_str())
-    .bind(&stored.agent_id)
     .execute(pool)
     .await
     .map_err(persistence_error)?;

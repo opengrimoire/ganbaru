@@ -201,55 +201,45 @@ async fn the_publish_source_comes_from_the_asking_runs_authorization() {
     );
 }
 
-/// Records the fixture agent's current policy with `safety_mode`, which standing approvals
-/// compare against.
-async fn set_agent_safety_mode(pool: &SqlitePool, safety_mode: &str) {
-    sqlx::query(
-        "UPDATE chat_agents SET current_policy_revision_id = 'policy:folders',
-             current_policy_safety_mode = ?
-         WHERE participant_id = 'participant:folder-agent'",
-    )
-    .bind(safety_mode)
-    .execute(pool)
-    .await
-    .unwrap();
+/// Sets the fixture channel's own agent access to `access`.
+async fn set_channel_access(pool: &SqlitePool, access: &str) {
+    sqlx::query("UPDATE chat_channels SET agent_access = ? WHERE conversation_id = ?")
+        .bind(access)
+        .bind(fixture_conversation())
+        .execute(pool)
+        .await
+        .unwrap();
 }
 
-/// A pool whose fixture run may publish from `workspace-1` under the ask policy, with the
-/// agent's safety mode recorded, and the open request and publish source of that run.
+fn fixture_conversation() -> String {
+    ganbaru_chat::project_defaults::default_channel_ids("project-chat")
+        .unwrap()
+        .0
+}
+
+/// A pool whose fixture run may publish from `workspace-1`, and the open request of that run in
+/// the fixture channel with its publish source.
 async fn standing_fixture() -> (SqlitePool, StoredPushRequest, InternalMcpFolderSource) {
     let pool = pool_with_folder_runs().await;
     grant_publish(&pool, "workspace-1").await;
-    set_agent_safety_mode(&pool, "ask_for_approval").await;
-    let stored = stored(request("workspace-1", None), Some("authorization:working"));
+    let (_, channel_id) =
+        ganbaru_chat::project_defaults::default_channel_ids("project-chat").unwrap();
+    let stored = StoredPushRequest {
+        channel_id,
+        ..stored(request("workspace-1", None), Some("authorization:working"))
+    };
     let source = publish_source(&pool, &stored).await.unwrap();
     (pool, stored, source)
 }
 
 #[tokio::test]
-async fn a_standing_push_needs_a_matching_approval_or_a_full_access_turn() {
-    let (pool, stored, source) = standing_fixture().await;
-    assert_eq!(
-        standing_permission(&pool, &stored, &source).await.unwrap(),
-        None
-    );
+async fn a_standing_push_needs_a_matching_approval_in_a_channel_at_ask_or_own() {
+    let (pool, stored, _) = standing_fixture().await;
+    assert_eq!(standing_permission(&pool, &stored).await.unwrap(), None);
 
-    let full_access = InternalMcpFolderSource {
-        runtime_approval_policy: ChatRuntimeApprovalPolicy::Unattended,
-        ..source.clone()
-    };
+    remember_push_approval(&pool, &stored).await.unwrap();
     assert_eq!(
-        standing_permission(&pool, &stored, &full_access)
-            .await
-            .unwrap(),
-        Some(StandingPermission::FullAccess)
-    );
-
-    remember_push_approval(&pool, &stored, &source)
-        .await
-        .unwrap();
-    assert_eq!(
-        standing_permission(&pool, &stored, &source).await.unwrap(),
+        standing_permission(&pool, &stored).await.unwrap(),
         Some(StandingPermission::Approval)
     );
 
@@ -261,6 +251,8 @@ async fn a_standing_push_needs_a_matching_approval_or_a_full_access_turn() {
     other_folder.request.working_folder_id = "workspace-2".to_string();
     let mut other_agent = stored.clone();
     other_agent.agent_id = "participant:local-owner".to_string();
+    let mut other_channel = stored.clone();
+    other_channel.channel_id = "channel:push".to_string();
     let mut removed_agent = stored.clone();
     removed_agent.agent_name = None;
     for (case, request) in [
@@ -268,66 +260,53 @@ async fn a_standing_push_needs_a_matching_approval_or_a_full_access_turn() {
         ("push URL", &other_url),
         ("folder", &other_folder),
         ("agent", &other_agent),
+        ("channel", &other_channel),
         ("removed agent", &removed_agent),
     ] {
         assert_eq!(
-            standing_permission(&pool, request, &source).await.unwrap(),
+            standing_permission(&pool, request).await.unwrap(),
             None,
             "another {case} asks again"
         );
     }
-    assert_eq!(
-        standing_permission(&pool, &removed_agent, &full_access)
-            .await
-            .unwrap(),
-        None,
-        "a removed agent never pushes on its own"
-    );
-    let auto_approve = InternalMcpFolderSource {
-        runtime_approval_policy: ChatRuntimeApprovalPolicy::AutoApprove,
-        ..source.clone()
-    };
-    assert_eq!(
-        standing_permission(&pool, &stored, &auto_approve)
-            .await
-            .unwrap(),
-        None,
-        "another approval policy asks again"
-    );
 
-    set_agent_safety_mode(&pool, "approve_for_me").await;
-    assert_eq!(
-        standing_permission(&pool, &stored, &source).await.unwrap(),
-        None,
-        "a changed safety mode drops the approval"
-    );
+    for (access, expected) in [
+        ("talk", None),
+        ("read", None),
+        ("own", Some(StandingPermission::Approval)),
+        ("ask", Some(StandingPermission::Approval)),
+    ] {
+        set_channel_access(&pool, access).await;
+        assert_eq!(
+            standing_permission(&pool, &stored).await.unwrap(),
+            expected,
+            "a channel at {access}"
+        );
+    }
 }
 
 #[tokio::test]
 async fn remembering_a_push_approves_again_under_one_key_by_the_local_person() {
-    let (pool, stored, source) = standing_fixture().await;
-    remember_push_approval(&pool, &stored, &source)
-        .await
-        .unwrap();
+    let (pool, stored, _) = standing_fixture().await;
+    remember_push_approval(&pool, &stored).await.unwrap();
     sqlx::query("UPDATE chat_push_approvals SET revoked_at = '2026-10-20T12:30:00.000Z', revision = revision + 1")
         .execute(&pool)
         .await
         .unwrap();
-    remember_push_approval(&pool, &stored, &source)
-        .await
-        .unwrap();
+    remember_push_approval(&pool, &stored).await.unwrap();
 
-    let rows: Vec<(String, String, String, String, Option<String>, i64)> = sqlx::query_as(
-        "SELECT sync_key, runtime_approval_policy, safety_mode, approved_by_participant_id,
-                revoked_at, revision
+    let rows: Vec<(String, String, String, Option<String>, i64)> = sqlx::query_as(
+        "SELECT sync_key, conversation_id, approved_by_participant_id, revoked_at, revision
          FROM chat_push_approvals",
     )
     .fetch_all(&pool)
     .await
     .unwrap();
+    let conversation = fixture_conversation();
     let expected_key = derived_id(
         PUSH_APPROVAL_KEY_PREFIX,
         &[
+            &conversation,
             "participant:folder-agent",
             "workspace-1",
             "git@example.invalid:org/repo.git",
@@ -339,27 +318,10 @@ async fn remembering_a_push_approves_again_under_one_key_by_the_local_person() {
         rows,
         [(
             expected_key,
-            "ask".to_string(),
-            "ask_for_approval".to_string(),
+            conversation,
             "participant:local-owner".to_string(),
             None,
             3
         )]
     );
-}
-
-#[tokio::test]
-async fn a_agent_without_a_current_policy_gets_no_approval() {
-    let pool = pool_with_folder_runs().await;
-    grant_publish(&pool, "workspace-1").await;
-    let stored = stored(request("workspace-1", None), Some("authorization:working"));
-    let source = publish_source(&pool, &stored).await.unwrap();
-    remember_push_approval(&pool, &stored, &source)
-        .await
-        .unwrap();
-    let approvals: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_push_approvals")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(approvals, 0);
 }

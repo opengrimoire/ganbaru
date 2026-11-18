@@ -46,10 +46,6 @@ fn chat_derives_sync_keys_with_the_manifest_prefixes() {
         chat::CHANNEL_MEMBERSHIP_KEY_PREFIX
     );
     assert_eq!(
-        conversion::FOLDER_GRANT_KEY_PREFIX,
-        chat::FOLDER_GRANT_KEY_PREFIX
-    );
-    assert_eq!(
         ganbaru_chat::ids::REPLY_THREAD_ID_PREFIX,
         chat::REPLY_THREAD_KEY_PREFIX
     );
@@ -67,12 +63,12 @@ fn chat_derives_sync_keys_with_the_manifest_prefixes() {
 fn every_replicated_table_with_derived_chat_state_has_a_hook() {
     let derived = [
         sync_effects::PARTICIPANTS_TABLE,
-        sync_effects::AGENTS_TABLE,
-        sync_effects::POLICY_REVISIONS_TABLE,
+        sync_effects::APP_SETTINGS_TABLE,
+        sync_effects::PROJECT_SETTINGS_TABLE,
+        sync_effects::CHANNELS_TABLE,
         sync_effects::CONVERSATIONS_TABLE,
         sync_effects::MEMBERSHIPS_TABLE,
         sync_effects::CHANNEL_MEMBERSHIPS_TABLE,
-        sync_effects::FOLDER_GRANTS_TABLE,
         sync_effects::MESSAGES_TABLE,
         sync_effects::MESSAGE_REVISIONS_TABLE,
         sync_effects::ASSIGNMENTS_TABLE,
@@ -95,20 +91,10 @@ fn every_replicated_table_with_derived_chat_state_has_a_hook() {
     );
 }
 
-/// The folder grant settle returns the strictest override by the Chat order, so that order must
-/// be the one sync ranks grant versions by, or a settled value could rank below a version.
+/// The engine refuses a hook it cannot run, so building the vault engine with the Chat hooks
+/// proves they are admissible.
 #[test]
-fn the_settle_approval_order_is_the_sync_grant_ranking() {
-    assert_eq!(
-        ganbaru_chat::sync_effects::APPROVAL_ORDER,
-        ganbaru_sync::domains::chat::APPROVAL_POLICIES
-    );
-}
-
-/// The engine refuses a hook that settles a group it cannot write back, so building the vault
-/// engine with the Chat hooks proves the folder grant and channel access settles are admissible.
-#[test]
-fn the_vault_engine_accepts_the_chat_folder_grant_settle() {
+fn the_vault_engine_accepts_the_chat_hooks() {
     let hooks = with_hooks(Hooks::new());
     assert!(
         ganbaru_sync::Engine::with(
@@ -118,121 +104,6 @@ fn the_vault_engine_accepts_the_chat_folder_grant_settle() {
         )
         .is_ok()
     );
-    assert_eq!(
-        ChatApplyHook.settled_groups(&chat::FOLDER_GRANTS),
-        &[folder_grant_group::GRANT]
-    );
-    assert_eq!(
-        ChatApplyHook.settled_groups(&chat::CHANNEL_MEMBERSHIPS),
-        &[channel_membership_group::ACCESS]
-    );
-}
-
-/// A channel access version reading entire history, participating when `participate` is set.
-fn access_version(
-    writer: u8,
-    participate: bool,
-    channel: Option<&str>,
-    scratch: Option<&str>,
-    removed: bool,
-    won: bool,
-) -> ConcurrentVersion {
-    let optional = |policy: Option<&str>| policy.map_or(Field::Null, |p| Field::Text(p.into()));
-    ConcurrentVersion {
-        writer: ganbaru_sync_contracts::WriterId::from_bytes([writer; 16]),
-        clock: ganbaru_sync_contracts::Hlc::new(u64::from(writer), 0),
-        value: Value::new(vec![
-            Field::Integer(1),
-            Field::Integer(i64::from(participate)),
-            Field::Text("entire".to_string()),
-            Field::Null,
-            optional(channel),
-            optional(scratch),
-            if removed {
-                Field::Text(NOW.to_string())
-            } else {
-                Field::Null
-            },
-        ])
-        .unwrap(),
-        won,
-    }
-}
-
-/// A participation clear concurrent with an "ask" edit the priority kept settles onto both, a
-/// removal stands, and an access value round-trips through its codec.
-#[test]
-fn a_channel_access_settle_keeps_a_cleared_participation_and_a_removal() {
-    let narrowing = [
-        access_version(1, false, None, None, false, false),
-        access_version(2, true, Some("ask"), None, false, true),
-    ];
-    assert_eq!(
-        settle_channel_access(&narrowing),
-        Some(access_version(3, false, Some("ask"), None, false, true).value)
-    );
-
-    let removed = [
-        access_version(1, false, None, None, false, false),
-        access_version(2, true, Some("ask"), None, true, true),
-    ];
-    assert_eq!(settle_channel_access(&removed), None);
-
-    let live = access_version(1, true, Some("ask"), Some("unattended"), false, true);
-    let decoded = channel_access(&live.value).expect("a live access value");
-    assert_eq!(channel_access_value(decoded), Some(live.value));
-}
-
-fn grant_version(
-    writer: u8,
-    approval: Option<&str>,
-    revoked: bool,
-    won: bool,
-) -> ConcurrentVersion {
-    ConcurrentVersion {
-        writer: ganbaru_sync_contracts::WriterId::from_bytes([writer; 16]),
-        clock: ganbaru_sync_contracts::Hlc::new(u64::from(writer), 0),
-        value: Value::new(vec![
-            Field::Text("edit".to_string()),
-            Field::Integer(1),
-            approval.map_or(Field::Null, |policy| Field::Text(policy.to_string())),
-            if revoked {
-                Field::Text(NOW.to_string())
-            } else {
-                Field::Null
-            },
-        ])
-        .unwrap(),
-        won,
-    }
-}
-
-/// A revoked winner stands, and a grant whose row or channel is missing keeps its winner, since
-/// the settle reads only replicated rows.
-#[tokio::test]
-async fn a_folder_grant_settle_keeps_a_revocation_and_a_grant_without_a_channel_override() {
-    let pool = migrated_pool().await;
-    let mut connection = pool.acquire().await.unwrap();
-    let revoked = [
-        grant_version(1, Some("unattended"), true, true),
-        grant_version(2, None, false, false),
-    ];
-    assert_eq!(
-        settle_folder_grant(&mut connection, "grant:missing", &revoked)
-            .await
-            .unwrap(),
-        None
-    );
-    let live = [
-        grant_version(1, Some("unattended"), false, true),
-        grant_version(2, None, false, false),
-    ];
-    assert_eq!(
-        settle_folder_grant(&mut connection, "grant:missing", &live)
-            .await
-            .unwrap(),
-        None
-    );
 }
 
 #[test]
@@ -240,15 +111,13 @@ fn only_revocations_removals_and_assignment_work_are_reported() {
     let mut sink = CollectingSink::default();
     report_effects(
         ChatSyncEffects {
-            access_state_created: BTreeSet::from(["participant:created".to_string()]),
-            access_revised: BTreeSet::from(["participant:revised".to_string()]),
             audience_revised: BTreeSet::from(["conversation:revised".to_string()]),
             revoked_agents: BTreeSet::from([
                 "participant:b".to_string(),
                 "participant:a".to_string(),
             ]),
+            lapsed_push_approvals: BTreeSet::from(["conversation:lapsed".to_string()]),
             search_rebuilt: BTreeSet::from(["item:rebuilt".to_string()]),
-            mismatched_pointers: BTreeSet::from(["participant:mismatched".to_string()]),
             removed_conversations: BTreeSet::from(["conversation:removed".to_string()]),
             reclaimed_attachments: BTreeSet::from(["attachment:reclaimed".to_string()]),
             queued_assignments: BTreeSet::from(["assignment:queued".to_string()]),
@@ -270,6 +139,7 @@ fn only_revocations_removals_and_assignment_work_are_reported() {
         vec![
             (CHAT_ACCESS_REVOKED_TOPIC, "participant:a"),
             (CHAT_ACCESS_REVOKED_TOPIC, "participant:b"),
+            (CHAT_PUSH_APPROVALS_LAPSED_TOPIC, "conversation:lapsed"),
             (CHAT_CONVERSATION_REMOVED_TOPIC, "conversation:removed"),
             (CHAT_ASSIGNMENT_REMOVED_TOPIC, "assignment:removed"),
             (CHAT_ASSIGNMENT_QUEUED_TOPIC, "assignment:queued"),
@@ -322,6 +192,7 @@ fn assignment_notices_hand_queued_and_started_work_and_pending_inputs_to_dispatc
         notice(CHAT_DELEGATION_SETTLED_TOPIC, "assignment:delegated"),
         notice(CHAT_ASSIGNMENT_STARTED_TOPIC, "assignment:started"),
         notice(CHAT_ASSIGNMENT_QUEUED_TOPIC, "assignment:queued"),
+        notice(CHAT_PUSH_APPROVALS_LAPSED_TOPIC, "conversation:lapsed"),
         notice(CHAT_ACCESS_REVOKED_TOPIC, AGENT_ID),
     ]);
     assert_eq!(
@@ -331,122 +202,13 @@ fn assignment_notices_hand_queued_and_started_work_and_pending_inputs_to_dispatc
             started: BTreeSet::from(["assignment:started".to_string()]),
             routed: BTreeSet::from(["assignment:routed".to_string()]),
             delegated: BTreeSet::from(["assignment:delegated".to_string()]),
+            push_approvals_lapsed: true,
         }
     );
     assert_eq!(
         waker::assignment_work(&[notice("music-root", "assignment:queued")]),
         waker::SyncedAssignmentWork::default()
     );
-}
-
-#[tokio::test]
-async fn materialized_agents_get_access_state_without_waking_the_drain() {
-    let pool = migrated_pool().await;
-    sqlx::query("UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-        "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
-         VALUES ('{AGENT_ID}', 'ai_agent', 'Hook agent', '{NOW}', '{NOW}');
-         INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
-         VALUES ('{AGENT_ID}', 'Test', '{NOW}', '{NOW}');"
-    )))
-    .execute(&pool)
-    .await
-    .unwrap();
-    let access_rows: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM chat_agent_access_state WHERE agent_id = ?")
-            .bind(AGENT_ID)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(access_rows, 0);
-
-    let mut connection = pool.acquire().await.unwrap();
-    let mut sink = CollectingSink::default();
-    ChatApplyHook
-        .after_materialize(
-            &mut connection,
-            &chat::AGENTS,
-            &[AGENT_ID.to_string()],
-            &mut sink,
-        )
-        .await
-        .unwrap();
-    drop(connection);
-
-    let access_rows: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM chat_agent_access_state WHERE agent_id = ?")
-            .bind(AGENT_ID)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(access_rows, 1);
-    assert!(sink.0.is_empty());
-}
-
-/// A hostile writer could send a pointer whose copy disagrees with its revision; failing the hook
-/// would turn that row into a sync error that stops every later apply on this device.
-#[tokio::test]
-async fn a_mismatched_pointer_applies_without_effective_access_or_blocking_later_rows() {
-    let pool = migrated_pool().await;
-    sqlx::query("UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-        "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
-         VALUES ('{AGENT_ID}', 'ai_agent', 'Hook agent', '{NOW}', '{NOW}'),
-                ('participant:later', 'ai_agent', 'Later agent', '{NOW}', '{NOW}');
-         INSERT INTO chat_agents (participant_id, role, created_at, updated_at)
-         VALUES ('{AGENT_ID}', 'Test', '{NOW}', '{NOW}'),
-                ('participant:later', 'Test', '{NOW}', '{NOW}');
-         INSERT INTO chat_agent_policy_revisions
-            (id, agent_id, provider_instance_id, model_selection_data, created_at)
-         VALUES ('policy:hook', '{AGENT_ID}', 'codex-personal', '{{}}', '{NOW}');
-         UPDATE chat_agents
-         SET current_policy_revision_id = 'policy:hook', current_policy_safety_mode = 'full_access'
-         WHERE participant_id = '{AGENT_ID}';"
-    )))
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    let mut connection = pool.acquire().await.unwrap();
-    let mut sink = CollectingSink::default();
-    ChatApplyHook
-        .after_materialize(
-            &mut connection,
-            &chat::AGENTS,
-            &[AGENT_ID.to_string()],
-            &mut sink,
-        )
-        .await
-        .unwrap();
-    ChatApplyHook
-        .after_materialize(
-            &mut connection,
-            &chat::AGENTS,
-            &["participant:later".to_string()],
-            &mut sink,
-        )
-        .await
-        .unwrap();
-    drop(connection);
-
-    let effective: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM chat_agent_effective_policies WHERE agent_id = ?")
-            .bind(AGENT_ID)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(effective, 0);
-    let access_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_agent_access_state")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(access_rows, 2);
 }
 
 const ATTACHMENT_DIGEST: &str = "5f2b0c4e8d6a1b3f7e9c2d4a6b8f0e1c3d5a7b9f1e2c4d6a8b0f2e4c6d8a0b1c";

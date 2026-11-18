@@ -37,6 +37,7 @@ impl ChatProviderDeviceState {
     /// Stores the usage limits a provider reported unless a newer report is already stored, and
     /// reports whether it was stored. A probe and a turn can report in either order, so the
     /// newest observation wins.
+    #[cfg(desktop)]
     pub fn observe_usage_limits(
         &mut self,
         status: RateLimitStatusEvent,
@@ -58,6 +59,7 @@ impl ChatProviderDeviceState {
 
     /// Whether this device heard from the instance less than `max_age` before `now`, through a
     /// successful status probe or a usage limit report.
+    #[cfg(desktop)]
     pub fn has_reading_within(
         &self,
         now: chrono::DateTime<chrono::Utc>,
@@ -342,6 +344,7 @@ pub fn record_dismissed_schedule_proposal(
 }
 
 /// Orders two stored timestamps by instant; text order differs across fraction precisions.
+#[cfg(desktop)]
 fn is_after(candidate: &UtcTimestamp, reference: &UtcTimestamp) -> bool {
     let instant = |value: &UtcTimestamp| chrono::DateTime::parse_from_rfc3339(value.as_str()).ok();
     match (instant(candidate), instant(reference)) {
@@ -353,6 +356,7 @@ fn is_after(candidate: &UtcTimestamp, reference: &UtcTimestamp) -> bool {
 
 /// Stores a usage limit report for an instance this device keeps; see
 /// [`ChatProviderDeviceState::observe_usage_limits`].
+#[cfg(desktop)]
 pub fn record_provider_usage_limits(
     scope: &mut ChatDeviceScope,
     instance_id: &ProviderInstanceId,
@@ -368,6 +372,7 @@ pub fn record_provider_usage_limits(
 /// Marks an instance as the most recently used on this device and reports whether the order
 /// across instances changed. An instance that is already the most recent keeps its older
 /// time, so consecutive turns on one provider never rewrite device state.
+#[cfg(desktop)]
 pub fn record_provider_use(
     scope: &mut ChatDeviceScope,
     instance_id: &ProviderInstanceId,

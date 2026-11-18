@@ -2,6 +2,7 @@
 
 pub mod acceptance;
 pub mod access;
+pub mod agent_settings;
 pub mod contracts;
 pub mod delegation;
 #[cfg(feature = "native-runtime")]

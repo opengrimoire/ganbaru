@@ -26,8 +26,6 @@ export interface ChatPortableProviderConfig {
   launchArguments: string[];
   environment: Record<string, string>;
   credentialReferences: Record<string, CredentialReferenceId>;
-  visibleModelIds: ModelId[];
-  favoriteModelIds: ModelId[];
   providerConfig: VersionedJson;
   [unknownField: string]: unknown;
 }

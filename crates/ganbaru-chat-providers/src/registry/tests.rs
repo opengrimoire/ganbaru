@@ -157,8 +157,6 @@ fn the_generic_acp_family_is_listed_and_creates_its_driver() {
         "launchArguments": [],
         "environment": {},
         "credentialReferences": {},
-        "visibleModelIds": [],
-        "favoriteModelIds": [],
         "providerConfig": { "schemaVersion": 1, "value": { "authMethod": "api-key" } }
     }))
     .unwrap();

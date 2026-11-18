@@ -87,8 +87,6 @@ describe("provider setup", () => {
     const current = {
       ...providerConfigurationFromDraft(draft),
       enabled: false,
-      visibleModelIds: ["gpt-5.6-sol"],
-      favoriteModelIds: ["gpt-5.6-sol"],
     };
 
     draft.executable = "/opt/codex/bin/codex";
@@ -96,8 +94,6 @@ describe("provider setup", () => {
 
     expect(updated.executable).toBe("/opt/codex/bin/codex");
     expect(updated.enabled).toBe(false);
-    expect(updated.visibleModelIds).toEqual(["gpt-5.6-sol"]);
-    expect(updated.favoriteModelIds).toEqual(["gpt-5.6-sol"]);
   });
 
   it("requires workspace consent for external OpenCode servers", () => {

@@ -156,8 +156,6 @@ mod tests {
             "launchArguments": [],
             "environment": {},
             "credentialReferences": {},
-            "visibleModelIds": [],
-            "favoriteModelIds": [],
             "providerConfig": { "schemaVersion": 1, "value": {} }
         }))
         .unwrap();

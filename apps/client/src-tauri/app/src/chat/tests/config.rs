@@ -16,8 +16,6 @@ fn valid_device_config() -> serde_json::Value {
             "launchArguments": ["--profile", "work"],
             "environment": { "RUST_LOG": "warn" },
             "credentialReferences": { "API_TOKEN": "credential-1" },
-            "visibleModelIds": ["gpt-5-codex"],
-            "favoriteModelIds": ["gpt-5-codex"],
             "providerConfig": { "schemaVersion": 1, "value": {} },
             "futurePortableField": { "preserved": true }
         }],

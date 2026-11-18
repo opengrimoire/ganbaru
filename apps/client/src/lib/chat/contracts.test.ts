@@ -483,8 +483,6 @@ describe("Chat provider contracts", () => {
       launchArguments: ["serve"],
       environment: { SAFE_MODE: "1" },
       credentialReferences: { API_TOKEN: "credential-1" },
-      visibleModelIds: ["model-1"],
-      favoriteModelIds: [],
       providerConfig: {
         schemaVersion: 7,
         value: { futureOption: [true, 4, "value"] },
@@ -615,8 +613,6 @@ describe("Chat provider contracts", () => {
         launchArguments: [],
         environment: {},
         credentialReferences: {},
-        visibleModelIds: [],
-        favoriteModelIds: [],
         providerConfig: { schemaVersion: 1, value: {} },
       },
       lastProbe: null,
@@ -800,8 +796,6 @@ describe("Chat configuration", () => {
         launchArguments: [],
         environment: {},
         credentialReferences: { API_TOKEN: "credential-1" },
-        visibleModelIds: ["gpt-5-codex"],
-        favoriteModelIds: ["gpt-5-codex"],
         providerConfig: { schemaVersion: 1, value: {} },
         futurePortableOption: { enabled: true },
       }],
@@ -877,8 +871,6 @@ describe("Chat configuration", () => {
       launchArguments: [],
       environment: {},
       credentialReferences: {},
-      visibleModelIds: [],
-      favoriteModelIds: [],
       providerConfig: { schemaVersion: 1, value: {} },
     };
     for (const field of [
@@ -886,8 +878,6 @@ describe("Chat configuration", () => {
       "launchArguments",
       "environment",
       "credentialReferences",
-      "visibleModelIds",
-      "favoriteModelIds",
     ] as const) {
       const incomplete = { ...provider };
       delete incomplete[field];
@@ -953,8 +943,6 @@ describe("Chat configuration", () => {
         launchArguments: [],
         environment: {},
         credentialReferences: {},
-        visibleModelIds: [],
-        favoriteModelIds: [],
         providerConfig: { schemaVersion: 1, value: {} },
       }],
     })).toThrow("contains machine-specific field executable");

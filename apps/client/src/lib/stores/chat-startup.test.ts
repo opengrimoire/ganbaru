@@ -172,7 +172,7 @@ describe("Chat startup", () => {
       configuration: {
         schemaVersion: 1, instanceId: "provider", familyId: "codex", label: "Codex",
         enabled: true, executable: "codex", providerHome: null, launchArguments: [],
-        environment: {}, credentialReferences: {}, visibleModelIds: [], favoriteModelIds: [],
+        environment: {}, credentialReferences: {},
         providerConfig: { schemaVersion: 1, value: {} },
       },
       lastProbe: null, lastSuccessfulProbeAt: null, modelCatalog: null, runtimeReview: [], usageLimits: null, lastUsedAt: null, duplicateOf: null,

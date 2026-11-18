@@ -1,12 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { ProbeState, ProviderAccountPlan, ProviderInstanceRead, ProviderModel } from "$lib/chat/contracts";
 import {
-  buildModelCompanySections,
   familiesInPickerOrder,
-  firstPickerChoice,
   providersInPickerOrder,
-  resolveAgentSelection,
-  resolveRecommendedSelection,
 } from "./model-picker-model";
 
 const NOW_MS = Date.parse("2026-11-17T12:00:00Z");
@@ -31,8 +27,6 @@ function provider(
   options: {
     state?: ProbeState;
     models?: ProviderModel[];
-    recommendedModelId?: string | null;
-    favoriteModelIds?: string[];
     lastUsedAt?: string | null;
     accountPlan?: ProviderAccountPlan | null;
   } = {},
@@ -50,8 +44,6 @@ function provider(
       launchArguments: [],
       environment: {},
       credentialReferences: {},
-      visibleModelIds: [],
-      favoriteModelIds: options.favoriteModelIds ?? [],
       providerConfig: { schemaVersion: 1, value: {} },
     },
     runtimeReview: [],
@@ -82,7 +74,7 @@ function provider(
     },
     lastSuccessfulProbeAt: state === "healthy" ? "2026-11-17T11:00:00Z" : null,
     modelCatalog: options.models
-      ? { instanceId, models: options.models, recommendedModelId: options.recommendedModelId ?? null, source: "provider", discoveredAt: "2026-11-17T11:00:00Z", stale: false }
+      ? { instanceId, models: options.models, recommendedModelId: null, source: "provider", discoveredAt: "2026-11-17T11:00:00Z", stale: false }
       : null,
     usageLimits: null,
     lastUsedAt: options.lastUsedAt ?? null,
@@ -112,8 +104,6 @@ describe("picker order", () => {
     });
     const claudePaid = provider("claude-main", "claude", { accountPlan: "subscription", models: [model("opus")] });
     expect(ids(providersInPickerOrder([codexFree, claudePaid], NOW_MS))).toEqual(["claude-main", "codex-main"]);
-    expect(buildModelCompanySections([codexFree, claudePaid], [], { providerInstanceId: null, modelId: null, providerManaged: false }, "", "Model set in the provider", "en", NOW_MS)
-      .map((section) => section.company.id)).toEqual(["anthropic", "openai"]);
   });
 
   it("lets the most recent use decide between equal plans", () => {
@@ -139,110 +129,3 @@ describe("picker order", () => {
   });
 });
 
-describe("first picker choice", () => {
-  it("takes the first usable favorite before any company section", () => {
-    const codex = provider("codex-main", "codex", { models: [model("gpt-5.5")] });
-    const claude = provider("claude-main", "claude", {
-      models: [model("claude-opus-5-5"), model("claude-haiku-5-5")],
-      favoriteModelIds: ["claude-haiku-5-5"],
-    });
-    const choice = firstPickerChoice([codex, claude], [], NOW_MS);
-    expect(choice?.provider.configuration.instanceId).toBe("claude-main");
-    expect(choice?.model?.id).toBe("claude-haiku-5-5");
-    expect(choice?.providerManaged).toBe(false);
-  });
-
-  it("skips unusable favorites and takes the first model of the first section", () => {
-    const codex = provider("codex-main", "codex", {
-      models: [model("gpt-5.5"), model("gpt-old", { availability: "unavailable" })],
-      favoriteModelIds: ["gpt-old"],
-    });
-    const claude = provider("claude-main", "claude", {
-      models: [model("claude-opus-5-5")],
-      lastUsedAt: "2026-11-17T10:00:00Z",
-    });
-    const choice = firstPickerChoice([codex, claude], [], NOW_MS);
-    expect(choice?.provider.configuration.instanceId).toBe("claude-main");
-    expect(choice?.model?.id).toBe("claude-opus-5-5");
-  });
-
-  it("offers a provider-managed choice for a provider without a catalog", () => {
-    const choice = firstPickerChoice([provider("cursor-main", "cursor")], [], NOW_MS);
-    expect(choice).toMatchObject({ model: null, providerManaged: true });
-    expect(choice?.provider.configuration.instanceId).toBe("cursor-main");
-  });
-
-  it("returns nothing when no provider can take work", () => {
-    const signedOut = provider("codex-main", "codex", { state: "authentication_required", models: [model("gpt-5.5")] });
-    expect(firstPickerChoice([signedOut], [], NOW_MS)).toBeNull();
-  });
-});
-
-describe("models without a provider default", () => {
-  const unselected = { providerInstanceId: null, modelId: null, providerManaged: false };
-
-  function configuredRows(providers: ProviderInstanceRead[]): string[] {
-    return buildModelCompanySections(providers, [], unselected, "", "Model set in the provider", "en", NOW_MS)
-      .flatMap((section) => section.managedProviders.map((entry) => entry.configuration.instanceId));
-  }
-
-  it("offers the provider's configured model only for providers without discovered models", () => {
-    const codex = provider("codex-main", "codex", { models: [model("gpt-5.6-sol")] });
-    const cursor = provider("cursor-main", "cursor");
-    expect(configuredRows([codex, cursor])).toEqual(["cursor-main"]);
-  });
-
-  it("shows a selection without a model as the catalog's recommended model", () => {
-    const claude = provider("claude-main", "claude", {
-      models: [model("fable"), model("opus"), model("sonnet")],
-      recommendedModelId: "opus",
-    });
-    const managed = { modelId: null, providerManaged: true, options: [] };
-    expect(resolveRecommendedSelection(claude, managed)).toEqual({ modelId: "opus", providerManaged: false, options: [] });
-    expect(resolveRecommendedSelection(provider("cursor-main", "cursor"), managed)).toBe(managed);
-    const named = { modelId: "sonnet", providerManaged: false };
-    expect(resolveRecommendedSelection(claude, named)).toBe(named);
-  });
-
-  it("falls back to the strongest visible model when the recommendation is hidden", () => {
-    const claude = provider("claude-main", "claude", {
-      models: [model("sonnet"), model("fable"), model("opus")],
-      recommendedModelId: "opus",
-    });
-    claude.configuration.visibleModelIds = ["sonnet", "fable"];
-    const managed = { modelId: null, providerManaged: true, options: [] };
-    expect(resolveRecommendedSelection(claude, managed).modelId).toBe("fable");
-  });
-});
-
-describe("resolveAgentSelection", () => {
-  const effort = (values: string[]) => [{
-    kind: "choice" as const,
-    key: "effort",
-    label: "Effort",
-    description: null,
-    options: values.map((value) => ({ value, label: value, description: null })),
-    defaultValue: null,
-  }];
-
-  it("freezes the recommendation and starts the effort on medium, else the highest", () => {
-    const claude = provider("claude-main", "claude", {
-      models: [model("opus", { options: effort(["low", "medium", "high"]) }), model("haiku", { options: effort(["low", "high"]) }), model("plain")],
-      recommendedModelId: "opus",
-    });
-    expect(resolveAgentSelection(claude, { modelId: null, providerManaged: true, options: [] })).toEqual({
-      modelId: "opus",
-      providerManaged: false,
-      options: [{ key: "effort", value: { kind: "choice", value: "medium" } }],
-    });
-    expect(resolveAgentSelection(claude, { modelId: "haiku", providerManaged: false, options: [] }).options)
-      .toEqual([{ key: "effort", value: { kind: "choice", value: "high" } }]);
-    expect(resolveAgentSelection(claude, { modelId: "plain", providerManaged: false, options: [] }).options).toEqual([]);
-  });
-
-  it("keeps options a person chose", () => {
-    const claude = provider("claude-main", "claude", { models: [model("opus", { options: effort(["low", "medium"]) })] });
-    const chosen = { modelId: "opus", providerManaged: false, options: [{ key: "effort", value: { kind: "choice" as const, value: "low" } }] };
-    expect(resolveAgentSelection(claude, chosen)).toBe(chosen);
-  });
-});

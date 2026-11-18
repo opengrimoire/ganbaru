@@ -381,7 +381,6 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::provider_updates::chat_run_provider_update,
             chat::settings_commands::chat_refresh_all_providers,
             chat::settings_commands::chat_refresh_provider_models,
-            chat::settings_commands::chat_update_provider_models,
             chat::settings_commands::chat_update_behavior,
             chat::settings_commands::chat_update_panels,
             chat::settings_commands::chat_set_working_folder_provider_preference,

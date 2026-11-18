@@ -137,7 +137,7 @@ function provider(instanceId: string, familyId: string, label: string): Provider
     configuration: {
       schemaVersion: 1, instanceId, familyId, label, enabled: true,
       executable: "provider", providerHome: null, launchArguments: [], environment: {},
-      credentialReferences: {}, visibleModelIds: [], favoriteModelIds: [],
+      credentialReferences: {},
       providerConfig: { schemaVersion: 1, value: {} },
     },
     lastProbe: null, modelCatalog: null, lastSuccessfulProbeAt: null, runtimeReview: [], usageLimits: null, lastUsedAt: null, duplicateOf: null,

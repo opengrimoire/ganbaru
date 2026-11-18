@@ -32,7 +32,6 @@ import type {
   ProjectWorkingFolderRead,
   CreateProjectWorkingFolderRequest,
   InteractionMode,
-  ModelId,
   ProviderInstanceConfig,
   ProviderInstanceId,
   ProviderInstanceRead,
@@ -1333,10 +1332,6 @@ export class ChatStore {
 
   async refreshModels(instanceId: ProviderInstanceId): Promise<void> {
     return this.configurationController.refreshModels(instanceId);
-  }
-
-  async updateModels(instanceId: ProviderInstanceId, visible: ModelId[], favorites: ModelId[]): Promise<void> {
-    return this.configurationController.updateModels(instanceId, visible, favorites);
   }
 
   async updateBehavior(behavior: ChatBehaviorPreferences): Promise<void> {

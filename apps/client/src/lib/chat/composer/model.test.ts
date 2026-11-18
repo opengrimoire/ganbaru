@@ -51,8 +51,6 @@ function provider(
       launchArguments: [],
       environment: {},
       credentialReferences: {},
-      visibleModelIds: [],
-      favoriteModelIds: [],
       providerConfig: { schemaVersion: 1, value: {} },
     },
     runtimeReview: [],

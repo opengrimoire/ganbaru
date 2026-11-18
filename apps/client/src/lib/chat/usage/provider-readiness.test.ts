@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProbeState, ProviderInstanceRead, ProviderUsageLimitsObservation } from "$lib/chat/contracts";
-import { buildModelCompanySections } from "$lib/chat/composer/model-picker-model";
+import { providersInPickerOrder } from "$lib/chat/composer/model-picker-model";
 import {
   compareProviderReadiness,
   planLimitWindowName,
@@ -34,8 +34,6 @@ function provider(
       launchArguments: [],
       environment: {},
       credentialReferences: {},
-      visibleModelIds: [],
-      favoriteModelIds: [],
       providerConfig: { schemaVersion: 1, value: {} },
     },
     runtimeReview: [],
@@ -162,16 +160,8 @@ describe("provider readiness", () => {
     expect(compareProviderReadiness(provider("codex", { usageLimits: limited }), older, NOW_MS)).toBeGreaterThan(0);
   });
 
-  it("puts a company served by a signed-in provider ahead of one whose provider needs sign-in", () => {
-    const sections = buildModelCompanySections(
-      [provider("codex", { state: "authentication_required" }), provider("claude")],
-      [],
-      { providerInstanceId: null, modelId: null, providerManaged: false },
-      "",
-      "Provider managed",
-      "en",
-      NOW_MS,
-    );
-    expect(sections.map((section) => section.managedProviders[0]?.configuration.familyId)).toEqual(["claude", "codex"]);
+  it("puts a signed-in provider ahead of one that needs sign-in", () => {
+    const ordered = providersInPickerOrder([provider("codex", { state: "authentication_required" }), provider("claude")], NOW_MS);
+    expect(ordered.map((entry) => entry.configuration.familyId)).toEqual(["claude", "codex"]);
   });
 });

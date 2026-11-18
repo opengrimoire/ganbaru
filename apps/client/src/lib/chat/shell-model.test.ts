@@ -54,8 +54,6 @@ function provider(state: ProviderInstanceRead["lastProbe"] extends infer _Probe 
       launchArguments: [],
       environment: {},
       credentialReferences: {},
-      visibleModelIds: [],
-      favoriteModelIds: [],
       providerConfig: { schemaVersion: 1, value: {} },
     },
     runtimeReview: [],

@@ -172,8 +172,6 @@ pub(super) fn configuration(home: &Path) -> ProviderInstanceConfig {
         "launchArguments": [],
         "environment": {},
         "credentialReferences": {},
-        "visibleModelIds": [],
-        "favoriteModelIds": [],
         "providerConfig": {
             "schemaVersion": 1,
             "value": {

@@ -19,7 +19,6 @@ use std::collections::{BTreeMap, BTreeSet};
 const MAX_PROVIDERS: usize = 64;
 const MAX_ARGUMENTS: usize = 64;
 const MAX_ENVIRONMENT_ROWS: usize = 64;
-const MAX_MODELS_PER_SET: usize = 512;
 const MAX_REMEMBERED_SELECTIONS: usize = 256;
 const MAX_LABEL_BYTES: usize = 160;
 const MAX_ARGUMENT_BYTES: usize = 4_096;
@@ -85,8 +84,6 @@ pub struct ChatPortableProviderConfig {
     pub launch_arguments: Vec<String>,
     pub environment: BTreeMap<String, String>,
     pub credential_references: BTreeMap<String, CredentialReferenceId>,
-    pub visible_model_ids: Vec<ModelId>,
-    pub favorite_model_ids: Vec<ModelId>,
     pub provider_config: VersionedJson,
     #[serde(flatten)]
     pub unknown_fields: BTreeMap<String, Value>,
@@ -350,14 +347,6 @@ fn validate_provider(provider: &ChatPortableProviderConfig, index: usize) -> Cha
                 "credential environment names must be valid and have one source",
             ));
         }
-    }
-    if provider.visible_model_ids.len() > MAX_MODELS_PER_SET
-        || provider.favorite_model_ids.len() > MAX_MODELS_PER_SET
-    {
-        return Err(ChatError::validation(
-            format!("chat.providers[{index}].visibleModelIds"),
-            format!("model preference sets support at most {MAX_MODELS_PER_SET} entries"),
-        ));
     }
     if ["executable", "providerHome", "canonicalPath", "lastProbe"]
         .iter()

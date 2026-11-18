@@ -25,8 +25,6 @@ fn provider_configuration() -> ProviderInstanceConfig {
         "launchArguments": [],
         "environment": {},
         "credentialReferences": {},
-        "visibleModelIds": [],
-        "favoriteModelIds": [],
         "providerConfig": { "schemaVersion": 1, "value": {} }
     }))
     .unwrap()
@@ -124,8 +122,6 @@ fn serialized_provider_configuration_contains_only_opaque_references() {
         "launchArguments": [],
         "environment": {},
         "credentialReferences": { "API_TOKEN": "credential-1" },
-        "visibleModelIds": [],
-        "favoriteModelIds": [],
         "providerConfig": { "schemaVersion": 1, "value": {} }
     });
     let configuration: ProviderInstanceConfig = serde_json::from_value(input).unwrap();

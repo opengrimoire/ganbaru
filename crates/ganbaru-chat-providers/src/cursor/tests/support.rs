@@ -88,8 +88,6 @@ pub fn configuration(home: &Path, endpoint: Option<&str>) -> ProviderInstanceCon
         "launchArguments": [],
         "environment": {},
         "credentialReferences": {},
-        "visibleModelIds": [],
-        "favoriteModelIds": [],
         "providerConfig": {
             "schemaVersion": 1,
             "value": { "apiEndpoint": endpoint }

@@ -157,8 +157,6 @@ mod tests {
                 "launchArguments": [],
                 "environment": {},
                 "credentialReferences": {},
-                "visibleModelIds": [],
-                "favoriteModelIds": [],
                 "providerConfig": {
                     "schemaVersion": 1,
                     "value": { "allowCustomModels": false, "customModelIds": [] }
@@ -185,8 +183,6 @@ mod tests {
         let existing = fixture.configuration("first", path.to_str().unwrap());
         let mut draft = fixture.configuration("second", "claude");
         draft.label = "Another label".to_string();
-        draft.visible_model_ids =
-            vec![serde_json::from_value(serde_json::json!("sonnet")).unwrap()];
         draft.provider_config.value = serde_json::json!({
             "allowCustomModels": true,
             "customModelIds": ["custom"],

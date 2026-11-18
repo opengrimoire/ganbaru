@@ -190,8 +190,6 @@ export function providerConfigurationFromDraft(
     launchArguments: [...draft.launchArguments],
     environment,
     credentialReferences,
-    visibleModelIds: [...(current?.visibleModelIds ?? [])],
-    favoriteModelIds: [...(current?.favoriteModelIds ?? [])],
     providerConfig: draft.providerConfig,
   };
 }

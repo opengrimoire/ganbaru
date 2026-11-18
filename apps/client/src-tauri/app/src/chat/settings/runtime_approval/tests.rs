@@ -17,8 +17,6 @@ fn configuration(
         "launchArguments": arguments,
         "environment": environment.iter().copied().collect::<std::collections::BTreeMap<_, _>>(),
         "credentialReferences": {},
-        "visibleModelIds": [],
-        "favoriteModelIds": [],
         "providerConfig": { "schemaVersion": 1, "value": settings }
     }))
     .expect("test provider configuration")

@@ -89,8 +89,6 @@ pub(crate) fn default_provider_configuration(
         launch_arguments: Vec::new(),
         environment: BTreeMap::new(),
         credential_references: BTreeMap::new(),
-        visible_model_ids: Vec::new(),
-        favorite_model_ids: Vec::new(),
         provider_config: VersionedJson {
             schema_version: metadata.configuration_schema_version,
             value: provider_config,

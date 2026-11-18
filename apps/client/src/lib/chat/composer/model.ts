@@ -67,12 +67,12 @@ export function isProviderAvailable(provider: ProviderInstanceRead): boolean {
 const PROVIDER_ROUTE_MODEL_IDS: ReadonlySet<string> = new Set(["auto", "default"]);
 
 /**
- * Selects the catalog's recommended model when it is visible, otherwise the strongest visible
+ * Selects the catalog's recommended model when it is listed, otherwise the strongest
  * built-in model of the first listed company.
  */
 export function recommendedProviderModel(
   provider: ProviderInstanceRead,
-  candidates: readonly ProviderModel[] = configuredVisibleModels(provider),
+  candidates: readonly ProviderModel[] = listedModels(provider),
 ): ProviderModel | null {
   const selectable = candidates.filter((model) => (
     (model.availability === "available" || model.availability === "stale")
@@ -207,13 +207,9 @@ export function resolveDefaultProviderModel(
   };
 }
 
-/** Lists non-deprecated models allowed by the provider visibility setting; an empty setting allows all. */
-function configuredVisibleModels(provider: ProviderInstanceRead): ProviderModel[] {
-  const visibleIds = provider.configuration.visibleModelIds;
-  return provider.modelCatalog?.models.filter((model) => (
-    model.availability !== "deprecated"
-    && (visibleIds.length === 0 || visibleIds.includes(model.id))
-  )) ?? [];
+/** Lists the catalog models that are not deprecated. */
+function listedModels(provider: ProviderInstanceRead): ProviderModel[] {
+  return provider.modelCatalog?.models.filter((model) => model.availability !== "deprecated") ?? [];
 }
 
 /** Classifies a known model option as the effort, speed, or other control. */

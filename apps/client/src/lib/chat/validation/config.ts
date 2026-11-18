@@ -29,7 +29,6 @@ import {
 const MAX_PROVIDERS = 64;
 const MAX_ARGUMENTS = 64;
 const MAX_ENVIRONMENT_ROWS = 64;
-const MAX_MODELS_PER_SET = 512;
 const MAX_REMEMBERED_SELECTIONS = 256;
 const MAX_LABEL_BYTES = 160;
 const MAX_ARGUMENT_BYTES = 4_096;
@@ -94,11 +93,6 @@ function parsePortableProvider(value: unknown, label: string): ChatPortableProvi
     if (!/^[A-Za-z0-9_]+$/.test(name)) throw new Error(`${label}.environment.${name} has an invalid name`);
     readBoundedString(environmentValue, MAX_ENVIRONMENT_VALUE_BYTES, `${label}.environment.${name}`, false);
   }
-  const visibleModelIds = readArray(record.visibleModelIds, `${label}.visibleModelIds`, readIdentifier);
-  const favoriteModelIds = readArray(record.favoriteModelIds, `${label}.favoriteModelIds`, readIdentifier);
-  if (visibleModelIds.length > MAX_MODELS_PER_SET || favoriteModelIds.length > MAX_MODELS_PER_SET) {
-    throw new Error(`${label}.visibleModelIds exceeds the item limit`);
-  }
   return {
     ...record,
     schemaVersion: readNonNegativeSafeInteger(record.schemaVersion, `${label}.schemaVersion`),
@@ -109,8 +103,6 @@ function parsePortableProvider(value: unknown, label: string): ChatPortableProvi
     launchArguments,
     environment,
     credentialReferences: readStringRecord(record.credentialReferences, `${label}.credentialReferences`),
-    visibleModelIds,
-    favoriteModelIds,
     providerConfig: readVersionedJson(record.providerConfig, `${label}.providerConfig`),
   };
 }

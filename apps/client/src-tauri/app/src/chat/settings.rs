@@ -40,7 +40,7 @@ pub(crate) use preferences::{remember_composer_selection, set_working_folder_pro
 pub(crate) use private_home::{
     configured_private_home, launch_configuration, maintenance_configuration, remove_private_home,
 };
-pub(crate) use providers::{apply_provider_probe, operation_context, unique_model_ids};
+pub(crate) use providers::{apply_provider_probe, operation_context};
 pub(crate) use runtime_approval::{
     ProviderRuntimePrompt, ProviderRuntimeReviewRead, RuntimeReceipts, approval_digests,
     approved_runtime, ask_runtime_approval, ingress_review_items, pending_portable_items,

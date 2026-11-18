@@ -92,8 +92,6 @@ pub struct ProviderInstanceConfig {
     pub launch_arguments: Vec<String>,
     pub environment: BTreeMap<String, String>,
     pub credential_references: BTreeMap<String, CredentialReferenceId>,
-    pub visible_model_ids: Vec<ModelId>,
-    pub favorite_model_ids: Vec<ModelId>,
     pub provider_config: VersionedJson,
     #[serde(skip)]
     pub internal_mcp: Option<ProviderInternalMcpConfig>,

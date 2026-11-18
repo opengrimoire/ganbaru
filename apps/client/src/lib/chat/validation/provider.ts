@@ -125,8 +125,6 @@ export function parseProviderInstanceConfig(value: unknown, label = "provider in
     launchArguments: readStringArray(record.launchArguments, `${label}.launchArguments`),
     environment: readStringRecord(record.environment, `${label}.environment`),
     credentialReferences: readStringRecord(record.credentialReferences, `${label}.credentialReferences`),
-    visibleModelIds: readArray(record.visibleModelIds, `${label}.visibleModelIds`, readIdentifier),
-    favoriteModelIds: readArray(record.favoriteModelIds, `${label}.favoriteModelIds`, readIdentifier),
     providerConfig: readVersionedJson(record.providerConfig, `${label}.providerConfig`),
   };
 }

@@ -164,8 +164,6 @@ pub fn fake_driver(control: Arc<FakeDriverControl>) -> Box<dyn ProviderDriver> {
             "launchArguments": [],
             "environment": {},
             "credentialReferences": {},
-            "visibleModelIds": [],
-            "favoriteModelIds": [],
             "providerConfig": { "schemaVersion": 1, "value": {} }
         }))
         .unwrap(),

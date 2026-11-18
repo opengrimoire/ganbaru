@@ -56,8 +56,6 @@ fn configuration(family_id: &str) -> ProviderInstanceConfig {
         "launchArguments": [],
         "environment": {},
         "credentialReferences": {},
-        "visibleModelIds": [],
-        "favoriteModelIds": [],
         "providerConfig": { "schemaVersion": 7, "value": { "future": true } },
         "futureCommonField": { "nested": [1, 2, 3] }
     }))

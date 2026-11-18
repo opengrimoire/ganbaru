@@ -5,7 +5,6 @@ import type {
   ChatProjectPrimaryWorkingFolderRead,
   ChatSettingsRead,
   CreateProjectWorkingFolderRequest,
-  ModelId,
   ProjectWorkingFolderId,
   ProjectWorkingFolderRead,
   ProviderInstanceConfig,
@@ -180,15 +179,6 @@ export class ChatConfigurationController {
 
   async refreshModels(instanceId: ProviderInstanceId): Promise<void> {
     await chatApi.refreshChatProviderModels(instanceId);
-    await this.refreshSettings();
-  }
-
-  async updateModels(
-    instanceId: ProviderInstanceId,
-    visible: ModelId[],
-    favorites: ModelId[],
-  ): Promise<void> {
-    await chatApi.updateChatProviderModels(instanceId, visible, favorites);
     await this.refreshSettings();
   }
 

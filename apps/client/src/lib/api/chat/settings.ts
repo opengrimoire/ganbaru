@@ -13,7 +13,6 @@ import type {
   ChatThreadId,
   ProjectWorkingFolderId,
   CredentialReferenceId,
-  ModelId,
   ProviderInstanceConfig,
   ProviderInstanceId,
   ProviderInstanceRead,
@@ -199,18 +198,6 @@ export async function runChatProviderUpdate(
 
 export async function refreshChatProviderModels(instanceId: ProviderInstanceId): Promise<ProviderModelCatalog> {
   return parseProviderModelCatalog(await invoke<unknown>("chat_refresh_provider_models", { instanceId }));
-}
-
-export async function updateChatProviderModels(
-  instanceId: ProviderInstanceId,
-  visibleModelIds: ModelId[],
-  favoriteModelIds: ModelId[],
-): Promise<ProviderInstanceRead> {
-  return parseProviderInstanceRead(await invoke<unknown>("chat_update_provider_models", {
-    instanceId,
-    visibleModelIds,
-    favoriteModelIds,
-  }));
 }
 
 export async function updateChatBehavior(behavior: ChatBehaviorPreferences): Promise<ChatSettingsRead["configuration"]> {

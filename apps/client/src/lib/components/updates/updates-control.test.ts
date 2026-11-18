@@ -18,8 +18,6 @@ function provider(instanceId: string, familyId: string, lastUsedAt: string | nul
       launchArguments: [],
       environment: {},
       credentialReferences: {},
-      visibleModelIds: [],
-      favoriteModelIds: [],
       providerConfig: { schemaVersion: 1, value: {} },
     },
     runtimeReview: [],

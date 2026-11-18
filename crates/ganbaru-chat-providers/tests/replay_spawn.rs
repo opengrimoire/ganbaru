@@ -93,8 +93,6 @@ fn claude_configuration(
             "GANBARU_REPLAY_FAILURE_LOG": directories.failure_log(),
         },
         "credentialReferences": {},
-        "visibleModelIds": [],
-        "favoriteModelIds": [],
         "providerConfig": {
             "schemaVersion": 1,
             "value": { "allowCustomModels": false, "customModelIds": [], "customModelLabels": {} }

@@ -115,9 +115,7 @@ function validModelSelection(
 }
 
 function selectableModelIds(provider: ProviderInstanceRead): ReadonlySet<string> {
-  const visibleIds = provider.configuration.visibleModelIds;
   return new Set((provider.modelCatalog?.models ?? [])
-    .filter((model) => model.availability !== "deprecated"
-      && (visibleIds.length === 0 || visibleIds.includes(model.id)))
+    .filter((model) => model.availability !== "deprecated")
     .map((model) => model.id));
 }

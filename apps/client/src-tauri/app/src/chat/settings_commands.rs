@@ -18,7 +18,7 @@ use super::settings::{
     mutate_chat_config, mutate_chat_configuration, operation_context, pick_local_path,
     portable_configuration, provider_instance_read, provider_mut, provider_not_found_error,
     provider_runtime_changed, read_chat_config, read_settings, remember_composer_selection,
-    replacement_provider_configurations, set_working_folder_provider_preference, unique_model_ids,
+    replacement_provider_configurations, set_working_folder_provider_preference,
     validate_picker_title,
 };
 use super::settings::{
@@ -38,7 +38,7 @@ use ganbaru_chat_contracts::config::{
     ChatBehaviorPreferences, ChatConfiguration, ChatPanelPreferences, RememberedComposerSelection,
 };
 use ganbaru_chat_contracts::models::{
-    ChatErrorCode, ChatResult, ChatThreadId, CredentialReferenceId, ModelId, ProbeState,
+    ChatErrorCode, ChatResult, ChatThreadId, CredentialReferenceId, ProbeState,
     ProjectWorkingFolderId, ProviderFamilyId, ProviderFamilyMetadataRead, ProviderInstanceConfig,
     ProviderInstanceId, ProviderModelCatalog, ProviderProbeResult,
 };
@@ -582,25 +582,6 @@ pub async fn chat_refresh_provider_models(
     Ok(catalog)
 }
 
-#[tauri::command]
-pub fn chat_update_provider_models(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, ChatSettingsState>,
-    instance_id: ProviderInstanceId,
-    visible_model_ids: Vec<ModelId>,
-    favorite_model_ids: Vec<ModelId>,
-) -> ChatResult<ProviderInstanceRead> {
-    let visible = unique_model_ids(visible_model_ids);
-    let favorites = unique_model_ids(favorite_model_ids);
-    mutate_chat_config(&app, &state, |config| {
-        let provider = provider_mut(config, &instance_id)?;
-        provider.visible_model_ids = visible;
-        provider.favorite_model_ids = favorites;
-        Ok(())
-    })?;
-    read_provider(&app, &instance_id)
-}
-
 /// Stores the Chat behavior preferences. Portable fields replicate to the vault's other devices.
 #[tauri::command]
 pub async fn chat_update_behavior(
@@ -794,8 +775,6 @@ mod tests {
             "launchArguments": [],
             "environment": {},
             "credentialReferences": {},
-            "visibleModelIds": [],
-            "favoriteModelIds": [],
             "providerConfig": { "schemaVersion": 1, "value": {} }
         }))
         .unwrap();

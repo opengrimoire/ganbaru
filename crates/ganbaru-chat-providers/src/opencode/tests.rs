@@ -1296,8 +1296,6 @@ pub(super) fn configuration(provider_config: serde_json::Value) -> ProviderInsta
         launch_arguments: Vec::new(),
         environment: BTreeMap::new(),
         credential_references: BTreeMap::new(),
-        visible_model_ids: Vec::new(),
-        favorite_model_ids: Vec::new(),
         provider_config: VersionedJson {
             schema_version: 1,
             value: provider_config,

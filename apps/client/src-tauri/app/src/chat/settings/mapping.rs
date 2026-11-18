@@ -42,8 +42,6 @@ pub(crate) fn provider_instance_read(
         launch_arguments: portable.launch_arguments.clone(),
         environment: portable.environment.clone(),
         credential_references: portable.credential_references.clone(),
-        visible_model_ids: portable.visible_model_ids.clone(),
-        favorite_model_ids: portable.favorite_model_ids.clone(),
         provider_config: portable.provider_config.clone(),
         internal_mcp: None,
         private_home: None,
@@ -96,8 +94,6 @@ pub(crate) fn portable_configuration(
         launch_arguments: config.launch_arguments.clone(),
         environment: config.environment.clone(),
         credential_references: config.credential_references.clone(),
-        visible_model_ids: config.visible_model_ids.clone(),
-        favorite_model_ids: config.favorite_model_ids.clone(),
         provider_config: config.provider_config.clone(),
         unknown_fields: config.unknown_fields.clone(),
     }

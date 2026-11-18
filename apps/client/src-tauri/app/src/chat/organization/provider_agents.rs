@@ -72,10 +72,7 @@ impl DeviceProviders {
                 .as_ref()
                 .map(|catalog| catalog.models.as_slice())
                 .unwrap_or_default();
-            catalog_agents.insert(
-                family.clone(),
-                catalog_agents_of(models, &read.configuration.visible_model_ids),
-            );
+            catalog_agents.insert(family.clone(), catalog_agents_of(models));
             let driver = ProviderDriverRegistry.create_driver(read.configuration.clone());
             let ready = driver.is_ok()
                 && !read.configuration.executable.trim().is_empty()
@@ -187,18 +184,15 @@ pub(crate) struct CatalogAgent {
     pub(crate) model_id: ModelId,
     pub(crate) display_name: String,
     pub(crate) model_options: Vec<ModelOptionSelection>,
-    /// Whether the agent starts turned off, because the model is hidden on this device.
+    /// Whether the agent starts turned off.
     pub(crate) archived: bool,
 }
 
 /// The agent of each model in `models` that can run: every model but a model line alias such as
 /// `opus`, which its line's agent already stands for, and those the provider reports
-/// unavailable. A model outside `visible_model_ids` starts turned off, unless that list is
-/// empty, which shows every model.
-pub(crate) fn catalog_agents_of(
-    models: &[ProviderModel],
-    visible_model_ids: &[ModelId],
-) -> Vec<CatalogAgent> {
+/// unavailable. Each starts turned off, since the line agents, which follow the newest model,
+/// are the ones most channels want; a person turns on the versions they need.
+pub(crate) fn catalog_agents_of(models: &[ProviderModel]) -> Vec<CatalogAgent> {
     models
         .iter()
         .filter(|model| {
@@ -214,7 +208,7 @@ pub(crate) fn catalog_agents_of(
                 model_id: model.id.clone(),
                 display_name,
                 model_options: default_effort(&model.options).into_iter().collect(),
-                archived: !visible_model_ids.is_empty() && !visible_model_ids.contains(&model.id),
+                archived: true,
             })
         })
         .collect()
@@ -684,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn every_runnable_catalog_model_gets_an_agent_off_when_hidden() {
+    fn every_runnable_catalog_model_gets_an_agent_that_starts_off() {
         let mut gone = catalog_model("claude-opus-4-1", "Opus 4.1");
         gone.availability = ModelAvailability::Unavailable;
         let mut sonnet = catalog_model("claude-sonnet-5", "Sonnet 5");
@@ -696,24 +690,17 @@ mod tests {
             gone,
         ];
 
-        let all = catalog_agents_of(&models, &[]);
+        let all = catalog_agents_of(&models);
         assert_eq!(
             all.iter()
                 .map(|agent| (agent.display_name.as_str(), agent.archived))
                 .collect::<Vec<_>>(),
-            [("Opus 4.8", false), ("Sonnet 5", false)]
+            [("Opus 4.8", true), ("Sonnet 5", true)]
         );
         assert_eq!(
             all[1].model_options,
             chosen("medium").into_iter().collect::<Vec<_>>()
         );
-
-        let visible = [ModelId::new("claude-sonnet-5").unwrap()];
-        let archived: Vec<bool> = catalog_agents_of(&models, &visible)
-            .iter()
-            .map(|agent| agent.archived)
-            .collect();
-        assert_eq!(archived, [true, false]);
     }
 
     #[test]

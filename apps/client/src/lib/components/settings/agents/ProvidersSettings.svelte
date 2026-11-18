@@ -27,6 +27,7 @@
   import { familiesInPickerOrder, providersInPickerOrder } from "$lib/chat/composer/model-picker-model";
   import ChatModelAvatar from "$lib/components/chat/identity/ChatModelAvatar.svelte";
   import AgentDefaultModel from "./AgentDefaultModel.svelte";
+  import AgentRoster from "./AgentRoster.svelte";
   import ProviderInstallSteps from "./ProviderInstallSteps.svelte";
   import ProviderPlanLimitRings from "./ProviderPlanLimitRings.svelte";
   import UnconfiguredProviderFamily from "./UnconfiguredProviderFamily.svelte";
@@ -719,6 +720,7 @@
                   {/if}
 
                   <AgentDefaultModel {instanceId} />
+                  <AgentRoster familyId={selectedProvider.configuration.familyId} {instanceId} />
 
 
                   <section class="editor-section catalog-section">

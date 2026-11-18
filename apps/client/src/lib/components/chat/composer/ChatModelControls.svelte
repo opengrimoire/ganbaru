@@ -26,7 +26,6 @@
     buildFavoriteModelEntries,
     buildModelCompanySections,
     buildQuickEffortChoices,
-    compactModelName,
     compactModelOptionLabel,
     isKnownModelOption,
     modelEffortStopPosition,
@@ -745,7 +744,7 @@
 
   function displayModelName(model: ProviderModel | null): string {
     if (!model) return provider?.configuration.label ?? t("chat.hero.chooseProvider");
-    return compactModelName(model.displayName, provider?.configuration.familyId ?? null);
+    return formatModelDisplayName(model.displayName);
   }
 
   function choiceDescription(

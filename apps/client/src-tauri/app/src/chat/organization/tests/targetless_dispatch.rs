@@ -115,6 +115,26 @@ async fn post_mention(
     execution_target: Option<ChatExecutionTarget>,
     text: &str,
 ) -> ChatWorkAssignmentId {
+    post_mention_of(
+        pool,
+        channel_id,
+        reply_thread_id,
+        execution_target,
+        text,
+        agent_id(),
+    )
+    .await
+}
+
+/// Posts `text`, which starts with a mention of `agent` labeled like the provider agent.
+async fn post_mention_of(
+    pool: &SqlitePool,
+    channel_id: &str,
+    reply_thread_id: Option<ChatReplyThreadId>,
+    execution_target: Option<ChatExecutionTarget>,
+    text: &str,
+    agent: ChatParticipantId,
+) -> ChatWorkAssignmentId {
     let mut request = message(text);
     static NEXT_POST: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let post = NEXT_POST.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -124,7 +144,7 @@ async fn post_mention(
     request.execution_target = execution_target;
     request.references = vec![participant_reference(
         &format!("reference:basic-agent-{post}"),
-        agent_id(),
+        agent,
         ChatParticipantKind::AiAgent,
         "Basic agent",
         "@Basic agent",
@@ -527,6 +547,72 @@ fn talk_work_discloses_no_folder_and_no_path_in_its_context() {
         assert!(
             !context.contains(vault_root.to_string_lossy().as_ref()),
             "{context}"
+        );
+        let _ = std::fs::remove_dir_all(&vault_root);
+    });
+}
+
+#[test]
+fn a_named_agent_keeps_its_own_model_over_the_channel_override() {
+    tauri::async_runtime::block_on(async {
+        let (pool, vault_root, channel_id, _, _) = project_with_two_folders("ask").await;
+        let named = super::super::provider_agents::create_custom_agent(
+            &pool,
+            &ProviderFamilyId::new(TEST_FAMILY).unwrap(),
+            "Reviewer",
+            &ChatAgentPolicyInput {
+                provider_managed_model: false,
+                model_id: Some(ModelId::new("named-model").unwrap()),
+                model_options: Vec::new(),
+                provider_options: VersionedJson {
+                    schema_version: 1,
+                    value: json!({}),
+                },
+                interaction_mode: InteractionMode::Build,
+            },
+        )
+        .await
+        .unwrap();
+        let conversation_id = default_channel_ids(PROJECT_ID).unwrap().0;
+        let mut connection = pool.acquire().await.unwrap();
+        super::super::access::add_agent_to_conversation(
+            &mut connection,
+            &named,
+            &conversation_id,
+            &now_timestamp().unwrap(),
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE chat_agent_channel_memberships
+             SET model_selection_schema_version = 1, model_selection_data = ?1
+             WHERE conversation_id = ?2",
+        )
+        .bind(serde_json::to_string(&named_model("override-model")).unwrap())
+        .bind(&conversation_id)
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+        drop(connection);
+
+        let named_work = post_mention_of(
+            &pool,
+            &channel_id,
+            None,
+            None,
+            "@Basic agent review this",
+            named,
+        )
+        .await;
+        let provider_work = mention_agent(&pool, &channel_id).await;
+
+        assert_eq!(
+            frozen_settings(&pool, &named_work).await.0,
+            named_model("named-model")
+        );
+        assert_eq!(
+            frozen_settings(&pool, &provider_work).await.0,
+            named_model("override-model")
         );
         let _ = std::fs::remove_dir_all(&vault_root);
     });

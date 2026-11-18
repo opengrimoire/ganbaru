@@ -225,6 +225,8 @@ export const chat = {
     noAgents: "No agents in this channel yet, so add one to mention it here.",
     modelFor: (name: string) => `Model for ${name}`,
     defaultModel: (name: string) => `Agent's model (${name})`,
+    newestOfLine: (line: string) => `Always the newest ${line}`,
+    fixedModel: (model: string) => `Always ${model}`,
     providerDefault: "the model set in the provider",
     pushApprovals: "Push approvals",
     pushApprovalsHint: "Pushes that match an approval run without asking once the agent's turn ends.",

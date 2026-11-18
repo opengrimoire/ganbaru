@@ -16,6 +16,7 @@
     chatAgentDefaultModelName,
     ownAccessAvailable,
   } from "$lib/chat/agents/channel-access";
+  import { formatModelDisplayName } from "$lib/chat/composer/model-company";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
   import ChatAgentScopeSettings, { type ChatAgentScopeValue } from "$lib/components/chat/agents/ChatAgentScopeSettings.svelte";
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
@@ -63,18 +64,26 @@
       const catalog = chat.settings?.providerInstances.find((provider) => (
         provider.configuration.instanceId === agent.localProviderInstanceId
       ))?.modelCatalog ?? null;
+      const behavior = chatAgentBehaviorLine(t, resolved, agent.participant.displayName);
+      if (agent.agentKind !== "provider") {
+        /* Model line and named agents keep their own model, so a channel cannot override it. */
+        const fixedLabel = agent.agentKind === "model"
+          ? t("chat.agentAccess.newestOfLine", agent.participant.displayName)
+          : t("chat.agentAccess.fixedModel", formatModelDisplayName(chatAgentDefaultModelName(t, agent.latestPolicy, catalog)));
+        return [{ agent, resolved, behavior, modelOptions: [{ value: "", label: fixedLabel }], modelValue: "" }];
+      }
       const override = channelModelOverride(current.modelOverrides, agent.participant.id);
       const defaultName = chatAgentDefaultModelName(t, agent.latestPolicy, catalog);
       const models: readonly Pick<ProviderModel, "id" | "displayName">[] = catalog?.models ?? [];
       const modelOptions = [
-        { value: "", label: t("chat.agentAccess.defaultModel", defaultName) },
-        ...models.map((model) => ({ value: model.id, label: model.displayName })),
+        { value: "", label: t("chat.agentAccess.defaultModel", formatModelDisplayName(defaultName)) },
+        ...models.map((model) => ({ value: model.id, label: formatModelDisplayName(model.displayName) })),
       ];
       if (override && !models.some((model) => model.id === override)) modelOptions.push({ value: override, label: override });
       return [{
         agent,
         resolved,
-        behavior: chatAgentBehaviorLine(t, resolved, agent.participant.displayName),
+        behavior,
         modelOptions,
         modelValue: override ?? "",
       }];

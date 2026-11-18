@@ -8,7 +8,8 @@
   import { formatNumber } from "$lib/i18n/formatters";
   import { chatParticipantDisplayName } from "$lib/chat/agents/participant-display";
   import type { ChatModelParticipant } from "$lib/chat/agents/participant-identity";
-  import { compactModelName, compactModelOptionLabel } from "$lib/chat/composer/model-picker-model";
+  import { compactModelOptionLabel } from "$lib/chat/composer/model-picker-model";
+  import { formatModelDisplayName } from "$lib/chat/composer/model-company";
   import { agentExecutionSummary } from "$lib/chat/agents/execution-summary";
   import { chatAgentModelParticipant } from "$lib/chat/agents/identity";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -94,7 +95,7 @@
   const cardModel = $derived(agentModel ?? model);
   const cardReasoning = $derived(agentReasoning() ?? cardModel?.defaultReasoning ?? null);
   const formattedModelName = $derived(cardModel
-    ? compactModelName(cardModel.displayName, cardModel.providerFamilyId)
+    ? formatModelDisplayName(cardModel.displayName)
     : null);
   const formattedReasoning = $derived(cardReasoning
     ? compactModelOptionLabel(

@@ -30,6 +30,17 @@ describe("suggestAgentMention", () => {
     });
   });
 
+  it("matches a case-sensitive agent only when the name keeps its case", () => {
+    const sol = { id: "participant:sol", displayName: "Sol", matchCase: true };
+    expect(suggestAgentMention("el sol sale", [], [sol])).toBeNull();
+    expect(suggestAgentMention("ask Sol about it", [], [sol])).toEqual({
+      participantId: "participant:sol",
+      displayName: "Sol",
+      start: 4,
+      end: 7,
+    });
+  });
+
   it("does not suggest an agent who is already mentioned", () => {
     const text = "@Ada and Ada again";
     expect(suggestAgentMention(text, [mention("participant:ada", 0, "Ada")], [ada])).toBeNull();

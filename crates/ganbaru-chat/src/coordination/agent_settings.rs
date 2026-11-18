@@ -249,26 +249,6 @@ pub async fn agent_is_present(
         .any(|member| member.agent_id.as_str() == agent_id))
 }
 
-/// Returns the unarchived AI agent of the provider family `family_id`, if the vault has one.
-pub async fn find_agent_by_provider_family(
-    connection: &mut SqliteConnection,
-    family_id: &str,
-) -> ChatResult<Option<ChatParticipantId>> {
-    let agent: Option<String> = sqlx::query_scalar(
-        "SELECT agent.participant_id FROM chat_agents agent
-         JOIN chat_participants participant ON participant.id = agent.participant_id
-         WHERE agent.provider_family_id = ? AND participant.archived_at IS NULL
-         ORDER BY agent.participant_id LIMIT 1",
-    )
-    .bind(family_id)
-    .fetch_optional(&mut *connection)
-    .await
-    .map_err(persistence_error)?;
-    agent
-        .map(|agent| ChatParticipantId::new(agent).map_err(|_| corrupt_data_error()))
-        .transpose()
-}
-
 /// Returns the model overrides of the unremoved AI channel memberships of a conversation.
 pub async fn read_channel_model_overrides(
     connection: &mut SqliteConnection,

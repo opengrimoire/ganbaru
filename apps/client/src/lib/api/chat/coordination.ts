@@ -17,6 +17,7 @@ import type {
   ChatChannelAgentRequest,
   ChatChannelAgentSettingsRead,
   ChatProjectAgentSettingsRead,
+  CreateChatAgentRequest,
   SetChatAgentPolicyRequest,
   SetChatChannelModelOverrideRequest,
   UpdateChatAppAgentSettingsRequest,
@@ -168,6 +169,27 @@ export async function setChatAgentPolicy(request: SetChatAgentPolicyRequest): Pr
     dbUrl: await ensureDbUrl(),
     request: {
       agentId: request.agentId,
+      policy: {
+        providerManagedModel: request.policy.providerManagedModel,
+        modelId: request.policy.modelId,
+        modelOptions: request.policy.modelOptions,
+        providerOptions: request.policy.providerOptions,
+        interactionMode: request.policy.interactionMode,
+      },
+    },
+  }));
+}
+
+/**
+ * Creates a named agent that runs one provider family with the model and options it keeps. Names are unique, ignoring
+ * case, and cannot be a model line such as "Opus" or "Sol"; a taken or malformed name fails validation on `displayName`.
+ */
+export async function createChatAgent(request: CreateChatAgentRequest): Promise<ChatAiAgentRead> {
+  return parseChatAiAgent(await invoke<unknown>("chat_create_agent", {
+    dbUrl: await ensureDbUrl(),
+    request: {
+      displayName: request.displayName,
+      providerFamilyId: request.providerFamilyId,
       policy: {
         providerManagedModel: request.policy.providerManagedModel,
         modelId: request.policy.modelId,

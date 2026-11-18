@@ -102,13 +102,16 @@ export function integrationCompany(familyId: string): ModelCompanyIdentity {
  *
  * Provider catalogs commonly use identifier-style hyphens in display names.
  * The UI presents those separators as spaces while preserving the catalog value
- * used for provider requests.
+ * used for provider requests. A leading "GPT" before a version is dropped, so
+ * "GPT-5.6-Sol" reads as "5.6 Sol" and OpenAI names read like the agent names
+ * a person tags.
  *
  * @param displayName - Display name supplied by the provider catalog.
  * @returns A compact human-facing model name.
  */
 export function formatModelDisplayName(displayName: string): string {
-  return displayName.trim().replace(/-+/g, " ").replace(/\s+/g, " ");
+  const spaced = displayName.trim().replace(/-+/g, " ").replace(/\s+/g, " ");
+  return spaced.replace(/^GPT (?=\d)/i, "");
 }
 
 /**

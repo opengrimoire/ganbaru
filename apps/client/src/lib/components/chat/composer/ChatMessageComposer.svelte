@@ -398,7 +398,11 @@
     isActiveChannelMember(membership)
       && membership.participant.archivedAt === null
       && membership.participant.kind === "ai_agent"
-      ? [{ id: membership.participant.id, displayName: membership.participant.displayName }]
+      ? [{
+        id: membership.participant.id,
+        displayName: membership.participant.displayName,
+        matchCase: chat.agents.find((agent) => agent.participant.id === membership.participant.id)?.agentKind !== "provider",
+      }]
       : []
   )));
   /** An agent the draft names without mentioning, offered as a local chip; never while editing a waiting reply. */

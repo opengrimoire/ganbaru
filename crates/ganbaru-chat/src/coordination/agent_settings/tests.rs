@@ -379,42 +379,6 @@ async fn agent_presence_follows_the_membership() {
 }
 
 #[tokio::test]
-async fn the_agent_of_a_provider_family_is_found_unless_it_is_archived() {
-    let pool = migrated_pool().await;
-    seed(&pool).await;
-    let mut connection = pool.acquire().await.unwrap();
-    assert_eq!(
-        find_agent_by_provider_family(&mut connection, "claude")
-            .await
-            .unwrap()
-            .map(|agent| agent.as_str().to_string()),
-        Some(OTHER_AGENT_ID.to_string())
-    );
-    assert_eq!(
-        find_agent_by_provider_family(&mut connection, "grok")
-            .await
-            .unwrap(),
-        None
-    );
-    drop(connection);
-
-    execute(
-        &pool,
-        &format!(
-            "UPDATE chat_participants SET archived_at = '{LATER}' WHERE id = '{OTHER_AGENT_ID}'"
-        ),
-    )
-    .await;
-    let mut connection = pool.acquire().await.unwrap();
-    assert_eq!(
-        find_agent_by_provider_family(&mut connection, "claude")
-            .await
-            .unwrap(),
-        None
-    );
-}
-
-#[tokio::test]
 async fn model_overrides_cover_present_memberships_that_set_one() {
     let pool = migrated_pool().await;
     seed(&pool).await;

@@ -4,6 +4,11 @@ import type { ChatMessageReference, ChatParticipantId } from "$lib/chat/contract
 export interface MentionSuggestionCandidate {
   id: ChatParticipantId;
   displayName: string;
+  /**
+   * Whether the name only matches with its exact case. Model and named agents carry everyday words such as "Sol" or
+   * "Opus", so a lowercase word in a sentence is not read as their name.
+   */
+  matchCase?: boolean;
 }
 
 /** An agent named in the draft without a mention, and where the name is. */
@@ -21,7 +26,7 @@ const WORD_CHARACTER = /[\p{L}\p{N}\p{M}_]/u;
 /**
  * Finds a channel agent the draft names in plain words but does not mention.
  *
- * A name matches as a whole word, ignoring case, and never inside an existing reference or right
+ * A name matches as a whole word, ignoring case unless the candidate asks to match case, and never inside an existing reference or right
  * after `@`, which the reference picker owns. An agent already mentioned is never suggested.
  * The earliest name in the text wins; at the same position the longer name wins, and then roster
  * order. The suggestion is local: it never posts and never calls a provider.
@@ -44,7 +49,9 @@ export function suggestAgentMention(
   for (const candidate of roster) {
     const name = candidate.displayName.trim();
     if (!name || mentioned.has(candidate.id)) continue;
-    const start = firstWholeWordMatch(text, haystack, name.toLocaleLowerCase(), references);
+    const start = candidate.matchCase
+      ? firstWholeWordMatch(text, text, name, references)
+      : firstWholeWordMatch(text, haystack, name.toLocaleLowerCase(), references);
     if (start === null) continue;
     const end = start + name.length;
     if (!best || start < best.start || (start === best.start && end > best.end)) {

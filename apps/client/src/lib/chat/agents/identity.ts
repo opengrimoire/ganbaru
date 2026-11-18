@@ -3,9 +3,10 @@ import type {
   ChatParticipantId,
   ChatSettingsRead,
 } from "$lib/chat/contracts";
+import { agentModelLine, newestModelOfLine } from "./agent-names";
 import { chatModelParticipant, type ChatModelParticipant } from "./participant-identity";
 
-/** Resolves the current model identity used as an AI agent's shared avatar. */
+/** Resolves the current model identity used as an AI agent's shared avatar; a model line agent shows its line's newest model. */
 export function chatAgentModelParticipant(
   participantId: ChatParticipantId,
   agents: readonly ChatAiAgentRead[],
@@ -19,9 +20,9 @@ export function chatAgentModelParticipant(
     ))
     : undefined;
   if (!provider) return null;
-  return chatModelParticipant(
-    provider.configuration.familyId,
-    agent.latestPolicy?.modelId ?? null,
-    provider.modelCatalog,
-  );
+  const line = agentModelLine(agent);
+  const modelId = line
+    ? newestModelOfLine(provider.configuration.familyId, line, provider.modelCatalog?.models ?? [])?.id ?? null
+    : agent.latestPolicy?.modelId ?? null;
+  return chatModelParticipant(provider.configuration.familyId, modelId, provider.modelCatalog);
 }

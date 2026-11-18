@@ -903,6 +903,13 @@ export interface SetChatAgentPolicyRequest {
   policy: ChatAgentPolicyInput;
 }
 
+/** A named agent: a person-chosen name, the provider family it runs through, and the model and options it keeps. */
+export interface CreateChatAgentRequest {
+  displayName: string;
+  providerFamilyId: ProviderFamilyId;
+  policy: ChatAgentPolicyInput;
+}
+
 export interface PostChatMessageRequest {
   clientCommandId: ChatCommandId;
   channelId: ChatChannelId;

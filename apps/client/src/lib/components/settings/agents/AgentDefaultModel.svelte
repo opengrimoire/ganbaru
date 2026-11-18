@@ -18,7 +18,7 @@
   let saving = $state(false);
   let error = $state<string | null>(null);
 
-  const agent = $derived(chat.agents.find((entry) => entry.localProviderInstanceId === instanceId) ?? null);
+  const agent = $derived(chat.agents.find((entry) => entry.agentKind === "provider" && entry.localProviderInstanceId === instanceId) ?? null);
   const policy = $derived(agent?.latestPolicy ?? null);
   const value = $derived({
     providerInstanceId: instanceId,

@@ -10,7 +10,6 @@ import { compareProviderReadiness } from "$lib/chat/usage/provider-readiness";
 import { isProviderAvailable, modelOptionRole, providerHasCatalogModels, rankedModels, recommendedProviderModel } from "./model";
 import {
   compareCompanyModels,
-  formatModelDisplayName,
   integrationCompany,
   modelCompany,
   type ModelCompanyIdentity,
@@ -62,15 +61,6 @@ export function resolveRecommendedSelection<Selection extends { modelId: string 
   if (!selection.providerManaged || !provider) return selection;
   const recommended = recommendedProviderModel(provider);
   return recommended ? { ...selection, modelId: recommended.id, providerManaged: false } : selection;
-}
-
-/** Formats a model name for the compact Chat model control. */
-export function compactModelName(
-  displayName: string,
-  familyId: ProviderFamilyId | null,
-): string {
-  const compactName = familyId === "codex" ? displayName.replace(/^GPT-/i, "") : displayName;
-  return formatModelDisplayName(compactName);
 }
 
 /** Formats an option label for the compact Chat model control. */

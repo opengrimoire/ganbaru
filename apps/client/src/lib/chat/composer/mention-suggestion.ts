@@ -75,3 +75,30 @@ function isWordCharacter(text: string, index: number): boolean {
   const character = text[index];
   return character !== undefined && WORD_CHARACTER.test(character);
 }
+
+/** A known agent the mention menu may offer to add to the channel. */
+export interface MentionableAgent {
+  participant: { id: ChatParticipantId; displayName: string; archivedAt: string | null };
+}
+
+/**
+ * Returns the known agents the mention menu offers as "Add @X to #channel": agents that are not archived, not already
+ * in the channel, and whose name contains the typed query, ignoring case. Choosing one adds it to the channel and keeps
+ * the mention; a message alone never adds an agent.
+ *
+ * @param agents Every known agent, in directory order.
+ * @param memberIds The participants that are members of the channel now.
+ * @param query The text typed after `@`.
+ */
+export function agentsToAddForMention<Agent extends MentionableAgent>(
+  agents: readonly Agent[],
+  memberIds: ReadonlySet<ChatParticipantId>,
+  query: string,
+): Agent[] {
+  const normalized = query.trim().toLocaleLowerCase();
+  return agents.filter((agent) => (
+    agent.participant.archivedAt === null
+      && !memberIds.has(agent.participant.id)
+      && (!normalized || agent.participant.displayName.toLocaleLowerCase().includes(normalized))
+  ));
+}

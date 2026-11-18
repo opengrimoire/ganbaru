@@ -46,6 +46,7 @@ export const chatSettings = {
     oneHour: "1 hora",
     twoHours: "2 horas",
     sessionsHeading: "Sesiones y terminales",
+    agentsHeading: "Agentes",
     diagnosticsHeading: "Diagnósticos",
     credentialStore: "Almacén de credenciales",
     credentialAvailable: "Disponible",

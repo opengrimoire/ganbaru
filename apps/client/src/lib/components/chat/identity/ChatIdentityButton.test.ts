@@ -6,7 +6,6 @@ import type {
   ChatAiAgentRead,
   ChatChannelRead,
   ChatParticipantRead,
-  ChatRuntimeApprovalPolicy,
 } from "$lib/chat/contracts";
 import type { ChatModelParticipant } from "$lib/chat/agents/participant-identity";
 import { getChat } from "$lib/stores/chat.svelte";
@@ -44,20 +43,20 @@ const agentParticipant: ChatParticipantRead = {
 
 const agent: ChatAiAgentRead = {
   participant: agentParticipant,
-  role: "Coding agent",
-  instructions: "",
+  providerFamilyId: "codex",
+  localProviderInstanceId: "codex-local",
   configurationState: "healthy",
   latestPolicy: {
     id: "policy:atlas:1",
     agentId: agentParticipant.id,
     revision: 1,
-    providerInstanceId: "codex-local",
-    safetyMode: "ask_for_approval",
     providerManagedModel: false,
     modelId: "gpt-5.6-terra",
-    modelOptions: [{ key: "service_tier", value: { kind: "choice", value: "fast" } }],
-    effort: "low",
-    speed: "fast",
+    modelOptions: [
+      { key: "reasoning_effort", value: { kind: "choice", value: "low" } },
+      { key: "service_tier", value: { kind: "choice", value: "fast" } },
+    ],
+    interactionMode: "build",
     providerOptions: { schemaVersion: 1, value: {} },
     createdAt: "2026-08-16T12:00:00.000Z",
   },
@@ -65,7 +64,7 @@ const agent: ChatAiAgentRead = {
   activeAssignmentCount: 0,
 };
 
-function channel(runtimeApprovalOverride: ChatRuntimeApprovalPolicy): ChatChannelRead {
+function channel(): ChatChannelRead {
   return {
     id: "channel:general",
     conversationId: "conversation:general",
@@ -76,13 +75,7 @@ function channel(runtimeApprovalOverride: ChatRuntimeApprovalPolicy): ChatChanne
     memberships: [{
       conversationId: "conversation:general",
       participant: agentParticipant,
-      aiAccess: {
-        capabilities: { readHistory: false, participate: true },
-        historyBoundary: { kind: "entire" },
-        runtimeApprovalOverride,
-        scratchRuntimeApprovalOverride: null,
-        folderGrants: [],
-      },
+      agentInChannel: true,
       revision: 1,
       removedAt: null,
     }],
@@ -164,7 +157,7 @@ describe("ChatIdentityButton", () => {
   it.each(["name", "mention"] as const)("uses the same agent identity card from a %s trigger", async (presentation) => {
     chat.settings = modelSettings();
     chat.agents = [agent];
-    chat.activeChannels = [channel("unattended")];
+    chat.activeChannels = [channel()];
     chat.selectedChannelId = "channel:general";
     target = document.createElement("div");
     document.body.append(target);
@@ -181,16 +174,13 @@ describe("ChatIdentityButton", () => {
     await tick();
     const card = document.body.querySelector<HTMLElement>(".identity-card");
     expect(card?.querySelector(".identity-heading strong")?.textContent).toBe("Atlas");
-    expect(card?.querySelector(".identity-heading small")?.textContent).toBe("Coding agent");
+    expect(card?.querySelector(".identity-heading small")).toBeNull();
     expect(card?.querySelector(".identity-status-dot")?.getAttribute("aria-label")).toBe("Available");
     expect(card?.querySelector(".identity-settings-label")?.textContent).toBe("Default settings");
     expect(card?.querySelector(".identity-model-name")?.textContent).toBe("5.6 Terra");
     expect(card?.querySelector(".identity-effort-name")?.textContent).toBe("Light");
     expect(card?.querySelector(".identity-model-row .provider-icon")).toBeNull();
     expect(card?.querySelector(".identity-fast-indicator svg")).not.toBeNull();
-    expect(card?.querySelector(".identity-model-divider")?.textContent).toBe("|");
-    expect(card?.querySelector(".identity-approval")?.textContent).toBe("Unattended within access");
-    expect(card?.querySelector(".identity-approval svg")).toBeNull();
     expect(card?.querySelector("dl")).toBeNull();
     expect(card?.textContent).not.toContain("gpt-5.6-sol");
     expect(card?.textContent).not.toContain("Available");
@@ -269,7 +259,7 @@ describe("ChatIdentityButton", () => {
     chat.agents = [{
       ...agent,
       latestPolicy: agent.latestPolicy
-        ? { ...agent.latestPolicy, speed: "standard" }
+        ? { ...agent.latestPolicy, modelOptions: agent.latestPolicy.modelOptions.filter((option) => option.key !== "service_tier") }
         : null,
     }];
     target = document.createElement("div");

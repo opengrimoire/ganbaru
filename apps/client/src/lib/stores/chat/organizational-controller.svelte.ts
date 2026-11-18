@@ -55,6 +55,8 @@ export class ChatOrganizationalController {
   scheduledMessagesByDestination = $state<Record<string, ChatScheduledMessageRead[]>>({});
   /** Bumped when channel notes or note proposal states may have changed, so open note views reread. */
   channelNotesVersion = $state(0);
+  /** Bumped when channel, project, or app agent settings may have changed, so open settings views reread. */
+  agentSettingsVersion = $state(0);
   /** Bumped when push request states may have changed, including pushes that ran without a person, so open cards reread. */
   pushRequestsVersion = $state(0);
 
@@ -66,6 +68,7 @@ export class ChatOrganizationalController {
     this.scheduledMessagesByDestination = {};
     this.scheduledMessagesVersion += 1;
     this.channelNotesVersion += 1;
+    this.agentSettingsVersion += 1;
     this.pushRequestsVersion += 1;
   }
 

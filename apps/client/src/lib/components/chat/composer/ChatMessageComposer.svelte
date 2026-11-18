@@ -16,6 +16,7 @@
   import AtSign from "@lucide/svelte/icons/at-sign";
   import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
+  import { isActiveChannelMember } from "$lib/chat/agents/channel-members";
   import type {
     ChatAiAgentRead,
     ChatAttachmentRead,
@@ -24,7 +25,6 @@
     ChatAssignmentTargetRead,
     ChatChannelRead,
     ChatChannelRosterRead,
-    ChatFolderCapability,
     ChatFollowupRouting,
     ChatInteractionStateRead,
     ChatMessageRead,
@@ -34,19 +34,25 @@
     ChatPromptCatalogEntry,
     ChatRecurrenceSpec,
     ChatScheduledMessageRead,
-    ChatAgentAccessRead,
     ChatWorkAssignmentId,
     ChatWorkAssignmentState,
     ProjectWorkingFolderPathRead,
+    ProviderModel,
   } from "$lib/chat/contracts";
   import { ChatComposerEditor, type ChatComposerEditorChange } from "$lib/chat/composer/editor";
-  import { mergePromptCatalog } from "$lib/chat/composer/command-model";
+  import {
+    channelModelChoices,
+    genericModelCommandEntry,
+    isModelCommandEntry,
+    mergePromptCatalog,
+    modelCommandEntries,
+  } from "$lib/chat/composer/command-model";
   import { composerMeterRead, type ComposerStatusRead } from "$lib/chat/composer/composer-meter";
   import { CHAT_IMAGE_LIMIT, composerTokenTrigger, validateImageFiles } from "$lib/chat/composer/model";
   import { pendingInputRows, pendingInputStartsWork, type PendingInputRow } from "$lib/chat/composer/pending-inputs";
   import { formatShortcut, hasOnlyShortcutModifier } from "$lib/keyboard-shortcuts";
   import { latestStructuredPlanSteps, summarizePlanProgress } from "$lib/chat/composer/plan-progress";
-  import { suggestAgentMention, type MentionSuggestion } from "$lib/chat/composer/mention-suggestion";
+  import { agentsToAddForMention, suggestAgentMention, type MentionSuggestion } from "$lib/chat/composer/mention-suggestion";
   import { pastedTextLineCount } from "$lib/chat/composer/paste";
   import { providerTargetAuthorityBlockers } from "$lib/chat/composer/provider-authority";
   import {
@@ -237,7 +243,6 @@
   const draftPlainText = $derived(chatComposerPlainText(editorDocument));
   /** Agents whose mention suggestion was dismissed for this draft. */
   let dismissedMentionSuggestions = $state<ChatParticipantId[]>([]);
-  let agentAccess = $state<ChatAgentAccessRead | null>(null);
   let assignmentTargets = $state<ChatAssignmentTargetRead[]>([]);
   let assignmentPreviewLoading = $state(false);
   let assignmentPreviewRequest = 0;
@@ -306,14 +311,10 @@
     const provider = chat.settings?.providerInstances.find(
       (entry) => entry.configuration.instanceId === offer.providerInstanceId,
     )?.configuration.label ?? offer.providerInstanceId;
-    const folders = offer.folders.map((folder) => t(
-      "chat.organization.workAccessFolder",
-      folderCapabilityLabel(folder.capability),
-      folder.displayName,
-      runtimeApprovalLabel(folder.runtimeApproval),
-    ));
+    const behavior = t(`chat.agentAccess.behavior.${offer.access}`);
+    const folders = offer.folders.map((folder) => folder.displayName);
     const access = folders.length > 0
-      ? formatList(localization.locale, folders, { style: "long", type: "conjunction" })
+      ? t("chat.organization.workAccessFolders", behavior, formatList(localization.locale, folders, { style: "long", type: "conjunction" }))
       : t("chat.organization.workAccessConversation");
     return `${t("chat.organization.workAwaitsStart")} ${t("chat.organization.workAwaitsStartAccess", provider, access)}`;
   });
@@ -325,7 +326,7 @@
     mentionedAgentId,
     inferredTarget,
     editorReferences,
-    agentAccess,
+    chat.selectedChannel,
     assignmentTargets,
   ));
   const pickerGroups = $derived.by(() => groupReferenceCandidates(pickerEntries));
@@ -343,7 +344,7 @@
     candidate.participant.id === targetAgentId
   )) ?? null);
   const targetProvider = $derived(chat.settings?.providerInstances.find((entry) => (
-    entry.configuration.instanceId === targetAgent?.latestPolicy?.providerInstanceId
+    entry.configuration.instanceId === targetAgent?.localProviderInstanceId
   )) ?? null);
   const catalogWorkingFolderId = $derived.by(() => {
     const available = (id: string) => chat.workingFolders.some((folder) => (
@@ -362,7 +363,7 @@
   });
   const promptCatalogKey = $derived([
     catalogWorkingFolderId ?? "",
-    targetAgent?.latestPolicy?.providerInstanceId ?? "",
+    targetAgent?.localProviderInstanceId ?? "",
     threadAssignment?.latestRunProviderThreadId ?? "",
   ].join("\u0000"));
   /** Whether the thread has work whose provider session /status can describe. */
@@ -393,10 +394,9 @@
   const sendBlocked = $derived(Boolean(validation || disclosureBlocker || providerBlockers.length || messageTooLarge));
   /** Channel agents that can take work, for the mention suggestion. */
   const mentionRoster = $derived((chat.selectedChannel?.memberships ?? []).flatMap((membership) => (
-    membership.removedAt === null
+    isActiveChannelMember(membership)
       && membership.participant.archivedAt === null
       && membership.participant.kind === "ai_agent"
-      && membership.aiAccess?.capabilities.participate === true
       ? [{ id: membership.participant.id, displayName: membership.participant.displayName }]
       : []
   )));
@@ -503,13 +503,11 @@
     const replyThreadId = destinationReplyThreadId(destination);
     if (!agentId || !channelId) {
       assignmentPreviewRequest += 1;
-      agentAccess = null;
       assignmentTargets = [];
       assignmentPreviewLoading = false;
       assignmentPreviewPending = null;
       return;
     }
-    agentAccess = null;
     assignmentTargets = [];
     assignmentPreviewPending = loadAssignmentPreview(agentId, channelId, replyThreadId);
   });
@@ -769,57 +767,42 @@
   async function mentionCandidates(query: string): Promise<ReferenceCandidate[]> {
     const normalized = query.trim().toLocaleLowerCase();
     const memberships = (chat.selectedChannel?.memberships ?? []).filter((membership) => (
-      membership.removedAt === null
+      isActiveChannelMember(membership)
         && membership.participant.archivedAt === null
-        && (membership.participant.kind !== "ai_agent"
-          || membership.aiAccess?.capabilities.participate === true)
     ));
     const memberIds = new Set(memberships.map((membership) => membership.participant.id));
     const entries: ReferenceCandidate[] = memberships.flatMap((membership) => {
       const agent = chat.agents.find((candidate) => (
         candidate.participant.id === membership.participant.id
       )) ?? null;
-      if (!matchesQuery(normalized, membership.participant.displayName, agent?.role ?? "")) return [];
+      if (!matchesQuery(normalized, membership.participant.displayName)) return [];
       return [{
         key: `participant:${membership.participant.id}`,
         kind: "participant" as const,
         group: t("chat.organization.channelParticipants"),
         label: membership.participant.displayName,
-        description: agent?.role || t("chat.organization.humanMember"),
+        description: agent ? t("chat.organization.aiAgent") : t("chat.organization.humanMember"),
         participant: membership.participant,
         agent,
         needsMembership: false,
       }];
     });
-    for (const agent of chat.agents) {
-      if (memberIds.has(agent.participant.id)
-        || !matchesQuery(normalized, agent.participant.displayName, agent.role)) continue;
+    for (const agent of agentsToAddForMention(chat.agents, memberIds, normalized)) {
       entries.push({
         key: `outside-participant:${agent.participant.id}`,
         kind: "participant",
         group: t("chat.organization.otherAgents"),
         label: agent.participant.displayName,
-        description: t("chat.organization.addBeforeMentioning"),
+        description: t("chat.organization.addAgentToChannel", agent.participant.displayName, chat.selectedChannel?.name ?? ""),
         participant: agent.participant,
         agent,
         needsMembership: true,
       });
     }
     const projectId = chat.selectedChannel?.projectId;
-    const selectedAccess = mentionedAgentId
-      ? agentAccess?.channels.find((channel) => (
-        channel.channelId === chat.selectedChannel?.id && channel.removedAt === null
-      )) ?? null
-      : null;
-    const grantedFolderIds = mentionedAgentId
-      ? new Set(selectedAccess?.folderGrants.flatMap((grant) => (
-        grant.revokedAt === null && grant.capability !== "none" ? [grant.workingFolderId] : []
-      )) ?? [])
-      : null;
     const folders = chat.workingFolders.filter((folder) => (
       folder.workingFolder.projectId === projectId
         && folder.workingFolder.archivedAt === null
-        && (grantedFolderIds === null || grantedFolderIds.has(folder.workingFolder.id))
     ));
     for (const folder of folders) {
       if (!matchesQuery(normalized, folder.workingFolder.displayName)) continue;
@@ -885,15 +868,16 @@
       return;
     }
     if (candidate.kind === "participant" && candidate.needsMembership) {
-      persist();
-      closePicker();
-      paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-configure-agent", {
-        detail: {
-          participantId: candidate.participant.id,
-          channelId: chat.selectedChannel?.id,
-        },
-      }));
-      return;
+      const channelId = chat.selectedChannel?.id;
+      if (!channelId) return;
+      try {
+        await chatApi.addChatChannelAgent({ channelId, agentId: candidate.participant.id });
+        await chat.channelAgentsChanged(channelId);
+      } catch (cause: unknown) {
+        closePicker();
+        error = chatErrorMessage(cause, t("chat.agentAccess.saveFailed"));
+        return;
+      }
     }
     if (candidate.kind === "channel") {
       const blocker = await channelDisclosureBlocker(candidate.channel, null);
@@ -971,7 +955,7 @@
   async function updatePromptMenu(kind: "skill" | "command", query: string): Promise<void> {
     const request = ++promptMenuRequest;
     const appEntries = kind === "command" ? agentCommandCatalog() : [];
-    const providerInstanceId = targetAgent?.latestPolicy?.providerInstanceId ?? null;
+    const providerInstanceId = targetAgent?.localProviderInstanceId ?? null;
     const workingFolderId = catalogWorkingFolderId;
     const canReadProvider = localExecutionAvailable && providerInstanceId !== null && workingFolderId !== null;
     if (!canReadProvider && kind === "skill") {
@@ -1027,7 +1011,7 @@
     const trigger = composerTokenTrigger(editorController.plainText(), selection.start);
     closePromptMenu();
     if (!trigger || trigger.kind === "mention") return;
-    if (entry.source === "app") {
+    if (entry.source === "app" && !isModelCommandEntry(entry)) {
       editorController.replaceRange(trigger.start, trigger.end, "");
       await runAgentCommand(entry.value);
       return;
@@ -1057,7 +1041,33 @@
       ...(statusAvailable
         ? [appCommand("/status", t("chat.composer.agentCommands.status"), t("chat.composer.agentCommands.statusDescription"))]
         : []),
+      ...modelCommandCatalog(),
     ];
+  }
+
+  /**
+   * The `/model` suggestions: the target agent's models, else every model the channel's agents offer here, else the
+   * bare command so it stays discoverable.
+   */
+  function modelCommandCatalog(): ChatPromptCatalogEntry[] {
+    const models = targetAgent
+      ? targetProvider?.modelCatalog?.models ?? []
+      : channelModelChoices(channelAgentModelCatalogs());
+    if (models.length === 0) {
+      return [genericModelCommandEntry("/model", t("chat.composer.agentCommands.modelGenericDescription"), t("chat.composer.agentCommands.modelArgument"))];
+    }
+    return modelCommandEntries(models, (name) => t("chat.composer.agentCommands.modelDescription", name));
+  }
+
+  function channelAgentModelCatalogs(): ProviderModel[][] {
+    return (chat.selectedChannel?.memberships ?? []).flatMap((membership) => {
+      if (membership.participant.kind !== "ai_agent" || !isActiveChannelMember(membership)) return [];
+      const agent = chat.agents.find((candidate) => candidate.participant.id === membership.participant.id);
+      const provider = chat.settings?.providerInstances.find((entry) => (
+        entry.configuration.instanceId === agent?.localProviderInstanceId
+      ));
+      return provider?.modelCatalog ? [provider.modelCatalog.models] : [];
+    });
   }
 
   function appCommand(value: string, label: string, description: string): ChatPromptCatalogEntry {
@@ -1476,17 +1486,13 @@
     const requestId = ++assignmentPreviewRequest;
     assignmentPreviewLoading = true;
     try {
-      const [access, targets] = await Promise.all([
-        chatApi.readChatAgentAccess(agentId),
-        chatApi.listChatAssignmentTargets({ agentId, channelId, replyThreadId }),
-      ]);
+      const targets = await chatApi.listChatAssignmentTargets({ agentId, channelId, replyThreadId });
       if (
         requestId !== assignmentPreviewRequest
         || mentionedAgentId !== agentId
         || chat.selectedChannel?.id !== channelId
         || destinationReplyThreadId(destination) !== replyThreadId
       ) return;
-      agentAccess = access;
       assignmentTargets = targets;
     } catch (cause: unknown) {
       if (
@@ -1558,12 +1564,7 @@
   }
 
   function rosterReaders(roster: ChatChannelRosterRead): ChatParticipantRead[] {
-    return roster.memberships.flatMap((membership) => {
-      if (membership.removedAt !== null) return [];
-      if (membership.participant.kind === "ai_agent"
-        && membership.aiAccess?.capabilities.readHistory !== true) return [];
-      return [membership.participant];
-    });
+    return roster.memberships.flatMap((membership) => (isActiveChannelMember(membership) ? [membership.participant] : []));
   }
 
   function rosterReaderIds(roster: ChatChannelRosterRead): Set<string> {
@@ -1611,7 +1612,6 @@
     alsoSendToChannel = false;
     scheduledFor = null;
     scheduledRecurrence = null;
-    agentAccess = null;
     assignmentTargets = [];
     disclosureBlocker = null;
     dismissedMentionSuggestions = [];
@@ -1970,50 +1970,31 @@
     return targets.find((target) => target.isDefault && target.eligible) ?? null;
   }
 
+  /**
+   * Why the mentioned agent cannot take this post's work here. An agent without a provider on this device is
+   * no blocker: its work waits in the thread for Start here on a device that has one.
+   */
   function assignmentProviderBlockers(
     agentId: string | null,
     target: ChatAssignmentTargetRead | null,
     references: readonly ChatMessageReference[],
-    access: ChatAgentAccessRead | null,
+    channel: ChatChannelRead | null,
     targets: readonly ChatAssignmentTargetRead[],
   ): string[] {
     if (!agentId) return [];
     const agent = chat.agents.find((candidate) => candidate.participant.id === agentId);
     const blockers: string[] = [];
-    if (!agent?.latestPolicy) blockers.push(t("chat.organization.providerNotConfigured"));
     if (agent && agent.configurationState !== "healthy") {
       blockers.push(t("chat.organization.agentNeedsSetup", agent.participant.displayName));
     }
     if (target && !target.eligible) {
       blockers.push(target.unavailableReason ?? t("chat.organization.targetUnavailable"));
     }
-    const channelAccess = access?.channels.find((channel) => (
-      channel.channelId === chat.selectedChannel?.id && channel.removedAt === null
-    )) ?? null;
-    if (!assignmentPreviewLoading && !channelAccess) {
+    const member = channel?.memberships.some((membership) => (
+      membership.participant.id === agentId && isActiveChannelMember(membership)
+    )) ?? false;
+    if (!assignmentPreviewLoading && !member) {
       blockers.push(t("chat.organization.agentChannelAccessUnavailable"));
-    }
-    if (channelAccess) {
-      const grantedFolderIds = new Set(channelAccess.folderGrants.flatMap((grant) => (
-        grant.revokedAt === null && grant.capability !== "none" ? [grant.workingFolderId] : []
-      )));
-      const referencedFolderIds = new Set(references.flatMap((reference) => (
-        reference.kind === "workingFolder" || reference.kind === "workspacePath"
-          ? [reference.workingFolderId]
-          : []
-      )));
-      const ungrantedFolders = [...referencedFolderIds]
-        .filter((folderId) => !grantedFolderIds.has(folderId))
-        .map((folderId) => chat.workingFolders.find((folder) => (
-          folder.workingFolder.id === folderId
-        ))?.workingFolder.displayName ?? folderId);
-      if (ungrantedFolders.length > 0) {
-        blockers.push(t(
-          "chat.organization.ungrantedFolderReferences",
-          new Intl.ListFormat(localization.locale, { style: "long", type: "conjunction" })
-            .format(ungrantedFolders),
-        ));
-      }
     }
     const unavailableEnvironments = references
       .filter((reference): reference is Extract<ChatMessageReference, { kind: "executionEnvironment" }> => (
@@ -2031,11 +2012,11 @@
           .format(unavailableEnvironments),
       ));
     }
-    const provider = chat.settings?.providerInstances.find((entry) => (
-      entry.configuration.instanceId === agent?.latestPolicy?.providerInstanceId
-    ));
+    const provider = agent?.localProviderInstanceId
+      ? chat.settings?.providerInstances.find((entry) => entry.configuration.instanceId === agent.localProviderInstanceId)
+      : undefined;
     const authority = provider?.lastProbe?.authoritySupport;
-    if (agent?.latestPolicy && !authority && !assignmentPreviewLoading) {
+    if (provider && !authority && !assignmentPreviewLoading) {
       blockers.push(t("chat.organization.providerAuthorityNotVerified"));
     }
     const requiresHostTools = references.some((reference) => (
@@ -2047,8 +2028,7 @@
       blockers.push(t("chat.organization.providerCannotUseHostTools"));
     }
     if (target && authority) {
-      const agentSafetyMode = agent?.latestPolicy?.safetyMode ?? null;
-      for (const blocker of providerTargetAuthorityBlockers(authority, target, agentSafetyMode)) {
+      for (const blocker of providerTargetAuthorityBlockers(authority, target)) {
         blockers.push(t(blocker));
       }
     }
@@ -2057,25 +2037,6 @@
 
   function destinationReplyThreadId(value: string): string | null {
     return value.startsWith("reply-thread:") ? value.slice("reply-thread:".length) : null;
-  }
-
-  function folderCapabilityLabel(capability: ChatFolderCapability): string {
-    switch (capability) {
-      case "none": return t("settings.agents.agents.folderCapabilities.none");
-      case "read": return t("settings.agents.agents.folderCapabilities.read");
-      case "edit": return t("settings.agents.agents.folderCapabilities.edit");
-      case "execute": return t("settings.agents.agents.folderCapabilities.execute");
-      case "publish": return t("settings.agents.agents.folderCapabilities.publish");
-    }
-  }
-
-  function runtimeApprovalLabel(policy: ChatAssignmentTargetRead["effectiveRuntimeApproval"]): string {
-    switch (policy) {
-      case "ask": return t("settings.agents.agents.runtime.ask");
-      case "autoApprove": return t("settings.agents.agents.runtime.autoApprove");
-      case "unattended": return t("settings.agents.agents.runtime.unattended");
-      case "providerCustom": return t("settings.agents.agents.runtime.providerCustom");
-    }
   }
 </script>
 

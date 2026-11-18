@@ -140,9 +140,6 @@
     initialDistractionsTab={settingsLauncher.targetDistractionsTab}
     initialContactsTab={settingsLauncher.targetContactsTab}
     initialAgentsSubsection={settingsLauncher.targetAgentsSubsection}
-    initialAgentsAgentId={settingsLauncher.targetAgentsAgentId}
-    initialAgentsChannelId={settingsLauncher.targetAgentsChannelId}
-    initialAgentsCreateAgent={settingsLauncher.targetAgentsCreateAgent}
   />
 {/if}
 

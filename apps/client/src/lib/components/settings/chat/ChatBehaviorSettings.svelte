@@ -16,8 +16,9 @@
   import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import SwitchField from "$lib/components/ui/SwitchField.svelte";
+  import ChatAppAgentSettings from "./ChatAppAgentSettings.svelte";
 
-  /** Chat behavior preferences as the general, terminal, and notification sections of Chat settings. */
+  /** Chat behavior preferences as the general, agents, terminal, and notification sections of Chat settings. */
   const localization = getLocalization();
   const { t } = localization;
   const chat = getChat();
@@ -112,6 +113,10 @@
       {/if}
     </div>
   </section>
+
+  <div class="h-px shrink-0 bg-border/50" aria-hidden="true"></div>
+
+  <ChatAppAgentSettings />
 
   {#if behavior}
     <div class="h-px shrink-0 bg-border/50" aria-hidden="true"></div>

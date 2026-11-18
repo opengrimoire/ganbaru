@@ -8,13 +8,13 @@ describe("settings launcher", () => {
       expect(launcher.isOpen).toBe(false);
     });
 
-    launcher.open("agents", { agentsSubsection: "agents", agentsCreateAgent: true, onClosed });
+    launcher.open("agents", { agentsSubsection: "files", onClosed });
     expect(launcher.isOpen).toBe(true);
     expect(onClosed).not.toHaveBeenCalled();
 
     launcher.close();
     expect(onClosed).toHaveBeenCalledTimes(1);
-    expect(launcher.targetAgentsCreateAgent).toBe(false);
+    expect(launcher.targetAgentsSubsection).toBeUndefined();
 
     launcher.open("appearance");
     launcher.close();

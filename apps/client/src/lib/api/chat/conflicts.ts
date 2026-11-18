@@ -1,6 +1,6 @@
 /**
- * Bridge for Chat sync conflicts: participant names, agent roles and instructions, channel names and topics, channel note wording, and
- * message edits.
+ * Bridge for Chat sync conflicts: participant names, app, project, and channel agent instructions, channel names and topics, channel note wording,
+ * and message edits.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -17,7 +17,15 @@ import {
 } from "$lib/utils/readers";
 
 /** Chat row kinds whose edits can conflict. */
-export const CHAT_CONFLICT_TARGETS = ["participant", "agent", "channel", "channel_note", "message"] as const;
+export const CHAT_CONFLICT_TARGETS = [
+  "participant",
+  "app_agent_instructions",
+  "project_agent_instructions",
+  "channel",
+  "channel_agent_instructions",
+  "channel_note",
+  "message",
+] as const;
 export type ChatConflictTarget = (typeof CHAT_CONFLICT_TARGETS)[number];
 
 /** One concurrent version of a conflicted Chat row. */
@@ -28,9 +36,9 @@ export interface ChatConflictVersion {
   editedAtMs: number;
   /** Whether every device shows this version now. */
   displayed: boolean;
-  /** A name, a role, a channel note, or message Markdown. */
+  /** A name, instructions, a channel note, or message Markdown. */
   text: string;
-  /** An agent's instructions or a channel's topic, or null when the row kind has none. */
+  /** A channel's topic, or null when the row kind has none. */
   detail: string | null;
 }
 
@@ -38,7 +46,7 @@ export interface ChatConflictVersion {
 export interface ChatConflict {
   target: ChatConflictTarget;
   id: string;
-  /** Where the row is, for a message or a channel note its channel name, or null when the row names itself. */
+  /** Where the row is: the channel of a message, channel note, or channel instructions, the project of project instructions, or null when the row names itself. */
   context: string | null;
   versions: ChatConflictVersion[];
 }

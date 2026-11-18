@@ -32,10 +32,10 @@ describe("chat conflict mapping", () => {
 
   it("rejects a version without a device", () => {
     expect(() => mapChatConflicts([{
-      target: "agent",
+      target: "channel_agent_instructions",
       id: "t",
       context: null,
-      versions: [{ version: "ab", editedAtMs: 1, displayed: true, text: "Reviewer", detail: "Review" }],
+      versions: [{ version: "ab", editedAtMs: 1, displayed: true, text: "Keep replies short", detail: null }],
     }])).toThrow("chat conflicts[0].versions[0].device");
   });
 });

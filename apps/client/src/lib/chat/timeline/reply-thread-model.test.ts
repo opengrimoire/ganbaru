@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import type {
   ChatAgentRunRead,
   ChatErrorCode,
-  ChatFolderGrant,
+  ChatChannelAgentSettingsRead,
+  ChatEffectiveAgentAccess,
   ChatMessageRead,
   ChatTimelineItemRead,
   ChatTimelineTurnRead,
@@ -15,7 +16,8 @@ import {
   agentRunRestart,
   agentRunShowedOutput,
   agentRunLocation,
-  channelHasFolderGrants,
+  agentMayUseChannelFolders,
+  replyThreadMetadataLine,
   exactExecutionReadKey,
   exactExecutionRuns,
   exactRunPresentationsReady,
@@ -41,8 +43,6 @@ function agentRun(id: string, providerExecutionThreadId: string | null): ChatAge
     workingFolderId: "folder-1",
     executionEnvironmentId: "environment-1",
     scratchGenerationId: null,
-    agentPolicyRevisionId: "policy-1",
-    effort: "medium",
     providerExecutionTurnId: `turn-${id}`,
     providerExecutionThreadId,
     state: "working",
@@ -616,33 +616,51 @@ describe("agentRunLocation", () => {
   });
 });
 
-describe("channelHasFolderGrants", () => {
-  function grant(overrides: Partial<ChatFolderGrant> = {}): ChatFolderGrant {
+describe("agentMayUseChannelFolders", () => {
+  function settings(effective: ChatEffectiveAgentAccess | null, agentId = "agent-1"): Pick<ChatChannelAgentSettingsRead, "agents"> {
     return {
-      workingFolderId: "folder-1",
-      displayName: "Website",
-      capability: "execute",
-      isDefault: false,
-      runtimeApprovalOverride: null,
-      revision: 1,
-      revokedAt: null,
-      ...overrides,
+      agents: [{
+        agentId,
+        requested: "ask",
+        effective,
+        downgradeReason: effective === "ask" ? null : "cannot_isolate",
+        installed: true,
+        ownOffered: false,
+      }],
     };
   }
 
-  function access(channelId: string, grants: ChatFolderGrant[], removedAt: string | null = null) {
-    return { channels: [{ channelId, removedAt, folderGrants: grants }] };
-  }
-
-  it("finds an active grant in the channel", () => {
-    expect(channelHasFolderGrants(access("channel-1", [grant()]), "channel-1")).toBe(true);
+  it("is true when the agent reads or edits folders here", () => {
+    expect(agentMayUseChannelFolders(settings("ask"), "agent-1")).toBe(true);
+    expect(agentMayUseChannelFolders(settings("read"), "agent-1")).toBe(true);
+    expect(agentMayUseChannelFolders(settings("edit_only"), "agent-1")).toBe(true);
   });
 
-  it("ignores revoked grants, grants without capability, other channels, and removed memberships", () => {
-    expect(channelHasFolderGrants(access("channel-1", [grant({ revokedAt: "2026-11-13T00:00:00Z" })]), "channel-1")).toBe(false);
-    expect(channelHasFolderGrants(access("channel-1", [grant({ capability: "none" })]), "channel-1")).toBe(false);
-    expect(channelHasFolderGrants(access("channel-2", [grant()]), "channel-1")).toBe(false);
-    expect(channelHasFolderGrants(access("channel-1", [grant()], "2026-11-13T00:00:00Z"), "channel-1")).toBe(false);
-    expect(channelHasFolderGrants(null, "channel-1")).toBe(false);
+  it("is false under talk, when the agent cannot work here, for other agents, and without settings", () => {
+    expect(agentMayUseChannelFolders(settings("talk"), "agent-1")).toBe(false);
+    expect(agentMayUseChannelFolders(settings(null), "agent-1")).toBe(false);
+    expect(agentMayUseChannelFolders(settings("ask", "agent-2"), "agent-1")).toBe(false);
+    expect(agentMayUseChannelFolders(null, "agent-1")).toBe(false);
+  });
+});
+
+describe("replyThreadMetadataLine", () => {
+  it("joins the run location and the model that ran", () => {
+    expect(replyThreadMetadataLine("Working in Website", "GPT-5")).toBe("Working in Website · GPT-5");
+  });
+
+  it("shows the model alone when the location adds nothing", () => {
+    expect(replyThreadMetadataLine(null, "Provider default, gpt-x is not available"))
+      .toBe("Provider default, gpt-x is not available");
+  });
+
+  it("shows the location alone until the executing device names the model", () => {
+    expect(replyThreadMetadataLine("Working in Website", null)).toBe("Working in Website");
+  });
+
+  it("omits blank parts and returns null when nothing is known", () => {
+    expect(replyThreadMetadataLine(null, null)).toBeNull();
+    expect(replyThreadMetadataLine("  ", "")).toBeNull();
+    expect(replyThreadMetadataLine(" Working in Website ", "  ")).toBe("Working in Website");
   });
 });

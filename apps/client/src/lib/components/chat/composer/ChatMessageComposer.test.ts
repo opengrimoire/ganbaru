@@ -74,6 +74,9 @@ function workingReplyThread(): ChatReplyThreadPageRead {
       localAcceptance: null,
       delegation: null,
       latestRunProviderThreadId: null,
+      modelSelection: { providerManagedModel: true, modelId: null, modelOptions: [] },
+      instructions: "",
+      modelLabel: null,
     },
     agentRuns: [],
     delegatedChildren: [],
@@ -679,6 +682,7 @@ describe("ChatMessageComposer", () => {
         localAcceptance: {
           digest: "digest-seen",
           providerInstanceId: "codex-phone",
+          access: "ask",
           folders,
         },
       },
@@ -704,7 +708,7 @@ describe("ChatMessageComposer", () => {
     const { notice } = mountWaitingWork();
 
     expect(notice.textContent).toContain("It would run with codex-phone");
-    expect(notice.textContent).toContain("Edit in Website (");
+    expect(notice.textContent).toContain("It would run with codex-phone: Asks before every command in Website.");
     expect(notice.textContent).not.toContain("scratch");
   });
 

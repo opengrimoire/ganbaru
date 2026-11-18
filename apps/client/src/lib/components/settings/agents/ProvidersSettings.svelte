@@ -26,6 +26,7 @@
   } from "$lib/chat/composer/model-company";
   import { familiesInPickerOrder, providersInPickerOrder } from "$lib/chat/composer/model-picker-model";
   import ChatModelAvatar from "$lib/components/chat/identity/ChatModelAvatar.svelte";
+  import AgentDefaultModel from "./AgentDefaultModel.svelte";
   import ProviderInstallSteps from "./ProviderInstallSteps.svelte";
   import ProviderPlanLimitRings from "./ProviderPlanLimitRings.svelte";
   import UnconfiguredProviderFamily from "./UnconfiguredProviderFamily.svelte";
@@ -716,6 +717,9 @@
                       </button>
                     </section>
                   {/if}
+
+                  <AgentDefaultModel {instanceId} />
+
 
                   <section class="editor-section catalog-section">
                     {#if acceptsCustomModels}

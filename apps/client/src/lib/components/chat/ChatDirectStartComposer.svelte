@@ -65,7 +65,7 @@
   import { useChatPaneEvents } from "$lib/chat/pane-events";
   import { useChat } from "$lib/stores/chat.svelte";
   import { useProjects } from "$lib/stores/projects.svelte";
-  import ChatAccessControl from "./composer/ChatAccessControl.svelte";
+  import ChatPermissionModeControl from "./composer/ChatPermissionModeControl.svelte";
   import ChatComposerFrame from "./composer/ChatComposerFrame.svelte";
   import ChatComposerInfoPanel from "./composer/ChatComposerInfoPanel.svelte";
   import ChatComposerSuggestionMenu from "./composer/ChatComposerSuggestionMenu.svelte";
@@ -890,7 +890,7 @@
         <button type="button" class="menu-item" onclick={insertMentionTrigger}><AtSign size={14} />{t("chat.composer.mentionFiles")}</button>
       </div>
     </details>
-    <ChatAccessControl />
+    <ChatPermissionModeControl />
     {#if visibleComposerMode}
       <span class="mode-divider" aria-hidden="true"></span>
       <button type="button" class="composer-mode" aria-label={t("chat.composer.exitCommandMode", visibleComposerMode.label)} onclick={clearVisibleComposerMode}>

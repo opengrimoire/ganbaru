@@ -15,9 +15,6 @@ export interface SettingsSectionRendererProps {
   readonly initialDistractionsTab?: DistractionsSettingsTab;
   readonly initialContactsTab?: ContactsSettingsTab;
   readonly activeAgentsSubsection: AgentsSettingsSubsection;
-  readonly initialAgentsAgentId?: string;
-  readonly initialAgentsChannelId?: string;
-  readonly initialAgentsCreateAgent?: boolean;
   readonly onOpenDistractionsLimitEditor: (target: DistractionsLimitEditorTarget) => void;
   readonly onOpenNotesTransferPanel: (operation: NotesTransferOperation) => void;
   readonly onOpenChatProviderSetup: (target: ChatProviderSetupTarget) => void;

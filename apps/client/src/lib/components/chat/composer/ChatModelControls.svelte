@@ -78,10 +78,13 @@
   let {
     value,
     disabled = false,
+    lockProvider = false,
     onChange,
   }: {
     value?: ChatModelControlSelection;
     disabled?: boolean;
+    /** Offers only the selected provider's models, for a setting that belongs to one provider installation. */
+    lockProvider?: boolean;
     onChange?: (selection: ChatModelControlSelection) => void;
   } = $props();
 
@@ -130,12 +133,15 @@
   const controlled = $derived(value !== undefined);
   /** The composer popover is placed by CSS above its trigger, so nudge it back inside a narrow screen. */
   const keepComposerPopoverInViewport = (node: HTMLElement) => (controlled ? undefined : keepInViewport(node));
-  const providers = $derived(chat.settings?.providerInstances ?? []);
+  const allProviders = $derived(chat.settings?.providerInstances ?? []);
   const providerInstanceId = $derived(value === undefined
     ? chat.composer.providerInstanceId
     : value.providerInstanceId);
+  const providers = $derived(lockProvider
+    ? allProviders.filter((entry) => entry.configuration.instanceId === providerInstanceId)
+    : allProviders);
   const provider = $derived(providers.find((entry) => entry.configuration.instanceId === providerInstanceId) ?? null);
-  const unconfiguredFamilies = $derived((chat.settings?.providerFamilies ?? []).filter((family) => !providers.some((entry) => entry.configuration.familyId === family.familyId)));
+  const unconfiguredFamilies = $derived(lockProvider ? [] : (chat.settings?.providerFamilies ?? []).filter((family) => !providers.some((entry) => entry.configuration.familyId === family.familyId)));
   const selection = $derived(value === undefined
     ? readComposerModelSelection(chat.composer.modelSelection)
     : {

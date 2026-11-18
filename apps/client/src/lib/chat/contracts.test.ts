@@ -20,7 +20,9 @@ import {
   parseChatRecurrenceSpec,
   parseChatScheduleProposal,
   parseChatScheduleProposalStates,
-  parseChatAgentAccess,
+  parseChatAppAgentSettings,
+  parseChatChannelAgentSettings,
+  parseChatProjectAgentSettings,
   parseChatConfiguration,
   parseCanonicalRuntimeEvent,
   parseCanonicalStoredEvent,
@@ -1137,8 +1139,6 @@ describe("Chat read and error contracts", () => {
       workingFolderId: "workspace-1",
       executionEnvironmentId: "current-folder:workspace-1",
       scratchGenerationId: null,
-      agentPolicyRevisionId: "policy:1",
-      effort: null,
       providerExecutionTurnId: "turn-1",
       providerExecutionThreadId: "thread-1",
       state: "completed",
@@ -1215,40 +1215,61 @@ describe("Chat read and error contracts", () => {
     expect(() => parseChatError({ ...fixture, details: undefined })).toThrow("details is not valid JSON");
   });
 
-  it("parses agent channel access and requires its capabilities", () => {
-    const channel = {
+  it("parses channel agent settings and refuses unknown access levels", () => {
+    const settings = {
       channelId: "channel:general",
       conversationId: "conversation:general",
-      projectId: "project-1",
-      groupId: "group-1",
-      channelName: "general",
-      capabilities: { readHistory: true, participate: true },
-      historyBoundary: { kind: "entire" },
-      runtimeApprovalOverride: null,
-      scratchRuntimeApprovalOverride: "ask",
-      folderGrants: [],
-      membershipRevision: 1,
-      removedAt: null,
-    };
-    const access = {
-      agentId: "participant:agent",
-      accessRevision: 3,
-      agentDefaultRuntimeApproval: "autoApprove",
-      channels: [channel],
+      access: null,
+      instructions: "Prefer small commits.",
+      effective: { access: "read", source: "project" },
+      agents: [
+        { agentId: "participant:codex", requested: "read", effective: "read", downgradeReason: null, installed: true, ownOffered: true },
+        { agentId: "participant:cursor", requested: "ask", effective: "read", downgradeReason: "cannot_ask_before_commands", installed: true, ownOffered: false },
+        { agentId: "participant:claude", requested: "ask", effective: null, downgradeReason: null, installed: false, ownOffered: false },
+      ],
+      modelOverrides: [{ agentId: "participant:codex", model: { providerManagedModel: false, modelId: "gpt-5.6-sol", modelOptions: [] } }],
+      pushApprovals: [],
+      revision: 4,
     };
 
-    expect(parseChatAgentAccess(access)).toEqual(access);
-    expect(() => parseChatAgentAccess({
-      ...access,
-      channels: [{ ...channel, capabilities: undefined }],
-    })).toThrow("capabilities");
+    expect(parseChatChannelAgentSettings(settings)).toEqual(settings);
+    expect(parseChatChannelAgentSettings({ ...settings, access: "own" }).access).toBe("own");
+    expect(() => parseChatChannelAgentSettings({ ...settings, access: "write" })).toThrow("access");
+    expect(() => parseChatChannelAgentSettings({ ...settings, effective: { access: "read", source: "device" } })).toThrow("source");
+    expect(() => parseChatChannelAgentSettings({
+      ...settings,
+      agents: [{ ...settings.agents[0], effective: "write" }],
+    })).toThrow("effective");
+    expect(() => parseChatChannelAgentSettings({
+      ...settings,
+      agents: [{ ...settings.agents[1], downgradeReason: "unknown" }],
+    })).toThrow("downgradeReason");
+  });
 
-    const ungrouped = { ...access, channels: [{ ...channel, groupId: null }] };
-    expect(parseChatAgentAccess(ungrouped)).toEqual(ungrouped);
-    expect(() => parseChatAgentAccess({
-      ...access,
-      channels: [{ ...channel, groupId: "" }],
-    })).toThrow("groupId");
+  it("fills an absent override model with the provider default", () => {
+    const parsed = parseChatChannelAgentSettings({
+      channelId: "channel:general",
+      conversationId: "conversation:general",
+      access: "ask",
+      instructions: "",
+      effective: { access: "ask", source: "channel" },
+      agents: [],
+      modelOverrides: [{ agentId: "participant:codex", model: {} }],
+      pushApprovals: [],
+      revision: 0,
+    });
+
+    expect(parsed.modelOverrides[0]?.model).toEqual({ providerManagedModel: false, modelId: null, modelOptions: [] });
+  });
+
+  it("requires a project's effective access and an app scope's own access", () => {
+    const project = { projectId: "project-1", access: null, instructions: "", effective: { access: "ask", source: "app" }, revision: 0 };
+    expect(parseChatProjectAgentSettings(project)).toEqual(project);
+    expect(() => parseChatProjectAgentSettings({ ...project, effective: undefined })).toThrow("effective");
+
+    const app = { access: "talk", instructions: "Be brief.", revision: 2, updatedAt: timestamp };
+    expect(parseChatAppAgentSettings(app)).toEqual(app);
+    expect(() => parseChatAppAgentSettings({ ...app, access: null })).toThrow("access");
   });
 });
 
@@ -1394,6 +1415,7 @@ describe("chat push request contracts", () => {
   it("parses standing push approvals and refuses a push URL with a password", () => {
     const approval = {
       approvalId: "push-approval-1",
+      channelId: "channel:1",
       agentId: "participant:atlas",
       workingFolderId: "folder:1",
       workingFolderName: "App",

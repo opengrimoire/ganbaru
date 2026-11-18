@@ -11,16 +11,17 @@ export function chatAgentModelParticipant(
   agents: readonly ChatAiAgentRead[],
   settings: ChatSettingsRead | null,
 ): ChatModelParticipant | null {
-  const policy = agents.find((agent) => agent.participant.id === participantId)
-    ?.latestPolicy;
-  if (!policy || !settings) return null;
-  const provider = settings.providerInstances.find((candidate) => (
-    candidate.configuration.instanceId === policy.providerInstanceId
-  ));
+  const agent = agents.find((entry) => entry.participant.id === participantId);
+  if (!agent || !settings) return null;
+  const provider = agent.localProviderInstanceId
+    ? settings.providerInstances.find((candidate) => (
+      candidate.configuration.instanceId === agent.localProviderInstanceId
+    ))
+    : undefined;
   if (!provider) return null;
   return chatModelParticipant(
     provider.configuration.familyId,
-    policy.modelId,
+    agent.latestPolicy?.modelId ?? null,
     provider.modelCatalog,
   );
 }

@@ -33,6 +33,9 @@ function assignmentWire(overrides: Record<string, unknown>): Record<string, unkn
     review: null,
     localAcceptance: null,
     delegation: null,
+    modelSelection: { providerManagedModel: true, modelId: null, modelOptions: [] },
+    instructions: "",
+    modelLabel: null,
     latestRunProviderThreadId: null,
     ...overrides,
   };

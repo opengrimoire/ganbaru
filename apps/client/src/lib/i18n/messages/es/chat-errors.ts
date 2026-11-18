@@ -36,16 +36,6 @@ export const chatErrors = {
     assignmentCheckpoints: "Este trabajo no tiene puntos de control guardados en este dispositivo para comparar.",
     assignmentRepositoryChanged: "El repositorio de la carpeta cambió durante este trabajo, así que sus cambios no se pueden comparar.",
   },
-  accessIssues: {
-    archived_channel: "Uno de los canales elegidos está archivado, así que quítalo o restaura el canal.",
-    archived_folder: "Una de las carpetas de trabajo elegidas está archivada, así que quítala o restaura la carpeta.",
-    cross_project_folder: "Una carpeta de trabajo pertenece a otro proyecto, así que elige una del proyecto de este canal.",
-    duplicate_channel: "Un canal aparece más de una vez, así que quita la entrada sobrante.",
-    duplicate_folder: "Una carpeta de trabajo aparece más de una vez, así que quita la entrada sobrante.",
-    multiple_default_folders: "Solo una carpeta de trabajo puede ser la predeterminada, así que deja solo una.",
-    retained_reference_disclosure: "Los mensajes anteriores mencionan canales que este agente no puede leer, así que empieza su historial desde que se concede el acceso.",
-    agent_not_found: "Este agente ya no existe.",
-  },
   actions: {
     loadChat: "No se pudo cargar el chat.",
     loadChannel: "No se pudo cargar el canal.",

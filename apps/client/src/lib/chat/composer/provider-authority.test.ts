@@ -5,7 +5,7 @@ import type {
   ChatRuntimeApprovalPolicy,
   ProviderAuthoritySupport,
 } from "$lib/chat/contracts";
-import { providerExecutesWithAsk, providerTargetAuthorityBlockers } from "./provider-authority";
+import { providerTargetAuthorityBlockers } from "./provider-authority";
 
 const confining: ProviderAuthoritySupport = {
   isolatedConversation: true,
@@ -39,41 +39,35 @@ function scratch(approval: ChatRuntimeApprovalPolicy = "ask"): Target {
 describe("providerTargetAuthorityBlockers", () => {
   it("accepts every target except publish when the provider confines commands itself", () => {
     for (const target of [folder("read"), folder("edit"), folder("execute", "autoApprove"), scratch("autoApprove")]) {
-      expect(providerTargetAuthorityBlockers(confining, target, "approve_for_me")).toEqual([]);
+      expect(providerTargetAuthorityBlockers(confining, target)).toEqual([]);
     }
-    expect(providerTargetAuthorityBlockers(confining, folder("publish"), "ask_for_approval")).toEqual([]);
+    expect(providerTargetAuthorityBlockers(confining, folder("publish"))).toEqual([]);
   });
 
-  it("admits person-approved commands only under Ask with a non-custom policy", () => {
+  it("admits person-approved commands only under Ask", () => {
     for (const target of [folder("execute"), scratch()]) {
-      expect(providerTargetAuthorityBlockers(approving, target, "ask_for_approval")).toEqual([]);
-      expect(providerTargetAuthorityBlockers(approving, target, "custom")).toEqual([
-        "chat.organization.providerCommandsNeedAsk",
-      ]);
-      expect(providerTargetAuthorityBlockers(approving, target, null)).toEqual([
+      expect(providerTargetAuthorityBlockers(approving, target)).toEqual([]);
+      expect(providerTargetAuthorityBlockers(approving, { ...target, effectiveRuntimeApproval: "autoApprove" })).toEqual([
         "chat.organization.providerCommandsNeedAsk",
       ]);
     }
-    expect(providerTargetAuthorityBlockers(approving, folder("execute", "autoApprove"), "ask_for_approval")).toEqual([
-      "chat.organization.providerCommandsNeedAsk",
-    ]);
   });
 
   it("does not require Ask for targets that run no commands", () => {
     for (const target of [folder("read", "autoApprove"), folder("edit", "autoApprove")]) {
-      expect(providerTargetAuthorityBlockers(approving, target, "approve_for_me")).toEqual([]);
+      expect(providerTargetAuthorityBlockers(approving, target)).toEqual([]);
     }
   });
 
   it("keeps publish refused when the provider cannot classify publication", () => {
-    expect(providerTargetAuthorityBlockers(approving, folder("publish"), "ask_for_approval")).toEqual([
+    expect(providerTargetAuthorityBlockers(approving, folder("publish"))).toEqual([
       "chat.organization.providerCannotPublish",
     ]);
   });
 
   it("reports commands the provider can neither confine nor relay", () => {
     const neither = { ...approving, personApprovedCommands: false };
-    expect(providerTargetAuthorityBlockers(neither, folder("execute"), "ask_for_approval")).toEqual([
+    expect(providerTargetAuthorityBlockers(neither, folder("execute"))).toEqual([
       "chat.organization.providerCannotConfineCommands",
     ]);
   });
@@ -86,30 +80,15 @@ describe("providerTargetAuthorityBlockers", () => {
       writableRoot: false,
       networkBoundary: false,
     };
-    expect(providerTargetAuthorityBlockers(bare, folder("read"), "ask_for_approval")).toEqual([
+    expect(providerTargetAuthorityBlockers(bare, folder("read"))).toEqual([
       "chat.organization.providerCannotReadRoot",
       "chat.organization.providerCannotDenyShell",
       "chat.organization.providerCannotEnforceNetwork",
     ]);
-    expect(providerTargetAuthorityBlockers(bare, scratch(), "ask_for_approval")).toEqual([
+    expect(providerTargetAuthorityBlockers(bare, scratch())).toEqual([
       "chat.organization.providerCannotWriteRoot",
       "chat.organization.providerCannotEnforceNetwork",
     ]);
-    expect(providerTargetAuthorityBlockers(bare, folder("none"), "ask_for_approval")).toEqual([]);
-  });
-});
-
-describe("providerExecutesWithAsk", () => {
-  it("accepts a person-approved provider under a ranked policy and a confining provider under any policy", () => {
-    expect(providerExecutesWithAsk(approving, "ask_for_approval")).toBe(true);
-    expect(providerExecutesWithAsk(approving, "approve_for_me")).toBe(true);
-    expect(providerExecutesWithAsk(confining, "custom")).toBe(true);
-  });
-
-  it("refuses providers without a network boundary or person-approved commands under a custom policy", () => {
-    expect(providerExecutesWithAsk({ ...approving, networkBoundary: false }, "ask_for_approval")).toBe(false);
-    expect(providerExecutesWithAsk({ ...approving, personApprovedCommands: false }, "ask_for_approval")).toBe(false);
-    expect(providerExecutesWithAsk(approving, "custom")).toBe(false);
-    expect(providerExecutesWithAsk(approving, null)).toBe(false);
+    expect(providerTargetAuthorityBlockers(bare, folder("none"))).toEqual([]);
   });
 });

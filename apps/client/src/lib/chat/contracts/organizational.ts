@@ -23,7 +23,8 @@ import type {
   ModelId,
   ProjectWorkingFolderId,
   ProviderInstanceId,
-  SafetyMode,
+  InteractionMode,
+  ProviderFamilyId,
   UtcTimestamp,
   VersionedJson,
 } from "./common";
@@ -85,34 +86,142 @@ export type ChatAssignmentReviewRequest =
 export const CHAT_FOLDER_CAPABILITIES = ["none", "read", "edit", "execute", "publish"] as const;
 export type ChatFolderCapability = (typeof CHAT_FOLDER_CAPABILITIES)[number];
 
-export const CHAT_RUNTIME_APPROVAL_POLICIES = [
-  "ask",
-  "autoApprove",
-  "unattended",
-  "providerCustom",
-] as const;
+/** Runtime approval after channel access is resolved: a person approves each command, or confined commands run without asking. */
+export const CHAT_RUNTIME_APPROVAL_POLICIES = ["ask", "autoApprove"] as const;
 export type ChatRuntimeApprovalPolicy = (typeof CHAT_RUNTIME_APPROVAL_POLICIES)[number];
 
-export interface ChatChannelCapabilities {
-  readHistory: boolean;
-  participate: boolean;
+/** How agents may work in a channel, from narrowest to widest, set at the app, project, or channel scope. */
+export const CHAT_AGENT_ACCESS_LEVELS = ["talk", "read", "ask", "own"] as const;
+export type ChatAgentAccess = (typeof CHAT_AGENT_ACCESS_LEVELS)[number];
+
+/** The scope an effective access comes from. */
+export const CHAT_AGENT_ACCESS_SOURCES = ["channel", "project", "app"] as const;
+export type ChatAgentAccessSource = (typeof CHAT_AGENT_ACCESS_SOURCES)[number];
+
+/** What one agent actually does on this device, from narrowest to widest; `edit_only` edits files without running commands. */
+export const CHAT_EFFECTIVE_AGENT_ACCESS_LEVELS = ["talk", "read", "edit_only", "ask", "own"] as const;
+export type ChatEffectiveAgentAccess = (typeof CHAT_EFFECTIVE_AGENT_ACCESS_LEVELS)[number];
+
+/** Why an agent works below the channel's access on this device. */
+export const CHAT_ACCESS_DOWNGRADE_REASONS = [
+  "cannot_confine_commands",
+  "cannot_ask_before_commands",
+  "cannot_read_only",
+  "cannot_isolate",
+] as const;
+export type ChatAccessDowngradeReason = (typeof CHAT_ACCESS_DOWNGRADE_REASONS)[number];
+
+/** The access a scope resolves to, with the scope it comes from. */
+export interface ChatEffectiveChannelAccessRead {
+  access: ChatAgentAccess;
+  source: ChatAgentAccessSource;
 }
 
-export type ChatHistoryBoundary =
-  | { kind: "entire" }
-  | { kind: "fromGrant"; lowerOrderKey?: string };
+/** What one agent in a channel does on the reading device under the channel's access. */
+export interface ChatAgentResolvedAccessRead {
+  agentId: ChatParticipantId;
+  requested: ChatAgentAccess;
+  /** Null when the agent cannot work in the channel on this device at all. */
+  effective: ChatEffectiveAgentAccess | null;
+  /** Why `effective` is narrower than `requested`, null when it is not or the provider is not installed. */
+  downgradeReason: ChatAccessDowngradeReason | null;
+  /** Whether this device has a provider installation for the agent. */
+  installed: boolean;
+  /** Whether the agent's provider on this device can work on its own. */
+  ownOffered: boolean;
+}
 
-export const CHAT_ACCESS_ISSUE_CODES = [
-  "archived_channel",
-  "archived_folder",
-  "cross_project_folder",
-  "duplicate_channel",
-  "duplicate_folder",
-  "multiple_default_folders",
-  "retained_reference_disclosure",
-  "agent_not_found",
-] as const;
-export type ChatAccessIssueCode = (typeof CHAT_ACCESS_ISSUE_CODES)[number];
+/** A model choice with its options, as agent defaults, channel overrides, and assignments store it. */
+export interface ChatModelSelection {
+  /** Whether the provider picks the model; `modelId` is then null. */
+  providerManagedModel: boolean;
+  modelId: ModelId | null;
+  modelOptions: ModelOptionSelection[];
+}
+
+/** The app scope of agent settings, which every project and channel inherits. */
+export interface ChatAppAgentSettingsRead {
+  access: ChatAgentAccess;
+  instructions: string;
+  revision: number;
+  updatedAt: UtcTimestamp;
+}
+
+/** The project scope of agent settings; a null access inherits the app access. */
+export interface ChatProjectAgentSettingsRead {
+  projectId: string;
+  access: ChatAgentAccess | null;
+  instructions: string;
+  /** The access the project's channels inherit, with its source. */
+  effective: ChatEffectiveChannelAccessRead;
+  /** Zero while the project has never saved its own settings. */
+  revision: number;
+}
+
+/** One agent's model override in one channel. */
+export interface ChatChannelModelOverrideRead {
+  agentId: ChatParticipantId;
+  model: ChatModelSelection;
+}
+
+/** One standing push approval of an agent in a channel. */
+export interface ChatChannelPushApprovalRead {
+  approvalId: string;
+  channelId: ChatChannelId;
+  agentId: ChatParticipantId;
+  workingFolderId: ProjectWorkingFolderId;
+  workingFolderName: string;
+  pushUrl: string;
+  destinationBranch: string;
+  approvedAt: UtcTimestamp;
+}
+
+/** The channel scope of agent settings with what it resolves to on this device. */
+export interface ChatChannelAgentSettingsRead {
+  channelId: ChatChannelId;
+  conversationId: ChatConversationId;
+  /** The channel's own access, null when it inherits. */
+  access: ChatAgentAccess | null;
+  instructions: string;
+  effective: ChatEffectiveChannelAccessRead;
+  agents: ChatAgentResolvedAccessRead[];
+  modelOverrides: ChatChannelModelOverrideRead[];
+  pushApprovals: ChatChannelPushApprovalRead[];
+  revision: number;
+}
+
+export interface UpdateChatAppAgentSettingsRequest {
+  access: ChatAgentAccess;
+  instructions: string;
+  expectedRevision: number;
+}
+
+/** Saving with `expectedRevision` 0 creates the project's row. */
+export interface UpdateChatProjectAgentSettingsRequest {
+  projectId: string;
+  access: ChatAgentAccess | null;
+  instructions: string;
+  expectedRevision: number;
+}
+
+export interface UpdateChatChannelAgentSettingsRequest {
+  channelId: ChatChannelId;
+  access: ChatAgentAccess | null;
+  instructions: string;
+  expectedRevision: number;
+}
+
+export interface ChatChannelAgentRequest {
+  channelId: ChatChannelId;
+  agentId: ChatParticipantId;
+}
+
+/** A null `model` clears the override. */
+export interface SetChatChannelModelOverrideRequest {
+  channelId: ChatChannelId;
+  agentId: ChatParticipantId;
+  model: ChatModelSelection | null;
+}
 
 /** One local day of an agent's usage, summed across the devices that ran it. */
 export interface ChatAgentUsageDayRead {
@@ -122,75 +231,6 @@ export interface ChatAgentUsageDayRead {
   workingSeconds: number;
   runCount: number;
   deviceIds: string[];
-}
-
-export interface ChatFolderGrant {
-  workingFolderId: ProjectWorkingFolderId;
-  displayName: string;
-  capability: ChatFolderCapability;
-  isDefault: boolean;
-  runtimeApprovalOverride: ChatRuntimeApprovalPolicy | null;
-  revision: number;
-  revokedAt: UtcTimestamp | null;
-}
-
-export interface ChatAgentChannelAccess {
-  channelId: ChatChannelId;
-  conversationId: ChatConversationId;
-  projectId: string;
-  /** Group of the channel's project, `null` when the project is outside every group. */
-  groupId: string | null;
-  channelName: string;
-  capabilities: ChatChannelCapabilities;
-  historyBoundary: ChatHistoryBoundary;
-  runtimeApprovalOverride: ChatRuntimeApprovalPolicy | null;
-  scratchRuntimeApprovalOverride: ChatRuntimeApprovalPolicy | null;
-  folderGrants: ChatFolderGrant[];
-  membershipRevision: number;
-  removedAt: UtcTimestamp | null;
-}
-
-export interface ChatAgentAccessRead {
-  agentId: ChatParticipantId;
-  accessRevision: number;
-  agentDefaultRuntimeApproval: ChatRuntimeApprovalPolicy;
-  channels: ChatAgentChannelAccess[];
-}
-
-export interface ChatAgentChannelAccessInput {
-  channelId: ChatChannelId;
-  capabilities: ChatChannelCapabilities;
-  historyBoundary: ChatHistoryBoundary;
-  runtimeApprovalOverride: ChatRuntimeApprovalPolicy | null;
-  scratchRuntimeApprovalOverride: ChatRuntimeApprovalPolicy | null;
-  folderGrants: Array<{
-    workingFolderId: ProjectWorkingFolderId;
-    capability: ChatFolderCapability;
-    isDefault: boolean;
-    runtimeApprovalOverride: ChatRuntimeApprovalPolicy | null;
-  }>;
-}
-
-export interface ReplaceChatAgentAccessRequest {
-  agentId: ChatParticipantId;
-  expectedAccessRevision: number;
-  channels: ChatAgentChannelAccessInput[];
-  agentProfile?: UpdateChatAgentProfileRequest | null;
-  policy?: ChatAgentPolicyInput | null;
-}
-
-export interface ChatAgentAccessPreviewIssue {
-  code: ChatAccessIssueCode;
-  fieldPath: string;
-  message: string;
-}
-
-export interface ChatAgentAccessPreviewRead {
-  proposed: ChatAgentAccessRead | null;
-  isExpansion: boolean;
-  addedChannelIds: ChatChannelId[];
-  removedChannelIds: ChatChannelId[];
-  issues: ChatAgentAccessPreviewIssue[];
 }
 
 export type ChatExecutionTarget =
@@ -483,26 +523,27 @@ export interface ChatParticipantRead {
   archivedAt: UtcTimestamp | null;
 }
 
+/** An agent's default model, set in Settings > Agents. */
 export interface ChatAgentPolicyRead {
   id: ChatAgentPolicyRevisionId;
   agentId: ChatParticipantId;
   revision: number;
-  providerInstanceId: ProviderInstanceId;
-  safetyMode: SafetyMode;
   providerManagedModel: boolean;
   modelId: ModelId | null;
   modelOptions: ModelOptionSelection[];
-  effort: string | null;
-  speed: string | null;
   providerOptions: VersionedJson;
+  interactionMode: InteractionMode;
   createdAt: UtcTimestamp;
 }
 
+/** One agent per provider family, named by the provider. */
 export interface ChatAiAgentRead {
   participant: ChatParticipantRead;
-  role: string;
-  instructions: string;
+  providerFamilyId: ProviderFamilyId;
+  /** This device's provider installation for the agent, null when it has none. */
+  localProviderInstanceId: ProviderInstanceId | null;
   configurationState: ChatAgentConfigurationState;
+  /** Null while the agent uses the provider default. */
   latestPolicy: ChatAgentPolicyRead | null;
   channelCount: number;
   activeAssignmentCount: number;
@@ -511,17 +552,10 @@ export interface ChatAiAgentRead {
 export interface ChatConversationMembershipRead {
   conversationId: ChatConversationId;
   participant: ChatParticipantRead;
-  aiAccess: ChatChannelRosterAiSummary | null;
+  /** Whether the participant is an agent added to the channel. */
+  agentInChannel: boolean;
   revision: number;
   removedAt: UtcTimestamp | null;
-}
-
-export interface ChatChannelRosterAiSummary {
-  capabilities: ChatChannelCapabilities;
-  historyBoundary: ChatHistoryBoundary;
-  runtimeApprovalOverride: ChatRuntimeApprovalPolicy | null;
-  scratchRuntimeApprovalOverride: ChatRuntimeApprovalPolicy | null;
-  folderGrants: ChatFolderGrant[];
 }
 
 export interface ChatChannelRosterRead {
@@ -534,7 +568,6 @@ export interface ChatChannelRosterRead {
 export interface PreviewChatChannelMembershipRemovalRequest {
   agentId: ChatParticipantId;
   channelId: ChatChannelId;
-  expectedAccessRevision: number;
 }
 
 export interface ChatChannelMembershipRemovalPreview {
@@ -543,7 +576,6 @@ export interface ChatChannelMembershipRemovalPreview {
   activeAssignmentCount: number;
   activeAuthorizationCount: number;
   willRevokeActiveWork: boolean;
-  proposedAccess: ChatAgentAccessRead;
 }
 
 export interface ChatProjectPrimaryWorkingFolderRead {
@@ -644,6 +676,12 @@ export interface ChatWorkAssignmentRead {
   stateReason: string | null;
   /** Where this work came from when another agent delegated it; null for work a person started. */
   delegation: ChatAssignmentDelegationRead | null;
+  /** The model the work starts on, frozen when it is created. */
+  modelSelection: ChatModelSelection;
+  /** The composed app, project, and channel instructions, frozen when the work is created. */
+  instructions: string;
+  /** The display name of the model that ran, null until the work is dispatched or when the provider chose the model. */
+  modelLabel: string | null;
   revision: number;
   settledAt: UtcTimestamp | null;
   createdAt: UtcTimestamp;
@@ -701,6 +739,8 @@ export interface ChatAssignmentAcceptanceOfferRead {
   /** Identifies these exact details; Start here passes it back so a change refreshes the offer. */
   digest: string;
   providerInstanceId: ProviderInstanceId;
+  /** What the agent will do here under the channel access. */
+  access: ChatEffectiveAgentAccess;
   folders: ChatAssignmentAcceptanceFolderRead[];
 }
 
@@ -802,8 +842,6 @@ export interface ChatAgentRunRead {
   workingFolderId: ProjectWorkingFolderId | null;
   executionEnvironmentId: ChatExecutionEnvironmentId;
   scratchGenerationId: ChatScratchGenerationId | null;
-  agentPolicyRevisionId: ChatAgentPolicyRevisionId;
-  effort: string | null;
   providerExecutionTurnId: ChatTurnId;
   providerExecutionThreadId: ChatThreadId | null;
   state: "queued" | "starting" | "working" | "waiting" | "completed" | "failed" | "cancelled";
@@ -846,33 +884,18 @@ export interface ChatMessageSearchResultRead {
   createdAt: UtcTimestamp;
 }
 
+/** An agent's default model; every field is required because the command refuses unknown or missing ones. */
 export interface ChatAgentPolicyInput {
-  providerInstanceId: ProviderInstanceId;
-  safetyMode: SafetyMode;
   providerManagedModel: boolean;
   modelId: ModelId | null;
   modelOptions: ModelOptionSelection[];
-  effort: string | null;
-  speed: string | null;
   providerOptions: VersionedJson;
+  interactionMode: InteractionMode;
 }
 
-export interface CreateChatAgentRequest {
+export interface SetChatAgentPolicyRequest {
   agentId: ChatParticipantId;
-  displayName: string;
-  avatar: VersionedJson;
-  role: string;
-  instructions: string;
   policy: ChatAgentPolicyInput;
-}
-
-export interface UpdateChatAgentProfileRequest {
-  agentId: ChatParticipantId;
-  displayName: string;
-  avatar: VersionedJson;
-  role: string;
-  instructions: string;
-  expectedRevision: number;
 }
 
 export interface PostChatMessageRequest {

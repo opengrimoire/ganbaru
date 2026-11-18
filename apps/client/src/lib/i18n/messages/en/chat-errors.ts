@@ -1,5 +1,4 @@
 import type { ChatErrorCode } from "$lib/chat/contracts/common";
-import type { ChatAccessIssueCode } from "$lib/chat/contracts/organizational";
 
 /** Messages for Chat failures, keyed by wire error code and by the action that failed. */
 export const chatErrors = {
@@ -37,16 +36,6 @@ export const chatErrors = {
     assignmentCheckpoints: "This work has no saved checkpoints on this device to compare.",
     assignmentRepositoryChanged: "The folder's repository changed during this work, so its changes cannot be compared.",
   },
-  accessIssues: {
-    archived_channel: "One of the chosen channels is archived, so remove it or restore the channel.",
-    archived_folder: "One of the chosen working folders is archived, so remove it or restore the folder.",
-    cross_project_folder: "A working folder belongs to another project, so choose one from this channel's project.",
-    duplicate_channel: "A channel is listed more than once, so remove the extra entry.",
-    duplicate_folder: "A working folder is listed more than once, so remove the extra entry.",
-    multiple_default_folders: "Only one working folder can be the default, so keep just one.",
-    retained_reference_disclosure: "Earlier messages mention channels this agent cannot read, so start its history from when access is granted.",
-    agent_not_found: "This agent no longer exists.",
-  } satisfies Record<ChatAccessIssueCode, string>,
   actions: {
     loadChat: "Chat could not be loaded.",
     loadChannel: "The channel could not be loaded.",

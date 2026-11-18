@@ -283,27 +283,6 @@
       void restoreMessageCheckpoint(event.detail.threadId, event.detail.checkpointId);
     };
     const openWorkspaceTool = (event: Event) => { openInspectorWorkspaceForEvent(event); };
-    const openAgents = (event: Event) => {
-      const participantId = event instanceof CustomEvent
-        && typeof event.detail === "object"
-        && event.detail !== null
-        && "participantId" in event.detail
-        && typeof event.detail.participantId === "string"
-        ? event.detail.participantId
-        : undefined;
-      const channelId = event instanceof CustomEvent
-        && typeof event.detail === "object"
-        && event.detail !== null
-        && "channelId" in event.detail
-        && typeof event.detail.channelId === "string"
-        ? event.detail.channelId
-        : undefined;
-      settings.open("agents", {
-        agentsSubsection: "agents",
-        agentsAgentId: participantId,
-        agentsChannelId: channelId,
-      });
-    };
     paneEvents.addEventListener("ganbaru:chat-revert-message", revertMessage);
     paneEvents.addEventListener("ganbaru:chat-open-review", openWorkspaceTool);
     paneEvents.addEventListener("ganbaru:chat-open-file", openWorkspaceTool);
@@ -318,7 +297,6 @@
       if (!channelId) return;
       paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-edit-channel", { detail: { channelId } }));
     };
-    paneEvents.addEventListener("ganbaru:chat-configure-agent", openAgents);
     paneEvents.addEventListener("ganbaru:chat-manage-members", manageMembers);
     return () => {
       answerRestoreDialog(false);
@@ -336,7 +314,6 @@
       paneEvents.removeEventListener("ganbaru:chat-revert-message", revertMessage);
       paneEvents.removeEventListener("ganbaru:chat-open-review", openWorkspaceTool);
       paneEvents.removeEventListener("ganbaru:chat-open-file", openWorkspaceTool);
-      paneEvents.removeEventListener("ganbaru:chat-configure-agent", openAgents);
       paneEvents.removeEventListener("ganbaru:chat-manage-members", manageMembers);
       void unlisten.then((dispose) => dispose());
       void unlistenOrganization.then((dispose) => dispose());

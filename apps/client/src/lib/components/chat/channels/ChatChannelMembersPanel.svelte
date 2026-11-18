@@ -1,13 +1,11 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import Pencil from "@lucide/svelte/icons/pencil";
-  import Settings2 from "@lucide/svelte/icons/settings-2";
   import StickyNote from "@lucide/svelte/icons/sticky-note";
   import UserRoundPlus from "@lucide/svelte/icons/user-round-plus";
   import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
   import type { ChatChannelRead } from "$lib/chat/contracts";
-  import { applyChannelMemberChanges, channelMemberChangeContext } from "$lib/chat/agents/channel-member-changes";
   import { summarizeChannelMembers } from "$lib/chat/agents/channel-members";
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
   import { floatPanel } from "$lib/components/contacts/float-panel";
@@ -27,12 +25,14 @@
   import { cn } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import { CHAT_OPEN_MEMBERS_EVENT, type ChatOpenMembersDetail } from "./members-panel-events";
+  import ChatChannelAgentsSection from "./ChatChannelAgentsSection.svelte";
   import { CHAT_OPEN_CHANNEL_NOTES_EVENT, type ChatOpenChannelNotesDetail } from "./channel-notes-panel-events";
   import Notice from "$lib/components/ui/Notice.svelte";
 
   /**
-   * Read-only view of who is in a channel, opened from the header. Adding members is possible here because it
-   * needs no channel permission beyond membership; renaming and the topic stay in the channel dialog.
+   * A channel's details, opened from the header: who is in it, and the Agents section, the one place that edits
+   * what agents do in the channel. Adding members needs no channel permission beyond membership; renaming and
+   * the topic stay in the channel dialog.
    */
   let {
     anchor = null,
@@ -63,7 +63,6 @@
   let error = $state<string | null>(null);
 
   const summary = $derived(summarizeChannelMembers(channel.memberships));
-  const agents = $derived(chat.agents.filter((agent) => summary.agentIds.has(agent.participant.id)));
   const localName = $derived(preferences.profileDisplayName.trim() || t("contacts.you"));
   const localDetail = $derived(preferences.profileDisplayName.trim() ? t("contacts.you") : null);
 
@@ -73,11 +72,6 @@
       "flex min-w-0 flex-1 items-center justify-center gap-1.5 px-1 text-popover-foreground transition-colors hover:bg-accent hover:text-accent-foreground",
       mobile ? "min-h-12 rounded-xl text-sm active:bg-accent" : "min-h-8 rounded-floating-item",
     );
-  }
-
-  function configureAgent(participantId: string): void {
-    onClose();
-    paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-configure-agent", { detail: { participantId, channelId: channel.id } }));
   }
 
   function editChannel(): void {
@@ -92,14 +86,15 @@
     paneEvents.dispatchEvent(new CustomEvent(CHAT_OPEN_CHANNEL_NOTES_EVENT, { detail: { channelId } satisfies ChatOpenChannelNotesDetail }));
   }
 
-  /** Settings covers the panel, so it closes now and asks the header to reopen it with the picker once Settings is gone. */
-  function createAgent(): void {
+  /**
+   * Agents come from installed providers, so a new one starts in Settings > Agents. Settings covers the panel,
+   * so it closes now and asks the header to reopen it with the picker once Settings is gone.
+   */
+  function setUpProvider(): void {
     const channelId = channel.id;
     onClose();
     settingsLauncher.open("agents", {
-      agentsSubsection: "agents",
-      agentsChannelId: channelId,
-      agentsCreateAgent: true,
+      agentsSubsection: "providers",
       onClosed: () => paneEvents.dispatchEvent(new CustomEvent(CHAT_OPEN_MEMBERS_EVENT, { detail: { channelId, addMembers: true } satisfies ChatOpenMembersDetail })),
     });
   }
@@ -107,12 +102,8 @@
   async function addAgents(agentIds: string[]): Promise<void> {
     error = null;
     try {
-      const next = new Set([...summary.agentIds, ...agentIds]);
-      if (await applyChannelMemberChanges(summary.agentIds, next, channelMemberChangeContext(chat, channel))) {
-        const saved = await chatApi.readChatChannel(channel.id);
-        chat.activeChannels = chat.activeChannels.map((entry) => entry.id === saved.id ? saved : entry);
-        await chat.refreshAgents();
-      }
+      for (const agentId of agentIds) await chatApi.addChatChannelAgent({ channelId: channel.id, agentId });
+      await chat.channelAgentsChanged(channel.id);
     } catch (cause: unknown) {
       error = chatErrorMessage(cause, t("chatErrors.actions.membersAction"));
     }
@@ -132,7 +123,7 @@
   </header>
 
   <div class="members-body min-h-0 flex-1 overflow-y-auto px-1.5 pb-1" class:capped={!mobile} use:scrollEdgeFadeAction>
-    {#if agents.length > 0}<div class="menu-label">{t("chat.organization.people")}</div>{/if}
+    <div class="menu-label">{t("chat.organization.people")}</div>
     <ul class="grid">
       <MemberRow name={localName} detail={localDetail}>
         {#snippet avatar()}<LocalPersonAvatar size={AVATAR_SIZE} />{/snippet}
@@ -145,19 +136,8 @@
         </MemberRow>
       {/each}
     </ul>
-    {#if agents.length > 0}
-      <div class="menu-label">{t("chat.organization.agents")}</div>
-      <ul class="grid">
-        {#each agents as agent (agent.participant.id)}
-          <MemberRow name={agent.participant.displayName} detail={agent.configurationState === "healthy" ? agent.role || t("chat.organization.aiAgent") : t("chat.organization.needsSetup")}>
-            {#snippet avatar()}<ChatParticipantAvatar participant={agent.participant} {agent} size={AVATAR_SIZE} />{/snippet}
-            {#snippet trailing()}
-              <button type="button" class="members-icon-button" aria-label={t("chat.organization.accessSettings", agent.participant.displayName)} onclick={() => configureAgent(agent.participant.id)}><Settings2 size={14} /></button>
-            {/snippet}
-          </MemberRow>
-        {/each}
-      </ul>
-    {/if}
+    <div class="menu-label">{t("chat.organization.agents")}</div>
+    <ChatChannelAgentsSection {channel} />
     {#if error}<Notice class="px-2 pb-1.5 text-panel-detail" message={error} />{/if}
   </div>
 
@@ -204,7 +184,7 @@
     space={{ kind: "channel", id: channel.id, name: channel.name }}
     onConfirm={addAgents}
     onClose={() => { pickerOpen = false; }}
-    onNewAgent={createAgent}
+    onNewAgent={setUpProvider}
   />
 {/if}
 
@@ -213,7 +193,4 @@
   .mobile-header { min-height: 3.5rem; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
   .members-close { display: grid; min-width: 3rem; min-height: 3rem; flex: 0 0 auto; place-items: center; border-radius: 0.75rem; }
   .members-close:active { background: var(--accent); }
-  .members-icon-button { display: grid; width: 1.75rem; height: 1.75rem; place-items: center; border-radius: 0.375rem; color: var(--muted-foreground); }
-  .members-icon-button:hover { background: var(--accent); color: var(--foreground); }
-  @media (pointer: coarse) { .members-icon-button { width: 2.5rem; height: 2.5rem; } }
 </style>

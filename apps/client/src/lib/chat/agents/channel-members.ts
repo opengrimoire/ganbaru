@@ -10,6 +10,17 @@ export interface ChannelMemberSummary {
 }
 
 /**
+ * Whether a membership is active in the channel now: not removed, and for an agent also added to the channel, which
+ * the backend tracks apart from the conversation membership.
+ */
+export function isActiveChannelMember(
+  membership: Pick<ChatConversationMembershipRead, "participant" | "agentInChannel" | "removedAt">,
+): boolean {
+  if (membership.removedAt !== null) return false;
+  return membership.participant.kind !== "ai_agent" || membership.agentInChannel;
+}
+
+/**
  * Groups a channel's active memberships into people and agents. The channel creator is a member from the
  * start, so the count includes the local person even when the projection carries no membership row for them yet.
  */
@@ -17,7 +28,7 @@ export function summarizeChannelMembers(memberships: readonly ChatConversationMe
   const people: ChatConversationMembershipRead[] = [];
   const agentIds = new Set<string>();
   for (const membership of memberships) {
-    if (membership.removedAt !== null) continue;
+    if (!isActiveChannelMember(membership)) continue;
     if (membership.participant.kind === "ai_agent") agentIds.add(membership.participant.id);
     else if (membership.participant.kind === "human") people.push(membership);
   }

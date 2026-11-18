@@ -3,13 +3,13 @@
   import Settings from "@lucide/svelte/icons/settings";
   import Zap from "@lucide/svelte/icons/zap";
   import * as chatApi from "$lib/api/chat";
-  import type { ChatInteractionStateRead, ChatParticipantRead, ChatRuntimeApprovalPolicy, ChatThreadId } from "$lib/chat/contracts";
+  import type { ChatInteractionStateRead, ChatParticipantRead, ChatThreadId } from "$lib/chat/contracts";
   import { composerMeterRead } from "$lib/chat/composer/composer-meter";
   import { formatNumber } from "$lib/i18n/formatters";
   import { chatParticipantDisplayName } from "$lib/chat/agents/participant-display";
   import type { ChatModelParticipant } from "$lib/chat/agents/participant-identity";
   import { compactModelName, compactModelOptionLabel } from "$lib/chat/composer/model-picker-model";
-  import { agentExecutionSummary } from "$lib/chat/agents/draft";
+  import { agentExecutionSummary } from "$lib/chat/agents/execution-summary";
   import { chatAgentModelParticipant } from "$lib/chat/agents/identity";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChat } from "$lib/stores/chat.svelte";
@@ -71,9 +71,9 @@
   const agentModel = $derived(participant?.kind === "ai_agent"
     ? chatAgentModelParticipant(participant.id, chat.agentIdentities, chat.settings)
     : null);
-  const agentProvider = $derived(agent?.latestPolicy
+  const agentProvider = $derived(agent?.localProviderInstanceId
     ? chat.settings?.providerInstances.find((entry) => (
-      entry.configuration.instanceId === agent.latestPolicy?.providerInstanceId
+      entry.configuration.instanceId === agent.localProviderInstanceId
     )) ?? null
     : null);
   /** The provider whose plan limits the card shows: the agent's, or the one serving the model. */
@@ -107,18 +107,11 @@
   const fastEnabled = $derived.by(() => {
     const policy = agent?.latestPolicy;
     if (!policy) return false;
-    if (policy.speed !== null) return policy.speed === "fast";
     const modelDefinition = agentProvider?.modelCatalog?.models.find((candidate) => (
       candidate.id === policy.modelId
     )) ?? null;
     return agentExecutionSummary(policy.modelOptions, modelDefinition).speed === "fast";
   });
-  const approvalPolicy = $derived(participant?.kind === "ai_agent"
-      ? chat.selectedChannel?.memberships.find((membership) => (
-        membership.participant.id === participant.id && membership.removedAt === null
-      ))?.aiAccess?.runtimeApprovalOverride ?? null
-    : null);
-  const approvalLabel = $derived(approvalPolicy ? approvalPolicyLabel(approvalPolicy) : null);
   let usageState = $state<ChatInteractionStateRead | null>(null);
   let usageReadFailed = $state(false);
   let usageRequest = 0;
@@ -284,17 +277,9 @@
     return t("chat.organization.needsSetup");
   }
 
-  function approvalPolicyLabel(policy: ChatRuntimeApprovalPolicy): string {
-    if (policy === "ask") return t("settings.agents.agents.runtime.ask");
-    if (policy === "autoApprove") return t("settings.agents.agents.runtime.autoApprove");
-    if (policy === "unattended") return t("settings.agents.agents.runtime.unattended");
-    return t("settings.agents.agents.runtime.providerCustom");
-  }
-
   function agentReasoning(): string | null {
     const policy = agent?.latestPolicy;
-    const selectedValue = policy?.effort
-      ?? policy?.modelOptions.find((option) => /effort|reasoning/iu.test(option.key))?.value;
+    const selectedValue = policy?.modelOptions.find((option) => /effort|reasoning/iu.test(option.key))?.value;
     const value = typeof selectedValue === "string"
       ? selectedValue
       : selectedValue?.kind === "choice" ? selectedValue.value : null;
@@ -331,7 +316,7 @@
       return;
     }
     if (participant?.kind === "ai_agent") {
-      settings.open("agents", { agentsSubsection: "agents", agentsAgentId: participant.id });
+      settings.open("agents", { agentsSubsection: "providers" });
     }
   }
 </script>
@@ -388,7 +373,6 @@
         </div>
         {#if participant?.kind === "local_user"}
           {#if localFullName && localFullName !== displayName}<small>{localFullName}</small>{/if}
-        {:else if participant?.kind === "ai_agent" && agent?.role}<small>{agent.role}</small>
         {/if}
       </div>
     </div>
@@ -401,10 +385,6 @@
             {#if fastEnabled}<span class="identity-fast-indicator" aria-label={t("chat.composer.fastEnabled")}><Zap size={13} fill="currentColor" /></span>{/if}
             <span class="identity-model-name">{formattedModelName}</span>
             {#if formattedReasoning}<span class="identity-effort-name">{formattedReasoning}</span>{/if}
-            {#if approvalLabel}
-              <span class="identity-model-divider" aria-hidden="true">|</span>
-              <span class="identity-approval">{approvalLabel}</span>
-            {/if}
           </div>
         </div>
       {:else}
@@ -455,8 +435,6 @@
   .identity-fast-indicator { display:grid; flex:0 0 auto; place-items:center; }
   .identity-model-name { overflow:hidden; min-width:0; text-overflow:ellipsis; white-space:nowrap; }
   .identity-effort-name { flex:0 0 auto; }
-  .identity-model-divider { flex:0 0 auto; color:var(--muted-foreground); }
-  .identity-approval { overflow:hidden; min-width:0; color:var(--foreground); text-overflow:ellipsis; white-space:nowrap; }
   .identity-context { display:grid; min-width:0; gap:0.22rem; font-size:var(--panel-font-size); }
   .identity-context small { color:var(--muted-foreground); font-size:var(--panel-detail-font-size); }
   .identity-context-pending { color:var(--muted-foreground); }

@@ -1,7 +1,7 @@
 import {
   CHAT_PUSH_COMMIT_MAX_LISTED_PATHS,
   CHAT_PUSH_REQUEST_STATES,
-  type ChatPushApproval,
+  type ChatChannelPushApprovalRead,
   type ChatPushRequest,
   type ChatPushRequestCommit,
   type ChatPushRequestStateRead,
@@ -64,14 +64,15 @@ export function parseChatPushRequestStates(
 }
 
 /**
- * Reads an agent's standing push approvals. Approvals replicate from other devices, so each push URL is
+ * Reads a channel's standing push approvals. Approvals replicate from other devices, so each push URL is
  * checked like a push request's.
  */
-export function parseChatPushApprovals(value: unknown, label = "Chat push approvals"): ChatPushApproval[] {
+export function parseChatPushApprovals(value: unknown, label = "Chat push approvals"): ChatChannelPushApprovalRead[] {
   return readArray(value, label, (entry, path) => {
     const record = readRecord(entry, path);
     return {
       approvalId: readIdentifier(record.approvalId, `${path}.approvalId`),
+      channelId: readIdentifier(record.channelId, `${path}.channelId`),
       agentId: readIdentifier(record.agentId, `${path}.agentId`),
       workingFolderId: readIdentifier(record.workingFolderId, `${path}.workingFolderId`),
       workingFolderName: readString(record.workingFolderName, `${path}.workingFolderName`),

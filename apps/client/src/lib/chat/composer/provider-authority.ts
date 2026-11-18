@@ -1,7 +1,6 @@
 import type {
   ChatAssignmentTargetRead,
   ProviderAuthoritySupport,
-  SafetyMode,
 } from "$lib/chat/contracts";
 
 /** Localized blocker messages a provider's authority support can raise for one target. */
@@ -18,19 +17,17 @@ export type ProviderTargetAuthorityBlocker =
  * Mirrors the send gate's provider enforcement check for one assignment target.
  *
  * Commands are confined when the provider confines them itself, or when it sends every
- * command to the person and the target's effective approval is Ask under a non-custom
- * agent policy. Publish also needs the provider to classify publication through the push
+ * command to the person and the target's effective approval is Ask, so each approval
+ * bounds that command. Publish also needs the provider to classify publication through the push
  * request host tool.
  *
  * @param authority - Authority support from the agent provider's last probe.
  * @param target - The selected assignment target.
- * @param agentSafetyMode - The agent policy's safety mode, or null when unknown.
  * @returns The blockers in display order; empty when the provider enforces the target.
  */
 export function providerTargetAuthorityBlockers(
   authority: ProviderAuthoritySupport,
   target: Pick<ChatAssignmentTargetRead, "kind" | "folderCapability" | "effectiveRuntimeApproval">,
-  agentSafetyMode: SafetyMode | null,
 ): ProviderTargetAuthorityBlocker[] {
   const blockers: ProviderTargetAuthorityBlocker[] = [];
   const capability = target.kind === "scratch" ? null : target.folderCapability;
@@ -47,12 +44,9 @@ export function providerTargetAuthorityBlockers(
     blockers.push("chat.organization.providerCannotDenyShell");
   }
   if (runsCommands && !authority.confinedCommands) {
-    const asksForEachCommand = target.effectiveRuntimeApproval === "ask"
-      && agentSafetyMode !== null
-      && agentSafetyMode !== "custom";
     if (!authority.personApprovedCommands) {
       blockers.push("chat.organization.providerCannotConfineCommands");
-    } else if (!asksForEachCommand) {
+    } else if (target.effectiveRuntimeApproval !== "ask") {
       blockers.push("chat.organization.providerCommandsNeedAsk");
     }
   }
@@ -64,23 +58,4 @@ export function providerTargetAuthorityBlockers(
     blockers.push("chat.organization.providerCannotPublish");
   }
   return blockers;
-}
-
-/**
- * Whether the send gate lets a provider run commands in a folder granted at Execute with
- * runtime approval Ask.
- *
- * @param authority - Authority support from the agent provider's last probe.
- * @param agentSafetyMode - The agent policy's safety mode, or null when unknown.
- * @returns True when an Execute and Ask folder target raises no provider blocker.
- */
-export function providerExecutesWithAsk(
-  authority: ProviderAuthoritySupport,
-  agentSafetyMode: SafetyMode | null,
-): boolean {
-  return providerTargetAuthorityBlockers(
-    authority,
-    { kind: "currentFolder", folderCapability: "execute", effectiveRuntimeApproval: "ask" },
-    agentSafetyMode,
-  ).length === 0;
 }

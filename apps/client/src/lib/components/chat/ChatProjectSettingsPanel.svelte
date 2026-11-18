@@ -1,5 +1,6 @@
 <script lang="ts">
   import Archive from "@lucide/svelte/icons/archive";
+  import ChatProjectAgentSettings from "$lib/components/chat/agents/ChatProjectAgentSettings.svelte";
   import ProjectSettingsPanelShell from "$lib/components/projects/settings/ProjectSettingsPanelShell.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -161,6 +162,8 @@
         popoverBoundaryElement={panelElement}
         class="w-44"
       />
+      <div class="h-px bg-border/70" aria-hidden="true"></div>
+      <ChatProjectAgentSettings {projectId} />
       <div class="h-px bg-border/70" aria-hidden="true"></div>
       <div class="flex flex-wrap justify-start gap-2 px-1 py-1">
         <button

@@ -58,9 +58,6 @@
     initialDistractionsTab,
     initialContactsTab,
     initialAgentsSubsection,
-    initialAgentsAgentId,
-    initialAgentsChannelId,
-    initialAgentsCreateAgent,
     presentation,
   }: {
     onClose: () => void;
@@ -68,9 +65,6 @@
     initialDistractionsTab?: DistractionsSettingsTab;
     initialContactsTab?: ContactsSettingsTab;
     initialAgentsSubsection?: AgentsSettingsSubsection;
-    initialAgentsAgentId?: string;
-    initialAgentsChannelId?: string;
-    initialAgentsCreateAgent?: boolean;
     presentation?: "dialog" | "mobile";
   } = $props();
 
@@ -97,7 +91,7 @@
   const availableInitialSection = untrack(() =>
     sections.find((section) => section.id === initialSection)?.id ?? null);
   const initialActiveSection = availableInitialSection ?? "appearance";
-  const initialActiveAgentsSubsection = untrack(() => initialAgentsSubsection ?? "agents");
+  const initialActiveAgentsSubsection = untrack(() => initialAgentsSubsection ?? "providers");
   const initialMobileSectionOpen = availableInitialSection !== null;
   let activeSection = $state<SectionId>(initialActiveSection);
   let mobileSectionOpen = $state(initialMobileSectionOpen);
@@ -479,9 +473,6 @@
               {initialDistractionsTab}
               {initialContactsTab}
               {activeAgentsSubsection}
-              {initialAgentsAgentId}
-              {initialAgentsChannelId}
-              {initialAgentsCreateAgent}
               onOpenDistractionsLimitEditor={openDistractionsLimitEditor}
               onOpenNotesTransferPanel={openNotesTransferPanel}
               onOpenChatProviderSetup={openChatProviderSetup}
@@ -736,9 +727,6 @@
             {initialDistractionsTab}
             {initialContactsTab}
             {activeAgentsSubsection}
-            {initialAgentsAgentId}
-            {initialAgentsChannelId}
-            {initialAgentsCreateAgent}
             onOpenDistractionsLimitEditor={openDistractionsLimitEditor}
             onOpenNotesTransferPanel={openNotesTransferPanel}
             onOpenChatProviderSetup={openChatProviderSetup}
@@ -771,25 +759,14 @@
 </div>
 
 {#if pendingDraftNavigation}
-  {#if openDraft === "profile"}
-    <ConfirmDialog
-      title={t("settings.profileIdentity.discardChangesTitle")}
-      message={t("settings.profileIdentity.discardChangesMessage")}
-      confirmLabel={t("settings.profileIdentity.discardChanges")}
-      cancelLabel={t("settings.profileIdentity.keepEditing")}
-      onConfirm={discardDraftAndContinue}
-      onCancel={cancelDraftNavigation}
-    />
-  {:else}
-    <ConfirmDialog
-      title={t("settings.agents.agents.discardDraftTitle")}
-      message={t("settings.agents.agents.discardDraftMessage")}
-      confirmLabel={t("settings.agents.agents.discardDraft")}
-      cancelLabel={t("settings.agents.agents.keepEditing")}
-      onConfirm={discardDraftAndContinue}
-      onCancel={cancelDraftNavigation}
-    />
-  {/if}
+  <ConfirmDialog
+    title={t("settings.profileIdentity.discardChangesTitle")}
+    message={t("settings.profileIdentity.discardChangesMessage")}
+    confirmLabel={t("settings.profileIdentity.discardChanges")}
+    cancelLabel={t("settings.profileIdentity.keepEditing")}
+    onConfirm={discardDraftAndContinue}
+    onCancel={cancelDraftNavigation}
+  />
 {/if}
 
 {/if}

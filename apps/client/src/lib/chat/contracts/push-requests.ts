@@ -58,17 +58,6 @@ export interface ConfirmPushRequestRequest {
   rememberApproval?: boolean;
 }
 
-/** A person's standing approval of an agent's pushes from one folder to one push URL and branch. */
-export interface ChatPushApproval {
-  approvalId: string;
-  agentId: string;
-  workingFolderId: string;
-  workingFolderName: string;
-  pushUrl: string;
-  destinationBranch: string;
-  approvedAt: UtcTimestamp;
-}
-
 /** Reasons Rust gives when a push request cannot be confirmed. */
 export const CHAT_PUSH_REQUEST_REFUSALS = [
   "push_request_pending",

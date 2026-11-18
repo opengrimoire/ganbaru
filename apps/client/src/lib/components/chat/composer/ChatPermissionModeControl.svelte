@@ -9,45 +9,31 @@
   import { portal } from "$lib/utils/portal";
   import ChatControlMenu, { type ChatControlOption } from "./ChatControlMenu.svelte";
 
+  /**
+   * Permission mode of a direct provider thread, read from and written to the shared composer state. Channel
+   * posts have no per-post permission choice; their agents follow the channel access.
+   */
+  let { disabled = false }: { disabled?: boolean } = $props();
+
   const { t } = getLocalization();
   const chat = useChat();
-  let {
-    value,
-    providerInstanceId,
-    workingFolderId,
-    disabled = false,
-    onChange,
-  }: {
-    value?: SafetyMode | null;
-    providerInstanceId?: string | null;
-    workingFolderId?: string | null;
-    disabled?: boolean;
-    onChange?: (value: SafetyMode) => void;
-  } = $props();
   let confirmationReturnFocus: HTMLElement | null = null;
-  let fullAccessDialogOpen = $state(false);
+  let trustDialogOpen = $state(false);
   let fullAccessTrusted = $state(false);
   let pendingTrustedMode = $state<SafetyMode | null>(null);
   let trustKey = $state("");
   let error = $state<string | null>(null);
-  const controlled = $derived(value !== undefined);
-  const selectedProviderInstanceId = $derived(controlled
-    ? providerInstanceId ?? null
-    : chat.composer.providerInstanceId);
-  const selectedWorkingFolderId = $derived(controlled
-    ? workingFolderId ?? null
-    : chat.composer.workingFolderId);
-  const provider = $derived(chat.settings?.providerInstances.find((entry) => entry.configuration.instanceId === selectedProviderInstanceId) ?? null);
+  const providerInstanceId = $derived(chat.composer.providerInstanceId);
+  const workingFolderId = $derived(chat.composer.workingFolderId);
+  const provider = $derived(chat.settings?.providerInstances.find((entry) => entry.configuration.instanceId === providerInstanceId) ?? null);
   const providerFamilyId = $derived(provider?.configuration.familyId ?? null);
   const permissionFileName = $derived(providerPermissionFileName(providerFamilyId));
-  const selectedSafetyMode = $derived(controlled
-    ? value ?? "ask_for_approval"
-    : chat.composer.safetyMode ?? "ask_for_approval");
+  const selectedMode = $derived(chat.composer.safetyMode ?? "ask_for_approval");
   const trustTitle = $derived(pendingTrustedMode === "custom" ? t("chat.composer.customPermissionsTitle") : t("chat.composer.fullAccessTitle"));
   const trustDescription = $derived(pendingTrustedMode === "custom"
     ? t("chat.composer.customPermissionsTrustDescription", permissionFileName)
     : t("chat.composer.fullAccessDescription"));
-  const safetyOptions = $derived<ChatControlOption[]>([
+  const modeOptions = $derived<ChatControlOption[]>([
     { value: "ask_for_approval", label: t("chat.hero.askForApproval"), description: t("chat.composer.askForApprovalDescription"), icon: "shield-question-mark", disabled: !providerSupportsPermissionMode(providerFamilyId, "ask_for_approval") },
     { value: "approve_for_me", label: t("chat.hero.approveForMe"), description: t("chat.composer.approveForMeDescription"), icon: "shield-check", disabled: !providerSupportsPermissionMode(providerFamilyId, "approve_for_me") },
     { value: "full_access", label: t("chat.hero.fullAccess"), description: t("chat.composer.fullAccessShortDescription"), icon: "shield-alert", disabled: !providerSupportsPermissionMode(providerFamilyId, "full_access") },
@@ -55,8 +41,8 @@
   ]);
 
   $effect(() => {
-    const folderId = selectedWorkingFolderId;
-    const providerId = selectedProviderInstanceId;
+    const folderId = workingFolderId;
+    const providerId = providerInstanceId;
     const key = folderId && providerId ? `${folderId}:${providerId}` : "";
     if (key === trustKey) return;
     trustKey = key;
@@ -69,45 +55,34 @@
   });
 
   $effect(() => {
-    const mode = selectedSafetyMode;
-    if (mode && providerFamilyId && !providerSupportsPermissionMode(providerFamilyId, mode)) {
-      setSafetyMode("ask_for_approval");
-    }
+    const mode = selectedMode;
+    if (providerFamilyId && !providerSupportsPermissionMode(providerFamilyId, mode)) setMode("ask_for_approval");
   });
 
-  function setSafetyMode(mode: SafetyMode): void {
-    if (controlled) {
-      onChange?.(mode);
-      return;
-    }
+  function setMode(mode: SafetyMode): void {
     chat.setComposerModes(mode, chat.composer.interactionMode);
   }
 
-  function chooseSafety(value: SafetyMode | ""): void {
+  function chooseMode(value: SafetyMode | ""): void {
     const mode = value || "ask_for_approval";
     if ((mode === "full_access" || mode === "custom") && !fullAccessTrusted) {
       pendingTrustedMode = mode;
       confirmationReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      fullAccessDialogOpen = true;
+      trustDialogOpen = true;
       return;
     }
-    setSafetyMode(mode);
+    setMode(mode);
   }
 
-  async function confirmFullAccess(): Promise<void> {
-    const folderId = selectedWorkingFolderId;
-    const providerId = selectedProviderInstanceId;
-    if (controlled && (!folderId || !providerId)) {
-      setSafetyMode(pendingTrustedMode ?? "full_access");
-      closeDialog();
-      return;
-    }
+  async function confirmTrust(): Promise<void> {
+    const folderId = workingFolderId;
+    const providerId = providerInstanceId;
     if (!folderId || !providerId) return;
     error = null;
     try {
       await chatApi.setChatFullAccessTrust(providerId, folderId, true);
       fullAccessTrusted = true;
-      setSafetyMode(pendingTrustedMode ?? "full_access");
+      setMode(pendingTrustedMode ?? "full_access");
       closeDialog();
     } catch (cause: unknown) {
       error = chatErrorMessage(cause, t("chatErrors.actions.accessAction"));
@@ -115,20 +90,19 @@
   }
 
   function closeDialog(): void {
-    fullAccessDialogOpen = false;
+    trustDialogOpen = false;
     pendingTrustedMode = null;
     const target = confirmationReturnFocus;
     confirmationReturnFocus = null;
     queueMicrotask(() => target?.isConnected && target.focus());
   }
-
 </script>
 
-<div class:controlled class:full-access={selectedSafetyMode === "full_access"} class="access-control">
-  <ChatControlMenu value={selectedSafetyMode} options={safetyOptions} ariaLabel={t("chat.hero.safety")} dataField="safety" onChange={(value) => chooseSafety(value as SafetyMode | "")} compact minimal={!controlled} {disabled} showTooltip={false} />
+<div class:full-access={selectedMode === "full_access"} class="permission-mode-control">
+  <ChatControlMenu value={selectedMode} options={modeOptions} ariaLabel={t("chat.hero.safety")} dataField="safety" onChange={(value) => chooseMode(value as SafetyMode | "")} compact minimal {disabled} showTooltip={false} />
 </div>
 
-{#if fullAccessDialogOpen}
+{#if trustDialogOpen}
   <div class="contents" use:portal>
     <ConfirmDialog
       title={trustTitle}
@@ -136,22 +110,19 @@
       confirmLabel={pendingTrustedMode === "custom" ? t("chat.composer.confirmCustomPermissions") : t("chat.composer.confirmFullAccess")}
       cancelLabel={t("chat.cancel")}
       danger={false}
-      onConfirm={() => void confirmFullAccess()}
+      onConfirm={() => void confirmTrust()}
       onCancel={closeDialog}
     />
   </div>
 {/if}
 
 <style>
-  .access-control { min-width: 0; color: var(--muted-foreground); }
-  .access-control.controlled { color: var(--foreground); }
-  .access-control :global(.control-trigger) { color: currentColor; }
-  .access-control.controlled :global(.control-trigger) { height: 2rem; border-radius: 999px; background: color-mix(in srgb, var(--accent) 52%, transparent); padding-inline: 0.55rem; }
-  .access-control.controlled :global(.control-trigger > svg:last-child) { margin-left: 0.2rem; color: var(--muted-foreground); }
-  .access-control.full-access :global(.control-trigger),
-  .access-control.full-access :global(.control-trigger:hover),
-  .access-control.full-access :global(.control-trigger[aria-expanded="true"]) { color: color-mix(in srgb, color-mix(in srgb, var(--status-tentative) 55%, var(--destructive)) 72%, var(--foreground)); }
-  :global(.dark) .access-control.full-access :global(.control-trigger),
-  :global(.dark) .access-control.full-access :global(.control-trigger:hover),
-  :global(.dark) .access-control.full-access :global(.control-trigger[aria-expanded="true"]) { color: var(--status-tentative); }
+  .permission-mode-control { min-width: 0; color: var(--muted-foreground); }
+  .permission-mode-control :global(.control-trigger) { color: currentColor; }
+  .permission-mode-control.full-access :global(.control-trigger),
+  .permission-mode-control.full-access :global(.control-trigger:hover),
+  .permission-mode-control.full-access :global(.control-trigger[aria-expanded="true"]) { color: color-mix(in srgb, color-mix(in srgb, var(--status-tentative) 55%, var(--destructive)) 72%, var(--foreground)); }
+  :global(.dark) .permission-mode-control.full-access :global(.control-trigger),
+  :global(.dark) .permission-mode-control.full-access :global(.control-trigger:hover),
+  :global(.dark) .permission-mode-control.full-access :global(.control-trigger[aria-expanded="true"]) { color: var(--status-tentative); }
 </style>

@@ -13,8 +13,15 @@ import type {
   ChatAssignmentInputRead,
   ChatAssignmentReviewRequest,
   ChatAiAgentRead,
-  ChatAgentAccessPreviewRead,
-  ChatAgentAccessRead,
+  ChatAppAgentSettingsRead,
+  ChatChannelAgentRequest,
+  ChatChannelAgentSettingsRead,
+  ChatProjectAgentSettingsRead,
+  SetChatAgentPolicyRequest,
+  SetChatChannelModelOverrideRequest,
+  UpdateChatAppAgentSettingsRequest,
+  UpdateChatChannelAgentSettingsRequest,
+  UpdateChatProjectAgentSettingsRequest,
   ChatChannelRosterRead,
   ChatChannelMembershipRemovalPreview,
   PreviewChatChannelMembershipRemovalRequest,
@@ -34,8 +41,6 @@ import type {
   ChatChannelPageRead,
   ChatReplyThreadPageRead,
   ChatMessageSearchResultRead,
-  CreateChatAgentRequest,
-  ReplaceChatAgentAccessRequest,
   PostChatMessageRequest,
   PostChatMessageResult,
   ScheduleChatMessageRequest,
@@ -56,8 +61,9 @@ import {
   parseChatChannels,
   parseChatAiAgent,
   parseChatAiAgents,
-  parseChatAgentAccess,
-  parseChatAgentAccessPreview,
+  parseChatAppAgentSettings,
+  parseChatChannelAgentSettings,
+  parseChatProjectAgentSettings,
   parseChatChannelRoster,
   parseChatChannelMembershipRemovalPreview,
   parseChatAssignmentTargets,
@@ -156,32 +162,94 @@ export async function readChatAgent(agentId: ChatParticipantId): Promise<ChatAiA
   }));
 }
 
-export async function readChatAgentAccess(
-  agentId: ChatParticipantId,
-): Promise<ChatAgentAccessRead> {
-  return parseChatAgentAccess(await invoke<unknown>("chat_read_agent_access", {
-    dbUrl: await ensureDbUrl(), agentId,
+/** Sets an agent's default model, which work starts on unless a channel or a thread overrides it. */
+export async function setChatAgentPolicy(request: SetChatAgentPolicyRequest): Promise<ChatAiAgentRead> {
+  return parseChatAiAgent(await invoke<unknown>("chat_set_agent_policy", {
+    dbUrl: await ensureDbUrl(),
+    request: {
+      agentId: request.agentId,
+      policy: {
+        providerManagedModel: request.policy.providerManagedModel,
+        modelId: request.policy.modelId,
+        modelOptions: request.policy.modelOptions,
+        providerOptions: request.policy.providerOptions,
+        interactionMode: request.policy.interactionMode,
+      },
+    },
   }));
 }
 
-export async function previewChatAgentAccess(
-  request: ReplaceChatAgentAccessRequest,
-): Promise<ChatAgentAccessPreviewRead> {
-  return parseChatAgentAccessPreview(await invoke<unknown>("chat_preview_agent_access", {
+/** Reads the app access and instructions every project and channel inherits. */
+export async function readChatAppAgentSettings(): Promise<ChatAppAgentSettingsRead> {
+  return parseChatAppAgentSettings(await invoke<unknown>("chat_read_app_agent_settings", {
+    dbUrl: await ensureDbUrl(),
+  }));
+}
+
+/** Saves the app access and instructions; a stale revision fails with `stale_revision`. */
+export async function updateChatAppAgentSettings(
+  request: UpdateChatAppAgentSettingsRequest,
+): Promise<ChatAppAgentSettingsRead> {
+  return parseChatAppAgentSettings(await invoke<unknown>("chat_update_app_agent_settings", {
     dbUrl: await ensureDbUrl(), request,
   }));
 }
 
-export async function replaceChatAgentAccess(
-  request: ReplaceChatAgentAccessRequest,
-): Promise<ChatAgentAccessRead> {
-  return parseChatAgentAccess(await invoke<unknown>("chat_replace_agent_access", {
+/** Reads a project's access and instructions with the access its channels inherit. */
+export async function readChatProjectAgentSettings(projectId: string): Promise<ChatProjectAgentSettingsRead> {
+  return parseChatProjectAgentSettings(await invoke<unknown>("chat_read_project_agent_settings", {
+    dbUrl: await ensureDbUrl(), projectId,
+  }));
+}
+
+/** Saves a project's access and instructions; revision 0 creates them. */
+export async function updateChatProjectAgentSettings(
+  request: UpdateChatProjectAgentSettingsRequest,
+): Promise<ChatProjectAgentSettingsRead> {
+  return parseChatProjectAgentSettings(await invoke<unknown>("chat_update_project_agent_settings", {
     dbUrl: await ensureDbUrl(), request,
   }));
 }
 
-export async function createChatAgent(request: CreateChatAgentRequest): Promise<ChatAiAgentRead> {
-  return parseChatAiAgent(await invoke<unknown>("chat_create_agent", {
+/** Reads a channel's agent settings with what each agent in it does on this device. */
+export async function readChatChannelAgentSettings(
+  channelId: ChatChannelId,
+): Promise<ChatChannelAgentSettingsRead> {
+  return parseChatChannelAgentSettings(await invoke<unknown>("chat_read_channel_agent_settings", {
+    dbUrl: await ensureDbUrl(), channelId,
+  }));
+}
+
+/** Saves a channel's access and instructions; a null access inherits. */
+export async function updateChatChannelAgentSettings(
+  request: UpdateChatChannelAgentSettingsRequest,
+): Promise<ChatChannelAgentSettingsRead> {
+  return parseChatChannelAgentSettings(await invoke<unknown>("chat_update_channel_agent_settings", {
+    dbUrl: await ensureDbUrl(), request,
+  }));
+}
+
+/** Adds an agent to a channel under the channel's access; adding a present agent changes nothing. */
+export async function addChatChannelAgent(request: ChatChannelAgentRequest): Promise<ChatChannelAgentSettingsRead> {
+  return parseChatChannelAgentSettings(await invoke<unknown>("chat_add_channel_agent", {
+    dbUrl: await ensureDbUrl(), request,
+  }));
+}
+
+/** Removes an agent from a channel, which stops its work there and ends its push approvals. */
+export async function removeChatChannelAgent(
+  request: ChatChannelAgentRequest,
+): Promise<ChatChannelAgentSettingsRead> {
+  return parseChatChannelAgentSettings(await invoke<unknown>("chat_remove_channel_agent", {
+    dbUrl: await ensureDbUrl(), request,
+  }));
+}
+
+/** Sets or clears the model an agent starts on in a channel. */
+export async function setChatChannelModelOverride(
+  request: SetChatChannelModelOverrideRequest,
+): Promise<ChatChannelAgentSettingsRead> {
+  return parseChatChannelAgentSettings(await invoke<unknown>("chat_set_channel_model_override", {
     dbUrl: await ensureDbUrl(), request,
   }));
 }

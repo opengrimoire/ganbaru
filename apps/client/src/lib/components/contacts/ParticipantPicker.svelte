@@ -72,15 +72,14 @@
   const candidates = $derived(agents.filter((agent) => !memberAgentIds.has(agent.participant.id)));
   const matchingCandidates = $derived(candidates.filter((agent) =>
     !normalizedQuery
-    || agent.participant.displayName.toLocaleLowerCase().includes(normalizedQuery)
-    || agent.role.toLocaleLowerCase().includes(normalizedQuery)));
+    || agent.participant.displayName.toLocaleLowerCase().includes(normalizedQuery)));
   const selectedAgents = $derived(candidates.filter((agent) => selectedIds.has(agent.participant.id)));
   const nestedOpen = $derived(inviteOpen || addContactOpen);
   const confirmText = $derived(selectedIds.size > 0 ? t("contacts.picker.confirmCount", selectedIds.size) : (confirmLabel ?? t("contacts.picker.confirm")));
 
   function agentDetail(agent: ChatAiAgentRead): string {
     if (agent.configurationState !== "healthy") return t("chat.organization.needsSetup");
-    return agent.role || t("chat.organization.aiAgent");
+    return t("chat.organization.aiAgent");
   }
 
   function setSelected(agentId: string, selected: boolean): void {

@@ -7,40 +7,30 @@
   import type { AgentsSettingsSubsection, ChatProviderSetupTarget } from "$lib/settings/types";
   import AgentFilesSettings from "$lib/components/settings/agents/AgentFilesSettings.svelte";
   import ProvidersSettings from "$lib/components/settings/agents/ProvidersSettings.svelte";
-  import AgentsSettings from "$lib/components/settings/agents/AgentsSettings.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
     initialSubsection,
-    initialAgentId,
-    initialChannelId,
-    initialCreateAgent,
     onOpenProviderSetup = () => {},
     onSubsectionChange = () => {},
     onRequestNavigation = (navigate) => navigate(),
-    onAgentDraftStateChange = () => {},
   }: {
     initialSubsection?: AgentsSettingsSubsection;
-    initialAgentId?: string;
-    initialChannelId?: string;
-    initialCreateAgent?: boolean;
     onOpenProviderSetup?: (target: ChatProviderSetupTarget) => void;
     onSubsectionChange?: (subsection: AgentsSettingsSubsection) => void;
     onRequestNavigation?: (navigate: () => void) => void;
-    onAgentDraftStateChange?: (open: boolean) => void;
   } = $props();
 
   const { t } = getLocalization();
   const chat = getChat();
-  let activeTab = $state<AgentsSettingsSubsection>("agents");
+  let activeTab = $state<AgentsSettingsSubsection>("providers");
   let initializing = $state(!chat.loaded);
   let loadError = $state<string | null>(null);
   const tabs: ReadonlyArray<{
     id: AgentsSettingsSubsection;
     label: () => string;
   }> = [
-    { id: "agents", label: () => t("settings.agents.agents.heading") },
     { id: "providers", label: () => t("settings.agents.providers.heading") },
     { id: "files", label: () => t("settings.agents.files.heading") },
   ];
@@ -82,7 +72,7 @@
 
 <div class="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-6">
   <div
-    class="grid grid-cols-3 gap-1 rounded-md border border-border bg-card p-1 dark:bg-transparent"
+    class="grid grid-cols-2 gap-1 rounded-md border border-border bg-card p-1 dark:bg-transparent"
     role="tablist"
     aria-label={t("settings.agents.tabLabel")}
   >
@@ -107,8 +97,6 @@
     <Loading layout="fill" class="min-h-40" />
   {:else if loadError}
     <div class="min-h-40 text-sm"><Notice layout="fill" message={loadError} onRetry={retryInitialize} /></div>
-  {:else if activeTab === "agents"}
-    <AgentsSettings initialAgentId={initialAgentId} initialChannelId={initialChannelId} initialCreate={initialCreateAgent} onDraftStateChange={onAgentDraftStateChange} />
   {:else if activeTab === "providers"}
     <ProvidersSettings {onOpenProviderSetup} />
   {:else if activeTab === "files"}

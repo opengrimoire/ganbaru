@@ -84,8 +84,6 @@ const run: ChatAgentRunRead = {
   workingFolderId: "folder:test",
   executionEnvironmentId: "environment:test",
   scratchGenerationId: null,
-  agentPolicyRevisionId: "policy:test",
-  effort: "medium",
   providerExecutionTurnId: "turn:test",
   providerExecutionThreadId: "provider-thread:test",
   state: "completed",
@@ -496,6 +494,9 @@ describe("ChatReplyThreadPanel", () => {
       review: null,
       localAcceptance: null,
       latestRunProviderThreadId: null,
+      modelSelection: { providerManagedModel: true, modelId: null, modelOptions: [] },
+      instructions: "",
+      modelLabel: null,
       delegation: null,
     } satisfies ChatReplyThreadPageRead["assignment"];
     const failureMessage: ChatMessageRead = {
@@ -648,6 +649,9 @@ describe("ChatReplyThreadPanel", () => {
       review: null,
       localAcceptance: null,
       latestRunProviderThreadId: null,
+      modelSelection: { providerManagedModel: true, modelId: null, modelOptions: [] },
+      instructions: "",
+      modelLabel: null,
       delegation: {
         parentAssignmentId: "assignment:parent",
         parentReplyThreadId: "reply-thread:parent",

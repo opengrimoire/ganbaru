@@ -2,7 +2,7 @@ import type {
   ChatAgentRunRead,
   ChatErrorCode,
   ChatMessageRead,
-  ChatAgentChannelAccess,
+  ChatChannelAgentSettingsRead,
   ChatThreadShellRead,
   ChatTimelinePageRead,
   ChatTimelineTurnRead,
@@ -403,14 +403,30 @@ export function agentRunLocation(
   return projectFolderCount > 1 ? { kind: "folder", name: folder.displayName } : null;
 }
 
+
 /**
- * Returns whether the agent holds a folder grant in the channel, so conversation-only work there means no grant
- * was implied rather than that the agent has no folder access at all.
+ * Returns whether the agent may use folders in the channel, so conversation-only work there reads as no folder
+ * chosen rather than as the talk-only behavior the channel asks for.
  */
-export function channelHasFolderGrants(
-  access: { channels: readonly Pick<ChatAgentChannelAccess, "channelId" | "removedAt" | "folderGrants">[] } | null,
-  channelId: string | null,
+export function agentMayUseChannelFolders(
+  settings: Pick<ChatChannelAgentSettingsRead, "agents"> | null,
+  agentId: string,
 ): boolean {
-  const channel = access?.channels.find((entry) => entry.channelId === channelId && entry.removedAt === null);
-  return channel?.folderGrants.some((grant) => grant.revokedAt === null && grant.capability !== "none") ?? false;
+  const effective = settings?.agents.find((entry) => entry.agentId === agentId)?.effective ?? null;
+  return effective !== null && effective !== "talk";
+}
+
+/** Separator between the parts of a reply thread's metadata line. */
+const METADATA_SEPARATOR = " · ";
+
+/**
+ * Returns the quiet metadata line of a reply thread: where its newest run works and the model its work actually ran
+ * on, so a `/model` switch, a channel override, or a fallback to the provider default shows where it happened.
+ * Returns `null` when neither part is known.
+ */
+export function replyThreadMetadataLine(locationLabel: string | null, modelLabel: string | null): string | null {
+  const parts = [locationLabel, modelLabel]
+    .map((part) => part?.trim() ?? "")
+    .filter((part) => part.length > 0);
+  return parts.length > 0 ? parts.join(METADATA_SEPARATOR) : null;
 }

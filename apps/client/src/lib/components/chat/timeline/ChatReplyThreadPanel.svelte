@@ -9,7 +9,8 @@
   import {
     agentRunRestart,
     agentRunLocation,
-    channelHasFolderGrants,
+    agentMayUseChannelFolders,
+    replyThreadMetadataLine,
     exactExecutionReadKey,
     exactExecutionRuns,
     exactRunPresentationsReady,
@@ -96,15 +97,18 @@
     run.scratchGenerationId !== null
   )));
   const runLocation = $derived(agentRunLocation(page?.agentRuns ?? [], chat.workingFolders));
-  /** Whether the run's agent holds a folder grant in this channel, read only when its newest run is conversation only. */
-  let conversationOnlyHasGrants = $state(false);
+  /** Whether the run's agent may use folders in this channel, read only when its newest run is conversation only. */
+  let conversationOnlyMayUseFolders = $state(false);
   let conversationOnlyAccessRequest = 0;
   const conversationOnlyAgentId = $derived(runLocation?.kind === "conversation" ? executionAgent?.id ?? null : null);
   const runLocationLabel = $derived(runLocation?.kind === "folder"
     ? t("chat.organization.workingIn", runLocation.name)
-    : runLocation?.kind === "conversation" && conversationOnlyHasGrants
+    : runLocation?.kind === "conversation" && conversationOnlyMayUseFolders
       ? t("chat.organization.conversationOnlyNoDefaultFolder")
       : null);
+  /** The model that ran, or the localized provider default once a run started without a named model. */
+  const modelLabel = $derived(assignment?.modelLabel ?? (assignment && executionRun ? t("chat.organization.providerDefaultModel") : null));
+  const metadataLine = $derived(replyThreadMetadataLine(runLocationLabel, modelLabel));
   const loadedExecutionTurnIds = $derived(new Set([
     ...chat.timelineItems.flatMap((item) => item.turnId ? [item.turnId] : []),
     ...chat.timelinePages.flatMap((timelinePage) => timelinePage.turns.map((turn) => turn.turnId)),
@@ -349,17 +353,17 @@
     const agentId = conversationOnlyAgentId;
     const channelId = chat.selectedChannel?.id ?? null;
     const request = ++conversationOnlyAccessRequest;
-    conversationOnlyHasGrants = false;
+    conversationOnlyMayUseFolders = false;
     if (agentId === null || channelId === null) return;
-    void chatApi.readChatAgentAccess(agentId)
-      .then((access) => {
+    void chatApi.readChatChannelAgentSettings(channelId)
+      .then((settings) => {
         if (request === conversationOnlyAccessRequest) {
-          conversationOnlyHasGrants = channelHasFolderGrants(access, channelId);
+          conversationOnlyMayUseFolders = agentMayUseChannelFolders(settings, agentId);
         }
       })
       .catch((cause: unknown) => {
         // The line only explains conversation-only work, so a failed read leaves it out.
-        console.warn("Could not read agent access for the reply location", cause);
+        console.warn("Could not read channel agent settings for the reply location", cause);
       });
   });
 
@@ -475,7 +479,7 @@
         <div class="date-divider"><span>{formatDateTime(localization.locale, Date.parse(page.rootMessage.createdAt), { dateStyle: "full" })}</span></div>
         <ChatOrganizationalMessage message={page.rootMessage} showReplyStrip={false} currentResponseSettings onActionError={reportMessageActionError} />
         {#if assignment?.delegation}<ChatDelegationOrigin delegation={assignment.delegation} onOpenThread={openThread} />{/if}
-        {#if runLocationLabel}<p class="run-location" data-run-location>{runLocationLabel}</p>{/if}
+        {#if metadataLine}<p class="run-location" data-run-location>{metadataLine}</p>{/if}
         {#each renderEntries as entry, index (entry.key)}
           {@const previousEntry = renderEntries[index - 1]}
           {@const previousCreatedAt = previousEntry ? entryCreatedAt(previousEntry) : page.rootMessage.createdAt}

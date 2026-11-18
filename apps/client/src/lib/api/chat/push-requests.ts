@@ -2,7 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { ensureDbUrl } from "$lib/api/db";
 import type {
   ChatConversationItemId,
-  ChatPushApproval,
+  ChatChannelId,
+  ChatChannelPushApprovalRead,
   ChatPushRequestStateRead,
   ConfirmPushRequestRequest,
   PostChatMessageResult,
@@ -34,10 +35,10 @@ export async function readChatPushRequestStates(
   }));
 }
 
-/** Lists an agent's active standing push approvals, by folder name, push URL, and branch. */
-export async function listChatPushApprovals(agentId: string): Promise<ChatPushApproval[]> {
+/** Lists a channel's active standing push approvals, by agent, folder name, push URL, and branch. */
+export async function listChatPushApprovals(channelId: ChatChannelId): Promise<ChatChannelPushApprovalRead[]> {
   return parseChatPushApprovals(await invoke<unknown>("chat_list_push_approvals", {
-    dbUrl: await ensureDbUrl(), agentId,
+    dbUrl: await ensureDbUrl(), channelId,
   }));
 }
 

@@ -721,7 +721,7 @@ async fn dispatch_claimed_assignment(
             delivered_sources: delivery.delivered_sources,
         },
         full_prompt_on_fresh_session: delivery.full_prompt_on_fresh_session,
-        model_label: Some(model.label),
+        model_label: model.label,
     };
     let run_id = ChatAgentRunId::new(new_id("agent-run")?).map_err(identifier_error)?;
     let sent = super::super::turns::send_turn(
@@ -1474,19 +1474,18 @@ pub(super) async fn deliver_assignment_input(
     record_assignment_input_delivered(&pool, &assignment_id, &message_item_id, &prepared).await
 }
 
-/// The model a dispatch runs and the label its assignment shows.
+/// The model a dispatch runs and the label its assignment shows. The label is `None` when the
+/// provider chooses the model, so every device shows its own localized provider default name
+/// instead of replicated text.
 #[derive(Debug, PartialEq)]
 struct DispatchModel {
     selection: ChatModelSelection,
-    label: String,
+    label: Option<String>,
 }
-
-/// Label of a run on the model the provider chooses.
-const PROVIDER_DEFAULT_LABEL: &str = "Provider default";
 
 /// Chooses the model a dispatch runs from the `frozen` selection of its assignment and the
 /// `catalog` this device last discovered for the provider. A named model the catalog does not
-/// offer runs on the provider default instead, and the label says so; without a catalog the
+/// offer runs on the provider default instead, with no label; without a catalog the
 /// named model runs as frozen, since the provider is the only authority on what it offers.
 fn dispatch_model(
     frozen: &ChatModelSelection,
@@ -1495,26 +1494,23 @@ fn dispatch_model(
     let Some(model_id) = frozen.model_id.as_ref() else {
         return DispatchModel {
             selection: frozen.clone(),
-            label: PROVIDER_DEFAULT_LABEL.to_string(),
+            label: None,
         };
     };
     let Some(catalog) = catalog else {
         return DispatchModel {
             selection: frozen.clone(),
-            label: model_id.as_str().to_string(),
+            label: Some(model_id.as_str().to_string()),
         };
     };
     match catalog.models.iter().find(|model| &model.id == model_id) {
         Some(model) => DispatchModel {
             selection: frozen.clone(),
-            label: model.display_name.clone(),
+            label: Some(model.display_name.clone()),
         },
         None => DispatchModel {
             selection: ChatModelSelection::provider_default(),
-            label: format!(
-                "{PROVIDER_DEFAULT_LABEL}, {} is not available",
-                model_id.as_str()
-            ),
+            label: None,
         },
     }
 }
@@ -1539,9 +1535,8 @@ fn assignment_turn_modes(
 mod tests {
     use super::{
         ChatModelSelection, ChatRuntimeApprovalPolicy, DispatchModel, InteractionMode,
-        ModelAvailability, ModelCatalogSource, ModelId, PROVIDER_DEFAULT_LABEL, ProviderInstanceId,
-        ProviderModel, ProviderModelCatalog, SafetyMode, UtcTimestamp, assignment_turn_modes,
-        dispatch_model,
+        ModelAvailability, ModelCatalogSource, ModelId, ProviderInstanceId, ProviderModel,
+        ProviderModelCatalog, SafetyMode, UtcTimestamp, assignment_turn_modes, dispatch_model,
     };
 
     #[test]
@@ -1603,18 +1598,17 @@ mod tests {
             dispatch_model(&named("gpt-5"), Some(&catalog)),
             DispatchModel {
                 selection: named("gpt-5"),
-                label: "GPT-5".to_string(),
+                label: Some("GPT-5".to_string()),
             }
         );
     }
 
     #[test]
-    fn an_unknown_model_falls_back_to_the_provider_default_and_says_so() {
+    fn an_unknown_model_falls_back_to_the_provider_default_without_a_label() {
         let catalog = catalog(&[("gpt-5", "GPT-5")]);
         let model = dispatch_model(&named("gpt-9"), Some(&catalog));
         assert_eq!(model.selection, ChatModelSelection::provider_default());
-        assert!(model.label.starts_with(PROVIDER_DEFAULT_LABEL));
-        assert!(model.label.contains("gpt-9"));
+        assert_eq!(model.label, None);
     }
 
     #[test]
@@ -1623,7 +1617,7 @@ mod tests {
             dispatch_model(&named("gpt-9"), None),
             DispatchModel {
                 selection: named("gpt-9"),
-                label: "gpt-9".to_string(),
+                label: Some("gpt-9".to_string()),
             }
         );
     }
@@ -1633,7 +1627,7 @@ mod tests {
         let default = ChatModelSelection::provider_default();
         let model = dispatch_model(&default, Some(&catalog(&[])));
         assert_eq!(model.selection, default);
-        assert_eq!(model.label, PROVIDER_DEFAULT_LABEL);
+        assert_eq!(model.label, None);
     }
 
     /// Which earlier run a later assignment of the fixture's reply thread could continue.

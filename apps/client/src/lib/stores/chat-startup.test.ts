@@ -102,28 +102,21 @@ afterEach(() => {
 });
 
 describe("Chat startup", () => {
-  it("prewarms cached history without launching providers, then discovers once when opened", async () => {
+  it("discovers providers once as startup prewarms cached history, without waiting for them", async () => {
     await chat.prewarmForProject("project");
     expect(chat.loaded).toBe(true);
     expect(chat.channelMessages).toEqual([message("general")]);
-    expect(chatApi.discoverDefaultChatProviders).not.toHaveBeenCalled();
+    expect(chatApi.discoverDefaultChatProviders).toHaveBeenCalledOnce();
     await Promise.all([chat.ensureLoaded(), chat.ensureLoaded()]);
     expect(chatApi.discoverDefaultChatProviders).toHaveBeenCalledOnce();
     expect(chat.providerDiscoveryLoading).toBe(true);
   });
 
-  it("discovers providers for a vault activated while Chat is open", async () => {
-    await chat.ensureLoaded();
-    expect(chatApi.discoverDefaultChatProviders).toHaveBeenCalledOnce();
-    resetChatForVault({ keepProviderDiscoveryRequest: true });
+  it("discovers providers again for a vault activated after startup", async () => {
+    await chat.prewarmForProject("project");
+    resetChatForVault();
     await chat.prewarmForProject("project");
     expect(chatApi.discoverDefaultChatProviders).toHaveBeenCalledTimes(2);
-  });
-
-  it("keeps a vault prepared before Chat opens free of provider processes", async () => {
-    resetChatForVault({ keepProviderDiscoveryRequest: true });
-    await chat.prewarmForProject("project");
-    expect(chatApi.discoverDefaultChatProviders).not.toHaveBeenCalled();
   });
 
   it("loads the selected channel while provider discovery remains unresolved", async () => {

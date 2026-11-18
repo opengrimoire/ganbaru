@@ -119,8 +119,6 @@ class ChatSharedState {
   agents = $state<ChatAiAgentRead[]>([]);
   archivedAgents = $state<ChatAiAgentRead[]>([]);
   providerDiscoveryStarted = false;
-  /** Whether a Chat surface opened this session, so a vault activated later discovers providers as it loads. */
-  providerDiscoveryRequested = false;
   readonly configuration = new ChatConfigurationController({
     onSettingsChanged: () => {
       for (const store of paneStores.all()) store.scheduleComposerDefaults();
@@ -502,15 +500,14 @@ export class ChatStore {
   /** Opens Chat from cached history and discovers providers without delaying that history. */
   async ensureLoaded(): Promise<void> {
     const vaultGeneration = this.vaultGeneration;
-    shared.providerDiscoveryRequested = true;
     await this.ensureCachedLoaded();
     if (vaultGeneration === this.vaultGeneration && this.loaded) this.startProviderDiscovery();
   }
 
-  /** Shares workspace hydration without starting provider discovery during prewarming. */
+  /** Shares workspace hydration, which also starts provider discovery for the vault. */
   private async ensureCachedLoaded(): Promise<void> {
     if (this.loaded) return;
-    this.loadPromise ??= this.reload(false).finally(() => {
+    this.loadPromise ??= this.reload().finally(() => {
       this.loadPromise = null;
     });
     await this.loadPromise;
@@ -559,8 +556,8 @@ export class ChatStore {
     this.composerRuntimeController.reset();
   }
 
-  /** Refreshes local Chat data; background prewarming leaves provider CLIs dormant until a Chat surface opens. */
-  async reload(discoverProviders = true): Promise<void> {
+  /** Refreshes local Chat data and starts provider discovery without waiting for it. */
+  async reload(): Promise<void> {
     const request = ++this.loadRequest;
     const vaultGeneration = this.vaultGeneration;
     this.loading = true;
@@ -571,7 +568,7 @@ export class ChatStore {
       const { settings, navigationChannels } = loaded;
       this.channelNavigationController.hydrateNavigation(navigationChannels);
       this.threadCollectionController.resetWindow();
-      if (discoverProviders || shared.providerDiscoveryRequested) this.startProviderDiscovery();
+      this.startProviderDiscovery();
       if (this.owner && localExecutionAvailable) this.recoverAssignments();
       await this.projects.ensureLoaded();
       if (request !== this.loadRequest || vaultGeneration !== this.vaultGeneration) return;
@@ -1798,16 +1795,10 @@ export function useChat(): ChatStore {
   return storeFor(getWorkspacePaneScope());
 }
 
-/**
- * Invalidates every pane's Chat state and the shared Chat state before prewarming another vault.
- *
- * @param options.keepProviderDiscoveryRequest Whether a Chat surface opened earlier in this session still asks the
- *   next vault to discover providers as it loads.
- */
-export function resetChatForVault(options: { keepProviderDiscoveryRequest?: boolean } = {}): void {
+/** Invalidates every pane's Chat state and the shared Chat state before prewarming another vault. */
+export function resetChatForVault(): void {
   for (const store of paneStores.all()) store.resetPaneForVault();
   shared.providerDiscoveryStarted = false;
-  if (!options.keepProviderDiscoveryRequest) shared.providerDiscoveryRequested = false;
   shared.agents = [];
   shared.archivedAgents = [];
   shared.configuration.reset();

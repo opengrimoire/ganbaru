@@ -490,7 +490,7 @@
     const unsubscribeHistoryVault = isMainWindow
       ? onActiveVaultIdentityChange((previousVaultId, nextVaultId) => {
           notesProjectHistoryScheduler.switchVault();
-          resetChatForVault({ keepProviderDiscoveryRequest: true });
+          resetChatForVault();
           chatNotifications?.reset();
           syncQuickNotesTrashPurge();
           projectTaskReminderScheduler.invalidate();

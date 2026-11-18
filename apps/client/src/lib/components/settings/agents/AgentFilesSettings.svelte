@@ -82,7 +82,6 @@
   const pendingSaves = $derived(providerFileSaves(files, textDrafts, preferenceDrafts));
   const dirty = $derived(pendingSaves.length > 0);
   const groups = $derived(splitProviderFiles(files));
-  const filesFolder = $derived((selectedInstanceId ? providerFolders.get(selectedInstanceId) : undefined) ?? providerFilesFolder(files));
   const preferenceFile = $derived(groups.configuration.find((file) => file.preferences !== null) ?? null);
   const preferencesAllowlisted = $derived(familyId ? providerPreferencesAllowlisted(familyId) : false);
   const docLinks = $derived(familyId ? PROVIDER_DOC_LINKS[familyId] ?? [] : []);
@@ -344,26 +343,11 @@
         <div class="detail-scroll-frame">
           <div bind:this={detailScrollElement} data-mobile-scroll-fade class="detail-scroll hide-scrollbar">
             {#if selectedFamily}
-              <div class="editor-heading">
-                <ChatModelAvatar familyId={selectedFamily.familyId} label={selectedFamily.displayName} size={38} />
-                <div class="min-w-0">
-                  <h3>{selectedFamily.displayName}</h3>
-                  <p>{selectedFamily.defaultExecutableCandidates[0] || selectedFamily.familyId}</p>
-                </div>
-              </div>
               <UnconfiguredProviderFamily
                 family={selectedFamily}
                 installedExecutables={chat.settings?.installedExecutables[selectedFamily.familyId]}
                 onSetUp={() => onOpenProviderSetup({ mode: "create", familyId: selectedFamily.familyId })}
               />
-            {:else if selectedProvider}
-              <div class="editor-heading">
-                <ChatModelAvatar familyId={selectedProvider.configuration.familyId} label={familyDisplayName(selectedProvider.configuration.familyId)} size={38} />
-                <div class="min-w-0">
-                  <h3>{selectedProvider.configuration.label}</h3>
-                  <p>{filesFolder ?? "\u00a0"}</p>
-                </div>
-              </div>
             {/if}
 
             {#if error}
@@ -492,10 +476,6 @@
   .save-area { margin-left:auto; justify-content:flex-end; }
   .save-error { min-width:0; overflow-wrap:anywhere; color:var(--destructive); font-size:calc(0.733333rem * var(--type-scale)); }
   .detail-scroll { display:grid; grid-template-columns:minmax(0,1fr); align-content:start; gap:1.5rem; padding:0.2rem 0.75rem 1rem 0; }
-  .editor-heading { display:grid; min-width:0; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:0.65rem; padding-inline:0.25rem; }
-  .editor-heading h3,.editor-heading p { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .editor-heading h3 { font-size:calc(0.833333rem * var(--type-scale)); font-weight:600; }
-  .editor-heading p { margin-top:0.08rem; color:var(--muted-foreground); font-size:calc(0.7rem * var(--type-scale)); }
   @media (max-width:700px) {
     .directory-layout { grid-template-columns:1fr; grid-template-rows:minmax(8rem,30%) minmax(0,1fr); }
     .directory-panel { border-bottom:1px solid var(--border); padding:0 0 0.75rem; }

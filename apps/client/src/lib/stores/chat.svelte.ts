@@ -641,21 +641,44 @@ export class ChatStore {
     return settings ? { settings, navigationChannels } : null;
   }
 
-  /** Starts at most one automatic discovery per vault, without delaying local history. */
+  /**
+   * Starts at most one automatic discovery per vault, without delaying local history. Discovery
+   * creates the agents of newly found providers, so the agents are reread once it settles.
+   */
   private startProviderDiscovery(): void {
     if (shared.providerDiscoveryStarted) return;
     shared.providerDiscoveryStarted = true;
     const vaultGeneration = this.vaultGeneration;
     const isCurrentVault = () => vaultGeneration === this.vaultGeneration;
-    void this.configurationController.discoverProviders(isCurrentVault).catch(async (error: unknown) => {
-      if (!isCurrentVault()) return;
-      console.error("Automatic Chat provider discovery failed", error);
-      try {
-        await this.configurationController.refreshSettings(isCurrentVault);
-      } catch (refreshError: unknown) {
-        if (isCurrentVault()) console.error("Chat settings refresh after discovery failed", refreshError);
-      }
-    });
+    void this.configurationController.discoverProviders(isCurrentVault)
+      .catch(async (error: unknown) => {
+        if (!isCurrentVault()) return;
+        console.error("Automatic Chat provider discovery failed", error);
+        try {
+          await this.configurationController.refreshSettings(isCurrentVault);
+        } catch (refreshError: unknown) {
+          if (isCurrentVault()) console.error("Chat settings refresh after discovery failed", refreshError);
+        }
+      })
+      .then(async () => {
+        if (!isCurrentVault()) return;
+        try {
+          await this.refreshDiscoveredAgents(isCurrentVault);
+        } catch (refreshError: unknown) {
+          if (isCurrentVault()) console.error("Chat agent refresh after discovery failed", refreshError);
+        }
+      });
+  }
+
+  /** Rereads the agents after discovery, keeping them only while the vault that started it is active. */
+  private async refreshDiscoveredAgents(isCurrentVault: () => boolean): Promise<void> {
+    const [agents, archivedAgents] = await Promise.all([
+      chatApi.listChatAgents(false),
+      chatApi.listChatAgents(true),
+    ]);
+    if (!isCurrentVault()) return;
+    this.agents = agents;
+    this.archivedAgents = archivedAgents;
   }
 
   private async prefetchRememberedProjectChannels(

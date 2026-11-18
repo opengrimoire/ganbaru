@@ -112,6 +112,14 @@ describe("Chat startup", () => {
     expect(chat.providerDiscoveryLoading).toBe(true);
   });
 
+  it("rereads the agents once discovery settles, so newly found providers can be mentioned", async () => {
+    await chat.prewarmForProject("project");
+    const discovered = [{ participant: { id: "agent-codex" } }] as unknown as Awaited<ReturnType<typeof chatApi.listChatAgents>>;
+    vi.mocked(chatApi.listChatAgents).mockImplementation(async (archived) => (archived ? [] : discovered));
+    discovery.resolve(settings());
+    await vi.waitFor(() => expect(chat.agents).toEqual(discovered));
+  });
+
   it("discovers providers again for a vault activated after startup", async () => {
     await chat.prewarmForProject("project");
     resetChatForVault();

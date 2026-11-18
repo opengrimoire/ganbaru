@@ -48,7 +48,7 @@ An agent works in a channel only after it is added, as in Slack. Adding needs no
 
 An agent acts only when mentioned, and a reply in its assignment thread continues its work without a new mention. Automatic replies to messages that do not mention it are a later option; the setting appears only when that second mode exists.
 
-Mentioning an agent that is not in the channel is offered in the mention menu as "Add @Codex to #general", which adds it and keeps the mention in the draft. Nothing is added by a message alone.
+Mentioning an agent that is not in the channel is offered in the mention menu as "Add @Opus to #general", which adds it and keeps the mention in the draft. Nothing is added by a message alone.
 
 ## Access
 

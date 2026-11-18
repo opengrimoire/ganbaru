@@ -10,6 +10,7 @@
   import Trash2 from "@lucide/svelte/icons/trash";
   import * as chatApi from "$lib/api/chat";
   import { newestModelOfLine } from "$lib/chat/agents/agent-names";
+  import { chatAgentDefaultModelName } from "$lib/chat/agents/channel-access";
   import { familyAgentRoster, listedCatalogModels, selectedEffortLabel } from "$lib/chat/agents/agent-roster";
   import type {
     ChatAiAgentRead,
@@ -324,9 +325,9 @@
   /** What an agent above the catalog runs: a line agent its newest model, a named agent its model and effort. */
   function agentRunsLabel(agent: ChatAiAgentRead): string {
     if (agent.agentKind === "line") return t("chat.agentAccess.newestOfLine", agent.participant.displayName);
-    const modelId = agent.latestPolicy?.modelId ?? null;
-    const model = selectedProvider?.modelCatalog?.models.find((entry) => entry.id === modelId) ?? null;
-    const modelName = model ? formatModelDisplayName(model.displayName) : modelId ?? t("chat.agentAccess.providerDefault");
+    const catalog = selectedProvider?.modelCatalog ?? null;
+    const modelName = formatModelDisplayName(chatAgentDefaultModelName(t, agent.latestPolicy, catalog));
+    const model = catalog?.models.find((entry) => entry.id === agent.latestPolicy?.modelId) ?? null;
     const effort = model ? selectedEffortLabel(agent.latestPolicy?.modelOptions ?? [], model.options) : null;
     return effort ? t("chat.agentAccess.fixedModelEffort", modelName, effort) : t("chat.agentAccess.fixedModel", modelName);
   }

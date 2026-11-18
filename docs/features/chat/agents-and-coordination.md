@@ -2,6 +2,8 @@
 
 Status: Partial. AI agents, per-channel agent access, mention-triggered assignments, frozen context packages, assignment review states, structured delegation, and daily agent usage summaries are implemented. Quiet periods, task-linked assignments, and human collaborators are planned.
 
+[Channel-centered agent configuration](channel-configuration.md) is the planned replacement for user-made agents and per-agent channel access described here.
+
 Ganbaru coordinates work through durable conversations, explicit assignments, and review. AI providers are execution mechanisms beneath that model, not organizational identities. There is no privileged manager agent or general vault agent, and no planning agent is seeded by default.
 
 ## Participants and agents

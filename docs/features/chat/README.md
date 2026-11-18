@@ -28,7 +28,7 @@ Provider runtimes own execution details: provider sessions and continuation, too
 
 A channel can link many sequential or parallel provider runs and never depends on one provider's continuation model. Rationale: providers differ and change; the organizational record must outlive any of them.
 
-See [Conversations](conversations.md), [Agents and coordination](agents-and-coordination.md), and [Execution and workspace](execution-and-workspace.md).
+See [Conversations](conversations.md), [Agents and coordination](agents-and-coordination.md), [Channel-centered agent configuration](channel-configuration.md) (planned), and [Execution and workspace](execution-and-workspace.md).
 
 ## First use
 

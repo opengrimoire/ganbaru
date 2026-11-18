@@ -2,7 +2,7 @@
 
 This document is the normative authorization specification for organizational Chat: who may read channel history, which resources a run may use, how authority is reduced, and what happens after restricted context has already been materialized. Product presentation belongs in the [Chat feature documents](../features/chat/README.md). Security boundaries are indexed in [Security](security/README.md).
 
-**Status: Implemented** for project-owned channels (including each project's built-in general channel), memberships, per-channel agent access, working-folder and scratch execution, runtime approvals, internal host tools, and revocation. Cross-project groups and direct-message surfaces are planned.
+**Status: Implemented** for project-owned channels (including each project's built-in general channel), memberships, per-channel agent access, working-folder and scratch execution, runtime approvals, internal host tools, and revocation. Cross-project groups and direct-message surfaces are planned. [Channel-centered agent configuration](../features/chat/channel-configuration.md) is the planned replacement for per-agent channel capabilities, history boundaries, folder grants, and approval overrides.
 
 ## Principles
 

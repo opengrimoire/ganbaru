@@ -12,7 +12,7 @@ Ganbaru Chat follows Claude Tag, which configures the place, not the agent: one 
 
 - The channel is the thing you configure. What an agent can do in a channel is visible on that channel, and every agent in it works under the same rules.
 - Settings inherit downward: app, then project, then channel. A lower level overrides a value; it never needs to repeat it.
-- An agent is a provider, not a persona. There are no user-made names, roles, or per-agent instructions.
+- An agent is a provider, a model line, or a named model, not a persona. Agents carry no roles or per-agent instructions; behavior comes from the channel.
 - No control that cannot be explained in one sentence, and no control with a single option.
 - No silent downgrades. When a provider cannot honor a channel's setting, the channel says what that agent will do instead.
 
@@ -20,9 +20,11 @@ Ganbaru Chat follows Claude Tag, which configures the place, not the agent: one 
 
 An agent is created the first time any device detects a supported provider (Claude, Codex, Cursor, Grok, OpenCode); nothing is seeded, so a vault with no provider has no agents. Its name, handle, and avatar come from the provider (`@Claude`, `@Codex`), and nothing renames them. The agent record is part of the vault and syncs; its ID is derived from the provider kind, so two devices that detect the same provider converge on one agent instead of creating duplicates.
 
+The same detection creates one agent per model line the provider offers (`@Fable`, `@Opus`, `@Sonnet`, `@Haiku` for Claude; `@Astra`, `@Sol`, `@Terra`, `@Luna` for Codex), with IDs derived from the provider and the line. A line agent always runs the newest model of its line on the executing device, so it never needs updating when a model ships. A person can also add a named agent in Settings > Agents: a one-word name, unique ignoring case and never a model line, plus a model and effort of that provider. Its ID is random and its name syncs. Line and named agents keep their own model, so a channel cannot override it; only `/model` in a message changes it for that work. A switch in Settings > Agents turns each line or named agent on or off for channels and mentions by archiving or restoring it. Model names drop a leading "GPT" so OpenAI names read like the agents people tag.
+
 Deferred: a second account of the same provider, or a generic ACP agent, will be added by hand in Settings > Agents with a short label. Its ID will be random, and the label will become its name and handle (`Claude (work)`, `@claude-work`), so mentions are never ambiguous. The label will sync; each device will bind the agent to one of its own provider installations, and until it does, the agent will count as not installed there.
 
-Settings > Agents is provider setup: for each agent, whether its provider is installed and signed in on this device, its default model and effort, and a test. The default model and effort sync with the agent; installation, executables, and credentials stay device-local, as today. When a device's provider does not offer the chosen model, the run uses that provider's recommended model and the thread shows which model ran.
+Settings > Agents is provider setup: for each provider, whether it is installed and signed in on this device, the provider agent's default model and effort, its line and named agents, and a test. The default model and effort sync with the agent; installation, executables, and credentials stay device-local, as today. When a device's provider does not offer the chosen model, the run uses that provider's recommended model and the thread shows which model ran.
 
 On a device where a provider is not installed, its agent still appears in channels and history, can still be mentioned, and its work waits in the thread for Start here on a device that has it. Because no device creates a provider agent, the agent has no home device: work runs on the desktop where the mention was posted when the provider is ready there, and otherwise waits for Start here. Android never executes agent work; it shows the agents, their work, and reviews.
 
@@ -73,7 +75,7 @@ A channel uses every folder of its project. A run uses a target chosen explicitl
 
 ## Model and effort
 
-Each agent's default model, with its effort and other model options, is set in Settings > Agents. A channel may override the model for an agent in its Agents section; the row shows "Agent's model (model)" until it does. A thread switches its own model with `/model` in a message that starts or continues the work, and later work in that thread keeps the model it last chose. The channel composer has no other model control, so a post never carries hidden model choices. Direct provider threads outside channels keep their own model controls. Every agent reply names the model that produced it, so a switch, a channel override, or a device falling back to the recommended model is visible where it happened.
+Each agent's default model, with its effort and other model options, is set in Settings > Agents. A channel may override the model for a provider agent in its Agents section; the row shows "Agent's model (model)" until it does. Line and named agents show their fixed model instead. A thread switches its own model with `/model` in a message that starts or continues the work, and later work in that thread keeps the model it last chose. The channel composer has no other model control, so a post never carries hidden model choices. Direct provider threads outside channels keep their own model controls. Every agent reply names the model that produced it, so a switch, a channel override, or a device falling back to the recommended model is visible where it happened.
 
 ## Common journeys
 
@@ -84,7 +86,7 @@ Each agent's default model, with its effort and other model options, is set in S
 
 ## Data consequences
 
-An agent channel membership holds only presence and an optional model override. Access and instructions are values on the app settings, the project, and the channel, synced with the rest of Chat; concurrent access edits keep the narrower level. An agent record holds its provider family and default model; its name and avatar come from the provider. Each assignment freezes its model and composed instructions when it is created, and records the model that ran. [Chat schema](../../data/schema/chat.md) owns the tables.
+An agent channel membership holds only presence and an optional model override. Access and instructions are values on the app settings, the project, and the channel, synced with the rest of Chat; concurrent access edits keep the narrower level. An agent record holds its provider family and default model; a provider or line agent takes its name from the provider or line, and a named agent keeps the name a person gave it. Each assignment freezes its model and composed instructions when it is created, and records the model that ran. [Chat schema](../../data/schema/chat.md) owns the tables.
 
 ## Decisions
 

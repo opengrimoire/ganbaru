@@ -8,6 +8,7 @@ import { readLastChatChannelId } from "$lib/chat/channel-sections";
 import { setActiveVaultIdentity } from "$lib/vault/active-vault";
 import { getChat, getChatStore, resetChatForVault } from "./chat.svelte";
 import { ChatConfigurationController } from "$lib/stores/chat/configuration-controller.svelte";
+import { multiProviderSettings } from "$lib/components/chat/composer/composer-test-store";
 
 const projects = vi.hoisted(() => ({
   selectedProjectId: "project",
@@ -112,12 +113,20 @@ describe("Chat startup", () => {
     expect(chat.providerDiscoveryLoading).toBe(true);
   });
 
-  it("rereads the agents once discovery settles, so newly found providers can be mentioned", async () => {
+  it("rereads the agents when discovery finds a provider no agent covers, so it can be mentioned", async () => {
     await chat.prewarmForProject("project");
-    const discovered = [{ participant: { id: "agent-codex" } }] as unknown as Awaited<ReturnType<typeof chatApi.listChatAgents>>;
+    const found = multiProviderSettings();
+    const discovered = found.providerInstances.map((provider) => ({
+      participant: { id: `agent-${provider.configuration.familyId}` },
+      providerFamilyId: provider.configuration.familyId,
+    })) as unknown as Awaited<ReturnType<typeof chatApi.listChatAgents>>;
     vi.mocked(chatApi.listChatAgents).mockImplementation(async (archived) => (archived ? [] : discovered));
-    discovery.resolve(settings());
+    discovery.resolve(found);
     await vi.waitFor(() => expect(chat.agents).toEqual(discovered));
+    const reads = vi.mocked(chatApi.listChatAgents).mock.calls.length;
+    vi.mocked(chatApi.readChatSettings).mockResolvedValue(found);
+    await chat.refreshSettings();
+    expect(chatApi.listChatAgents).toHaveBeenCalledTimes(reads);
   });
 
   it("discovers providers again for a vault activated after startup", async () => {

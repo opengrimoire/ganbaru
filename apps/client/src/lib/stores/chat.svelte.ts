@@ -119,11 +119,43 @@ class ChatSharedState {
   agents = $state<ChatAiAgentRead[]>([]);
   archivedAgents = $state<ChatAiAgentRead[]>([]);
   providerDiscoveryStarted = false;
+  /** Bumped by {@link resetAgents}, so an agent read started for an earlier vault is dropped. */
+  private agentReadGeneration = 0;
   readonly configuration = new ChatConfigurationController({
     onSettingsChanged: () => {
       for (const store of paneStores.all()) store.scheduleComposerDefaults();
+      this.refreshAgentsForNewProviders();
     },
   });
+
+  /**
+   * Rereads the agents when the settings name a provider family that no agent covers yet. Reading the agents creates
+   * the agent of each provider this device has, so a provider found by discovery or set up in Settings becomes
+   * mentionable without reopening Chat.
+   */
+  private refreshAgentsForNewProviders(): void {
+    const settings = this.configuration.settings;
+    if (!settings) return;
+    const covered = new Set([...this.agents, ...this.archivedAgents].map((agent) => agent.providerFamilyId));
+    if (settings.providerInstances.every((provider) => covered.has(provider.configuration.familyId))) return;
+    const generation = this.agentReadGeneration;
+    void Promise.all([chatApi.listChatAgents(false), chatApi.listChatAgents(true)])
+      .then(([agents, archivedAgents]) => {
+        if (generation !== this.agentReadGeneration) return;
+        this.agents = agents;
+        this.archivedAgents = archivedAgents;
+      })
+      .catch((error: unknown) => {
+        if (generation === this.agentReadGeneration) console.error("Chat agent refresh after a provider change failed", error);
+      });
+  }
+
+  /** Forgets the agents of the previous vault and any read still in flight for it. */
+  resetAgents(): void {
+    this.agentReadGeneration += 1;
+    this.agents = [];
+    this.archivedAgents = [];
+  }
   /** The vault-wide queue of work that waits for the person, which every pane's rail shows. */
   readonly reviewQueue = new ChatReviewQueueController({
     onReviewed: (channelIds) => {
@@ -626,9 +658,9 @@ export class ChatStore {
       chatApi.listChatAgents(true),
     ]);
     if (vaultGeneration === this.vaultGeneration) {
-      this.configurationController.hydrate(settings, workingFolders);
       this.agents = agents;
       this.archivedAgents = archivedAgents;
+      this.configurationController.hydrate(settings, workingFolders);
     }
     return { settings, navigationChannels };
   }
@@ -641,44 +673,21 @@ export class ChatStore {
     return settings ? { settings, navigationChannels } : null;
   }
 
-  /**
-   * Starts at most one automatic discovery per vault, without delaying local history. Discovery
-   * creates the agents of newly found providers, so the agents are reread once it settles.
-   */
+  /** Starts at most one automatic discovery per vault, without delaying local history. */
   private startProviderDiscovery(): void {
     if (shared.providerDiscoveryStarted) return;
     shared.providerDiscoveryStarted = true;
     const vaultGeneration = this.vaultGeneration;
     const isCurrentVault = () => vaultGeneration === this.vaultGeneration;
-    void this.configurationController.discoverProviders(isCurrentVault)
-      .catch(async (error: unknown) => {
-        if (!isCurrentVault()) return;
-        console.error("Automatic Chat provider discovery failed", error);
-        try {
-          await this.configurationController.refreshSettings(isCurrentVault);
-        } catch (refreshError: unknown) {
-          if (isCurrentVault()) console.error("Chat settings refresh after discovery failed", refreshError);
-        }
-      })
-      .then(async () => {
-        if (!isCurrentVault()) return;
-        try {
-          await this.refreshDiscoveredAgents(isCurrentVault);
-        } catch (refreshError: unknown) {
-          if (isCurrentVault()) console.error("Chat agent refresh after discovery failed", refreshError);
-        }
-      });
-  }
-
-  /** Rereads the agents after discovery, keeping them only while the vault that started it is active. */
-  private async refreshDiscoveredAgents(isCurrentVault: () => boolean): Promise<void> {
-    const [agents, archivedAgents] = await Promise.all([
-      chatApi.listChatAgents(false),
-      chatApi.listChatAgents(true),
-    ]);
-    if (!isCurrentVault()) return;
-    this.agents = agents;
-    this.archivedAgents = archivedAgents;
+    void this.configurationController.discoverProviders(isCurrentVault).catch(async (error: unknown) => {
+      if (!isCurrentVault()) return;
+      console.error("Automatic Chat provider discovery failed", error);
+      try {
+        await this.configurationController.refreshSettings(isCurrentVault);
+      } catch (refreshError: unknown) {
+        if (isCurrentVault()) console.error("Chat settings refresh after discovery failed", refreshError);
+      }
+    });
   }
 
   private async prefetchRememberedProjectChannels(
@@ -1822,8 +1831,7 @@ export function useChat(): ChatStore {
 export function resetChatForVault(): void {
   for (const store of paneStores.all()) store.resetPaneForVault();
   shared.providerDiscoveryStarted = false;
-  shared.agents = [];
-  shared.archivedAgents = [];
+  shared.resetAgents();
   shared.configuration.reset();
   shared.reviewQueue.reset();
   chatPanelVisibility.clear();

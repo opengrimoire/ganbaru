@@ -4,9 +4,9 @@ use crate::events::{CanonicalEvent, CanonicalRuntimeEvent, NotificationEvent};
 use crate::models::{
     ChatCommandContext, ChatCommandId, ChatError, ChatErrorCode, ChatResult, ChatThreadId,
     ChatTurnId, CompactContextRequest, DriverOperationReceipt, InterruptTurnRequest, McpStatusRead,
-    McpStatusRequest, ProviderSessionId, ProviderSessionSnapshot, ProviderSessionState,
-    ResolveApprovalRequest, ResolveUserInputRequest, ResumeSessionRequest, RollbackRequest,
-    SendTurnRequest, StartSessionRequest, SteerTurnRequest, StopSessionRequest,
+    McpStatusRequest, ProviderFamilyId, ProviderSessionId, ProviderSessionSnapshot,
+    ProviderSessionState, ResolveApprovalRequest, ResolveUserInputRequest, ResumeSessionRequest,
+    RollbackRequest, SendTurnRequest, StartSessionRequest, SteerTurnRequest, StopSessionRequest,
     TurnDispatchReceipt,
 };
 use crate::providers::{
@@ -41,6 +41,12 @@ const STOP_FLUSH_INTERVAL: Duration = Duration::from_millis(32);
 /// runtime settles it as interrupted and stops the provider. Reason: a provider that ignored an
 /// interrupt is not trusted with the next turn.
 pub const INTERRUPT_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a session must stay idle with no provider events before an updated CLI replaces it.
+/// Reason: work the agent left running after its turn ended sends no events Ganbaru tracks, so
+/// a short quiet period keeps a restart from cutting it off right after the turn.
+pub const UPDATE_RESTART_QUIET: Duration = Duration::from_secs(60);
+/// The longest a session waiting to restart after an update goes between idle checks.
+const UPDATE_RESTART_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 pub enum ThreadRuntimeCommand {
     SessionState(ProviderSessionState),
@@ -48,6 +54,13 @@ pub enum ThreadRuntimeCommand {
     PendingRequest(bool),
     TerminalLinkedOperation(bool),
     Touch,
+    /// Stops the session once it is idle and quiet when it runs a CLI of this family, so the next
+    /// turn resumes on the updated program. Never interrupts a turn, a pending request, or a
+    /// terminal operation.
+    RestartAfterProviderUpdate {
+        family_id: ProviderFamilyId,
+        quiet: Duration,
+    },
     PromptCatalog {
         response: oneshot::Sender<ChatResult<Vec<crate::models::ChatPromptCatalogEntry>>>,
     },
@@ -554,6 +567,38 @@ impl ChatRuntimeRegistry {
         });
         owners.insert(thread_id, Arc::clone(&owner));
         Ok(owner)
+    }
+
+    /// Asks every session that runs a CLI of `family_id` to restart once it is idle and quiet, so
+    /// conversations pick up an updated program without interrupting work in progress.
+    ///
+    /// # Errors
+    ///
+    /// Fails only when the owner registry is unavailable; a thread that cannot take the request
+    /// keeps its current session until its normal idle stop.
+    pub fn restart_family_sessions_after_update(
+        &self,
+        family_id: &ProviderFamilyId,
+    ) -> ChatResult<()> {
+        for owner in self.owners()? {
+            if !owner
+                .snapshot()
+                .is_ok_and(|snapshot| snapshot.accepting_commands)
+            {
+                continue;
+            }
+            let command = ThreadRuntimeCommand::RestartAfterProviderUpdate {
+                family_id: family_id.clone(),
+                quiet: UPDATE_RESTART_QUIET,
+            };
+            if let Err(error) = owner.try_command(command) {
+                eprintln!(
+                    "Chat could not schedule a restart after a provider update, code {:?}",
+                    error.code
+                );
+            }
+        }
+        Ok(())
     }
 
     pub fn owners(&self) -> ChatResult<Vec<Arc<ThreadRuntimeOwner>>> {

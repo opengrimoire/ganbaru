@@ -10,14 +10,16 @@ use super::settings::{
     device_state_error, maintenance_configuration, provider_instance_read, read_chat_config,
     read_provider, require_runtime_approved_on_device,
 };
+use ganbaru_chat::runtime::ChatRuntimeRegistry;
 use ganbaru_chat_contracts::models::{
-    ChatError, ChatResult, ProviderInstanceConfig, ProviderInstanceId, ProviderUpdateRead,
-    ProviderUpdateRunRead,
+    ChatError, ChatResult, ProviderFamilyId, ProviderInstanceConfig, ProviderInstanceId,
+    ProviderUpdateRead, ProviderUpdateRunRead,
 };
 use ganbaru_chat_providers::cli_updates::{
     ReleaseLookups, UpdateCheck, prepare_update_check, run_update, update_command,
 };
 use ganbaru_chat_providers::{ProviderCliCommand, ProviderDriverFactory, ProviderDriverRegistry};
+use tauri::Manager;
 
 /// One update at a time, since two installers replacing the same program would race.
 static UPDATE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -75,6 +77,8 @@ pub async fn chat_check_provider_updates(
 
 /// Runs the provider's own update command for `instance_id`, installing `target_version`
 /// where the CLI takes a version.
+/// After a successful update, open sessions of that family restart onto the new program once
+/// they are idle and quiet, so running work is never interrupted.
 ///
 /// # Errors
 ///
@@ -87,9 +91,20 @@ pub async fn chat_run_provider_update(
     instance_id: ProviderInstanceId,
     target_version: String,
 ) -> ChatResult<ProviderUpdateRunRead> {
-    let command = resolved_update_command(&app, &instance_id, &target_version)?;
+    let (family_id, command) = resolved_update_command(&app, &instance_id, &target_version)?;
     let _guard = UPDATE_LOCK.lock().await;
-    run_update(command).await
+    let result = run_update(command).await?;
+    if result.successful
+        && let Err(error) = app
+            .state::<ChatRuntimeRegistry>()
+            .restart_family_sessions_after_update(&family_id)
+    {
+        eprintln!(
+            "Chat could not restart sessions after a provider update, code {:?}",
+            error.code
+        );
+    }
+    Ok(result)
 }
 
 fn prepared_check(
@@ -107,7 +122,7 @@ fn resolved_update_command(
     app: &tauri::AppHandle,
     instance_id: &ProviderInstanceId,
     target_version: &str,
-) -> ChatResult<ProviderCliCommand> {
+) -> ChatResult<(ProviderFamilyId, ProviderCliCommand)> {
     let provider = read_provider(app, instance_id)?;
     let current_version = provider
         .last_probe
@@ -117,5 +132,6 @@ fn resolved_update_command(
     require_runtime_approved_on_device(app, &configuration)?;
     let driver =
         ProviderDriverRegistry.create_driver(maintenance_configuration(app, &configuration)?)?;
-    update_command(driver.as_ref(), &current_version, target_version)
+    let command = update_command(driver.as_ref(), &current_version, target_version)?;
+    Ok((configuration.family_id, command))
 }

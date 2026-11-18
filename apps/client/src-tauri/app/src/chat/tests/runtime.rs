@@ -14,7 +14,7 @@ use ganbaru_chat_contracts::events::CanonicalEvent;
 use ganbaru_chat_contracts::models::{ChatChangeNotification, ChatError, ChatResult, UtcTimestamp};
 use ganbaru_chat_contracts::models::{
     ChatCheckpointId, ChatCommandContext, ChatCommandId, ChatErrorCode, ChatThreadId,
-    ProviderSessionState, RollbackRequest,
+    ProviderFamilyId, ProviderSessionState, RollbackRequest,
 };
 use ganbaru_chat_providers::ProviderEventSink;
 use std::collections::HashSet;
@@ -665,6 +665,83 @@ fn ready_session_stops_lazily_and_hung_shutdown_stays_bounded() {
         );
         assert!(started.elapsed() < Duration::from_millis(250));
         assert!(!owner.snapshot().unwrap().accepting_commands);
+    });
+}
+
+/// Starts a fake session on `thread-1`, the thread the fake driver reports its events for.
+async fn started_owner(
+    registry: &ChatRuntimeRegistry,
+) -> Arc<ganbaru_chat::runtime::ThreadRuntimeOwner> {
+    let owner = registry
+        .owner(ChatThreadId::new("thread-1").unwrap())
+        .unwrap();
+    let control = Arc::new(FakeDriverControl::default());
+    let sink: Arc<dyn ProviderEventSink> = Arc::new(RecordingEventSink::new(Arc::clone(&control)));
+    owner
+        .start_session(
+            fake_driver(control),
+            start_request(),
+            sink,
+            operation_context("start-update-restart", Duration::from_secs(1)),
+        )
+        .await
+        .unwrap();
+    owner
+}
+
+fn restart_after_update(family_id: &str, quiet: Duration) -> ThreadRuntimeCommand {
+    ThreadRuntimeCommand::RestartAfterProviderUpdate {
+        family_id: ProviderFamilyId::new(family_id).unwrap(),
+        quiet,
+    }
+}
+
+#[test]
+fn a_provider_update_restarts_only_quiet_idle_sessions_of_its_family() {
+    tauri::async_runtime::block_on(async {
+        let idle_registry = ChatRuntimeRegistry::default();
+        let busy_registry = ChatRuntimeRegistry::default();
+        let quiet = Duration::from_millis(80);
+        let idle = started_owner(&idle_registry).await;
+        let busy = started_owner(&busy_registry).await;
+        busy.try_command(ThreadRuntimeCommand::TurnActive(true))
+            .unwrap();
+
+        idle.try_command(restart_after_update("other", quiet))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(160)).await;
+        assert_eq!(
+            idle.snapshot().unwrap().session_state,
+            ProviderSessionState::Ready
+        );
+
+        idle.try_command(ThreadRuntimeCommand::Touch).unwrap();
+        idle.try_command(restart_after_update("fake", quiet))
+            .unwrap();
+        busy.try_command(restart_after_update("fake", quiet))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            idle.snapshot().unwrap().session_state,
+            ProviderSessionState::Ready,
+            "a session waits for the quiet period before restarting"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            idle.snapshot().unwrap().session_state,
+            ProviderSessionState::Stopped
+        );
+        let busy_state = busy.snapshot().unwrap();
+        assert!(busy_state.turn_active, "a running turn is never stopped");
+        assert_ne!(busy_state.session_state, ProviderSessionState::Stopped);
+
+        busy.try_command(ThreadRuntimeCommand::TurnActive(false))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            busy.snapshot().unwrap().session_state,
+            ProviderSessionState::Stopped
+        );
     });
 }
 

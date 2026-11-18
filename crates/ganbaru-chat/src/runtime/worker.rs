@@ -12,6 +12,9 @@ struct RuntimeWorker {
     interrupt_confirmation_timeout: Duration,
     /// The turn an accepted interrupt is waiting on, and when the runtime stops waiting.
     interrupt_deadline: Option<(ChatTurnId, Instant)>,
+    /// How long the session must stay quiet before it restarts onto an updated CLI, when one was
+    /// installed while it ran.
+    restart_when_quiet: Option<Duration>,
 }
 
 impl RuntimeWorker {
@@ -30,11 +33,18 @@ impl RuntimeWorker {
             generation,
             interrupt_confirmation_timeout,
             interrupt_deadline: None,
+            restart_when_quiet: None,
         }
     }
 
     async fn handle(&mut self, command: ThreadRuntimeCommand) -> bool {
-        self.touch();
+        // A restart request is not session activity, so it must not postpone the quiet period.
+        if !matches!(
+            command,
+            ThreadRuntimeCommand::RestartAfterProviderUpdate { .. }
+        ) {
+            self.touch();
+        }
         match command {
             ThreadRuntimeCommand::SessionState(value) => self.update(|state| {
                 state.session_state = value;
@@ -52,6 +62,15 @@ impl RuntimeWorker {
                 state.terminal_linked_operation = value;
             }),
             ThreadRuntimeCommand::Touch => {}
+            ThreadRuntimeCommand::RestartAfterProviderUpdate { family_id, quiet } => {
+                let runs_family = self
+                    .driver
+                    .as_ref()
+                    .is_some_and(|driver| driver.instance_configuration().family_id == family_id);
+                if runs_family {
+                    self.restart_when_quiet = Some(quiet);
+                }
+            }
             ThreadRuntimeCommand::PromptCatalog { response } => {
                 let result = self
                     .driver
@@ -138,6 +157,7 @@ impl RuntimeWorker {
                 }
                 let generation = self.next_generation();
                 self.driver.take();
+                self.restart_when_quiet = None;
                 self.session = None;
                 self.update(|state| {
                     state.session_id = None;
@@ -198,6 +218,7 @@ impl RuntimeWorker {
                 }
                 let generation = self.next_generation();
                 self.driver.take();
+                self.restart_when_quiet = None;
                 self.session = None;
                 self.update(|state| {
                     state.session_id = None;
@@ -442,6 +463,7 @@ impl RuntimeWorker {
         force: bool,
         context: DriverOperationContext,
     ) -> ChatResult<()> {
+        self.restart_when_quiet = None;
         let initial_flush = self.flush_events(&context).await;
         let Some(mut driver) = self.driver.take() else {
             self.session = None;
@@ -516,16 +538,37 @@ impl RuntimeWorker {
             .await;
     }
 
-    /// The earlier of the idle deadline and a pending interrupt deadline.
+    /// The earliest of the idle deadline, a pending interrupt deadline, and the next check of a
+    /// restart after a CLI update.
     fn next_deadline(&self, idle_timeout: Duration) -> Option<Instant> {
         let interrupt = self
             .interrupt_deadline
             .as_ref()
             .map(|(_, deadline)| *deadline);
-        match (self.idle_deadline(idle_timeout), interrupt) {
-            (Some(idle), Some(interrupt)) => Some(idle.min(interrupt)),
-            (idle, interrupt) => idle.or(interrupt),
-        }
+        [
+            self.idle_deadline(idle_timeout),
+            interrupt,
+            self.restart_deadline(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
+    /// When the session can next restart onto an updated CLI: once it has been quiet long enough,
+    /// rechecked periodically while a turn or request keeps it busy.
+    fn restart_deadline(&self) -> Option<Instant> {
+        let quiet = self.restart_when_quiet?;
+        self.driver.as_ref()?;
+        let last_activity = self.snapshot.lock().ok()?.last_activity;
+        let next_check = Instant::now() + quiet.min(UPDATE_RESTART_POLL_INTERVAL);
+        Some((last_activity + quiet).max(next_check))
+    }
+
+    /// Whether a session waiting on a CLI update is idle and has been quiet long enough.
+    fn can_restart_after_update(&self) -> bool {
+        self.restart_when_quiet
+            .is_some_and(|quiet| self.can_idle_stop(quiet))
     }
 
     /// Whether a pending interrupt deadline has passed.
@@ -670,7 +713,7 @@ pub(super) async fn run_thread_runtime(
                 Ok(command) => command,
                 Err(_) => {
                     if !worker.interrupt_expired(Instant::now())
-                        && worker.can_idle_stop(idle_timeout)
+                        && (worker.can_idle_stop(idle_timeout) || worker.can_restart_after_update())
                     {
                         worker.idle_stop().await;
                     }

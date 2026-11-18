@@ -214,6 +214,19 @@ pub enum ProviderAuthSource {
     AccountLogin,
 }
 
+/// What the signed-in account pays for the provider, when the CLI reports it. The app ranks
+/// providers by it, so only a plan the provider names as free ranks below an unknown one.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAccountPlan {
+    /// A paid plan of the provider, such as a ChatGPT or Claude subscription.
+    Subscription,
+    /// Usage billed to an API key.
+    ApiKey,
+    /// The provider's free plan.
+    Free,
+}
+
 /// Where a probed CLI version falls against the provider family's compatibility range.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -266,6 +279,9 @@ pub struct ProviderProbeResult {
     /// How sessions authenticate; `None` when the driver cannot tell.
     #[serde(default)]
     pub auth_source: Option<ProviderAuthSource>,
+    /// The account's plan; `None` when the driver cannot tell.
+    #[serde(default)]
+    pub account_plan: Option<ProviderAccountPlan>,
     pub capabilities: ProviderCapabilities,
     pub authority_support: ProviderAuthoritySupport,
     pub checked_at: UtcTimestamp,

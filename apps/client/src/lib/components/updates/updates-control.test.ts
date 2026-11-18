@@ -30,6 +30,7 @@ function provider(instanceId: string, familyId: string, lastUsedAt: string | nul
       negotiatedProtocolVersion: null,
       accountLabel: null,
       authSource: null,
+      accountPlan: null,
       capabilities: { entries: [] },
       authoritySupport: {
         isolatedConversation: true,

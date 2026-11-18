@@ -168,6 +168,10 @@ export const PROVIDER_AUTH_SOURCES = ["api_key", "account_login"] as const;
 /** How a provider authenticates the sessions it starts: an API key or the CLI's account login. */
 export type ProviderAuthSource = (typeof PROVIDER_AUTH_SOURCES)[number];
 
+export const PROVIDER_ACCOUNT_PLANS = ["subscription", "api_key", "free"] as const;
+/** What the signed-in account pays for a provider: a paid plan, API key billing, or the free plan. */
+export type ProviderAccountPlan = (typeof PROVIDER_ACCOUNT_PLANS)[number];
+
 export const MODEL_AVAILABILITIES = ["available", "unavailable", "deprecated", "stale", "unknown"] as const;
 export type ModelAvailability = (typeof MODEL_AVAILABILITIES)[number];
 

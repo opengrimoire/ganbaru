@@ -144,10 +144,10 @@ function compareSectionReadiness(left: ModelCompanySection, right: ModelCompanyS
 }
 
 /**
- * Groups every visible model and setup offer by model company, with a Default choice for each
- * provider whose catalog lists no default entry. Sections served by a ready provider come first,
- * then limited ones, then those that need setup; ties keep the most recently used provider first
- * and then the company order.
+ * Groups every visible model and setup offer by model company, with a choice of the provider's own
+ * configured model for each provider without catalog models. Sections served by a ready provider
+ * come first, then limited ones, then those that need setup; ties rank the lead provider's account
+ * plan, then its most recent use, then the company order.
  */
 export function buildModelCompanySections(
   providers: readonly ProviderInstanceRead[],
@@ -315,8 +315,9 @@ export function firstPickerChoice(
 }
 
 /**
- * Orders provider instances as the model picker orders their sections: ready ones first, then the
- * most recently used, then by model company, keeping the given order for ties.
+ * Orders provider instances as the model picker orders their sections, which also picks the
+ * provider of a new thread: ready ones first, then by account plan, then the most recently used,
+ * then by model company, keeping the given order for ties.
  *
  * @param providers Provider instances in backend order.
  * @param nowMs Current instant, which decides plan-limit readiness.

@@ -718,6 +718,13 @@ impl CursorProviderDriver {
         }
     }
 
+    /// The account's plan, known only when sessions bill an API key; the CLIs do not name a
+    /// login's plan.
+    pub(super) fn account_plan(&self) -> Option<ProviderAccountPlan> {
+        (self.auth_source() == Some(ProviderAuthSource::ApiKey))
+            .then_some(ProviderAccountPlan::ApiKey)
+    }
+
     /// How a Grok instance authenticates once its configuration is resolved for launch.
     pub fn grok_auth_source(configuration: &ProviderInstanceConfig) -> ProviderAuthSource {
         if grok_api_key_configured(&configuration.environment) {

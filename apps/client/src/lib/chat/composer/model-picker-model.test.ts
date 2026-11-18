@@ -60,6 +60,7 @@ function provider(
       negotiatedProtocolVersion: null,
       accountLabel: null,
       authSource: null,
+      accountPlan: null,
       capabilities: { entries: [] },
       authoritySupport: {
         isolatedConversation: true,

@@ -526,6 +526,11 @@ impl ProviderDriver for CodexProviderDriver {
                         version: parse_user_agent_version(&snapshot.initialize.user_agent),
                         negotiated_protocol_version: Some("2".to_string()),
                         auth_source: None,
+                        account_plan: snapshot
+                            .account
+                            .account
+                            .as_ref()
+                            .and_then(CodexAccount::plan),
                         account_label,
                         capabilities: codex_capabilities(),
                         authority_support: snapshot.authority_support,
@@ -546,6 +551,7 @@ impl ProviderDriver for CodexProviderDriver {
                         version: refusal.as_ref().map(|(_, version)| version.clone()),
                         negotiated_protocol_version: None,
                         auth_source: None,
+                        account_plan: None,
                         account_label: None,
                         capabilities: codex_capabilities(),
                         authority_support: ProviderAuthoritySupport::default(),

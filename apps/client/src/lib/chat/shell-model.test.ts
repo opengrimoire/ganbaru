@@ -66,6 +66,7 @@ function provider(state: ProviderInstanceRead["lastProbe"] extends infer _Probe 
       negotiatedProtocolVersion: "2",
       accountLabel: null,
       authSource: null,
+      accountPlan: null,
       capabilities: { entries: [] },
       authoritySupport: {
         isolatedConversation: true,

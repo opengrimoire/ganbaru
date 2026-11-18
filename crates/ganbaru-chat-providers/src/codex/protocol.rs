@@ -5,7 +5,8 @@ use super::transport::CodexRpcFailure;
 use crate::models::{
     ChatError, ChatResult, InteractionMode, MAX_DEVELOPER_INSTRUCTIONS_BYTES, ModelAvailability,
     ModelChoiceOption, ModelId, ModelOptionDefinition, ModelOptionSelection, ModelOptionValue,
-    ProviderCapability, ProviderModel, SafetyMode, SendTurnRequest, TurnModeSnapshot,
+    ProviderAccountPlan, ProviderCapability, ProviderModel, SafetyMode, SendTurnRequest,
+    TurnModeSnapshot,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -139,9 +140,23 @@ pub struct CodexAccount {
     #[serde(rename = "type")]
     pub account_type: String,
     pub email: Option<String>,
-    // Deserialized to validate the provider's advertised account wire shape.
-    #[allow(dead_code)]
     pub plan_type: Option<String>,
+}
+
+impl CodexAccount {
+    /// The account's plan: an API key account bills per use, and a ChatGPT account names its
+    /// plan, where every named plan but `free` is paid and `unknown` tells nothing.
+    pub fn plan(&self) -> Option<ProviderAccountPlan> {
+        if self.account_type.eq_ignore_ascii_case("apikey") {
+            return Some(ProviderAccountPlan::ApiKey);
+        }
+        match self.plan_type.as_deref().map(str::trim)? {
+            "" => None,
+            plan if plan.eq_ignore_ascii_case("unknown") => None,
+            plan if plan.eq_ignore_ascii_case("free") => Some(ProviderAccountPlan::Free),
+            _ => Some(ProviderAccountPlan::Subscription),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]

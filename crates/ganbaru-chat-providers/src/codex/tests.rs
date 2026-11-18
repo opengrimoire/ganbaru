@@ -946,3 +946,42 @@ fn codex_user_agents_admit_against_the_tested_range() {
         );
     }
 }
+
+#[test]
+fn account_plans_rank_only_a_named_free_plan_as_free() {
+    let plan = |account: Value| {
+        serde_json::from_value::<CodexAccount>(account)
+            .unwrap()
+            .plan()
+    };
+    assert_eq!(
+        plan(json!({ "type": "apiKey" })),
+        Some(ProviderAccountPlan::ApiKey)
+    );
+    assert_eq!(
+        plan(json!({ "type": "chatgpt", "planType": "free" })),
+        Some(ProviderAccountPlan::Free)
+    );
+    for paid in [
+        "plus",
+        "pro",
+        "go",
+        "team",
+        "business",
+        "enterprise",
+        "edu",
+        "a_new_plan",
+    ] {
+        assert_eq!(
+            plan(json!({ "type": "chatgpt", "planType": paid })),
+            Some(ProviderAccountPlan::Subscription),
+            "{paid}"
+        );
+    }
+    assert_eq!(
+        plan(json!({ "type": "chatgpt", "planType": "unknown" })),
+        None
+    );
+    assert_eq!(plan(json!({ "type": "chatgpt", "planType": null })), None);
+    assert_eq!(plan(json!({ "type": "chatgpt" })), None);
+}

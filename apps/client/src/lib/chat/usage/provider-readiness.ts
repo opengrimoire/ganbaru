@@ -1,4 +1,4 @@
-import type { ProviderInstanceRead } from "$lib/chat/contracts";
+import type { ProviderAccountPlan, ProviderInstanceRead } from "$lib/chat/contracts";
 import { composerRateLimitWindows, formatWindowDuration, isProviderAvailable } from "$lib/chat/composer/model";
 
 /** Age after which a limits read names when it was observed, since the provider may have moved on. */
@@ -104,8 +104,24 @@ export function providerReadiness(provider: ProviderInstanceRead, nowMs: number)
 }
 
 /**
- * Orders providers by readiness, then by the most recent use on this device. Returns 0 for
- * equally ready providers with the same use, so callers keep their own fallback order.
+ * Ranks the account plan a provider reported: paid plans and API keys first, then providers
+ * that do not say, then a plan the provider names as free.
+ */
+const ACCOUNT_PLAN_ORDER: Readonly<Record<ProviderAccountPlan | "unknown", number>> = {
+  subscription: 0,
+  api_key: 0,
+  unknown: 1,
+  free: 2,
+};
+
+function accountPlanRank(provider: ProviderInstanceRead): number {
+  return ACCOUNT_PLAN_ORDER[provider.lastProbe?.accountPlan ?? "unknown"];
+}
+
+/**
+ * Orders providers by readiness, then by the account plan, then by the most recent use on this
+ * device. The plan comes before recent use so one trial turn on a free plan does not outrank a
+ * paid one. Returns 0 for equal providers, so callers keep their own fallback order.
  */
 export function compareProviderReadiness(
   left: ProviderInstanceRead,
@@ -113,6 +129,7 @@ export function compareProviderReadiness(
   nowMs: number,
 ): number {
   return READINESS_ORDER[providerReadiness(left, nowMs)] - READINESS_ORDER[providerReadiness(right, nowMs)]
+    || accountPlanRank(left) - accountPlanRank(right)
     || lastUsedMs(right) - lastUsedMs(left);
 }
 

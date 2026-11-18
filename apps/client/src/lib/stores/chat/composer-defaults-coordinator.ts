@@ -42,7 +42,7 @@ export class ChatComposerDefaultsCoordinator {
     const settings = this.options.settings();
     const snapshot = this.options.composer();
     if (!settings || snapshot.loading) return;
-    const defaults = resolveComposerDefaults(settings, snapshot);
+    const defaults = resolveComposerDefaults(settings, snapshot, Date.now());
     if (!defaults) return;
     let changed = false;
     if (snapshot.providerInstanceId !== defaults.providerInstanceId) {

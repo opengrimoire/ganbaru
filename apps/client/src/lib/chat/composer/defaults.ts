@@ -12,6 +12,7 @@ import {
   readComposerModelSelection,
   resolveDefaultProviderModel,
 } from "./model";
+import { providersInPickerOrder } from "./model-picker-model";
 
 export interface ComposerDefaultsInput {
   workingFolderId: string | null;
@@ -28,10 +29,15 @@ export interface ResolvedComposerDefaults {
   interactionMode: InteractionMode;
 }
 
-/** Resolves a complete, valid composer selection from settings and persisted draft state. */
+/**
+ * Resolves a complete, valid composer selection from settings and persisted draft state.
+ *
+ * @param nowMs Current instant, which decides plan-limit readiness when ranking providers.
+ */
 export function resolveComposerDefaults(
   settings: ChatSettingsRead,
   input: ComposerDefaultsInput,
+  nowMs: number,
 ): ResolvedComposerDefaults | null {
   const workingFolderId = input.workingFolderId;
   if (!workingFolderId) return null;
@@ -44,7 +50,7 @@ export function resolveComposerDefaults(
   ] ?? null;
   const resolved = currentProvider
     ? resolveDefaultProviderModel([currentProvider], currentProvider.configuration.instanceId)
-    : resolveDefaultProviderModel(settings.providerInstances, preferredProviderId);
+    : resolveDefaultProviderModel(providersInPickerOrder(settings.providerInstances, nowMs), preferredProviderId);
   if (!resolved) {
     return {
       providerInstanceId: null,

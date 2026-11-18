@@ -27,6 +27,7 @@ function probe(overrides: Partial<ProviderProbeResult> = {}): ProviderProbeResul
     negotiatedProtocolVersion: "stream-json",
     accountLabel: null,
     authSource: null,
+    accountPlan: null,
     capabilities: { entries: [] },
     authoritySupport: {
       isolatedConversation: true,

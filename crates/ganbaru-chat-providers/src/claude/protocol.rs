@@ -139,6 +139,18 @@ pub struct ClaudeAccount {
     pub subscription_type: Option<String>,
 }
 
+impl ClaudeAccount {
+    /// The account's plan from its Claude subscription. An account without one bills through
+    /// the API console or a cloud provider, which the CLI does not name, so it stays unknown.
+    pub fn plan(&self) -> Option<ProviderAccountPlan> {
+        match self.subscription_type.as_deref().map(str::trim)? {
+            "" => None,
+            plan if plan.eq_ignore_ascii_case("free") => Some(ProviderAccountPlan::Free),
+            _ => Some(ProviderAccountPlan::Subscription),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClaudeResumeCursor {
     pub session_uuid: String,

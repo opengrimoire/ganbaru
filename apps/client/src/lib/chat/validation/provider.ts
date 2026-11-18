@@ -6,6 +6,7 @@ import {
   PROVIDER_INSTALL_SHELLS,
   PROVIDER_MATURITIES,
   PROBE_STATES,
+  PROVIDER_ACCOUNT_PLANS,
   PROVIDER_AUTH_SOURCES,
   PROVIDER_VERSION_ADMISSIONS,
   type ModelChoiceOption,
@@ -140,6 +141,9 @@ export function parseProviderProbeResult(value: unknown, label = "provider probe
     accountLabel: readNullable(record.accountLabel, `${label}.accountLabel`, readString),
     authSource: readNullable(record.authSource, `${label}.authSource`, (entry, entryLabel) =>
       readEnum(entry, PROVIDER_AUTH_SOURCES, entryLabel),
+    ),
+    accountPlan: readNullable(record.accountPlan, `${label}.accountPlan`, (entry, entryLabel) =>
+      readEnum(entry, PROVIDER_ACCOUNT_PLANS, entryLabel),
     ),
     capabilities: parseProviderCapabilities(record.capabilities, `${label}.capabilities`),
     authoritySupport: parseProviderAuthoritySupport(

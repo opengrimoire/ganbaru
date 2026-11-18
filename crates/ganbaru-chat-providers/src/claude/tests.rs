@@ -1200,3 +1200,28 @@ fn configured_environment_cannot_name_the_sandbox_variables() {
         assert_eq!(error.code, ChatErrorCode::Validation, "{name}");
     }
 }
+
+#[test]
+fn account_plans_follow_the_claude_subscription() {
+    let plan = |account: Value| {
+        serde_json::from_value::<ClaudeAccount>(account)
+            .unwrap()
+            .plan()
+    };
+    for paid in ["pro", "max", "team", "enterprise"] {
+        assert_eq!(
+            plan(json!({ "subscriptionType": paid })),
+            Some(ProviderAccountPlan::Subscription),
+            "{paid}"
+        );
+    }
+    assert_eq!(
+        plan(json!({ "subscriptionType": "free" })),
+        Some(ProviderAccountPlan::Free)
+    );
+    assert_eq!(
+        plan(json!({ "email": "redacted@example.test", "subscriptionType": null })),
+        None
+    );
+    assert_eq!(plan(json!({})), None);
+}

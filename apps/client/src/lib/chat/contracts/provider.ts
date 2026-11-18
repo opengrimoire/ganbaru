@@ -11,6 +11,7 @@ import type {
   ProviderMaturity,
   ProviderInstanceId,
   ProbeState,
+  ProviderAccountPlan,
   ProviderAuthSource,
   ProviderVersionAdmission,
   UtcTimestamp,
@@ -113,6 +114,8 @@ export interface ProviderProbeResult {
   negotiatedProtocolVersion: string | null;
   accountLabel: string | null;
   authSource: ProviderAuthSource | null;
+  /** The account's plan, or `null` when the provider does not report it. */
+  accountPlan: ProviderAccountPlan | null;
   capabilities: ProviderCapabilities;
   authoritySupport: ProviderAuthoritySupport;
   checkedAt: UtcTimestamp;

@@ -19,7 +19,7 @@ import type {
 } from "$lib/chat/contracts";
 import { parseApprovalSubject, parseSessionPermissionGrant } from "$lib/chat/validation/events";
 import { readArray } from "$lib/utils/readers";
-import { compareCompanyModels, integrationCompany, modelCompany } from "./model-company";
+import { compareCompanyModels, modelCompany } from "./model-company";
 export { clipboardImageFiles } from "$lib/utils/clipboard-images";
 
 export const CHAT_IMAGE_LIMIT = 8;
@@ -60,21 +60,6 @@ export interface DefaultProviderModelSelection {
 /** Reports whether a configured provider can currently accept Chat work. */
 export function isProviderAvailable(provider: ProviderInstanceRead): boolean {
   return provider.configuration.enabled && provider.lastProbe?.state === "healthy";
-}
-
-/** Orders usable providers by Ganbaru's model-company priority, with OpenAI first. */
-export function availableProvidersInDefaultOrder(
-  providers: readonly ProviderInstanceRead[],
-): ProviderInstanceRead[] {
-  return providers
-    .map((provider, index) => ({ provider, index }))
-    .filter(({ provider }) => isProviderAvailable(provider))
-    .sort((left, right) => (
-      integrationCompany(left.provider.configuration.familyId).order
-      - integrationCompany(right.provider.configuration.familyId).order
-      || left.index - right.index
-    ))
-    .map(({ provider }) => provider);
 }
 
 /** Model ids that route to whatever the provider decides instead of naming a model. */
@@ -189,12 +174,17 @@ export function providerHasCatalogModels(provider: ProviderInstanceRead | null):
   return (provider?.modelCatalog?.models.length ?? 0) > 0;
 }
 
-/** Resolves a ready initial provider and model while honoring a healthy folder preference. */
+/**
+ * Resolves a ready initial provider and model while honoring a healthy folder preference.
+ *
+ * @param providers Provider instances in picker order, whose first ready entry is the default.
+ * @param preferredProviderId The folder's preferred provider, used while it is ready.
+ */
 export function resolveDefaultProviderModel(
   providers: readonly ProviderInstanceRead[],
   preferredProviderId: string | null = null,
 ): DefaultProviderModelSelection | null {
-  const available = availableProvidersInDefaultOrder(providers);
+  const available = providers.filter(isProviderAvailable);
   const provider = available.find((entry) => (
     entry.configuration.instanceId === preferredProviderId
   )) ?? available[0];

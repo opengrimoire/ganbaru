@@ -62,6 +62,7 @@ function provider(
       negotiatedProtocolVersion: null,
       accountLabel: null,
       authSource: null,
+      accountPlan: null,
       capabilities: capabilities(),
       authoritySupport: {
         isolatedConversation: true,
@@ -203,7 +204,7 @@ describe("Chat composer model", () => {
     const claude = provider("claude-local", "claude", [model("claude-opus-4-1")]);
     const codex = provider("codex-local", "codex", [model("gpt-5.5-sol"), model("gpt-5.6-sol")]);
 
-    const resolved = resolveDefaultProviderModel([claude, codex]);
+    const resolved = resolveDefaultProviderModel([codex, claude]);
 
     expect(resolved?.provider.configuration.instanceId).toBe("codex-local");
     expect(resolved?.model?.id).toBe("gpt-5.6-sol");

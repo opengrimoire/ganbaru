@@ -665,6 +665,7 @@ describe("Chat provider contracts", () => {
       negotiatedProtocolVersion: "stream-json",
       accountLabel: null,
       authSource: "api_key",
+      accountPlan: "subscription",
       capabilities: { entries: [] },
       authoritySupport: {
         isolatedConversation: true,
@@ -690,6 +691,10 @@ describe("Chat provider contracts", () => {
     expect(parseProviderProbeResult({ ...probe, authSource: null }).authSource).toBeNull();
     expect(() => parseProviderProbeResult({ ...probe, authSource: "browser" }))
       .toThrow("authSource has an unsupported value");
+    expect(parseProviderProbeResult({ ...probe, accountPlan: "free" }).accountPlan).toBe("free");
+    expect(parseProviderProbeResult({ ...probe, accountPlan: null }).accountPlan).toBeNull();
+    expect(() => parseProviderProbeResult({ ...probe, accountPlan: "plus" }))
+      .toThrow("accountPlan has an unsupported value");
     expect(parseProviderProbeResult({ ...probe, agentMinimumVersion: "2.1.325" }).agentMinimumVersion).toBe("2.1.325");
     expect(() => parseProviderProbeResult({ ...probe, agentMinimumVersion: 2 }))
       .toThrow("agentMinimumVersion must be a string");

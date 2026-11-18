@@ -20,6 +20,7 @@ import {
   CHAT_REVIEW_QUEUE_KINDS,
   CHAT_SCHEDULED_MESSAGE_STATES,
   CHAT_AGENT_CONFIGURATION_STATES,
+  CHAT_AGENT_KINDS,
   CHAT_WORK_ASSIGNMENT_STATES,
   CHAT_ACCESS_DOWNGRADE_REASONS,
   CHAT_AGENT_ACCESS_LEVELS,
@@ -159,6 +160,7 @@ export function parseChatAiAgent(value: unknown, label = "Chat AI agent"): ChatA
   return {
     participant: parseChatParticipant(record.participant, `${label}.participant`),
     providerFamilyId: readIdentifier(record.providerFamilyId, `${label}.providerFamilyId`),
+    agentKind: readEnum(record.agentKind, CHAT_AGENT_KINDS, `${label}.agentKind`),
     localProviderInstanceId: readNullable(
       record.localProviderInstanceId,
       `${label}.localProviderInstanceId`,

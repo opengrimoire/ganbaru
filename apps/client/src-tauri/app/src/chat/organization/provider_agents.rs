@@ -1,16 +1,22 @@
 //! The agent of each provider family, and what each family's provider does on this device.
 //!
-//! An agent is a provider: every device that detects a provider family creates its agent under
-//! an id derived from the family, so devices converge on one agent per family. Which provider
-//! installation runs an agent is a device-local choice made here.
+//! Every device that detects a provider family creates its agent, and the built-in agent of each
+//! model line the family offers, under ids derived from the family and line, so devices converge
+//! on the same agents. Which provider installation runs an agent is a device-local choice made
+//! here.
 
+use super::agent_kinds::{family_model_lines, line_display_name};
+use super::common::new_id;
 use super::reads::LocalProviderInstances;
-use super::{now_timestamp, persistence_error};
+use super::workflow::insert_policy_revision;
+use super::{identifier_error, now_timestamp, persistence_error};
 use crate::chat::device_state::read_active_device_scope;
-use ganbaru_chat::conversion::provider_agent_id;
+use ganbaru_chat::conversion::{model_agent_id, provider_agent_id};
+use ganbaru_chat::coordination::contracts::ChatAgentPolicyInput;
 use ganbaru_chat_contracts::models::*;
+use ganbaru_chat_providers::model_recommendation::is_model_line;
 use ganbaru_chat_providers::{ProviderDriverFactory, ProviderDriverRegistry};
-use sqlx::SqlitePool;
+use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::collections::BTreeMap;
 
 /// The provider installation that runs one family's agent on this device.
@@ -157,8 +163,10 @@ pub(crate) async fn ensure_device_provider_agents(
 }
 
 /// Creates the agent of each `(family, display_name)` that the vault lacks, under the id
-/// derived from the family. An existing agent, archived or not, is left as it is, so running it
-/// again changes nothing and two devices that detect one family write the same agent.
+/// derived from the family, and the built-in agent of each model line the family offers, such
+/// as Opus or Sol, under the id derived from the family and line. An existing agent, archived or
+/// not, is left as it is, so running it again changes nothing and two devices that detect one
+/// family write the same agents.
 pub(crate) async fn ensure_provider_agents(
     pool: &SqlitePool,
     families: &[(String, String)],
@@ -167,47 +175,131 @@ pub(crate) async fn ensure_provider_agents(
         return Ok(());
     }
     let now = now_timestamp()?;
+    let invalid_family =
+        |_| ChatError::validation("providerFamilyId", "The provider family is not valid");
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
     for (family, display_name) in families {
-        let agent_id = provider_agent_id(family).map_err(|_| {
-            ChatError::validation("providerFamilyId", "The provider family is not valid")
-        })?;
         let display_name = display_name.trim();
         let display_name = if display_name.is_empty() {
             family.as_str()
         } else {
             display_name
         };
-        sqlx::query(
-            "INSERT INTO chat_participants
-                (id, participant_kind, display_name, created_at, updated_at)
-             VALUES (?, 'ai_agent', ?, ?, ?)
-             ON CONFLICT DO NOTHING",
-        )
-        .bind(&agent_id)
-        .bind(display_name)
-        .bind(now.as_str())
-        .bind(now.as_str())
-        .execute(&mut *transaction)
-        .await
-        .map_err(persistence_error)?;
-        sqlx::query(
-            "INSERT INTO chat_agents (participant_id, provider_family_id, created_at, updated_at)
-             SELECT ?1, ?2, ?3, ?3
-             WHERE EXISTS (
-                 SELECT 1 FROM chat_participants
-                 WHERE id = ?1 AND participant_kind = 'ai_agent'
-             )
-             ON CONFLICT DO NOTHING",
-        )
-        .bind(&agent_id)
-        .bind(family)
-        .bind(now.as_str())
-        .execute(&mut *transaction)
-        .await
-        .map_err(persistence_error)?;
+        let agent_id = provider_agent_id(family).map_err(invalid_family)?;
+        insert_agent(&mut transaction, &agent_id, family, display_name, &now).await?;
+        for line in family_model_lines(family) {
+            let agent_id = model_agent_id(family, line).map_err(invalid_family)?;
+            let display_name = line_display_name(line);
+            insert_agent(&mut transaction, &agent_id, family, &display_name, &now).await?;
+        }
     }
     transaction.commit().await.map_err(persistence_error)
+}
+
+/// The longest name, in characters, a person can give an agent.
+const MAX_AGENT_NAME_CHARACTERS: usize = 32;
+
+/// The name a person gave a new agent, trimmed, or a validation error when it is empty, too long,
+/// or holds characters that would break an `@` mention: whitespace, `@`, or control characters.
+pub(super) fn validate_agent_name(display_name: &str) -> ChatResult<&str> {
+    let name = display_name.trim();
+    let invalid = |message: &str| ChatError::validation("displayName", message);
+    if name.is_empty() {
+        return Err(invalid("Name the agent"));
+    }
+    if name.chars().count() > MAX_AGENT_NAME_CHARACTERS {
+        return Err(invalid("The agent name is too long"));
+    }
+    if name
+        .chars()
+        .any(|character| character.is_whitespace() || character.is_control() || character == '@')
+    {
+        return Err(invalid("The agent name cannot hold spaces or @"));
+    }
+    Ok(name)
+}
+
+/// Creates an agent of `family` named `display_name` that runs `policy`, under a random id, and
+/// returns its id. The name must differ, ignoring case, from every agent's name, archived ones
+/// included, and from every built-in model line, so each `@` mention names one agent.
+pub(super) async fn create_custom_agent(
+    pool: &SqlitePool,
+    family: &ProviderFamilyId,
+    display_name: &str,
+    policy: &ChatAgentPolicyInput,
+) -> ChatResult<ChatParticipantId> {
+    let name = validate_agent_name(display_name)?;
+    if is_model_line(name) {
+        return Err(name_taken());
+    }
+    let now = now_timestamp()?;
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    let taken: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM chat_participants
+         WHERE participant_kind = 'ai_agent' AND lower(display_name) = lower(?)",
+    )
+    .bind(name)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(persistence_error)?;
+    if taken.is_some() {
+        return Err(name_taken());
+    }
+    let agent_id = ChatParticipantId::new(new_id("agent")?).map_err(identifier_error)?;
+    insert_agent(
+        &mut transaction,
+        agent_id.as_str(),
+        family.as_str(),
+        name,
+        &now,
+    )
+    .await?;
+    insert_policy_revision(&mut transaction, &agent_id, policy, &now).await?;
+    transaction.commit().await.map_err(persistence_error)?;
+    Ok(agent_id)
+}
+
+fn name_taken() -> ChatError {
+    ChatError::validation("displayName", "Another agent already has this name")
+}
+
+/// Inserts the agent `agent_id` of `family` named `display_name` unless the vault has it.
+pub(super) async fn insert_agent(
+    transaction: &mut Transaction<'_, Sqlite>,
+    agent_id: &str,
+    family: &str,
+    display_name: &str,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    sqlx::query(
+        "INSERT INTO chat_participants
+            (id, participant_kind, display_name, created_at, updated_at)
+         VALUES (?, 'ai_agent', ?, ?, ?)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(agent_id)
+    .bind(display_name)
+    .bind(now.as_str())
+    .bind(now.as_str())
+    .execute(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    sqlx::query(
+        "INSERT INTO chat_agents (participant_id, provider_family_id, created_at, updated_at)
+         SELECT ?1, ?2, ?3, ?3
+         WHERE EXISTS (
+             SELECT 1 FROM chat_participants
+             WHERE id = ?1 AND participant_kind = 'ai_agent'
+         )
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(agent_id)
+    .bind(family)
+    .bind(now.as_str())
+    .execute(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -288,6 +380,59 @@ mod tests {
         assert_eq!(providers.local_instances().len(), 2);
     }
 
+    fn policy(model: &str) -> ChatAgentPolicyInput {
+        ChatAgentPolicyInput {
+            provider_managed_model: false,
+            model_id: Some(ModelId::new(model).unwrap()),
+            model_options: Vec::new(),
+            provider_options: VersionedJson {
+                schema_version: 1,
+                value: serde_json::json!({}),
+            },
+            interaction_mode: InteractionMode::Build,
+        }
+    }
+
+    #[test]
+    fn a_named_agent_keeps_its_model_and_a_name_no_other_agent_or_line_holds() {
+        tauri::async_runtime::block_on(async {
+            let pool = super::super::tests::migrated_pool().await;
+            ensure_provider_agents(&pool, &[("claude".to_string(), "Anthropic".to_string())])
+                .await
+                .unwrap();
+            let claude = ProviderFamilyId::new("claude").unwrap();
+
+            let reviewer = create_custom_agent(&pool, &claude, " Reviewer ", &policy("sonnet"))
+                .await
+                .unwrap();
+            let read =
+                super::super::reads::read_agent(&pool, &reviewer, &LocalProviderInstances::new())
+                    .await
+                    .unwrap();
+            assert_eq!(read.participant.display_name, "Reviewer");
+            assert_eq!(read.agent_kind, ChatAgentKind::Custom);
+            assert_eq!(
+                read.latest_policy.and_then(|policy| policy.model_id),
+                Some(ModelId::new("sonnet").unwrap())
+            );
+
+            for taken in [
+                "reviewer",
+                "ANTHROPIC",
+                "Opus",
+                "sol",
+                "two words",
+                "@me",
+                "",
+            ] {
+                let error = create_custom_agent(&pool, &claude, taken, &policy("sonnet"))
+                    .await
+                    .unwrap_err();
+                assert_eq!(error.code, ChatErrorCode::Validation, "{taken}");
+            }
+        });
+    }
+
     #[test]
     fn ensuring_a_family_again_converges_on_one_agent_with_its_derived_id() {
         tauri::async_runtime::block_on(async {
@@ -302,7 +447,7 @@ mod tests {
                 .unwrap();
             ensure_provider_agents(&pool, &family("  ")).await.unwrap();
 
-            let agents: Vec<(String, String)> = sqlx::query_as(
+            let mut agents: Vec<(String, String)> = sqlx::query_as(
                 "SELECT agent.participant_id, participant.display_name
                  FROM chat_agents agent
                  JOIN chat_participants participant ON participant.id = agent.participant_id
@@ -311,10 +456,18 @@ mod tests {
             .fetch_all(&pool)
             .await
             .unwrap();
-            assert_eq!(
-                agents,
-                vec![(provider_agent_id("codex").unwrap(), "Codex".to_string())]
-            );
+            agents.sort();
+            let mut expected = vec![(provider_agent_id("codex").unwrap(), "Codex".to_string())];
+            for (line, name) in [
+                ("astra", "Astra"),
+                ("sol", "Sol"),
+                ("terra", "Terra"),
+                ("luna", "Luna"),
+            ] {
+                expected.push((model_agent_id("codex", line).unwrap(), name.to_string()));
+            }
+            expected.sort();
+            assert_eq!(agents, expected);
         });
     }
 }

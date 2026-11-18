@@ -44,6 +44,7 @@ const agentParticipant: ChatParticipantRead = {
 const agent: ChatAiAgentRead = {
   participant: agentParticipant,
   providerFamilyId: "codex",
+  agentKind: "provider",
   localProviderInstanceId: "codex-local",
   configurationState: "healthy",
   latestPolicy: {

@@ -16,6 +16,19 @@ pub enum ChatParticipantKind {
     Human,
 }
 
+/// What an AI agent stands for, read from how its id was made.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatAgentKind {
+    /// The agent of a whole provider family, which runs its default model.
+    Provider,
+    /// A built-in agent of one model line, such as Opus or Sol, which runs the line's newest
+    /// model.
+    Model,
+    /// An agent a person named, with its own model and effort.
+    Custom,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChatAgentConfigurationState {
@@ -1032,6 +1045,7 @@ pub struct ChatAgentPolicyRead {
 pub struct ChatAiAgentRead {
     pub participant: ChatParticipantRead,
     pub provider_family_id: ProviderFamilyId,
+    pub agent_kind: ChatAgentKind,
     /// The configured provider instance of the family on the reading device, absent when the
     /// provider is not installed here.
     pub local_provider_instance_id: Option<ProviderInstanceId>,

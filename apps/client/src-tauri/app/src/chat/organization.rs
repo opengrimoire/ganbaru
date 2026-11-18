@@ -28,6 +28,7 @@ const MAX_SEARCH_RESULTS: u32 = 100;
 
 #[cfg(desktop)]
 pub mod access;
+mod agent_kinds;
 mod agent_lifecycle;
 #[cfg(desktop)]
 mod assignments;
@@ -190,6 +191,35 @@ pub async fn chat_set_agent_policy(
     let pool = chat_pool(app, db_url).await?;
     set_agent_policy(&pool, &request).await?;
     read_agent(&pool, &request.agent_id, &local_instances).await
+}
+
+/// Creates an agent a person names, with its own model and effort, on a provider family this
+/// device runs.
+#[tauri::command]
+#[cfg(desktop)]
+pub async fn chat_create_agent(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: CreateChatAgentCommand,
+) -> ChatResult<ChatAiAgentRead> {
+    validate_policy(&request.policy)?;
+    let providers = provider_agents::read_device_providers(&app);
+    if providers.get(request.provider_family_id.as_str()).is_none() {
+        return Err(ChatError::validation(
+            "providerFamilyId",
+            "This provider is not set up on this device",
+        ));
+    }
+    let local_instances = providers.local_instances();
+    let pool = chat_pool(app, db_url).await?;
+    let agent_id = provider_agents::create_custom_agent(
+        &pool,
+        &request.provider_family_id,
+        &request.display_name,
+        &request.policy,
+    )
+    .await?;
+    read_agent(&pool, &agent_id, &local_instances).await
 }
 
 /// Stores the policy of `request` as the newest revision of a non-archived agent.

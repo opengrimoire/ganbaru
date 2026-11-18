@@ -42,6 +42,15 @@ pub struct SetChatAgentPolicyCommand {
     pub policy: ChatAgentPolicyInput,
 }
 
+/// Creates an agent a person names, which runs its own model and effort on a provider family.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateChatAgentCommand {
+    pub display_name: String,
+    pub provider_family_id: ProviderFamilyId,
+    pub policy: ChatAgentPolicyInput,
+}
+
 /// Saves the app scope of agent settings.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

@@ -86,6 +86,7 @@ describe("ChatParticipantAvatar", () => {
     chat.agents = [{
       participant: agentParticipant,
       providerFamilyId: "codex",
+      agentKind: "provider",
       localProviderInstanceId: "codex-local",
       configurationState: "healthy",
       latestPolicy: {
@@ -120,6 +121,7 @@ describe("ChatParticipantAvatar", () => {
     const archivedAgent = {
       participant: { ...agentParticipant, archivedAt: "2026-08-14T12:00:00.000Z" },
       providerFamilyId: "codex",
+      agentKind: "provider",
       localProviderInstanceId: "codex-local",
       configurationState: "healthy",
       latestPolicy: {

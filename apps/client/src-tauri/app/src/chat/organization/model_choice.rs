@@ -87,7 +87,9 @@ pub(super) struct FrozenWorkSettings {
 /// continues `previous_assignment_id` keeps its predecessor's model and instructions unless the
 /// trigger names a model with `/model`. Otherwise the model is the one `/model` names, else the
 /// channel's override for the agent, else the agent's default model, else the provider default,
-/// and the instructions are the vault, project, and channel instructions joined.
+/// and the instructions are the vault, project, and channel instructions joined. A built-in model
+/// line agent always freezes its line, such as `opus`, unless `/model` names another model, and
+/// dispatch runs the line's newest model.
 ///
 /// The model a command names is frozen as named, since the device that creates work may not
 /// know the executing device's models; dispatch falls back to the provider default when the
@@ -118,14 +120,24 @@ pub(super) async fn resolve_frozen_work_settings(
             instructions,
         });
     }
-    let model_selection = match requested {
-        Some(requested) => requested,
-        None => match read_channel_model_override(connection, conversation_id, agent_id).await? {
-            Some(selection) => selection,
-            None => read_agent_default_model(connection, agent_id)
-                .await?
-                .unwrap_or_else(ChatModelSelection::provider_default),
+    let line = read_model_agent_line(connection, agent_id).await?;
+    let model_selection = match (requested, line) {
+        (Some(requested), _) => requested,
+        (None, Some(line)) => ChatModelSelection {
+            provider_managed_model: false,
+            model_id: Some(ModelId::new(line).map_err(|_| {
+                ChatError::validation("modelId", "The model line is not a valid model id")
+            })?),
+            model_options: Vec::new(),
         },
+        (None, None) => {
+            match read_channel_model_override(connection, conversation_id, agent_id).await? {
+                Some(selection) => selection,
+                None => read_agent_default_model(connection, agent_id)
+                    .await?
+                    .unwrap_or_else(ChatModelSelection::provider_default),
+            }
+        }
     };
     Ok(FrozenWorkSettings {
         model_selection,
@@ -145,6 +157,20 @@ async fn read_assignment_settings(
     .fetch_optional(&mut *connection)
     .await
     .map_err(persistence_error)
+}
+
+/// The model line `agent_id` runs when it is a built-in model line agent, such as `opus`.
+async fn read_model_agent_line(
+    connection: &mut SqliteConnection,
+    agent_id: &str,
+) -> ChatResult<Option<&'static str>> {
+    let family: Option<String> =
+        sqlx::query_scalar("SELECT provider_family_id FROM chat_agents WHERE participant_id = ?")
+            .bind(agent_id)
+            .fetch_optional(&mut *connection)
+            .await
+            .map_err(persistence_error)?;
+    Ok(family.and_then(|family| super::agent_kinds::model_agent_line(&family, agent_id)))
 }
 
 /// The default model of `agent_id`, set in Settings > Agents, if it has one.
@@ -170,6 +196,34 @@ async fn read_agent_default_model(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(desktop)]
+    #[test]
+    fn only_a_built_in_model_line_agent_runs_a_line() {
+        use ganbaru_chat::conversion::{model_agent_id, provider_agent_id};
+        tauri::async_runtime::block_on(async {
+            let pool = super::super::tests::migrated_pool().await;
+            super::super::provider_agents::ensure_provider_agents(
+                &pool,
+                &[("codex".to_string(), "OpenAI".to_string())],
+            )
+            .await
+            .unwrap();
+            let mut connection = pool.acquire().await.unwrap();
+            let sol = model_agent_id("codex", "sol").unwrap();
+            assert_eq!(
+                read_model_agent_line(&mut connection, &sol).await.unwrap(),
+                Some("sol")
+            );
+            let provider = provider_agent_id("codex").unwrap();
+            assert_eq!(
+                read_model_agent_line(&mut connection, &provider)
+                    .await
+                    .unwrap(),
+                None
+            );
+        });
+    }
 
     #[test]
     fn a_model_command_names_the_word_after_it() {

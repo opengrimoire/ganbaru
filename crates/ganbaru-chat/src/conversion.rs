@@ -16,6 +16,8 @@ pub const MEMBERSHIP_KEY_PREFIX: &str = "conversation-membership";
 pub const CHANNEL_MEMBERSHIP_KEY_PREFIX: &str = "ai-channel-membership";
 /// Prefix of the participant id of the agent of one provider family, over the family id.
 pub const PROVIDER_AGENT_KEY_PREFIX: &str = "agent-provider";
+/// Prefix of the participant id of a built-in model line agent, over the family id and line.
+pub const MODEL_AGENT_KEY_PREFIX: &str = "agent-model";
 /// Prefix of conversation read cursor keys, over the conversation and participant.
 pub const CONVERSATION_CURSOR_KEY_PREFIX: &str = "conversation-read-cursor";
 /// Prefix of reply thread read cursor keys, over the reply thread and participant.
@@ -41,6 +43,12 @@ pub fn channel_membership_key(conversation_id: &str, agent_id: &str) -> Result<S
 /// derives alike so the agents of one family converge.
 pub fn provider_agent_id(family_id: &str) -> Result<String, String> {
     key(PROVIDER_AGENT_KEY_PREFIX, &[family_id])
+}
+
+/// The participant id of the built-in agent of the model `line`, such as `opus`, of the provider
+/// family `family_id`, which every device derives alike so the agents of one line converge.
+pub fn model_agent_id(family_id: &str, line: &str) -> Result<String, String> {
+    key(MODEL_AGENT_KEY_PREFIX, &[family_id, line])
 }
 
 /// The `sync_key` of a participant's conversation read cursor.

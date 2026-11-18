@@ -38,6 +38,10 @@ export type ChatParticipantKind = (typeof CHAT_PARTICIPANT_KINDS)[number];
 export const CHAT_FOLLOWUP_ROUTINGS = ["steer", "queue"] as const;
 export type ChatFollowupRouting = (typeof CHAT_FOLLOWUP_ROUTINGS)[number];
 
+/** What an agent stands for: a provider family, a built-in model line such as Opus, or a named agent. */
+export const CHAT_AGENT_KINDS = ["provider", "model", "custom"] as const;
+export type ChatAgentKind = (typeof CHAT_AGENT_KINDS)[number];
+
 export const CHAT_AGENT_CONFIGURATION_STATES = [
   "healthy",
   "needs_setup",
@@ -536,10 +540,11 @@ export interface ChatAgentPolicyRead {
   createdAt: UtcTimestamp;
 }
 
-/** One agent per provider family, named by the provider. */
+/** An agent of a provider family: the family's own, a built-in model line, or one a person named. */
 export interface ChatAiAgentRead {
   participant: ChatParticipantRead;
   providerFamilyId: ProviderFamilyId;
+  agentKind: ChatAgentKind;
   /** This device's provider installation for the agent, null when it has none. */
   localProviderInstanceId: ProviderInstanceId | null;
   configurationState: ChatAgentConfigurationState;

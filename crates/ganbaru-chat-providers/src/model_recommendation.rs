@@ -73,6 +73,69 @@ pub fn recommended_model_id(native: NativeCompany, models: &[ProviderModel]) -> 
         .map(|(_, model)| model.id.clone())
 }
 
+/// The model lines a provider that natively runs `native` models offers as built-in agents, in
+/// order of strength: Fable, Opus, Sonnet, and Haiku for Anthropic, and Astra, Sol, Terra, and
+/// Luna for OpenAI. Other providers offer none, since their catalogs name no lines of their own.
+pub fn model_lines(native: NativeCompany) -> &'static [&'static str] {
+    match native {
+        NativeCompany::Anthropic => &["fable", "opus", "sonnet", "haiku"],
+        NativeCompany::OpenAi => &["astra", "sol", "terra", "luna"],
+        NativeCompany::Xai | NativeCompany::None => &[],
+    }
+}
+
+/// The company the provider family `family_id` runs natively.
+pub fn family_native_company(family_id: &str) -> NativeCompany {
+    match family_id {
+        "claude" => NativeCompany::Anthropic,
+        "codex" => NativeCompany::OpenAi,
+        "grok" => NativeCompany::Xai,
+        _ => NativeCompany::None,
+    }
+}
+
+/// Whether `model_id` names a model line, such as `opus` or `sol`, instead of one model.
+pub fn is_model_line(model_id: &str) -> bool {
+    let model_id = model_id.to_ascii_lowercase();
+    ANTHROPIC_TIERS.contains(&model_id.as_str()) || OPENAI_TIERS.contains(&model_id.as_str())
+}
+
+/// The id of the newest model of `line`, such as `gpt-5.6-sol` for `sol`, or `None` when
+/// `models` offers nothing selectable of that line. Plain variants win over fast, low-effort, or
+/// maximum-effort ones, as in [`recommended_model_id`].
+pub fn newest_model_of_line(line: &str, models: &[ProviderModel]) -> Option<ModelId> {
+    let line = line.to_ascii_lowercase();
+    let of_line: Vec<&ProviderModel> = models
+        .iter()
+        .filter(|model| {
+            matches!(
+                model.availability,
+                ModelAvailability::Available
+                    | ModelAvailability::Stale
+                    | ModelAvailability::Unknown
+            ) && words(model).contains(&line)
+        })
+        .collect();
+    let built_in = of_line.iter().any(|model| !model.custom);
+    of_line
+        .into_iter()
+        .filter(|model| !built_in || !model.custom)
+        .enumerate()
+        .min_by_key(|(index, model)| {
+            let words = words(model);
+            (
+                Reverse(version(model)),
+                words
+                    .iter()
+                    .filter(|word| VARIANT_WORDS.contains(&word.as_str()))
+                    .count(),
+                words.iter().filter(|word| !is_identity_word(word)).count(),
+                *index,
+            )
+        })
+        .map(|(_, model)| model.id.clone())
+}
+
 type Rank = (usize, usize, Reverse<Vec<u64>>, usize, usize, usize);
 
 fn rank(native: NativeCompany, model: &ProviderModel, index: usize) -> Rank {
@@ -233,6 +296,22 @@ mod tests {
             recommended(NativeCompany::Anthropic, &models).as_deref(),
             Some("opus")
         );
+    }
+
+    #[test]
+    fn a_line_resolves_to_its_newest_plain_model() {
+        let models = [
+            model("gpt-5.5-sol", "GPT-5.5-Sol"),
+            model("gpt-5.6-sol-fast", "GPT-5.6-Sol-Fast"),
+            model("gpt-5.6-sol", "GPT-5.6-Sol"),
+            model("gpt-5.6-astra", "GPT-5.6-Astra"),
+        ];
+        let newest =
+            |line: &str| newest_model_of_line(line, &models).map(|id| id.as_str().to_string());
+        assert_eq!(newest("sol").as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(newest("Astra").as_deref(), Some("gpt-5.6-astra"));
+        assert_eq!(newest("luna"), None);
+        assert!(is_model_line("Opus") && is_model_line("sol") && !is_model_line("gpt-5.6-sol"));
     }
 
     #[test]

@@ -20,6 +20,7 @@ use ganbaru_chat::coordination::access::{access_ceiling, effective_access_level_
 use ganbaru_chat::coordination::reports::{AnsweredQuestion, read_answered_question};
 use ganbaru_chat::coordination::revocation::PARENT_AUTHORITY_REVOKED_REASON;
 use ganbaru_chat_contracts::models::*;
+use ganbaru_chat_providers::model_recommendation::newest_model_of_line;
 use sqlx::{Row, SqlitePool};
 
 /// Claims and runs the queued dispatch job of `assignment_id`. A dispatch that settled the
@@ -1484,8 +1485,10 @@ struct DispatchModel {
 }
 
 /// Chooses the model a dispatch runs from the `frozen` selection of its assignment and the
-/// `catalog` this device last discovered for the provider. A selection without a model, or with a
-/// model the catalog does not offer, runs the catalog's recommended model under its name; without
+/// `catalog` this device last discovered for the provider. A model line the catalog does not
+/// offer by that id, such as `sol`, runs the line's newest model. A selection without a model,
+/// or with a model the catalog does not offer, runs the catalog's recommended model under its
+/// name; without
 /// a catalog the named model runs as frozen, since the provider is the only authority on what it
 /// offers.
 fn dispatch_model(
@@ -1506,7 +1509,19 @@ fn dispatch_model(
             selection: frozen.clone(),
             label: Some(model.display_name.clone()),
         },
-        None => recommended_model(Vec::new(), Some(catalog)),
+        None => match newest_model_of_line(model_id.as_str(), &catalog.models)
+            .and_then(|id| catalog.models.iter().find(|model| model.id == id))
+        {
+            Some(model) => DispatchModel {
+                selection: ChatModelSelection {
+                    provider_managed_model: false,
+                    model_id: Some(model.id.clone()),
+                    model_options: frozen.model_options.clone(),
+                },
+                label: Some(model.display_name.clone()),
+            },
+            None => recommended_model(Vec::new(), Some(catalog)),
+        },
     }
 }
 
@@ -1668,6 +1683,34 @@ mod tests {
             expected
         );
         assert_eq!(dispatch_model(&named("gpt-9"), Some(&catalog)), expected);
+    }
+
+    #[test]
+    fn a_model_line_runs_its_newest_model_with_the_frozen_options() {
+        use ganbaru_chat_contracts::models::{ModelOptionSelection, ModelOptionValue};
+        let catalog = catalog(&[
+            ("gpt-5.5-sol", "GPT-5.5-Sol"),
+            ("gpt-5.6-sol", "GPT-5.6-Sol"),
+            ("gpt-5.6-astra", "GPT-5.6-Astra"),
+        ]);
+        let effort = vec![ModelOptionSelection {
+            key: "reasoningEffort".to_string(),
+            value: ModelOptionValue::Choice("high".to_string()),
+        }];
+        let frozen = ChatModelSelection {
+            model_options: effort.clone(),
+            ..named("sol")
+        };
+        assert_eq!(
+            dispatch_model(&frozen, Some(&catalog)),
+            DispatchModel {
+                selection: ChatModelSelection {
+                    model_options: effort,
+                    ..named("gpt-5.6-sol")
+                },
+                label: Some("GPT-5.6-Sol".to_string()),
+            }
+        );
     }
 
     /// Which earlier run a later assignment of the fixture's reply thread could continue.

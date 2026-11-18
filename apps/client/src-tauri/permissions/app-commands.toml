@@ -67,6 +67,7 @@ commands.allow = [
   "chat_configure_bitbucket_credential",
   "chat_confirm_provider_runtime",
   "chat_conflicts",
+  "chat_create_agent",
   "chat_create_channel",
   "chat_create_channel_note",
   "chat_create_hosted_change_request",

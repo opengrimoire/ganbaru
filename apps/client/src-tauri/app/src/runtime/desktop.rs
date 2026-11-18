@@ -406,6 +406,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::organization::chat_list_agents,
             chat::organization::chat_read_agent,
             chat::usage_summaries::chat_read_agent_usage,
+            chat::organization::chat_create_agent,
             chat::organization::chat_set_agent_policy,
             chat::organization::chat_archive_agent,
             chat::organization::access::chat_read_app_agent_settings,

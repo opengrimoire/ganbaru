@@ -166,7 +166,9 @@ pub(super) async fn read_agent(
     )
     .map_err(identifier_error)?;
     let local_provider_instance_id = local_instances.get(provider_family_id.as_str()).cloned();
+    let agent_kind = super::agent_kinds::agent_kind(provider_family_id.as_str(), agent_id.as_str());
     Ok(ChatAiAgentRead {
+        agent_kind,
         participant: read_participant(pool, agent_id).await?,
         configuration_state: if local_provider_instance_id.is_some() {
             ChatAgentConfigurationState::Healthy

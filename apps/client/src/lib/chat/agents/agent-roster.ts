@@ -8,7 +8,8 @@ import type {
   ProviderModel,
 } from "$lib/chat/contracts";
 import { modelOptionRole } from "$lib/chat/composer/model";
-import { familyModelLines } from "./agent-names";
+import { compareCompanyModels, modelCompany } from "$lib/chat/composer/model-company";
+import { familyModelLines, newestModelOfLine } from "./agent-names";
 
 /** The fields of an agent the roster reads. */
 export type RosterAgent = Pick<ChatAiAgentRead, "agentKind" | "providerFamilyId" | "participant"> & {
@@ -67,6 +68,57 @@ export function listedCatalogModels<Model extends Pick<ProviderModel, "id">>(
 ): Model[] {
   const lines = familyModelLines(familyId);
   return models.filter((model) => !lines.includes(model.id.toLowerCase()));
+}
+
+/**
+ * Orders the catalog `models` of `familyId` as Settings > Agents lists them: by company, then by the company's model
+ * hierarchy, newest version first, then by display name.
+ *
+ * @param compareNames Orders display names the hierarchy leaves tied, in the reader's locale.
+ */
+export function sortCatalogModels<Model extends ProviderModel>(
+  familyId: ProviderFamilyId,
+  models: readonly Model[],
+  compareNames: (left: string, right: string) => number,
+): Model[] {
+  return [...models].sort((left, right) => {
+    const leftCompany = modelCompany(familyId, left);
+    const rightCompany = modelCompany(familyId, right);
+    return leftCompany.order - rightCompany.order
+      || (leftCompany.id === rightCompany.id ? compareCompanyModels(leftCompany.id, left, right) : 0)
+      || compareNames(left.displayName, right.displayName);
+  });
+}
+
+/** A model a custom agent can run, as the Custom agent dialog offers it. */
+export interface CustomAgentModelChoice {
+  /** The model id the agent stores: a model line, such as `opus`, or a catalog model id. */
+  modelId: ModelId;
+  /** The model line the choice follows, or `null` for one fixed catalog model. */
+  line: string | null;
+  /** The catalog model the choice runs now, whose options the dialog offers. */
+  model: ProviderModel;
+}
+
+/**
+ * The models a custom agent of `familyId` can run, in Settings > Agents order: each model line the catalog offers a
+ * model of, strongest first, which always runs the line's newest model, then every listed catalog model.
+ *
+ * @param models The provider's catalog models that are still offered.
+ * @param compareNames Orders display names the model hierarchy leaves tied, in the reader's locale.
+ */
+export function customAgentModelChoices(
+  familyId: ProviderFamilyId,
+  models: readonly ProviderModel[],
+  compareNames: (left: string, right: string) => number,
+): CustomAgentModelChoice[] {
+  const lineChoices = familyModelLines(familyId).flatMap((line) => {
+    const model = newestModelOfLine(familyId, line, models);
+    return model ? [{ modelId: line, line, model }] : [];
+  });
+  const catalogChoices = sortCatalogModels(familyId, listedCatalogModels(familyId, models), compareNames)
+    .map((model) => ({ modelId: model.id, line: null, model }));
+  return [...lineChoices, ...catalogChoices];
 }
 
 /**

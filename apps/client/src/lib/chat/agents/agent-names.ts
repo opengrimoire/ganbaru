@@ -81,3 +81,8 @@ export function agentModelLine(agent: Pick<ChatAiAgentRead, "agentKind" | "provi
   const line = agent.participant.displayName.trim().toLowerCase();
   return familyModelLines(agent.providerFamilyId).includes(line) ? line : null;
 }
+
+/** The name of the model line `line`, such as `Opus` for `opus`, as its built-in agent shows it. */
+export function lineDisplayName(line: string): string {
+  return line.charAt(0).toUpperCase() + line.slice(1);
+}

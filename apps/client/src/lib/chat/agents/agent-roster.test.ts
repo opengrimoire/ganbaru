@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { ChatAgentKind, ModelOptionDefinition } from "$lib/chat/contracts";
-import { familyAgentRoster, listedCatalogModels, selectedEffortLabel } from "./agent-roster";
+import type { ChatAgentKind, ModelOptionDefinition, ProviderModel } from "$lib/chat/contracts";
+import { customAgentModelChoices, familyAgentRoster, listedCatalogModels, selectedEffortLabel } from "./agent-roster";
+
+function model(id: string, displayName: string): ProviderModel {
+  return { id, displayName, description: null, contextLimit: null, availability: "available", capabilities: [], options: [] };
+}
 
 function agent(displayName: string, agentKind: ChatAgentKind, modelId: string | null = null, providerFamilyId = "claude") {
   return {
@@ -54,6 +58,31 @@ describe("listedCatalogModels", () => {
     const models = [{ id: "opus" }, { id: "Sonnet" }, { id: "claude-opus-5-5" }, { id: "sol" }];
     expect(listedCatalogModels("claude", models).map((model) => model.id)).toEqual(["claude-opus-5-5", "sol"]);
     expect(listedCatalogModels("cursor", models)).toEqual(models);
+  });
+});
+
+describe("customAgentModelChoices", () => {
+  it("offers each offered line by its newest model first, strongest line first, then the catalog newest first", () => {
+    const choices = customAgentModelChoices("claude", [
+      model("claude-sonnet-5-5", "Sonnet 5.5"),
+      model("opus", "Opus"),
+      model("claude-opus-5-0", "Opus 5"),
+      model("claude-opus-5-5", "Opus 5.5"),
+    ], compare);
+
+    expect(choices.map((choice) => [choice.modelId, choice.line, choice.model.id])).toEqual([
+      ["opus", "opus", "claude-opus-5-5"],
+      ["sonnet", "sonnet", "claude-sonnet-5-5"],
+      ["claude-opus-5-5", null, "claude-opus-5-5"],
+      ["claude-opus-5-0", null, "claude-opus-5-0"],
+      ["claude-sonnet-5-5", null, "claude-sonnet-5-5"],
+    ]);
+  });
+
+  it("offers a gated line such as Mythos only when the catalog has a model of it", () => {
+    const lines = (models: ProviderModel[]) => customAgentModelChoices("claude", models, compare).flatMap((choice) => (choice.line ? [choice.line] : []));
+    expect(lines([model("claude-opus-5-5", "Opus 5.5")])).toEqual(["opus"]);
+    expect(lines([model("claude-opus-5-5", "Opus 5.5"), model("claude-mythos-1", "Mythos 1")])).toEqual(["mythos", "opus"]);
   });
 });
 

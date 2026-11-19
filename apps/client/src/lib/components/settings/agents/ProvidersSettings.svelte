@@ -10,7 +10,7 @@
   import Trash2 from "@lucide/svelte/icons/trash";
   import * as chatApi from "$lib/api/chat";
   import { newestModelOfLine } from "$lib/chat/agents/agent-names";
-  import { familyAgentRoster, listedCatalogModels } from "$lib/chat/agents/agent-roster";
+  import { familyAgentRoster, listedCatalogModels, sortCatalogModels } from "$lib/chat/agents/agent-roster";
   import type {
     ChatAiAgentRead,
     ProviderFamilyMetadataRead,
@@ -22,11 +22,7 @@
   import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { providerFamilyDisplayName } from "$lib/chat/provider-setup";
   import { providerVersionNotice, type ProviderVersionNotice } from "$lib/chat/provider-version";
-  import {
-    compareCompanyModels,
-    formatModelDisplayName,
-    modelCompany,
-  } from "$lib/chat/composer/model-company";
+  import { formatModelDisplayName, modelCompany } from "$lib/chat/composer/model-company";
   import { familiesInPickerOrder, providersInPickerOrder } from "$lib/chat/composer/model-picker-model";
   import ChatModelAvatar from "$lib/components/chat/identity/ChatModelAvatar.svelte";
   import CustomAgentDialog from "./CustomAgentDialog.svelte";
@@ -98,17 +94,11 @@
     const query = search.trim().toLocaleLowerCase(localization.locale);
     const collator = new Intl.Collator(localization.locale);
     const familyId = selectedProvider?.configuration.familyId ?? "";
-    return listedCatalogModels(familyId, selectedProvider?.modelCatalog?.models ?? [])
+    const listed = listedCatalogModels(familyId, selectedProvider?.modelCatalog?.models ?? [])
       .filter((model) => !query
         || formatModelDisplayName(model.displayName).toLocaleLowerCase(localization.locale).includes(query)
-        || model.id.toLocaleLowerCase(localization.locale).includes(query))
-      .sort((left, right) => {
-        const leftCompany = modelCompany(familyId, left);
-        const rightCompany = modelCompany(familyId, right);
-        return leftCompany.order - rightCompany.order
-          || (leftCompany.id === rightCompany.id ? compareCompanyModels(leftCompany.id, left, right) : 0)
-          || collator.compare(left.displayName, right.displayName);
-      });
+        || model.id.toLocaleLowerCase(localization.locale).includes(query));
+    return sortCatalogModels(familyId, listed, collator.compare);
   });
   /** Custom agents are created where providers run, so only a device with local execution offers the dialog. */
   const canCreateAgents = platformHasCapability(BUILD_PLATFORM_PROFILE, "chat.local-execution");

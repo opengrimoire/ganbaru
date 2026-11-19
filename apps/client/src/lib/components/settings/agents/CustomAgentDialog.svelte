@@ -3,8 +3,8 @@
   import AtSign from "@lucide/svelte/icons/at-sign";
   import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
-  import { agentNameProblem, MAX_AGENT_NAME_CHARACTERS, type AgentNameProblem } from "$lib/chat/agents/agent-names";
-  import { listedCatalogModels } from "$lib/chat/agents/agent-roster";
+  import { agentNameProblem, lineDisplayName, MAX_AGENT_NAME_CHARACTERS, type AgentNameProblem } from "$lib/chat/agents/agent-names";
+  import { customAgentModelChoices, type CustomAgentModelChoice } from "$lib/chat/agents/agent-roster";
   import { customAgentControls, selectedModelOption, withModelOption } from "$lib/chat/agents/custom-agent";
   import { defaultModelOptions, recommendedProviderModel } from "$lib/chat/composer/model";
   import { formatModelDisplayName } from "$lib/chat/composer/model-company";
@@ -24,8 +24,8 @@
   import { createBackdropPress } from "$lib/utils/backdrop-press";
 
   /**
-   * Creates an agent a person names, such as `@Reviewer`, that always runs one model of `provider` with the reasoning
-   * and speed chosen here. The reasoning starts on medium, else the model's highest.
+   * Creates an agent a person names, such as `@Reviewer`, that runs one model of `provider`, or the newest model of one
+   * of its lines, with the reasoning and speed chosen here. The reasoning starts on medium, else the model's highest.
    */
   let { provider, onClose }: { provider: ProviderInstanceRead; onClose: () => void } = $props();
 
@@ -49,19 +49,25 @@
   let chosenOptions = $state<ModelOptionSelection[] | null>(null);
 
   const familyId = $derived(provider.configuration.familyId);
-  const models = $derived(listedCatalogModels(
+  const choices = $derived(customAgentModelChoices(
     familyId,
     (provider.modelCatalog?.models ?? []).filter((model) => model.availability !== "deprecated"),
+    new Intl.Collator(localization.locale).compare,
   ));
-  const model = $derived<ProviderModel | null>(
-    models.find((entry) => entry.id === chosenModelId)
-      ?? recommendedProviderModel(provider, models)
-      ?? models[0]
+  const recommendedId = $derived(recommendedProviderModel(provider, choices.map((entry) => entry.model))?.id ?? null);
+  /** The chosen model, else the first choice that runs the recommended model, so a line wins over its version. */
+  const choice = $derived<CustomAgentModelChoice | null>(
+    choices.find((entry) => entry.modelId === chosenModelId)
+      ?? choices.find((entry) => entry.model.id === recommendedId)
+      ?? choices[0]
       ?? null,
   );
+  const model = $derived<ProviderModel | null>(choice?.model ?? null);
   const options = $derived(chosenOptions ?? (model ? defaultModelOptions(model.options) : []));
   const controls = $derived(customAgentControls(model?.options ?? []));
-  const modelChoices = $derived(models.map((entry) => ({ value: entry.id, label: formatModelDisplayName(entry.displayName) })));
+  const modelChoices = $derived(choices.map((entry) => (entry.line
+    ? { value: entry.modelId, label: lineDisplayName(entry.line), summary: t("settings.agents.roster.latest") }
+    : { value: entry.modelId, label: formatModelDisplayName(entry.model.displayName) })));
   const reasoningChoices = $derived((controls.reasoning?.options ?? []).map((option) => ({
     value: option.value,
     label: compactModelOptionLabel(option.label, familyId, t("chat.composer.light"), t("chat.composer.extraHigh")),
@@ -126,7 +132,7 @@
   async function create(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     nameTouched = true;
-    if (nameProblem || creating || !model) return;
+    if (nameProblem || creating || !choice) return;
     creating = true;
     error = null;
     try {
@@ -135,7 +141,7 @@
         providerFamilyId: familyId,
         policy: {
           providerManagedModel: false,
-          modelId: model.id,
+          modelId: choice.modelId,
           modelOptions: options.map((option) => ({ ...option })),
           providerOptions: { schemaVersion: 1, value: {} },
           interactionMode: "build",
@@ -230,7 +236,7 @@
             <Select
               inline
               class="w-full"
-              value={model?.id ?? ""}
+              value={choice?.modelId ?? ""}
               options={modelChoices}
               ariaLabel={t("settings.agents.roster.modelLabel")}
               disabled={creating || modelChoices.length === 0}
@@ -277,7 +283,7 @@
         <button
           type="submit"
           class={SETTINGS_PRIMARY_BUTTON_CLASS}
-          disabled={creating || !model || (nameTouched && nameProblem !== null)}
+          disabled={creating || !choice || (nameTouched && nameProblem !== null)}
         >{t("settings.agents.roster.create")}</button>
       </footer>
     </form>

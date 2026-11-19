@@ -73,7 +73,6 @@ export const agentsSettings = {
     cancel: "Cancelar",
     createFailed: "No se pudo agregar el agente.",
     nameProblems: {
-      empty: "Ponle nombre al agente.",
       tooLong: (limit: string) => `Usa como máximo ${limit} caracteres.`,
       characters: "Usa una sola palabra sin espacios ni @.",
       taken: "Otro agente o modelo ya tiene este nombre.",

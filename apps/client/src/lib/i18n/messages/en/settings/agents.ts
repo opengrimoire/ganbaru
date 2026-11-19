@@ -70,7 +70,6 @@ export const agentsSettings = {
     cancel: "Cancel",
     createFailed: "Could not add the agent.",
     nameProblems: {
-      empty: "Name the agent.",
       tooLong: (limit: string) => `Use at most ${limit} characters.`,
       characters: "Use one word without spaces or @.",
       taken: "Another agent or model already has this name.",

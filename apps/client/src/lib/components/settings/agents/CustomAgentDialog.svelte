@@ -20,6 +20,7 @@
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { getChat } from "$lib/stores/chat.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
+  import { cn } from "$lib/utils";
   import { createBackdropPress } from "$lib/utils/backdrop-press";
 
   /**
@@ -80,7 +81,8 @@
   ));
   const visibleProblem = $derived(nameTouched || name.trim() ? nameProblem : null);
 
-  function problemMessage(problem: AgentNameProblem): string {
+  /** The message under the name field; a missing name shows only the invalid field outline. */
+  function problemMessage(problem: Exclude<AgentNameProblem, "empty">): string {
     if (problem === "tooLong") {
       return t("settings.agents.roster.nameProblems.tooLong", formatNumber(localization.locale, MAX_AGENT_NAME_CHARACTERS));
     }
@@ -201,7 +203,7 @@
         <button type="button" class="dialog-icon-button" aria-label={t("common.close")} onclick={onClose}><X size={16} /></button>
       </header>
 
-      <div class="flex min-h-0 flex-col gap-4 overflow-y-auto px-5 py-3 text-panel">
+      <div class="@container flex min-h-0 flex-col gap-4 overflow-y-auto px-5 py-3 text-panel">
         <label class="grid gap-1.5">
           <span class="field-label">{t("settings.agents.roster.nameLabel")}</span>
           <span class="field flex min-w-0 items-center gap-1 pl-2.5">
@@ -219,36 +221,38 @@
               onblur={() => { nameTouched = true; }}
             />
           </span>
-          {#if visibleProblem}<span class="text-panel-detail text-destructive">{problemMessage(visibleProblem)}</span>{/if}
+          {#if visibleProblem && visibleProblem !== "empty"}<span class="text-panel-detail text-destructive">{problemMessage(visibleProblem)}</span>{/if}
         </label>
 
-        <div class="grid gap-1.5">
-          <span class="field-label">{t("settings.agents.roster.modelLabel")}</span>
-          <Select
-            inline
-            class="w-full"
-            value={model?.id ?? ""}
-            options={modelChoices}
-            ariaLabel={t("settings.agents.roster.modelLabel")}
-            disabled={creating || modelChoices.length === 0}
-            onChange={chooseModel}
-          />
-        </div>
-
-        {#if controls.reasoning}
-          <div class="grid gap-1.5">
-            <span class="field-label">{t("settings.agents.roster.reasoningLabel")}</span>
+        <div class="grid gap-4 @xs:grid-cols-2 @xs:gap-3">
+          <div class={cn("grid min-w-0 gap-1.5", !controls.reasoning && "@xs:col-span-2")}>
+            <span class="field-label">{t("settings.agents.roster.modelLabel")}</span>
             <Select
               inline
               class="w-full"
-              value={choiceValue(controls.reasoning.key)}
-              options={reasoningChoices}
-              ariaLabel={t("settings.agents.roster.reasoningLabel")}
-              disabled={creating}
-              onChange={chooseReasoning}
+              value={model?.id ?? ""}
+              options={modelChoices}
+              ariaLabel={t("settings.agents.roster.modelLabel")}
+              disabled={creating || modelChoices.length === 0}
+              onChange={chooseModel}
             />
           </div>
-        {/if}
+
+          {#if controls.reasoning}
+            <div class="grid min-w-0 gap-1.5">
+              <span class="field-label">{t("settings.agents.roster.reasoningLabel")}</span>
+              <Select
+                inline
+                class="w-full"
+                value={choiceValue(controls.reasoning.key)}
+                options={reasoningChoices}
+                ariaLabel={t("settings.agents.roster.reasoningLabel")}
+                disabled={creating}
+                onChange={chooseReasoning}
+              />
+            </div>
+          {/if}
+        </div>
 
         {#if controls.speed}
           <div class="grid gap-1.5">

@@ -65,7 +65,7 @@ One serialized Rust publisher synchronizes the journal and derives budgets from 
 
 ## Managed files
 
-Profile images, project icons, custom emoji, Notes icons, covers, attachments, and CSV input use system document selection and bounded managed-asset writes. Declared and sniffed MIME type, size, dimensions where relevant, digest, and destination are validated before canonical references are stored. Remote Notes images are not rendered directly under the current content policy; a future ingestion flow can download and validate them into managed storage.
+Profile images, project icons, custom emoji, Notes icons, covers, attachments, Chat images, and CSV input use system document selection and bounded managed-asset writes. Declared and sniffed MIME type, size, dimensions where relevant, digest, and destination are validated before canonical references are stored. Remote Notes images are not rendered directly under the current content policy; a future ingestion flow can download and validate them into managed storage.
 
 ## Deferrable work
 

@@ -204,7 +204,8 @@
         <label class="grid gap-1.5">
           <span class="field-label">{t("settings.agents.roster.nameLabel")}</span>
           <span class="field flex min-w-0 items-center gap-0.5 pl-2.5">
-            <span class="text-muted-foreground">@</span>
+            <!-- Inter raises @ only before a capital it can see, so the fixed prefix asks for that case form itself. -->
+            <span class="text-muted-foreground [font-feature-settings:'case']">@</span>
             <input
               bind:this={nameInput}
               class="field-bare min-w-0 flex-1"

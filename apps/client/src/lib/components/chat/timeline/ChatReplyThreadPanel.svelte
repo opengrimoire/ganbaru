@@ -443,7 +443,7 @@
   data-chat-reply-thread
   style:--chat-composer-dock-height={`${composerDocked ? dockHeight : 0}px`}
 >
-  <header class="thread-header" class:reserve-global-actions={reserveGlobalActions}>
+  <header class="thread-header" class:reserve-global-actions={reserveGlobalActions} data-reply-thread-header>
     <div class="thread-tab-shell" role="tablist">
       <button type="button" class="thread-tab" data-thread-tab role="tab" aria-selected="true" tabindex="0" onmousedown={preventMiddleButtonScroll} onauxclick={closeFromMiddleClick}>
         <MessagesSquare size={13} /><strong>{t("chat.organization.thread")}</strong>
@@ -470,6 +470,7 @@
   <div
     bind:this={scroller}
     data-mobile-scroll-fade class="thread-scroll"
+    data-reply-thread-scroll
     aria-busy={!executionPresentationReady || chat.replyThreadLoading || undefined}
     onscroll={rememberScrollPosition}
   >

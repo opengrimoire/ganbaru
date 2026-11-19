@@ -65,6 +65,7 @@
   import ChatChannelArchive from "$lib/components/chat/channels/ChatChannelArchive.svelte";
   import ChatChannelFeed from "$lib/components/chat/channels/ChatChannelFeed.svelte";
   import ChatReplyThreadPanel from "$lib/components/chat/timeline/ChatReplyThreadPanel.svelte";
+  import ChatReplyThreadSheet from "$lib/components/chat/timeline/ChatReplyThreadSheet.svelte";
   import ChatRestoreDialog from "$lib/components/chat/review/ChatRestoreDialog.svelte";
   import { isTextEntryElement, OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
   import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
@@ -1195,10 +1196,11 @@
             {:else}
               <Loading layout="fill" class="min-h-0 flex-1" />
             {/if}
-          {:else if threadFullSurface && chat.openReplyThreadId}
+          {:else if threadFullSurface && chat.openReplyThreadId && !mobileShell}
             <ChatReplyThreadPanel presentation="main" onClose={closeReplyThread} />
           {:else}
             <ChatChannelFeed onThreadOpened={threadOpened} />
+            {#if mobileShell && chat.openReplyThreadId}<ChatReplyThreadSheet onClose={closeReplyThread} />{/if}
           {/if}
         {:else if !chat.loading && !chat.channelsLoading}
           <ChatFirstUse />

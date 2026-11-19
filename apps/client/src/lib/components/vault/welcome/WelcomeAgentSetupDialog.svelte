@@ -95,7 +95,7 @@
     bind:this={dialog}
     class={cn(
       "surface-dialog relative z-10 flex max-h-full w-full flex-col overflow-hidden outline-none",
-      view.kind === "advanced" ? "max-w-3xl" : "max-w-lg",
+      view.kind === "advanced" ? "max-w-3xl" : "max-w-xl",
     )}
     style={view.kind === "advanced" ? "--foreground: var(--card-foreground); height: min(100%, 44rem);" : "--foreground: var(--card-foreground);"}
     role="dialog"

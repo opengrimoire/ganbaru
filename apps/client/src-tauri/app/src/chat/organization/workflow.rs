@@ -7,15 +7,18 @@ use super::assignments::read_assignment_subject;
 #[cfg(desktop)]
 use super::common::wire_work_state;
 use super::common::{
-    assignment_input_id, json_object, new_id, serialization_error, wire_review_outcome,
-    work_assignment_id,
+    assignment_input_id, serialization_error, wire_review_outcome, work_assignment_id,
 };
+#[cfg(desktop)]
+use super::common::{json_object, new_id};
 #[cfg(desktop)]
 use super::context::{FreezeOutcome, WorkToFreeze, freeze_context_package};
 use super::inputs::place_delivered_reply;
 #[cfg(desktop)]
 use super::now_timestamp;
-use super::reads::{read_active_or_latest_assignment, read_assignment, read_participant};
+#[cfg(desktop)]
+use super::reads::read_assignment;
+use super::reads::{read_active_or_latest_assignment, read_participant};
 use super::{
     LOCAL_PARTICIPANT_ID, ReviewedWork, i64_value, identifier_error, persistence_error, u64_value,
 };

@@ -15,7 +15,9 @@
   /**
    * The linking screen of first use, with the shared onboarding navigation at its bottom: its primary action continues
    * without linking until a device links, and Back, when the shell passes `onBack`, returns to the screen before it
-   * until a device links. With `progress`, the navigation shows the screen's place among the first-use screens.
+   * until a device links, after which it stays disabled. With `backLocked`, Back shows disabled even without `onBack`.
+   * With `progress`, the navigation shows the screen's place among the first-use screens. `onComplete` receives the
+   * vault that is active once the screen is left, which a linked or server copy may have replaced.
    */
   let {
     platform,
@@ -24,6 +26,7 @@
     initialStatus = null,
     bootstrapReplicaOnLink = false,
     onBack,
+    backLocked = false,
     progress,
     onComplete,
   }: {
@@ -33,8 +36,9 @@
     initialStatus?: PairingStatus | null;
     bootstrapReplicaOnLink?: boolean;
     onBack?: () => void;
+    backLocked?: boolean;
     progress?: OnboardingNavProgress;
-    onComplete: () => void | Promise<void>;
+    onComplete: (activeVaultId: string) => void | Promise<void>;
   } = $props();
 
   const { t } = getLocalization();
@@ -84,7 +88,7 @@
     try {
       if (!persistCompletion) await releaseStarterVault();
       const activeId = persistCompletion ? await activeVaultId() : null;
-      await onComplete();
+      await onComplete(activeId ?? vaultId);
       const storage = safeStorage();
       if (storage) {
         completeVaultHandoffOnboarding(storage, vaultId);
@@ -145,6 +149,6 @@
     </div>
   </section>
 
-  <OnboardingNav {primary} onBack={linked ? undefined : onBack} {progress} />
+  <OnboardingNav {primary} onBack={linked ? undefined : onBack} backLocked={backLocked || onBack !== undefined} {progress} />
 </div>
 {/if}

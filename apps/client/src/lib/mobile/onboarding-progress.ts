@@ -2,14 +2,14 @@ import { WELCOME_SETUP_STEPS, WELCOME_TOUR_STEPS } from "$lib/vault/welcome-step
 import { FOCUS_ACCESS_STEP_ORDER } from "./focus-access-steps";
 
 /** The stages of the Android first-run onboarding, in the order they appear. */
-export const MOBILE_ONBOARDING_STAGES = ["setup", "tour", "permissions", "linking"] as const;
+export const MOBILE_ONBOARDING_STAGES = ["setup", "linking", "tour", "permissions"] as const;
 
 /** One stage of the Android first-run onboarding. */
 export type MobileOnboardingStage = (typeof MOBILE_ONBOARDING_STAGES)[number];
 
 /**
- * How many screens each stage can show: the language and vault screens, the feature tour, the permissions, and the
- * linking screen. Permissions count every step any phone may ask for, so the bar has the same length on every device,
+ * How many screens each stage can show: the language and vault screens, the linking screen, the feature tour, and the
+ * permissions. Permissions count every step any phone may ask for, so the bar has the same length on every device,
  * and the steps a phone skips pass as done.
  */
 const STAGE_SCREENS: Readonly<Record<MobileOnboardingStage, number>> = {

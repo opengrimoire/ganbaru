@@ -40,10 +40,10 @@
    * matters, a drawing of the system screens it opens, and, for sensitive access, what Ganbaru sees and never sees.
    * The screen for sensitive access is its disclosure, shown immediately before the system settings open. The screens
    * share the welcome screens' navigation, with Back between them, and a screen whose access is already on, reached by
-   * going back or forward, says so and only continues. `onComplete` reports how many screens there were, so a shell can
-   * offer Back from the screen after them only when there is a screen to return to.
+   * going back or forward, says so and only continues. Its first screen shows Back disabled, since the
+   * screens before it cannot be chosen again.
    */
-  let { onComplete }: { onComplete: (stepCount: number) => void } = $props();
+  let { onComplete }: { onComplete: () => void } = $props();
 
   /** How long a step shows that its access just turned on before the next step arrives. */
   const GRANTED_HOLD_MS = 700;
@@ -117,7 +117,7 @@
         console.warn("Android Focus onboarding completion could not be saved", error);
       }
     }
-    onComplete(steps?.length ?? 0);
+    onComplete();
   }
 
   /** Shows the step at `next`, already marked as on when Android reports its access on. */
@@ -323,6 +323,7 @@
         <OnboardingNav
           primary={primaryAction(step)}
           onBack={index > 0 ? back : undefined}
+          backLocked
           backDisabled={opening}
         >
           {#snippet secondary()}

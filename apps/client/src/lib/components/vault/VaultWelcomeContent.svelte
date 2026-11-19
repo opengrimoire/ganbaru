@@ -21,7 +21,8 @@
    * bottom while the screens change above it at once, so moving between them never shifts the buttons. The last
    * screen's primary action is `last`, such as the default location on the data screen; the shell's other data choices
    * sit in the data screen itself. `step` is bindable so a shell can start on a later screen or show the progress in
-   * its own chrome; with `showStepDots`, the navigation shows it across both stages instead.
+   * its own chrome; with `showStepDots`, the navigation shows it across every first-use screen instead. The tour's
+   * first screen shows Back disabled, since the screens before it cannot be chosen again.
    */
   let {
     stage,
@@ -91,6 +92,7 @@
   <OnboardingNav
     primary={onLast ? last : { label: t("vaultSetup.continue"), onClick: next }}
     onBack={index > 0 ? back : undefined}
+    backLocked={stage === "tour"}
     backDisabled={onLast && lastBackDisabled}
     {progress}
   />

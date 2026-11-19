@@ -26,12 +26,12 @@ describe("welcome steps", () => {
     expect(welcomeStepAt("tour", Number.NaN)).toBe("calendar");
   });
 
-  it("counts progress across the setup screens, the tour, and the linking screen last", () => {
-    const count = WELCOME_SETUP_STEPS.length + WELCOME_TOUR_STEPS.length + 1;
+  it("counts progress across the setup screens, then the linking screen, then the tour", () => {
+    const count = WELCOME_SETUP_STEPS.length + 1 + WELCOME_TOUR_STEPS.length;
     expect(welcomeProgress("setup", 0)).toEqual({ index: 0, count });
-    expect(welcomeProgress("setup", WELCOME_DATA_STEP)).toEqual({ index: WELCOME_DATA_STEP, count });
-    expect(welcomeProgress("tour", 0)).toEqual({ index: WELCOME_SETUP_STEPS.length, count });
-    expect(welcomeProgress("tour", 99)).toEqual({ index: count - 2, count });
-    expect(welcomeProgress("linking")).toEqual({ index: count - 1, count });
+    expect(welcomeProgress("setup", 99)).toEqual({ index: WELCOME_DATA_STEP, count });
+    expect(welcomeProgress("linking")).toEqual({ index: WELCOME_SETUP_STEPS.length, count });
+    expect(welcomeProgress("tour", 0)).toEqual({ index: WELCOME_SETUP_STEPS.length + 1, count });
+    expect(welcomeProgress("tour", 99)).toEqual({ index: count - 1, count });
   });
 });

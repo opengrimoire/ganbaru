@@ -4,8 +4,8 @@
   import VaultWelcomeContent from "./VaultWelcomeContent.svelte";
 
   /**
-   * The desktop feature tour, once the setup screens have opened the vault. It starts on the first feature with no
-   * Back to the setup screens, since the vault is already chosen, and `onComplete` moves on to the linking screen.
+   * The desktop feature tour, once the vault is open and the linking screen is done. It starts on the first feature
+   * with Back disabled, since linking is already settled, and `onComplete` opens the app.
    */
   let { onComplete }: { onComplete: () => void | Promise<void> } = $props();
 

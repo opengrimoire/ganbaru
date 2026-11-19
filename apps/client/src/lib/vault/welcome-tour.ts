@@ -34,3 +34,17 @@ export function completeWelcomeTour(storage: WritableStorage | undefined, vaultI
     console.warn("Could not clear the pending welcome tour:", error);
   }
 }
+
+/**
+ * Moves a pending feature tour from `fromVaultId` to `toVaultId` when linking replaced the vault the setup screens
+ * opened with a linked or server copy, so the tour still shows, and resumes after a restart, for the vault now active.
+ */
+export function carryWelcomeTour(
+  storage: (ReadableStorage & WritableStorage) | undefined,
+  fromVaultId: string,
+  toVaultId: string,
+): void {
+  if (fromVaultId === toVaultId || !welcomeTourPending(storage, fromVaultId)) return;
+  markWelcomeTourPending(storage, toVaultId);
+  completeWelcomeTour(storage, fromVaultId);
+}

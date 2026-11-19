@@ -14,7 +14,8 @@
     vaultId: string;
     initialInvitation: PairingInvitation | null;
     initialStatus: PairingStatus;
-    onComplete: () => void | Promise<void>;
+    /** Leaves the linking screen with the vault active by then. */
+    onComplete: (activeVaultId: string) => void | Promise<void>;
   } = $props();
 </script>
 
@@ -24,6 +25,7 @@
     {vaultId}
     {initialInvitation}
     {initialStatus}
+    backLocked
     progress={welcomeProgress("linking")}
     {onComplete}
   />

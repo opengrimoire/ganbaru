@@ -82,7 +82,7 @@ async function mountMobileVaultSetup(initialError: string | null) {
 }
 
 /**
- * Mounts the onboarding that follows vault setup, the feature tour, the access review, and then the linking screen,
+ * Mounts the onboarding that follows vault setup, the linking screen, the feature tour, and then the access review,
  * whichever of them is still pending, and opens the app in place once it finishes.
  */
 async function mountMobileSetupOnboarding(

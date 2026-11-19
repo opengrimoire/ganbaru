@@ -4,8 +4,8 @@
   import MobileOnboardingProgress from "./MobileOnboardingProgress.svelte";
 
   /**
-   * The Android feature tour, once the setup screens have opened the vault. It starts on the first feature with no
-   * Back to the setup screens, since the vault is already chosen, and `onComplete` moves on to the access review.
+   * The Android feature tour, after the linking screen. It starts on the first feature with Back disabled, since
+   * linking is already settled, and `onComplete` moves on to the access review.
    */
   let { onComplete }: { onComplete: () => void } = $props();
 

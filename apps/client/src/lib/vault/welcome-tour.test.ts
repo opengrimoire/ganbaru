@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { completeWelcomeTour, markWelcomeTourPending, welcomeTourPending } from "./welcome-tour";
+import { carryWelcomeTour, completeWelcomeTour, markWelcomeTourPending, welcomeTourPending } from "./welcome-tour";
 
 function memoryStorage() {
   const values = new Map<string, string>();
@@ -26,6 +26,23 @@ describe("welcome tour state", () => {
     completeWelcomeTour(storage, "vault-a");
     expect(welcomeTourPending(storage, "vault-a")).toBe(false);
     expect(welcomeTourPending(storage, "vault-b")).toBe(true);
+  });
+
+  it("moves a pending tour to the vault a linked copy put in place of the one setup opened", () => {
+    const storage = memoryStorage();
+    markWelcomeTourPending(storage, "starter");
+    carryWelcomeTour(storage, "starter", "linked");
+    expect(welcomeTourPending(storage, "starter")).toBe(false);
+    expect(welcomeTourPending(storage, "linked")).toBe(true);
+  });
+
+  it("leaves the tour alone when the vault stayed the same or had no pending tour", () => {
+    const storage = memoryStorage();
+    markWelcomeTourPending(storage, "vault-a");
+    carryWelcomeTour(storage, "vault-a", "vault-a");
+    expect(welcomeTourPending(storage, "vault-a")).toBe(true);
+    carryWelcomeTour(storage, "vault-b", "vault-c");
+    expect(welcomeTourPending(storage, "vault-c")).toBe(false);
   });
 
   it("skips the tour when storage is missing or refuses access", () => {

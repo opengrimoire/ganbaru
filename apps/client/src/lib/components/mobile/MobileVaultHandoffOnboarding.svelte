@@ -9,6 +9,7 @@
     initialStatus = null,
     bootstrapReplicaOnLink = false,
     onBack,
+    backLocked = false,
     onComplete,
   }: {
     vaultId?: string;
@@ -16,7 +17,10 @@
     bootstrapReplicaOnLink?: boolean;
     /** Returns to the screen before linking; without it, the screen has no Back. */
     onBack?: () => void;
-    onComplete: () => void | Promise<void>;
+    /** Shows Back disabled in first use, where the screens before linking cannot be chosen again. */
+    backLocked?: boolean;
+    /** Leaves the screen with the vault active by then, which a linked copy may have replaced. */
+    onComplete: (activeVaultId: string) => void | Promise<void>;
   } = $props();
 </script>
 
@@ -32,6 +36,7 @@
         {initialStatus}
         {bootstrapReplicaOnLink}
         {onBack}
+        {backLocked}
         {onComplete}
       />
     </div>

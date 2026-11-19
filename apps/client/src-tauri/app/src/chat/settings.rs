@@ -19,8 +19,6 @@ pub(crate) use activity::{
     CHAT_PROVIDER_ACTIVITY_EVENT, ProviderActivity, record_provider_activity,
 };
 pub(crate) use credentials::invalidate_provider_state_for_credential;
-#[cfg(all(test, unix))]
-pub(crate) use discovery::installed_provider_executables;
 #[cfg(test)]
 pub(crate) use discovery::{
     default_provider_configuration, provider_family_is_discoverable,
@@ -30,6 +28,8 @@ pub(crate) use discovery::{
     discover_default_providers, discover_default_providers_once, executable_search_directories,
     mark_discovery_finished, replacement_provider_configurations,
 };
+#[cfg(all(test, unix))]
+pub(crate) use discovery::{drop_met_install_requirements, installed_provider_executables};
 pub(crate) use duplicates::{duplicate_configuration_error, find_duplicate};
 pub(crate) use mapping::{
     device_configuration, portable_configuration, provider_instance_read, provider_runtime_changed,

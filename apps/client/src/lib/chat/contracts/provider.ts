@@ -68,6 +68,18 @@ export interface ProviderInstallGuide {
   signInAfterInstallCommand: string;
   /** The provider documentation page about installing the CLI, always `https`. */
   docsUrl: string;
+  /** A tool the installer needs that this device lacks, installed first; `null` when nothing is missing. */
+  requirement: ProviderInstallRequirement | null;
+}
+
+/** A tool a provider installer needs, such as Node.js for an npm package. */
+export interface ProviderInstallRequirement {
+  /** The tool's name as people know it. */
+  name: string;
+  /** The program discovery looks for to tell whether the tool is installed. */
+  program: string;
+  /** The command that installs the tool in the guide's terminal. */
+  command: string;
 }
 
 /** A newer provider CLI release than the last probe found, inside the family's supported range. */

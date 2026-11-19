@@ -11,7 +11,7 @@
 //! definition also names the folders its installer puts the program in, which discovery
 //! searches because a running app keeps the `PATH` it started with.
 
-use crate::models::{ProviderInstallGuide, ProviderInstallShell};
+use crate::models::{ProviderInstallGuide, ProviderInstallRequirement, ProviderInstallShell};
 use std::path::{Path, PathBuf};
 
 /// One provider's installers by platform, with the page that explains them.
@@ -28,11 +28,29 @@ struct InstallDefinition {
     /// The sign-in command for a new PowerShell window right after the installer ran.
     windows_sign_in_after_install: &'static str,
     docs_url: &'static str,
+    /// A tool the Windows installer needs before it can run.
+    windows_requirement: Option<&'static Requirement>,
     /// Where the Linux and macOS installers put the program, as folder names under the home folder.
     unix_directories: &'static [&'static [&'static str]],
     /// Where the Windows installer puts the program, as folder names under a per-user folder.
     windows_directories: &'static [(WindowsRoot, &'static [&'static str])],
 }
+
+/// A tool an installer needs, with the command that installs it.
+struct Requirement {
+    name: &'static str,
+    /// The program discovery looks for.
+    program: &'static str,
+    command: &'static str,
+}
+
+/// Node.js through the Windows package manager, which puts `node` and the folder npm installs
+/// programs in on `PATH` for new shells.
+const NODE_JS: Requirement = Requirement {
+    name: "Node.js",
+    program: "node",
+    command: "winget install OpenJS.NodeJS.LTS",
+};
 
 /// The per-user Windows folder an installer writes under.
 #[derive(Clone, Copy)]
@@ -55,6 +73,7 @@ const INSTALLERS: &[InstallDefinition] = &[
         unix_sign_in_after_install: "~/.local/bin/claude auth login",
         windows_sign_in_after_install: r#"& "$HOME\.local\bin\claude.exe" auth login"#,
         docs_url: "https://code.claude.com/docs/en/setup",
+        windows_requirement: None,
         unix_directories: &[&[".local", "bin"]],
         windows_directories: &[(WindowsRoot::Home, &[".local", "bin"])],
     },
@@ -66,6 +85,7 @@ const INSTALLERS: &[InstallDefinition] = &[
         unix_sign_in_after_install: "codex login",
         windows_sign_in_after_install: "codex login",
         docs_url: "https://developers.openai.com/codex/cli",
+        windows_requirement: None,
         unix_directories: &[&[".local", "bin"]],
         windows_directories: &[(
             WindowsRoot::LocalAppData,
@@ -81,6 +101,7 @@ const INSTALLERS: &[InstallDefinition] = &[
         unix_sign_in_after_install: "~/.local/bin/cursor-agent login",
         windows_sign_in_after_install: "cursor-agent login",
         docs_url: "https://cursor.com/docs/cli/installation",
+        windows_requirement: None,
         unix_directories: &[&[".local", "bin"]],
         windows_directories: &[(WindowsRoot::LocalAppData, &["cursor-agent"])],
     },
@@ -92,6 +113,7 @@ const INSTALLERS: &[InstallDefinition] = &[
         unix_sign_in_after_install: "grok login",
         windows_sign_in_after_install: "grok login",
         docs_url: "https://docs.x.ai/build/overview",
+        windows_requirement: None,
         // The program lives in `.grok/bin`, linked from `.local/bin` only when that is on `PATH`.
         unix_directories: &[&[".grok", "bin"], &[".local", "bin"]],
         windows_directories: &[(WindowsRoot::Home, &[".grok", "bin"])],
@@ -108,6 +130,7 @@ const INSTALLERS: &[InstallDefinition] = &[
         unix_sign_in_after_install: "opencode auth login",
         windows_sign_in_after_install: "opencode.cmd auth login",
         docs_url: "https://opencode.ai/docs/",
+        windows_requirement: Some(&NODE_JS),
         unix_directories: &[&[".opencode", "bin"]],
         windows_directories: &[(WindowsRoot::RoamingAppData, &["npm"])],
     },
@@ -142,6 +165,14 @@ fn install_guide_for(family_id: &str, windows: bool) -> Option<ProviderInstallGu
         sign_in_command: definition.sign_in.to_string(),
         sign_in_after_install_command: sign_in_after_install.to_string(),
         docs_url: definition.docs_url.to_string(),
+        requirement: windows
+            .then_some(definition.windows_requirement)
+            .flatten()
+            .map(|requirement| ProviderInstallRequirement {
+                name: requirement.name.to_string(),
+                program: requirement.program.to_string(),
+                command: requirement.command.to_string(),
+            }),
     })
 }
 
@@ -277,6 +308,28 @@ mod tests {
                 .sign_in_after_install_command
                 .starts_with("opencode.cmd ")
         );
+    }
+
+    #[test]
+    fn only_the_windows_npm_installer_needs_node() {
+        let node = install_guide_for("opencode", true)
+            .unwrap()
+            .requirement
+            .unwrap();
+        assert_eq!(node.program, "node");
+        assert!(node.command.starts_with("winget install "));
+        assert_eq!(
+            install_guide_for("opencode", false).unwrap().requirement,
+            None
+        );
+        for family in ["claude", "codex", "cursor", "grok"] {
+            for windows in [false, true] {
+                assert_eq!(
+                    install_guide_for(family, windows).unwrap().requirement,
+                    None
+                );
+            }
+        }
     }
 
     #[test]

@@ -29,7 +29,7 @@
     onRefresh?: () => Promise<void>;
   } = $props();
 
-  type InstallStep = "open" | "install" | "reopen" | "sign-in" | "finish";
+  type InstallStep = "open" | "requirement" | "requirement-reopen" | "install" | "reopen" | "sign-in" | "finish";
 
   const { t } = getLocalization();
   let linkError = $state<string | null>(null);
@@ -39,10 +39,13 @@
   const powerShell = $derived(guide.shell === "powershell");
   const prompt = $derived(powerShell ? "PS>" : "$");
   const needsInstall = $derived(situationNeedsInstall(situation));
+  const requirement = $derived(needsInstall ? guide.requirement : null);
   /** The steps in order; a terminal only sees the `PATH` an installer changed once it is opened again. */
-  const steps = $derived<InstallStep[]>(
-    needsInstall ? ["open", "install", "reopen", "sign-in", "finish"] : ["open", "sign-in", "finish"],
-  );
+  const steps = $derived.by((): InstallStep[] => {
+    if (!needsInstall) return ["open", "sign-in", "finish"];
+    const prepare: InstallStep[] = requirement ? ["requirement", "requirement-reopen"] : [];
+    return ["open", ...prepare, "install", "reopen", "sign-in", "finish"];
+  });
   const statusMessage = $derived.by(() => {
     switch (situation.kind) {
       case "installed": return t("settings.agents.providers.install.installed", cliName, situation.path);
@@ -97,6 +100,15 @@
               : t("settings.agents.providers.install.openTerminal")}
           </p>
         </NumberedStep>
+      {:else if step === "requirement" && requirement}
+        <NumberedStep {number} total={steps.length}>
+          <div class="min-w-0 flex-1 pt-0.5 pb-4">
+            <p class="text-[0.8rem] leading-5 text-foreground">
+              {t("settings.agents.providers.install.runRequirementInstall", requirement.name, cliName)}
+            </p>
+            <CommandBox class="mt-2 text-[0.75rem]" command={requirement.command} {prompt} />
+          </div>
+        </NumberedStep>
       {:else if step === "install"}
         <NumberedStep {number} total={steps.length}>
           <div class="min-w-0 flex-1 pt-0.5 pb-4">
@@ -104,7 +116,7 @@
             <CommandBox class="mt-2 text-[0.75rem]" command={guide.command} {prompt} />
           </div>
         </NumberedStep>
-      {:else if step === "reopen"}
+      {:else if step === "reopen" || step === "requirement-reopen"}
         <NumberedStep {number} total={steps.length}>
           <p class="min-w-0 flex-1 pt-0.5 pb-4 text-[0.8rem] leading-5 text-foreground">
             {powerShell

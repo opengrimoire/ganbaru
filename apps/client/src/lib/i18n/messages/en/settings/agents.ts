@@ -139,6 +139,7 @@ export const agentsSettings = {
       signedOut: (provider: string) => `This device is not signed in to your ${provider} account.`,
       openTerminal: "Open a terminal on this computer.",
       openPowerShell: "Open PowerShell on this computer.",
+      runRequirementInstall: (tool: string, cli: string) => `Paste this command and press Enter to install ${tool}, which ${cli} needs.`,
       runInstall: (cli: string) => `Paste this command and press Enter to install ${cli}.`,
       reopenTerminal: "When it finishes, close the terminal and open a new one.",
       reopenPowerShell: "When it finishes, close PowerShell and open it again.",

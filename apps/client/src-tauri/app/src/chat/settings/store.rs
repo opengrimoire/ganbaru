@@ -1,7 +1,10 @@
 use super::{
-    device_state_error, discovery::installed_family_executables,
-    duplicates::duplicate_configurations, executable_search_directories,
-    mapping::provider_instance_read, provider_not_found_error,
+    device_state_error,
+    discovery::{drop_met_install_requirements, installed_family_executables},
+    duplicates::duplicate_configurations,
+    executable_search_directories,
+    mapping::provider_instance_read,
+    provider_not_found_error,
 };
 use crate::chat::configuration::{
     on_blocking_pool, read_chat_configuration, update_chat_device_config, with_behavior,
@@ -34,7 +37,8 @@ pub(crate) async fn read_settings(app: &tauri::AppHandle) -> ChatResult<ChatSett
     for read in &mut provider_instances {
         read.duplicate_of = duplicates.remove(&read.configuration.instance_id);
     }
-    let provider_families = ProviderDriverRegistry.list_metadata();
+    let mut provider_families = ProviderDriverRegistry.list_metadata();
+    drop_met_install_requirements(&mut provider_families, &search_directories);
     let installed_executables =
         installed_family_executables(&provider_families, &search_directories);
     Ok(ChatSettingsRead {

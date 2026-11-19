@@ -142,6 +142,33 @@ pub(crate) fn installed_provider_executables(
     executables
 }
 
+/// Clears each install guide's requirement whose program `search_directories` already holds,
+/// so the guide only asks for a tool this device lacks.
+pub(crate) fn drop_met_install_requirements(
+    families: &mut [ProviderFamilyMetadataRead],
+    search_directories: &[PathBuf],
+) {
+    for guide in families
+        .iter_mut()
+        .filter_map(|metadata| metadata.install_guide.as_mut())
+    {
+        if guide.requirement.as_ref().is_some_and(|requirement| {
+            program_is_installed(&requirement.program, search_directories)
+        }) {
+            guide.requirement = None;
+        }
+    }
+}
+
+/// Whether a safe program named `name` sits in one of `search_directories`.
+fn program_is_installed(name: &str, search_directories: &[PathBuf]) -> bool {
+    search_directories.iter().any(|directory| {
+        executable_candidate_names(name)
+            .into_iter()
+            .any(|candidate| is_safe_executable_candidate(&directory.join(candidate)))
+    })
+}
+
 /// The CLI programs found for each family this device can set up, by family, so Settings can
 /// say whether a family that has no configuration is installed. A family whose search finds
 /// nothing maps to an empty list.

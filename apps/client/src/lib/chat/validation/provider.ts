@@ -18,6 +18,7 @@ import {
   type ProviderCapabilitySupport,
   type ProviderFamilyMetadataRead,
   type ProviderInstallGuide,
+  type ProviderInstallRequirement,
   type ProviderInstanceConfig,
   type ProviderModel,
   type ProviderModelCatalog,
@@ -74,6 +75,16 @@ export function parseProviderAuthoritySupport(
   };
 }
 
+/** Reads a tool an installer needs. */
+function parseProviderInstallRequirement(value: unknown, label: string): ProviderInstallRequirement {
+  const record = readRecord(value, label);
+  return {
+    name: readString(record.name, `${label}.name`),
+    program: readString(record.program, `${label}.program`),
+    command: readString(record.command, `${label}.command`),
+  };
+}
+
 /** Reads an install guide, refusing a documentation link that is not `https`. */
 function parseProviderInstallGuide(value: unknown, label: string): ProviderInstallGuide {
   const record = readRecord(value, label);
@@ -85,6 +96,7 @@ function parseProviderInstallGuide(value: unknown, label: string): ProviderInsta
     signInCommand: readString(record.signInCommand, `${label}.signInCommand`),
     signInAfterInstallCommand: readString(record.signInAfterInstallCommand, `${label}.signInAfterInstallCommand`),
     docsUrl,
+    requirement: readNullable(record.requirement, `${label}.requirement`, parseProviderInstallRequirement),
   };
 }
 

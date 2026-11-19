@@ -142,6 +142,7 @@ export const agentsSettings = {
       signedOut: (provider: string) => `Este dispositivo no tiene una sesión iniciada en tu cuenta de ${provider}.`,
       openTerminal: "Abre una terminal en esta computadora.",
       openPowerShell: "Abre PowerShell en esta computadora.",
+      runRequirementInstall: (tool: string, cli: string) => `Pega este comando y presiona Enter para instalar ${tool}, que ${cli} necesita.`,
       runInstall: (cli: string) => `Pega este comando y presiona Enter para instalar ${cli}.`,
       reopenTerminal: "Cuando termine, cierra la terminal y abre una nueva.",
       reopenPowerShell: "Cuando termine, cierra PowerShell y vuelve a abrirlo.",

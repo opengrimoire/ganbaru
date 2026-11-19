@@ -7,8 +7,6 @@ use super::credentials::{
 #[cfg(test)]
 use super::device_state::ChatProviderDeviceState;
 use super::device_state::{read_active_device_scope, update_active_device_scope};
-#[cfg(all(test, unix))]
-use super::settings::installed_provider_executables;
 pub(crate) use super::settings::read_provider;
 use super::settings::{
     CHAT_PROVIDER_ACTIVITY_EVENT, apply_provider_probe, config_io_error, credential_error,
@@ -32,6 +30,8 @@ use super::settings::{
     default_provider_configuration, provider_family_is_discoverable,
     should_discover_default_provider,
 };
+#[cfg(all(test, unix))]
+use super::settings::{drop_met_install_requirements, installed_provider_executables};
 use crate::chat::configuration::{read_chat_configuration, write_chat_behavior};
 use crate::vault;
 use ganbaru_chat_contracts::config::{
@@ -995,5 +995,53 @@ mod tests {
         );
         set_mode(&shared, 0o755);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_install_guide_asks_for_a_requirement_only_while_its_program_is_missing() {
+        use ganbaru_chat_contracts::models::ProviderInstallRequirement;
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = std::env::temp_dir().join(format!(
+            "ganbaru-provider-requirement-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut families = ProviderDriverRegistry
+            .list_metadata()
+            .into_iter()
+            .filter(|metadata| metadata.install_guide.is_some())
+            .take(2)
+            .collect::<Vec<_>>();
+        for (metadata, program) in families.iter_mut().zip(["present-tool", "absent-tool"]) {
+            metadata.install_guide.as_mut().unwrap().requirement =
+                Some(ProviderInstallRequirement {
+                    name: "Tool".to_string(),
+                    program: program.to_string(),
+                    command: "install tool".to_string(),
+                });
+        }
+        let present = directory.join("present-tool");
+        std::fs::write(&present, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&present, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        drop_met_install_requirements(&mut families, std::slice::from_ref(&directory));
+
+        let requirements = families
+            .iter()
+            .map(|metadata| {
+                metadata
+                    .install_guide
+                    .as_ref()
+                    .unwrap()
+                    .requirement
+                    .as_ref()
+                    .map(|requirement| requirement.program.as_str())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(requirements, [None, Some("absent-tool")]);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

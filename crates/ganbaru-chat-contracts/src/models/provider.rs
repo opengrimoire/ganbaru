@@ -192,6 +192,23 @@ pub struct ProviderInstallGuide {
     pub sign_in_after_install_command: String,
     /// The provider documentation page about installing the CLI.
     pub docs_url: String,
+    /// A tool the installer needs that this device lacks, installed first. The registry names
+    /// every tool an installer needs, and the settings read keeps it only while discovery
+    /// cannot find its program.
+    #[serde(default)]
+    pub requirement: Option<ProviderInstallRequirement>,
+}
+
+/// A tool a provider installer needs, such as Node.js for an npm package.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderInstallRequirement {
+    /// The tool's name as people know it.
+    pub name: String,
+    /// The program discovery looks for to tell whether the tool is installed.
+    pub program: String,
+    /// The command that installs the tool in the guide's terminal.
+    pub command: String,
 }
 
 /// The terminal a provider's install and sign-in commands are written for.

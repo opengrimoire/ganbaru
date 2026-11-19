@@ -700,7 +700,11 @@ describe("Chat provider contracts", () => {
   });
 
   it("reads an install guide and refuses a documentation link that is not https", () => {
-    const installGuide = { shell: "terminal", command: "curl -fsSL https://claude.ai/install.sh | bash", signInCommand: "claude auth login", signInAfterInstallCommand: "~/.local/bin/claude auth login", docsUrl: "https://code.claude.com/docs/en/setup" };
+    const installGuide = { shell: "terminal", command: "curl -fsSL https://claude.ai/install.sh | bash", signInCommand: "claude auth login", signInAfterInstallCommand: "~/.local/bin/claude auth login", docsUrl: "https://code.claude.com/docs/en/setup", requirement: null };
+    const requirement = { name: "Node.js", program: "node", command: "winget install OpenJS.NodeJS.LTS" };
+    expect(parseProviderFamilyMetadata({ ...metadataFixture(), installGuide: { ...installGuide, requirement } }).installGuide?.requirement).toEqual(requirement);
+    expect(() => parseProviderFamilyMetadata({ ...metadataFixture(), installGuide: { ...installGuide, requirement: { ...requirement, command: 1 } } }))
+      .toThrow("installGuide.requirement.command must be a string");
     expect(parseProviderFamilyMetadata({ ...metadataFixture(), installGuide }).installGuide).toEqual(installGuide);
     expect(() => parseProviderFamilyMetadata({ ...metadataFixture(), installGuide: { ...installGuide, docsUrl: "http://example.com" } }))
       .toThrow("installGuide.docsUrl must use https");

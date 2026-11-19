@@ -61,6 +61,8 @@ export const agentsSettings = {
   roster: {
     add: "Agente personalizado",
     remove: "Eliminar",
+    removeTitle: (name: string) => `¿Eliminar a @${name}?`,
+    removeMessage: "El agente se elimina en todos los dispositivos vinculados, o se archiva y se oculta si ya participó en una conversación, para que sus mensajes conserven su autor.",
     restore: "Restaurar",
     showArchived: "Mostrar agentes archivados",
     hideArchived: "Ocultar agentes archivados",

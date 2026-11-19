@@ -58,6 +58,8 @@ export const agentsSettings = {
   roster: {
     add: "Custom agent",
     remove: "Delete",
+    removeTitle: (name: string) => `Delete @${name}?`,
+    removeMessage: "The agent is deleted on every linked device, or archived and hidden when it already took part in a conversation, so its messages keep their author.",
     restore: "Restore",
     showArchived: "Show archived agents",
     hideArchived: "Hide archived agents",

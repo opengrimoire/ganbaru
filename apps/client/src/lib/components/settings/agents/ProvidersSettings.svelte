@@ -35,6 +35,7 @@
   import { unconfiguredFamilySituation } from "./provider-install-steps";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import { requestConfirmation } from "$lib/components/ui/confirmation.svelte";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
@@ -264,7 +265,15 @@
   /** Deletes a named agent that was never used, and archives one that was, which hides it from the list. */
   async function removeAgent(agent: ChatAiAgentRead): Promise<void> {
     if (!selectedProvider) return;
-    await perform(selectedProvider.configuration.instanceId, async () => {
+    const instanceId = selectedProvider.configuration.instanceId;
+    const confirmed = await requestConfirmation({
+      title: t("settings.agents.roster.removeTitle", agent.participant.displayName),
+      message: t("settings.agents.roster.removeMessage"),
+      confirmLabel: t("settings.agents.roster.remove"),
+      danger: true,
+    });
+    if (!confirmed) return;
+    await perform(instanceId, async () => {
       await chatApi.removeCustomChatAgent(agent.participant.id, agent.participant.revision);
       await chat.refreshAgents();
     });

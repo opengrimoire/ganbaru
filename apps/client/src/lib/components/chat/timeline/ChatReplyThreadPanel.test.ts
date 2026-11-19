@@ -589,6 +589,56 @@ describe("ChatReplyThreadPanel", () => {
     expect(target.querySelector("[data-run-outcome]")).toBeNull();
   });
 
+  it("shows the state of work another linked device runs and stops it from the thread", async () => {
+    const remoteWork = {
+      id: "assignment:remote",
+      replyThreadId: page.thread.id,
+      agent: agentParticipant,
+      triggeringMessageItemId: "root:test",
+      previousAssignmentId: null,
+      state: "working",
+      stateReason: null,
+      revision: 2,
+      settledAt: null,
+      createdAt: "2026-08-04T17:00:00.000Z",
+      updatedAt: "2026-08-04T17:01:00.000Z",
+      review: null,
+      localAcceptance: null,
+      latestRunProviderThreadId: null,
+      modelSelection: { providerManagedModel: true, modelId: null, modelOptions: [] },
+      instructions: "",
+      modelLabel: null,
+      delegation: null,
+    } satisfies ChatReplyThreadPageRead["assignment"];
+    const remotePage: ChatReplyThreadPageRead = { ...page, replies: [], assignment: remoteWork, agentRuns: [] };
+    chat.openReplyThreadId = remotePage.thread.id;
+    chat.replyThread = remotePage;
+    chat.replyThreadPages = [remotePage];
+    chat.selectedExecutionRunId = null;
+    chat.selectedThreadId = null;
+    vi.spyOn(chat, "selectAssignmentExecution").mockResolvedValue();
+    vi.spyOn(chatApi, "readChatThreadShell").mockImplementation(async (threadId) => threadShell(threadId));
+    vi.spyOn(chat, "listScheduledOrganizationalMessages").mockResolvedValue([]);
+    const cancel = vi.spyOn(chat, "cancelAssignment").mockResolvedValue();
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatReplyThreadPanel, {
+      target,
+      props: { onClose: vi.fn() },
+    });
+
+    await vi.waitFor(() => {
+      expect(target?.querySelector('[data-work-state="working"]')).not.toBeNull();
+    });
+    expect(target.querySelector('[data-work-state="working"] [role="status"]')?.textContent)
+      .toBe(en.chat.delegation.states.working);
+    const stop = target.querySelector<HTMLButtonElement>('[data-work-state="working"] [data-action="stop-run"]');
+    expect(stop?.title).toContain("Atlas");
+    stop?.click();
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith("assignment:remote"));
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
   it("exposes private scratch only when the reply thread has a scratch run", async () => {
     const scratchThreadId = "provider-thread:scratch";
     const scratchRun = {

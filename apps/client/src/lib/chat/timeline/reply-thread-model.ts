@@ -191,6 +191,28 @@ export function agentRunIsActive(run: Pick<ChatAgentRunRead, "state">): boolean 
   return ACTIVE_RUN_STATES.has(run.state);
 }
 
+/** Work assignment states in which the work is still active, so a person can stop it. */
+export const STOPPABLE_ASSIGNMENT_STATES: ReadonlySet<ChatWorkAssignmentRead["state"]> = new Set([
+  "queued",
+  "working",
+  "waiting_for_answer",
+  "waiting_for_approval",
+]);
+
+/**
+ * Returns the active work of a reply thread that no visible run stands for, so the thread shows its state and a stop
+ * control itself: work whose run has not started, or work another linked device runs, since runs stay on the device
+ * that executes them. Work that waits for a Start on this device is left to the composer, which offers that Start.
+ */
+export function activeWorkWithoutRun<Work extends Pick<ChatWorkAssignmentRead, "id" | "state" | "localAcceptance">>(
+  assignment: Work | null,
+  runs: readonly Pick<ChatAgentRunRead, "assignmentId" | "state">[],
+): Work | null {
+  if (!assignment || !STOPPABLE_ASSIGNMENT_STATES.has(assignment.state) || assignment.localAcceptance) return null;
+  const runShown = runs.some((run) => run.assignmentId === assignment.id && agentRunIsActive(run));
+  return runShown ? null : assignment;
+}
+
 /**
  * Returns whether a run needs its own place in the thread although its exact turn is not loaded: a run that failed or
  * was stopped before it had a provider turn, or a run that still works and can be stopped.

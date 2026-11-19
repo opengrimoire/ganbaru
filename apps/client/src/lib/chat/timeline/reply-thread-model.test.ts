@@ -7,10 +7,12 @@ import type {
   ChatMessageRead,
   ChatTimelineItemRead,
   ChatTimelineTurnRead,
+  ChatWorkAssignmentRead,
   JsonValue,
   VersionedJson,
 } from "$lib/chat/contracts";
 import {
+  activeWorkWithoutRun,
   agentRunIsActive,
   agentRunOutcome,
   agentRunRestart,
@@ -432,6 +434,49 @@ describe("reply thread run outcomes", () => {
     const states: ChatAgentRunRead["state"][] = ["queued", "starting", "working", "waiting", "completed", "failed", "cancelled"];
 
     expect(states.filter((state) => agentRunIsActive({ state }))).toEqual(["queued", "starting", "working", "waiting"]);
+  });
+});
+
+describe("active work without a run", () => {
+  type Work = Pick<ChatWorkAssignmentRead, "id" | "state" | "localAcceptance">;
+  const work = (state: Work["state"], localAcceptance: Work["localAcceptance"] = null): Work => ({
+    id: "assignment-1",
+    state,
+    localAcceptance,
+  });
+
+  it("stands for active work that another linked device runs, whose runs never reach this device", () => {
+    const states: Work["state"][] = [
+      "queued",
+      "working",
+      "waiting_for_answer",
+      "waiting_for_approval",
+      "ready_for_review",
+      "completed",
+      "failed",
+      "cancelled",
+    ];
+
+    expect(states.filter((state) => activeWorkWithoutRun(work(state), []) !== null))
+      .toEqual(["queued", "working", "waiting_for_answer", "waiting_for_approval"]);
+    expect(activeWorkWithoutRun(null, [])).toBeNull();
+  });
+
+  it("leaves active work to the Stop working control of its active run", () => {
+    expect(activeWorkWithoutRun(work("working"), [{ assignmentId: "assignment-1", state: "working" }])).toBeNull();
+  });
+
+  it("still stands for the work when only an ended run or another work's run is visible", () => {
+    const active = work("working");
+
+    expect(activeWorkWithoutRun(active, [{ assignmentId: "assignment-1", state: "completed" }])).toBe(active);
+    expect(activeWorkWithoutRun(active, [{ assignmentId: "assignment-0", state: "working" }])).toBe(active);
+  });
+
+  it("leaves work that waits for a Start on this device to the composer", () => {
+    const offer = { digest: "digest-1", providerInstanceId: "codex-desk", access: "ask" as const, folders: [] };
+
+    expect(activeWorkWithoutRun(work("queued", offer), [])).toBeNull();
   });
 });
 

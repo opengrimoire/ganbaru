@@ -35,10 +35,10 @@
     ChatRecurrenceSpec,
     ChatScheduledMessageRead,
     ChatWorkAssignmentId,
-    ChatWorkAssignmentState,
     ProviderModel,
   } from "$lib/chat/contracts";
   import { ChatComposerEditor, type ChatComposerEditorChange } from "$lib/chat/composer/editor";
+  import { STOPPABLE_ASSIGNMENT_STATES } from "$lib/chat/timeline/reply-thread-model";
   import {
     channelModelChoices,
     genericModelCommandEntry,
@@ -119,12 +119,6 @@
 
   const REFERENCE_CLIPBOARD_TYPE = "application/x-ganbaru-chat-references+json";
   const MAX_MESSAGE_BYTES = 131_072;
-  const STOPPABLE_ASSIGNMENT_STATES = new Set<ChatWorkAssignmentState>([
-    "queued",
-    "working",
-    "waiting_for_answer",
-    "waiting_for_approval",
-  ]);
 
   let {
     destination,

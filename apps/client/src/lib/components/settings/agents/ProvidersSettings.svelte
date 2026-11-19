@@ -773,7 +773,7 @@
                                   role="img"
                                   aria-label={t("settings.agents.roster.latest")}
                                   data-app-tooltip={t("settings.agents.roster.latest")}
-                                ><CircleQuestionMark strokeWidth={1.8} aria-hidden="true" /></span>
+                                ><CircleQuestionMark size={14} strokeWidth={1.8} aria-hidden="true" /></span>
                               {/if}
                             </div>
                             <div class="model-actions">
@@ -851,7 +851,7 @@
               class="custom-agent-action {SETTINGS_PRIMARY_BUTTON_CLASS}"
               disabled={refreshingAll || busyIds.includes(selectedProvider.configuration.instanceId)}
               onclick={() => { customAgentOpen = true; }}
-            >{t("settings.agents.roster.add")}</button>
+            ><Plus size={14} />{t("settings.agents.roster.add")}</button>
           {/if}
         </footer>
       </div>
@@ -942,7 +942,6 @@
   .model-row { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:0.65rem; border-bottom:1px solid var(--border); padding:0.62rem 0.25rem; }
   .model-identity { display:flex; min-width:0; align-items:center; gap:0.35rem; }
   .latest-mark { display:inline-grid; flex:0 0 auto; place-items:center; color:var(--muted-foreground); }
-  .latest-mark :global(svg) { width:1.1em; height:1.1em; }
   .model-name { overflow:hidden; color:var(--foreground); font-size:calc(0.8rem * var(--type-scale)); font-weight:550; line-height:1.1rem; text-overflow:ellipsis; white-space:nowrap; }
   .model-actions { display:flex; flex-shrink:0; align-items:center; gap:0.45rem; }
   .models-empty { padding:0.9rem 0.25rem; color:var(--muted-foreground); font-size:calc(0.75rem * var(--type-scale)); }

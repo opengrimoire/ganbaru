@@ -19,7 +19,6 @@
   import { chatAgentDefaultModelId } from "$lib/chat/agents/channel-access";
   import { isActiveChannelMember } from "$lib/chat/agents/channel-members";
   import type {
-    ChatAiAgentRead,
     ChatAttachmentRead,
     ChatAssignmentInputRead,
     ChatAssignmentReviewRequest,
@@ -37,7 +36,6 @@
     ChatScheduledMessageRead,
     ChatWorkAssignmentId,
     ChatWorkAssignmentState,
-    ProjectWorkingFolderPathRead,
     ProviderModel,
   } from "$lib/chat/contracts";
   import { ChatComposerEditor, type ChatComposerEditorChange } from "$lib/chat/composer/editor";
@@ -74,6 +72,17 @@
     type ChatReferenceClipboardSlice,
     type ChatReferenceTrigger,
   } from "$lib/chat/composer/message-references";
+  import {
+    candidateIsDisabled,
+    candidateReference,
+    firstPickerIndex,
+    groupReferenceCandidates,
+    inferAssignmentTarget,
+    lastPickerIndex,
+    matchesQuery,
+    nextPickerIndex,
+    type ReferenceCandidate,
+  } from "$lib/chat/composer/reference-candidates";
   import { chatErrorCode, chatErrorMessage, chatErrorReason } from "$lib/chat/error-presentation";
   import { parseChatMessageReference } from "$lib/chat/validation";
   import { formatDateTime, formatList } from "$lib/i18n/formatters";
@@ -101,60 +110,10 @@
   type ScheduleMenuComponent = typeof import("./ChatMessageScheduleMenu.svelte").default;
   type EmojiPickerComponent = typeof import("$lib/components/icon-picker/IconPicker.svelte").default;
 
-  type ReferenceCandidate =
-    | {
-        key: string;
-        kind: "participant";
-        group: string;
-        label: string;
-        description: string;
-        participant: ChatParticipantRead;
-        agent: ChatAiAgentRead | null;
-        needsMembership: boolean;
-      }
-    | {
-        key: string;
-        kind: "channel";
-        group: string;
-        label: string;
-        description: string;
-        channel: ChatChannelRead;
-      }
-    | {
-        key: string;
-        kind: "workingFolder";
-        group: string;
-        label: string;
-        description: string;
-        workingFolderId: string;
-      }
-    | {
-        key: string;
-        kind: "workspacePath";
-        group: string;
-        label: string;
-        description: string;
-        workingFolderId: string;
-        path: ProjectWorkingFolderPathRead;
-      }
-    | {
-        key: string;
-        kind: "executionEnvironment";
-        group: string;
-        label: string;
-        description: string;
-        target: ChatAssignmentTargetRead;
-      };
-
   interface DisclosureBlocker {
     message: string;
     sourceChannelId: string;
     sourceReferenceId: string | null;
-  }
-
-  interface ReferenceCandidateGroup {
-    label: string;
-    entries: Array<{ candidate: ReferenceCandidate; index: number }>;
   }
 
   const REFERENCE_CLIPBOARD_TYPE = "application/x-ganbaru-chat-references+json";
@@ -901,45 +860,6 @@
       announcement = t("chat.organization.referenceInserted", reference.metadata.labelSnapshot);
     } else {
       announcement = t("chat.organization.duplicateReference", reference.metadata.labelSnapshot);
-    }
-  }
-
-  function candidateReference(candidate: ReferenceCandidate): ChatMessageReference | null {
-    const metadata = {
-      referenceId: crypto.randomUUID(),
-      labelSnapshot: candidate.label.replace(/^[@#]/u, ""),
-      startOffset: 0,
-      endOffset: 0,
-      plainTextProjection: candidate.kind === "channel"
-        ? candidate.label
-        : `@${candidate.label.replace(/^@/u, "")}`,
-    };
-    switch (candidate.kind) {
-      case "participant":
-        return {
-          kind: "participant",
-          metadata,
-          participantId: candidate.participant.id,
-          participantKind: candidate.participant.kind,
-        };
-      case "channel":
-        return { kind: "channel", metadata, channelId: candidate.channel.id };
-      case "workingFolder":
-        return { kind: "workingFolder", metadata, workingFolderId: candidate.workingFolderId };
-      case "workspacePath":
-        return {
-          kind: "workspacePath",
-          metadata,
-          workingFolderId: candidate.workingFolderId,
-          pathKind: candidate.path.kind === "directory" ? "folder" : "file",
-          relativePath: candidate.path.relativePath,
-        };
-      case "executionEnvironment":
-        return candidate.target.executionTarget ? {
-          kind: "executionEnvironment",
-          metadata,
-          executionEnvironmentId: candidate.target.executionTarget.executionEnvironmentId,
-        } : null;
     }
   }
 
@@ -1894,10 +1814,6 @@
     return [group?.name, project?.name].filter(Boolean).join(" / ") || channel.projectId;
   }
 
-  function matchesQuery(query: string, ...values: string[]): boolean {
-    return !query || values.some((value) => value.toLocaleLowerCase().includes(query));
-  }
-
   function candidateSort(left: ReferenceCandidate, right: ReferenceCandidate): number {
     return candidateRank(left) - candidateRank(right)
       || left.group.localeCompare(right.group)
@@ -1912,63 +1828,6 @@
     if (candidate.kind === "workingFolder") return 2;
     if (candidate.kind === "workspacePath") return 3;
     return 4;
-  }
-
-  function groupReferenceCandidates(candidates: readonly ReferenceCandidate[]): ReferenceCandidateGroup[] {
-    const groups: ReferenceCandidateGroup[] = [];
-    candidates.forEach((candidate, index) => {
-      const group = groups.at(-1);
-      if (group?.label === candidate.group) group.entries.push({ candidate, index });
-      else groups.push({ label: candidate.group, entries: [{ candidate, index }] });
-    });
-    return groups;
-  }
-
-  function candidateIsDisabled(candidate: ReferenceCandidate): boolean {
-    return candidate.kind === "executionEnvironment" && !candidate.target.eligible;
-  }
-
-  function firstPickerIndex(candidates: readonly ReferenceCandidate[]): number {
-    const index = candidates.findIndex((candidate) => !candidateIsDisabled(candidate));
-    return index < 0 ? 0 : index;
-  }
-
-  function lastPickerIndex(candidates: readonly ReferenceCandidate[]): number {
-    for (let index = candidates.length - 1; index >= 0; index -= 1) {
-      if (!candidateIsDisabled(candidates[index]!)) return index;
-    }
-    return 0;
-  }
-
-  function nextPickerIndex(
-    candidates: readonly ReferenceCandidate[],
-    current: number,
-    direction: 1 | -1,
-  ): number {
-    if (candidates.length === 0) return 0;
-    let index = current;
-    for (let attempts = 0; attempts < candidates.length; attempts += 1) {
-      index = (index + direction + candidates.length) % candidates.length;
-      if (!candidateIsDisabled(candidates[index]!)) return index;
-    }
-    return current;
-  }
-
-  function inferAssignmentTarget(
-    references: readonly ChatMessageReference[],
-    targets: readonly ChatAssignmentTargetRead[],
-  ): ChatAssignmentTargetRead | null {
-    const referencedEnvironmentIds = new Set(references.flatMap((reference) => (
-      reference.kind === "executionEnvironment" ? [reference.executionEnvironmentId] : []
-    )));
-    if (referencedEnvironmentIds.size === 1) {
-      const environmentId = [...referencedEnvironmentIds][0];
-      const target = targets.find((candidate) => (
-        candidate.executionTarget?.executionEnvironmentId === environmentId && candidate.eligible
-      ));
-      if (target) return target;
-    }
-    return targets.find((target) => target.isDefault && target.eligible) ?? null;
   }
 
   /**

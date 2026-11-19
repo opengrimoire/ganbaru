@@ -1200,7 +1200,7 @@
             <ChatReplyThreadPanel presentation="main" onClose={closeReplyThread} />
           {:else}
             <ChatChannelFeed onThreadOpened={threadOpened} />
-            {#if mobileShell && chat.openReplyThreadId}<ChatReplyThreadSheet onClose={closeReplyThread} />{/if}
+            {#if mobileShell && chat.openReplyThreadId && !threadColumnOpen}<ChatReplyThreadSheet onClose={closeReplyThread} />{/if}
           {/if}
         {:else if !chat.loading && !chat.channelsLoading}
           <ChatFirstUse />

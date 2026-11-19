@@ -44,12 +44,13 @@ function canScrollToward(element: HTMLElement, deltaY: number): boolean {
 }
 
 /**
- * Return whether text entry, a slider, or a scroller nested inside the thread entries sits under `target` and keeps a
- * vertical drag; the entries scroller itself is judged by its offset instead.
+ * Return whether text entry, a slider, a floating menu, or a scroller nested inside the thread entries sits under
+ * `target` and keeps a vertical drag; the entries scroller itself is judged by its offset instead.
  */
 function innerControlKeepsDrag(target: Element | null, scroll: HTMLElement | null, deltaY: number): boolean {
   for (let current = target; current && current !== scroll; current = current.parentElement) {
     if (current.matches("[data-reply-thread-sheet]")) return false;
+    if (current.matches(".surface-floating")) return true;
     if (isTextEntryElement(current)) return true;
     if (current instanceof HTMLInputElement && current.type === "range") return true;
     if (current instanceof HTMLElement && canScrollToward(current, deltaY)) return true;
@@ -69,6 +70,8 @@ export class ReplyThreadSheetController {
   entered = $state(false);
   closing = $state(false);
   private fullHeight = $state(0);
+  /** Whether the track changed size this frame, as the keyboard slides, so the sheet follows it without easing. */
+  private trackResizing = $state(false);
   private gesture: SheetGesture | null = null;
   private closeTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -78,13 +81,25 @@ export class ReplyThreadSheetController {
     $effect(() => {
       const track = options.track();
       if (!track) return;
+      let settleFrame = 0;
       const measure = () => {
         this.fullHeight = track.clientHeight;
       };
-      const observer = new ResizeObserver(measure);
+      const observer = new ResizeObserver(() => {
+        if (track.clientHeight === untrack(() => this.fullHeight)) return;
+        this.trackResizing = true;
+        measure();
+        cancelAnimationFrame(settleFrame);
+        settleFrame = requestAnimationFrame(() => {
+          this.trackResizing = false;
+        });
+      });
       observer.observe(track);
       untrack(measure);
-      return () => observer.disconnect();
+      return () => {
+        observer.disconnect();
+        cancelAnimationFrame(settleFrame);
+      };
     });
 
     $effect(() => {
@@ -145,9 +160,9 @@ export class ReplyThreadSheetController {
     return Math.max(this.visibleHeight, this.heights.peek);
   }
 
-  /** How height changes animate, or null while a finger moves the sheet. */
+  /** How height changes animate, or null while a finger moves the sheet or the sheet follows the keyboard. */
   get motion(): "settle" | null {
-    return this.dragHeight === null ? "settle" : null;
+    return this.dragHeight === null && !this.trackResizing ? "settle" : null;
   }
 
   /** Slide the sheet out, then close the thread. */

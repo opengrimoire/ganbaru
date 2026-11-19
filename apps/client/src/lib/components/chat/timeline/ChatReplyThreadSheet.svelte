@@ -62,7 +62,7 @@
   .thread-sheet-frame { position:fixed; z-index:50; top:var(--visual-viewport-offset-top); left:var(--visual-viewport-offset-left); width:var(--visual-viewport-width); height:calc(var(--visual-viewport-height) - var(--safe-area-bottom)); overflow:clip; pointer-events:none; }
   .thread-sheet-backdrop { position:absolute; inset:0; pointer-events:auto; }
   .thread-sheet-track { position:absolute; top:calc(var(--safe-area-top) + 0.5rem); right:var(--safe-area-right); bottom:0; left:var(--safe-area-left); pointer-events:none; }
-  .thread-sheet { position:absolute; right:0; bottom:0; left:0; overflow:clip; background:var(--cal-bg); box-shadow:var(--floating-shadow); pointer-events:auto; }
+  .thread-sheet { position:absolute; right:0; bottom:0; left:0; max-height:100%; overflow:clip; background:var(--cal-bg); box-shadow:var(--floating-shadow); pointer-events:auto; }
   .thread-sheet[data-sheet-motion="settle"], .thread-sheet-backdrop[data-sheet-motion="settle"] { transition:height var(--thread-sheet-settle) cubic-bezier(0.2, 0.8, 0.2, 1), opacity var(--thread-sheet-settle) ease; }
   .thread-sheet-content { display:flex; flex-direction:column; }
   .thread-sheet-handle { display:flex; height:1.125rem; flex:0 0 auto; justify-content:center; padding-top:0.25rem; background:var(--cal-bg); touch-action:none; }

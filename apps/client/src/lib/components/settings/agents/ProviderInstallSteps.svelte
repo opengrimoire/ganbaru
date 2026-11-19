@@ -115,7 +115,7 @@
         {:else}
           <button
             type="button"
-            class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-[0.733333rem] font-semibold whitespace-nowrap text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+            class="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-2.5 text-[0.733333rem] font-semibold whitespace-nowrap text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
             disabled={refreshing}
             onclick={() => void refresh()}
           >

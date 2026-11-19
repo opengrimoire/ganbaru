@@ -187,6 +187,9 @@ pub struct ProviderInstallGuide {
     pub command: String,
     /// The command that signs the person in to their provider account once the CLI is installed.
     pub sign_in_command: String,
+    /// The sign-in command for a terminal opened right after the installer ran, which names the
+    /// installed program by its folder when the installer leaves that folder off `PATH`.
+    pub sign_in_after_install_command: String,
     /// The provider documentation page about installing the CLI.
     pub docs_url: String,
 }

@@ -64,6 +64,8 @@ export interface ProviderInstallGuide {
   command: string;
   /** The command that signs the person in to their provider account once the CLI is installed. */
   signInCommand: string;
+  /** The sign-in command for a terminal opened right after the installer ran, which names the installed program by its folder when the installer leaves that folder off `PATH`. */
+  signInAfterInstallCommand: string;
   /** The provider documentation page about installing the CLI, always `https`. */
   docsUrl: string;
 }

@@ -120,7 +120,7 @@
                 ? t("settings.agents.providers.install.runSignInIfNeeded")
                 : t("settings.agents.providers.install.runSignIn")}
             </p>
-            <CommandBox class="mt-2 text-[0.75rem]" command={guide.signInCommand} {prompt} />
+            <CommandBox class="mt-2 text-[0.75rem]" command={needsInstall ? guide.signInAfterInstallCommand : guide.signInCommand} {prompt} />
           </div>
         </NumberedStep>
       {:else}

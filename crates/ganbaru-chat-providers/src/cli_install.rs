@@ -2,7 +2,10 @@
 //!
 //! Commands are the providers' own, copied from their installation pages, and are shown for
 //! the person to run in a terminal, with the command each CLI documents for signing in to the
-//! provider account; Ganbaru never runs an installer or a sign-in itself. Each command
+//! provider account; Ganbaru never runs an installer or a sign-in itself. The sign-in shown
+//! right after an install names the program by its folder when the installer leaves that
+//! folder off `PATH`, and on Windows it calls npm and its shims through their `.cmd` files,
+//! which the default PowerShell execution policy allows. Each command
 //! installs a release inside the family's supported range, so OpenCode names its version 1
 //! installer and package rather than the version 2 line Ganbaru has no runtime for. Each
 //! definition also names the folders its installer puts the program in, which discovery
@@ -20,6 +23,10 @@ struct InstallDefinition {
     windows: &'static str,
     /// The command that signs in to the provider account, the same on every platform.
     sign_in: &'static str,
+    /// The sign-in command for a new Linux or macOS terminal right after the installer ran.
+    unix_sign_in_after_install: &'static str,
+    /// The sign-in command for a new PowerShell window right after the installer ran.
+    windows_sign_in_after_install: &'static str,
     docs_url: &'static str,
     /// Where the Linux and macOS installers put the program, as folder names under the home folder.
     unix_directories: &'static [&'static [&'static str]],
@@ -44,6 +51,9 @@ const INSTALLERS: &[InstallDefinition] = &[
         unix: "curl -fsSL https://claude.ai/install.sh | bash",
         windows: "irm https://claude.ai/install.ps1 | iex",
         sign_in: "claude auth login",
+        // The installer leaves its folder off `PATH` on every platform and only prints how to add it.
+        unix_sign_in_after_install: "~/.local/bin/claude auth login",
+        windows_sign_in_after_install: r#"& "$HOME\.local\bin\claude.exe" auth login"#,
         docs_url: "https://code.claude.com/docs/en/setup",
         unix_directories: &[&[".local", "bin"]],
         windows_directories: &[(WindowsRoot::Home, &[".local", "bin"])],
@@ -53,6 +63,8 @@ const INSTALLERS: &[InstallDefinition] = &[
         unix: "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
         windows: "irm https://chatgpt.com/codex/install.ps1 | iex",
         sign_in: "codex login",
+        unix_sign_in_after_install: "codex login",
+        windows_sign_in_after_install: "codex login",
         docs_url: "https://developers.openai.com/codex/cli",
         unix_directories: &[&[".local", "bin"]],
         windows_directories: &[(
@@ -65,6 +77,9 @@ const INSTALLERS: &[InstallDefinition] = &[
         unix: "curl https://cursor.com/install -fsS | bash",
         windows: "irm 'https://cursor.com/install?win32=true' | iex",
         sign_in: "cursor-agent login",
+        // The Linux and macOS installer only prints how to add its folder to `PATH`.
+        unix_sign_in_after_install: "~/.local/bin/cursor-agent login",
+        windows_sign_in_after_install: "cursor-agent login",
         docs_url: "https://cursor.com/docs/cli/installation",
         unix_directories: &[&[".local", "bin"]],
         windows_directories: &[(WindowsRoot::LocalAppData, &["cursor-agent"])],
@@ -74,6 +89,8 @@ const INSTALLERS: &[InstallDefinition] = &[
         unix: "curl -fsSL https://x.ai/cli/install.sh | bash",
         windows: "irm https://x.ai/cli/install.ps1 | iex",
         sign_in: "grok login",
+        unix_sign_in_after_install: "grok login",
+        windows_sign_in_after_install: "grok login",
         docs_url: "https://docs.x.ai/build/overview",
         // The program lives in `.grok/bin`, linked from `.local/bin` only when that is on `PATH`.
         unix_directories: &[&[".grok", "bin"], &[".local", "bin"]],
@@ -84,8 +101,12 @@ const INSTALLERS: &[InstallDefinition] = &[
         unix: "curl -fsSL https://opencode.ai/install | bash",
         // OpenCode documents no PowerShell installer; its version 1 npm package installs
         // on Windows wherever Node.js is present.
-        windows: "npm install -g opencode-ai@1",
+        // `npm.cmd` and `opencode.cmd` skip the `.ps1` shims that the default PowerShell
+        // execution policy refuses to run.
+        windows: "npm.cmd install -g opencode-ai@1",
         sign_in: "opencode auth login",
+        unix_sign_in_after_install: "opencode auth login",
+        windows_sign_in_after_install: "opencode.cmd auth login",
         docs_url: "https://opencode.ai/docs/",
         unix_directories: &[&[".opencode", "bin"]],
         windows_directories: &[(WindowsRoot::RoamingAppData, &["npm"])],
@@ -102,15 +123,24 @@ fn install_guide_for(family_id: &str, windows: bool) -> Option<ProviderInstallGu
     let definition = INSTALLERS
         .iter()
         .find(|definition| definition.family_id == family_id)?;
-    let (shell, command) = if windows {
-        (ProviderInstallShell::PowerShell, definition.windows)
+    let (shell, command, sign_in_after_install) = if windows {
+        (
+            ProviderInstallShell::PowerShell,
+            definition.windows,
+            definition.windows_sign_in_after_install,
+        )
     } else {
-        (ProviderInstallShell::Terminal, definition.unix)
+        (
+            ProviderInstallShell::Terminal,
+            definition.unix,
+            definition.unix_sign_in_after_install,
+        )
     };
     Some(ProviderInstallGuide {
         shell,
         command: command.to_string(),
         sign_in_command: definition.sign_in.to_string(),
+        sign_in_after_install_command: sign_in_after_install.to_string(),
         docs_url: definition.docs_url.to_string(),
     })
 }
@@ -205,6 +235,48 @@ mod tests {
                 definition.family_id
             );
         }
+    }
+
+    #[test]
+    fn every_sign_in_after_install_runs_the_family_program_with_the_same_arguments() {
+        for definition in INSTALLERS {
+            let (_, arguments) = definition
+                .sign_in
+                .split_once(' ')
+                .expect(definition.family_id);
+            let program = definition.sign_in.split_whitespace().next().unwrap();
+            for command in [
+                definition.unix_sign_in_after_install,
+                definition.windows_sign_in_after_install,
+            ] {
+                let (invocation, rest) = command
+                    .rsplit_once(&format!(" {arguments}"))
+                    .expect(command);
+                assert!(rest.is_empty(), "{command}");
+                let name = invocation
+                    .trim_start_matches("& ")
+                    .trim_matches('"')
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .unwrap();
+                let name = name
+                    .strip_suffix(".exe")
+                    .or_else(|| name.strip_suffix(".cmd"))
+                    .unwrap_or(name);
+                assert_eq!(name, program, "{command}");
+            }
+        }
+    }
+
+    #[test]
+    fn opencode_on_windows_avoids_the_powershell_script_shims() {
+        let windows = install_guide_for("opencode", true).unwrap();
+        assert!(windows.command.starts_with("npm.cmd "));
+        assert!(
+            windows
+                .sign_in_after_install_command
+                .starts_with("opencode.cmd ")
+        );
     }
 
     #[test]

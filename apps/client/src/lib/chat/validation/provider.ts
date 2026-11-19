@@ -83,6 +83,7 @@ function parseProviderInstallGuide(value: unknown, label: string): ProviderInsta
     shell: readEnum(record.shell, PROVIDER_INSTALL_SHELLS, `${label}.shell`),
     command: readString(record.command, `${label}.command`),
     signInCommand: readString(record.signInCommand, `${label}.signInCommand`),
+    signInAfterInstallCommand: readString(record.signInAfterInstallCommand, `${label}.signInAfterInstallCommand`),
     docsUrl,
   };
 }

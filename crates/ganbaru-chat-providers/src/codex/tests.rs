@@ -122,10 +122,7 @@ pub(super) fn configuration(
             "schemaVersion": 1,
             "value": {
                 "shadowHomePath": shadow_home,
-                "refreshMcpBeforeTurn": true,
-                "allowCustomModels": false,
-                "customModelIds": [],
-                "customModelLabels": {}
+                "refreshMcpBeforeTurn": true
             }
         }
     }))

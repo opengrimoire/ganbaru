@@ -322,7 +322,6 @@ export function modelSettings(): ChatSettingsRead {
           contextLimit: 258_000,
           availability: "available",
           capabilities: ["images"],
-          custom: false,
           options: [{
             kind: "choice",
             key: "reasoning_effort",
@@ -345,7 +344,6 @@ export function modelSettings(): ChatSettingsRead {
           contextLimit: 258_000,
           availability: "available",
           capabilities: [],
-          custom: false,
           options: [{
             kind: "choice",
             key: "reasoning_effort",
@@ -378,7 +376,6 @@ export function modelSettings(): ChatSettingsRead {
           contextLimit: 200_000,
           availability: "deprecated",
           capabilities: [],
-          custom: false,
           options: [],
         }],
       },
@@ -411,7 +408,6 @@ export function claudeModelSettings(): ChatSettingsRead {
       contextLimit: null,
       availability: "available",
       capabilities: [],
-      custom: false,
       options: [{
         kind: "choice",
         key: "effort",

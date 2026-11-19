@@ -858,8 +858,7 @@ mod tests {
                 "contextLimit": null,
                 "availability": "available",
                 "capabilities": [],
-                "options": [],
-                "custom": false
+                "options": []
             }, {
                 "id": "gpt-old",
                 "displayName": "GPT Old",
@@ -867,8 +866,7 @@ mod tests {
                 "contextLimit": null,
                 "availability": "deprecated",
                 "capabilities": [],
-                "options": [],
-                "custom": false
+                "options": []
             }],
             "source": "provider",
             "discoveredAt": "2026-07-23T03:18:50.240Z",

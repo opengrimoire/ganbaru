@@ -1621,7 +1621,6 @@ mod tests {
                     availability: ModelAvailability::Available,
                     capabilities: Vec::new(),
                     options: Vec::new(),
-                    custom: false,
                 })
                 .collect(),
             recommended_model_id: None,

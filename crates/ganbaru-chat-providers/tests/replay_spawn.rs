@@ -95,7 +95,7 @@ fn claude_configuration(
         "credentialReferences": {},
         "providerConfig": {
             "schemaVersion": 1,
-            "value": { "allowCustomModels": false, "customModelIds": [], "customModelLabels": {} }
+            "value": {}
         }
     }))
     .unwrap()

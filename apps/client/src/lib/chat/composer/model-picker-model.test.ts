@@ -16,7 +16,6 @@ function model(id: string, overrides: Partial<ProviderModel> = {}): ProviderMode
     availability: "available",
     capabilities: [],
     options: [],
-    custom: false,
     ...overrides,
   };
 }

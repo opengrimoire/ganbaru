@@ -16,13 +16,8 @@ pub const MAX_RUNTIME_REVIEW_LABEL_CHARS: usize = 240;
 /// Variables that apply silently for every family because they only affect formatting or locale.
 const SHARED_SILENT_ENVIRONMENT: &[&str] = &["LANG", "LC_ALL", "NO_COLOR", "TZ"];
 
-/// Provider configuration keys that only change model presentation.
-const COSMETIC_PROVIDER_CONFIG_KEYS: &[&str] = &[
-    "allowCustomModels",
-    "customModelIds",
-    "customModelLabels",
-    "refreshMcpBeforeTurn",
-];
+/// Provider configuration keys that never change what a session can reach.
+const COSMETIC_PROVIDER_CONFIG_KEYS: &[&str] = &["refreshMcpBeforeTurn"];
 
 /// Variable names and prefixes that load code, redirect traffic, or move provider state.
 const PERMISSION_WIDENING_ENVIRONMENT: &[&str] = &[

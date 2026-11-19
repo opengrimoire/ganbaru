@@ -444,7 +444,6 @@ pub fn provider_models(
                     ProviderCapability::CostReporting,
                 ],
                 options,
-                custom: false,
             })
         })
         .collect()

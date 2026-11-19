@@ -257,23 +257,6 @@ impl CodexProviderDriver {
                 break;
             }
         }
-        if self.settings.allow_custom_models {
-            let mut known = models
-                .iter()
-                .map(|model| model.id.as_str().to_string())
-                .collect::<BTreeSet<_>>();
-            for custom in &self.settings.custom_model_ids {
-                if known.insert(custom.clone()) {
-                    models.push(custom_provider_model(
-                        custom,
-                        self.settings
-                            .custom_model_labels
-                            .get(custom)
-                            .map(String::as_str),
-                    )?);
-                }
-            }
-        }
         Ok(models)
     }
 

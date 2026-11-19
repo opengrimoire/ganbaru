@@ -286,7 +286,6 @@ export function parseProviderModel(value: unknown, label = "provider model"): Pr
       (entry, entryLabel) => readEnum(entry, PROVIDER_CAPABILITIES, entryLabel),
     ),
     options: readArray(record.options, `${label}.options`, parseModelOptionDefinition),
-    custom: readBoolean(record.custom, `${label}.custom`),
   };
 }
 

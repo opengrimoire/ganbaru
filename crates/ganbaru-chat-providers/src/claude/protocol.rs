@@ -6,7 +6,7 @@ use crate::registry::{ProviderCompatibilityRange, VersionOrder, admit_version, v
 use base64::{Engine as _, engine::general_purpose};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
@@ -1024,11 +1024,7 @@ fn without_default_route(models: Vec<ClaudeModel>) -> Vec<ClaudeModel> {
         .collect()
 }
 
-pub fn provider_models(
-    models: Vec<ClaudeModel>,
-    custom_ids: &[String],
-    custom_labels: &BTreeMap<String, String>,
-) -> ChatResult<Vec<ProviderModel>> {
+pub fn provider_models(models: Vec<ClaudeModel>) -> ChatResult<Vec<ProviderModel>> {
     let mut output = Vec::new();
     let mut seen = BTreeSet::new();
     for model in without_default_route(models) {
@@ -1054,24 +1050,6 @@ pub fn provider_models(
             availability: ModelAvailability::Available,
             capabilities: claude_model_capabilities(),
             options,
-            custom: false,
-        });
-    }
-    for id in custom_ids {
-        if !seen.insert(id.clone()) {
-            continue;
-        }
-        validate_model_id(id)?;
-        let display_name = custom_labels.get(id).cloned().unwrap_or_else(|| id.clone());
-        output.push(ProviderModel {
-            id: ModelId::new(id.clone()).map_err(|_| protocol_error("custom model ID"))?,
-            display_name,
-            description: Some("Custom Claude model ID".to_string()),
-            context_limit: None,
-            availability: ModelAvailability::Unknown,
-            capabilities: claude_model_capabilities(),
-            options: claude_model_options(true, &CLAUDE_EFFORT_LEVELS.map(str::to_string), false),
-            custom: true,
         });
     }
     Ok(output)

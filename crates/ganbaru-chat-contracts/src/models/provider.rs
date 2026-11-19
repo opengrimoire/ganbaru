@@ -387,7 +387,6 @@ pub struct ProviderModel {
     pub availability: super::ModelAvailability,
     pub capabilities: Vec<ProviderCapability>,
     pub options: Vec<ModelOptionDefinition>,
-    pub custom: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

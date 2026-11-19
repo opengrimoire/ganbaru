@@ -117,7 +117,7 @@ describe("Chat composer model", () => {
   it("ranks favorite and recent models before the remaining catalog without replacing raw IDs", () => {
     const models = ["z-model", "favorite", "recent"].map((id) => ({
       id, displayName: id, description: null, contextLimit: null, availability: "available" as const,
-      capabilities: [], options: [], custom: false,
+      capabilities: [], options: [],
     }));
     expect(rankedModels(models, ["favorite"], ["recent"], "").map((model) => model.id)).toEqual(["favorite", "recent", "z-model"]);
   });
@@ -167,7 +167,6 @@ describe("Chat composer model", () => {
       availability: "available",
       capabilities: [],
       options: [effort],
-      custom: false,
     });
     const claude = provider("claude-local", "claude", [model("claude-opus-4-1")]);
     const codex = provider("codex-local", "codex", [model("gpt-5.5-sol"), model("gpt-5.6-sol")]);

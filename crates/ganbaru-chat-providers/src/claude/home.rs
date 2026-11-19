@@ -4,16 +4,12 @@ use super::preferences::{host_preference_variable, preference_variable_names};
 use crate::models::{
     ChatError, ChatErrorCode, ChatResult, ContinuationGroupId, ProviderInstanceConfig,
 };
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-const MAX_CUSTOM_MODELS: usize = 128;
-const MAX_MODEL_ID_BYTES: usize = 256;
-const MAX_MODEL_LABEL_BYTES: usize = 160;
 #[cfg(windows)]
 const MAX_SHIM_BYTES: u64 = 64 * 1024;
 /// Variables Ganbaru sets to run shell commands under the sandbox, which a configured
@@ -26,58 +22,22 @@ const SANDBOX_ENVIRONMENT_NAMES: &[&str] = &[
 /// Appended to the continuation group digest of organizational sessions only.
 const ORGANIZATIONAL_CONTINUATION_MARKER: &[u8] = b"\0organizational";
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
-#[serde(default, rename_all = "camelCase")]
-pub struct ClaudeProviderSettings {
-    pub allow_custom_models: bool,
-    pub custom_model_ids: Vec<String>,
-    pub custom_model_labels: BTreeMap<String, String>,
-}
-
-impl ClaudeProviderSettings {
-    pub fn parse(configuration: &ProviderInstanceConfig) -> ChatResult<Self> {
-        if configuration.provider_config.schema_version != 1 {
-            return Err(ChatError::validation(
-                "providerConfig.schemaVersion",
-                "Claude provider config schema is unsupported",
-            ));
-        }
-        let settings: Self = serde_json::from_value(configuration.provider_config.value.clone())
-            .map_err(|_| {
-                ChatError::validation("providerConfig", "Claude provider config is invalid")
-            })?;
-        if settings.custom_model_ids.len() > MAX_CUSTOM_MODELS
-            || settings.custom_model_ids.iter().any(|model| {
-                model.trim().is_empty()
-                    || model.len() > MAX_MODEL_ID_BYTES
-                    || model.chars().any(char::is_control)
-            })
-        {
-            return Err(ChatError::validation(
-                "providerConfig.customModelIds",
-                "Claude custom model configuration is invalid",
-            ));
-        }
-        if !settings.allow_custom_models && !settings.custom_model_ids.is_empty() {
-            return Err(ChatError::validation(
-                "providerConfig.customModelIds",
-                "Claude custom models require the advanced custom-model option",
-            ));
-        }
-        let ids = settings.custom_model_ids.iter().collect::<BTreeSet<_>>();
-        if settings.custom_model_labels.iter().any(|(id, label)| {
-            !ids.contains(id)
-                || label.trim().is_empty()
-                || label.len() > MAX_MODEL_LABEL_BYTES
-                || label.chars().any(char::is_control)
-        }) {
-            return Err(ChatError::validation(
-                "providerConfig.customModelLabels",
-                "Claude custom model labels are invalid",
-            ));
-        }
-        Ok(settings)
+/// Validates a Claude provider configuration. Claude takes no provider settings, so only the
+/// schema version and the object shape are checked.
+pub fn validate_provider_config(configuration: &ProviderInstanceConfig) -> ChatResult<()> {
+    if configuration.provider_config.schema_version != 1 {
+        return Err(ChatError::validation(
+            "providerConfig.schemaVersion",
+            "Claude provider config schema is unsupported",
+        ));
     }
+    if !configuration.provider_config.value.is_object() {
+        return Err(ChatError::validation(
+            "providerConfig",
+            "Claude provider config is invalid",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

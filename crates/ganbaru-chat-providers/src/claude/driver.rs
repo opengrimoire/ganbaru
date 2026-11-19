@@ -51,7 +51,6 @@ type ClaudeOpenedConnection = (
 
 pub struct ClaudeProviderDriver {
     pub(super) configuration: ProviderInstanceConfig,
-    pub(super) settings: ClaudeProviderSettings,
     pub(super) live: Option<ClaudeLiveSession>,
     pub(super) cached_models: Option<ProviderModelCatalog>,
     pub(super) cached_commands: Vec<ClaudeCommand>,
@@ -141,10 +140,9 @@ impl ClaudeProviderDriver {
                 "Claude driver requires the Claude provider family",
             ));
         }
-        let settings = ClaudeProviderSettings::parse(&configuration)?;
+        validate_provider_config(&configuration)?;
         Ok(Self {
             configuration,
-            settings,
             live: None,
             cached_models: None,
             cached_commands: Vec::new(),
@@ -213,15 +211,7 @@ impl ClaudeProviderDriver {
             .await?;
         let result = async {
             let initialize = initialize(&connection, context).await?;
-            let models = provider_models(
-                initialize.models.clone(),
-                if self.settings.allow_custom_models {
-                    &self.settings.custom_model_ids
-                } else {
-                    &[]
-                },
-                &self.settings.custom_model_labels,
-            )?;
+            let models = provider_models(initialize.models.clone())?;
             let usage_limits = if read_usage_limits && has_plan(&initialize) {
                 read_plan_limits(&connection, context).await
             } else {
@@ -447,15 +437,7 @@ impl ClaudeProviderDriver {
                 return Err(error);
             }
         }
-        let models = provider_models(
-            initialize.models.clone(),
-            if self.settings.allow_custom_models {
-                &self.settings.custom_model_ids
-            } else {
-                &[]
-            },
-            &self.settings.custom_model_labels,
-        )?;
+        let models = provider_models(initialize.models.clone())?;
         self.cached_commands = initialize.commands.clone();
         self.cached_models = Some(ProviderModelCatalog {
             instance_id: self.configuration.instance_id.clone(),

@@ -11,7 +11,6 @@ function model(id: string, displayName: string, overrides: Partial<ProviderModel
     availability: "available",
     capabilities: [],
     options: [],
-    custom: false,
     ...overrides,
   };
 }
@@ -60,13 +59,12 @@ describe("isModelLineName", () => {
 });
 
 describe("newestModelOfLine", () => {
-  it("picks the newest built-in model of the line and skips unusable ones", () => {
+  it("picks the newest model of the line and skips unusable ones", () => {
     const models = [
       model("claude-opus-4-7", "Claude Opus 4.7"),
       model("claude-opus-4-9", "Claude Opus 4.9", { availability: "unavailable" }),
       model("claude-opus-4-8", "Claude Opus 4.8"),
       model("claude-sonnet-5", "Claude Sonnet 5"),
-      model("team-opus-9", "Team Opus 9", { custom: true }),
     ];
     expect(newestModelOfLine("claude", "opus", models)?.id).toBe("claude-opus-4-8");
   });

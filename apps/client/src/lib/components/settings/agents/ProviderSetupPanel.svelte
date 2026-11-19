@@ -467,12 +467,7 @@
     if (familyId === "codex") {
       return {
         schemaVersion: 1,
-        value: {
-          refreshMcpBeforeTurn: false,
-          allowCustomModels: false,
-          customModelIds: [],
-          customModelLabels: {},
-        },
+        value: { refreshMcpBeforeTurn: false },
       };
     }
     if (familyId === "opencode") return { schemaVersion: 1, value: { mode: "local" } };
@@ -570,11 +565,6 @@
                   />
                 </div>
               </div>
-              <SwitchField
-                label={t("settings.agents.setup.allowCustomModels")}
-                checked={providerConfigBoolean("allowCustomModels")}
-                onChange={(checked) => setProviderConfigBoolean("allowCustomModels", checked)}
-              />
             {:else if draft.familyId === "cursor"}
               <div class="form-row">
                 <label for="cursor-endpoint">{t("settings.agents.setup.endpoint")}</label>

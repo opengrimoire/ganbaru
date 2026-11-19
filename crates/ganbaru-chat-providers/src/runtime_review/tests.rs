@@ -157,9 +157,6 @@ fn endpoint_and_path_settings_need_review_and_cosmetic_settings_do_not() {
         &[],
         json!({
             "shadowHomePath": "/tmp/home",
-            "allowCustomModels": true,
-            "customModelIds": ["m"],
-            "customModelLabels": { "m": "M" },
             "refreshMcpBeforeTurn": true
         }),
     );

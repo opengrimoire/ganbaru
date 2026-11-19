@@ -46,7 +46,7 @@ enum Company {
 /// The id of the model `models` recommends for a provider that natively runs `native` models,
 /// or `None` when the catalog offers nothing selectable.
 pub fn recommended_model_id(native: NativeCompany, models: &[ProviderModel]) -> Option<ModelId> {
-    let selectable: Vec<&ProviderModel> = models
+    models
         .iter()
         .filter(|model| {
             matches!(
@@ -56,18 +56,6 @@ pub fn recommended_model_id(native: NativeCompany, models: &[ProviderModel]) -> 
                     | ModelAvailability::Unknown
             ) && !ROUTE_IDS.contains(&model.id.as_str().to_ascii_lowercase().as_str())
         })
-        .collect();
-    let built_in: Vec<&ProviderModel> = selectable
-        .iter()
-        .copied()
-        .filter(|model| !model.custom)
-        .collect();
-    let pool = if built_in.is_empty() {
-        selectable
-    } else {
-        built_in
-    };
-    pool.into_iter()
         .enumerate()
         .min_by_key(|(index, model)| rank(native, model, *index))
         .map(|(_, model)| model.id.clone())
@@ -105,7 +93,7 @@ pub fn is_model_line(model_id: &str) -> bool {
 /// maximum-effort ones, as in [`recommended_model_id`].
 pub fn newest_model_of_line(line: &str, models: &[ProviderModel]) -> Option<ModelId> {
     let line = line.to_ascii_lowercase();
-    let of_line: Vec<&ProviderModel> = models
+    models
         .iter()
         .filter(|model| {
             matches!(
@@ -115,11 +103,6 @@ pub fn newest_model_of_line(line: &str, models: &[ProviderModel]) -> Option<Mode
                     | ModelAvailability::Unknown
             ) && words(model).contains(&line)
         })
-        .collect();
-    let built_in = of_line.iter().any(|model| !model.custom);
-    of_line
-        .into_iter()
-        .filter(|model| !built_in || !model.custom)
         .enumerate()
         .min_by_key(|(index, model)| {
             let words = words(model);
@@ -274,7 +257,6 @@ mod tests {
             availability: ModelAvailability::Available,
             capabilities: Vec::new(),
             options: Vec::new(),
-            custom: false,
         }
     }
 
@@ -395,19 +377,13 @@ mod tests {
     }
 
     #[test]
-    fn skips_unusable_and_custom_models_unless_only_custom_ones_remain() {
+    fn skips_unusable_models() {
         let mut unavailable = model("opus", "Opus 5.5");
         unavailable.availability = ModelAvailability::Unavailable;
-        let mut custom = model("claude-opus-9", "Opus 9");
-        custom.custom = true;
-        let models = [unavailable, custom.clone(), model("sonnet", "Sonnet 5.5")];
+        let models = [unavailable, model("sonnet", "Sonnet 5.5")];
         assert_eq!(
             recommended(NativeCompany::Anthropic, &models).as_deref(),
             Some("sonnet")
-        );
-        assert_eq!(
-            recommended(NativeCompany::Anthropic, &[custom]).as_deref(),
-            Some("claude-opus-9")
         );
         assert_eq!(
             recommended(NativeCompany::Anthropic, &[model("default", "Default")]),

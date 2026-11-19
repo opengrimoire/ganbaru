@@ -46,12 +46,10 @@ export function recommendedProviderModel(
   provider: ProviderInstanceRead,
   candidates: readonly ProviderModel[] = listedModels(provider),
 ): ProviderModel | null {
-  const selectable = candidates.filter((model) => (
+  const pool = candidates.filter((model) => (
     (model.availability === "available" || model.availability === "stale")
     && !PROVIDER_ROUTE_MODEL_IDS.has(model.id.toLowerCase())
   ));
-  const builtIn = selectable.filter((model) => !model.custom);
-  const pool = builtIn.length > 0 ? builtIn : selectable;
   const recommendedModelId = provider.modelCatalog?.recommendedModelId ?? null;
   const recommended = pool.find((model) => model.id === recommendedModelId);
   if (recommended) return recommended;

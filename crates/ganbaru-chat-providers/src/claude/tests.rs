@@ -174,11 +174,7 @@ pub(super) fn configuration(home: &Path) -> ProviderInstanceConfig {
         "credentialReferences": {},
         "providerConfig": {
             "schemaVersion": 1,
-            "value": {
-                "allowCustomModels": false,
-                "customModelIds": [],
-                "customModelLabels": {}
-            }
+            "value": {}
         }
     }))
     .unwrap()
@@ -266,7 +262,7 @@ fn native_model_metadata_resolves_names_and_supported_effort_levels() {
     }]))
     .unwrap();
 
-    let models = provider_models(models, &[], &BTreeMap::new()).unwrap();
+    let models = provider_models(models).unwrap();
 
     assert_eq!(models[0].id.as_str(), "claude-opus-4-8");
     assert_eq!(models[0].display_name, "Opus 4.8");
@@ -301,28 +297,6 @@ fn native_model_metadata_resolves_names_and_supported_effort_levels() {
 }
 
 #[test]
-fn custom_model_names_do_not_infer_fast_mode_support() {
-    let models = provider_models(
-        Vec::new(),
-        &["claude-opus-9".to_string()],
-        &BTreeMap::from([(
-            "claude-opus-9".to_string(),
-            "Default (研究用 Opus 9)".to_string(),
-        )]),
-    )
-    .unwrap();
-
-    assert_eq!(models.len(), 1);
-    assert_eq!(models[0].display_name, "Default (研究用 Opus 9)");
-    assert!(models[0].options.iter().all(|definition| {
-        !matches!(
-            definition,
-            ModelOptionDefinition::Boolean { key, .. } if key == "fastMode"
-        )
-    }));
-}
-
-#[test]
 fn native_model_routes_keep_distinct_capabilities_despite_matching_labels() {
     let input: Vec<ClaudeModel> = serde_json::from_value(json!([{
         "value": "opus",
@@ -333,7 +307,7 @@ fn native_model_routes_keep_distinct_capabilities_despite_matching_labels() {
         "displayName": "Opus 9"
     }]))
     .unwrap();
-    let models = provider_models(input, &[], &BTreeMap::new()).unwrap();
+    let models = provider_models(input).unwrap();
 
     assert_eq!(
         models
@@ -377,15 +351,15 @@ fn the_default_route_is_listed_only_as_the_model_it_runs() {
             .collect::<Vec<_>>()
     };
 
-    let shared = provider_models(input("claude-opus-9"), &[], &BTreeMap::new()).unwrap();
+    let shared = provider_models(input("claude-opus-9")).unwrap();
     assert_eq!(ids(shared), [("opus".to_string(), "Opus 9".to_string())]);
 
     for long_context in ["claude-opus-9[1m]", "claude-opus-10[1m]"] {
-        let models = provider_models(input(long_context), &[], &BTreeMap::new()).unwrap();
+        let models = provider_models(input(long_context)).unwrap();
         assert_eq!(ids(models), [("opus".to_string(), "Opus 9".to_string())]);
     }
 
-    let distinct = provider_models(input("claude-opus-10"), &[], &BTreeMap::new()).unwrap();
+    let distinct = provider_models(input("claude-opus-10")).unwrap();
     assert_eq!(distinct[0].options.len(), 1);
     assert_eq!(
         ids(distinct),

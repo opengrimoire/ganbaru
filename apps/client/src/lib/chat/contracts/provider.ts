@@ -164,7 +164,6 @@ export interface ProviderModel {
   availability: ModelAvailability;
   capabilities: ProviderCapability[];
   options: ModelOptionDefinition[];
-  custom: boolean;
 }
 
 export interface ProviderModelCatalog {

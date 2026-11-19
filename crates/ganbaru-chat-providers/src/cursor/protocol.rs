@@ -446,7 +446,6 @@ pub fn parse_acp_models(setup: &AcpSessionSetup) -> ChatResult<Vec<ProviderModel
                     ProviderCapability::DynamicModelChange,
                 ],
                 options: Vec::new(),
-                custom: false,
             })
         })
         .collect()
@@ -505,7 +504,6 @@ pub fn parse_available_models(value: Value) -> ChatResult<Vec<ProviderModel>> {
                     ProviderCapability::DynamicModelChange,
                 ],
                 options: model_option_definitions(&model.config_options),
-                custom: false,
             })
         })
         .collect()

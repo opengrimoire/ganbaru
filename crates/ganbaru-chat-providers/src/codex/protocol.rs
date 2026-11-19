@@ -776,24 +776,6 @@ pub fn provider_model(model: CodexModel) -> ChatResult<ProviderModel> {
         },
         capabilities,
         options,
-        custom: false,
-    })
-}
-
-pub fn custom_provider_model(
-    model_id: &str,
-    display_name: Option<&str>,
-) -> ChatResult<ProviderModel> {
-    validate_model_id(model_id)?;
-    Ok(ProviderModel {
-        id: ModelId::new(model_id.to_string()).map_err(identifier_error)?,
-        display_name: display_name.unwrap_or(model_id).to_string(),
-        description: Some("Custom Codex model ID".to_string()),
-        context_limit: None,
-        availability: ModelAvailability::Unknown,
-        capabilities: Vec::new(),
-        options: Vec::new(),
-        custom: true,
     })
 }
 

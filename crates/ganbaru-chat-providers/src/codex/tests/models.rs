@@ -1,16 +1,6 @@
 use super::*;
 
 #[test]
-fn custom_model_keeps_its_optional_display_label() {
-    let model = custom_provider_model("exact-model-id", Some("Team model")).unwrap();
-
-    assert_eq!(model.id.as_str(), "exact-model-id");
-    assert_eq!(model.display_name, "Team model");
-    assert!(model.custom);
-    assert_eq!(model.availability, ModelAvailability::Unknown);
-}
-
-#[test]
 fn safety_modes_map_to_exact_codex_policies() {
     assert_eq!(
         safety_settings(SafetyMode::AskForApproval),

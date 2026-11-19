@@ -18,7 +18,6 @@ function model(id: string, displayName = id): ProviderModel {
     availability: "available",
     capabilities: [],
     options: [],
-    custom: false,
   };
 }
 

@@ -13,7 +13,6 @@
   import { familyAgentRoster, listedCatalogModels } from "$lib/chat/agents/agent-roster";
   import type {
     ChatAiAgentRead,
-    JsonValue,
     ProviderFamilyMetadataRead,
     ProviderInstanceRead,
     ProviderModel,
@@ -67,10 +66,6 @@
   let refreshingAll = $state(false);
   let refreshResult = $state<ProviderRefreshResult | null>(null);
   let refreshedOnOpen = $state(false);
-  let customOpen = $state(false);
-  let customId = $state("");
-  let customLabel = $state("");
-  let customError = $state<string | null>(null);
   let customAgentOpen = $state(false);
   let operationError = $state<string | null>(null);
   let updateFailure = $state<{ instanceId: string; output: string | null } | null>(null);
@@ -129,9 +124,6 @@
       !query || agent.participant.displayName.toLocaleLowerCase(localization.locale).includes(query)
     ));
   });
-  const acceptsCustomModels = $derived(
-    selectedProvider?.configuration.familyId === "codex" && providerConfigBoolean("allowCustomModels"),
-  );
 
   $effect(() => {
     if (families.some((family) => family.familyId === selectedFamilyId)) return;
@@ -184,8 +176,6 @@
 
   function resetCatalogState(): void {
     search = "";
-    customOpen = false;
-    customError = null;
     operationError = null;
   }
 
@@ -278,74 +268,6 @@
       return newestModelOfLine(selectedProvider.configuration.familyId, agent.participant.displayName.trim().toLowerCase(), models);
     }
     return models.find((model) => model.id === agent.latestPolicy?.modelId) ?? null;
-  }
-
-  function providerConfigBoolean(key: string): boolean {
-    const value = selectedProvider?.configuration.providerConfig.value;
-    return typeof value === "object" && value !== null && !Array.isArray(value) && value[key] === true;
-  }
-
-  function providerConfigRecord(): Record<string, JsonValue> {
-    const value = selectedProvider?.configuration.providerConfig.value;
-    return typeof value === "object" && value !== null && !Array.isArray(value) ? { ...value } : {};
-  }
-
-  function stringRecord(value: JsonValue | undefined): Record<string, string> {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
-    return Object.fromEntries(
-      Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
-    );
-  }
-
-  async function saveCustomModel(): Promise<void> {
-    if (!selectedProvider || !acceptsCustomModels) return;
-    const id = customId.trim();
-    const label = customLabel.trim();
-    if (!id || id.length > 256 || [...id].some((character) => /\p{Control}/u.test(character))) {
-      customError = t("settings.agents.models.customId");
-      return;
-    }
-    const config = providerConfigRecord();
-    const existingIds = Array.isArray(config.customModelIds)
-      ? config.customModelIds.filter((value): value is string => typeof value === "string")
-      : [];
-    const existingLabels = stringRecord(config.customModelLabels);
-    config.customModelIds = [...new Set([...existingIds, id])];
-    config.customModelLabels = { ...existingLabels, ...(label ? { [id]: label } : {}) };
-    customError = null;
-    await perform(selectedProvider.configuration.instanceId, async () => {
-      const saved = await chat.saveProvider({
-        ...selectedProvider.configuration,
-        providerConfig: { ...selectedProvider.configuration.providerConfig, value: config },
-      });
-      if (!saved) return;
-      await chat.probeProvider(selectedProvider.configuration.instanceId);
-      await chat.refreshModels(selectedProvider.configuration.instanceId);
-      customId = "";
-      customLabel = "";
-      customOpen = false;
-    });
-  }
-
-  async function removeCustomModel(modelId: string): Promise<void> {
-    if (!selectedProvider || !acceptsCustomModels) return;
-    const config = providerConfigRecord();
-    const customIds = Array.isArray(config.customModelIds)
-      ? config.customModelIds.filter((value): value is string => typeof value === "string" && value !== modelId)
-      : [];
-    const labels = stringRecord(config.customModelLabels);
-    delete labels[modelId];
-    config.customModelIds = customIds;
-    config.customModelLabels = labels;
-    await perform(selectedProvider.configuration.instanceId, async () => {
-      const saved = await chat.saveProvider({
-        ...selectedProvider.configuration,
-        providerConfig: { ...selectedProvider.configuration.providerConfig, value: config },
-      });
-      if (!saved) return;
-      await chat.probeProvider(selectedProvider.configuration.instanceId);
-      await chat.refreshModels(selectedProvider.configuration.instanceId);
-    });
   }
 
   function providerStateLabel(provider: ProviderInstanceRead): string {
@@ -726,33 +648,10 @@
                           placeholder={t("settings.agents.models.search")}
                         />
                       </label>
-                      {#if acceptsCustomModels}
-                        <button type="button" class="compact-action" disabled={selectedBusy} onclick={() => { customOpen = !customOpen; }}>
-                          <Plus size={13} />
-                          {t("settings.agents.models.addCustom")}
-                        </button>
-                      {/if}
                     </div>
 
                     {#if selectedProvider.modelCatalog?.stale}
                       <p class="catalog-warning">{t("settings.agents.models.catalogStale")}</p>
-                    {/if}
-
-                    {#if customOpen && acceptsCustomModels}
-                      <section class="custom-model-editor">
-                        <label>
-                          <span>{t("settings.agents.models.customId")}</span>
-                          <input bind:value={customId} />
-                        </label>
-                        <label>
-                          <span>{t("settings.agents.models.customLabel")}</span>
-                          <input bind:value={customLabel} />
-                        </label>
-                        <button type="button" class="compact-action" disabled={selectedBusy} onclick={() => void saveCustomModel()}>
-                          {t("settings.agents.models.saveCustom")}
-                        </button>
-                        {#if customError}<p role="alert">{customError}</p>{/if}
-                      </section>
                     {/if}
 
                     {#if models.length === 0 && listedAgents.length === 0}
@@ -803,18 +702,6 @@
                                   disabled={selectedBusy}
                                   onChange={(enabled) => void setAgentEnabled(modelAgent, enabled)}
                                 />
-                              {/if}
-                              {#if model.custom}
-                                <button
-                                  type="button"
-                                  class="icon-action destructive"
-                                  disabled={selectedBusy}
-                                  aria-label={t("settings.agents.models.removeCustom")}
-                                  data-app-tooltip={t("settings.agents.models.removeCustom")}
-                                  onclick={() => void removeCustomModel(model.id)}
-                                >
-                                  <Trash2 size={14} />
-                                </button>
                               {/if}
                             </div>
                           </div>
@@ -915,7 +802,6 @@
   .refresh-summary { color:var(--muted-foreground); }
   .refresh-summary.attention,.catalog-warning,.provider-notice { color:var(--status-tentative); }
   .refresh-summary.attention { border-left-color:var(--destructive); }
-  .custom-model-editor p { color:var(--destructive); }
   .editor-content { display:grid; align-content:start; gap:1rem; }
   /* Notices match the size of the provider details around them. */
   .editor-content :global(.notice) { font-size:0.8rem; }
@@ -934,10 +820,6 @@
   .model-search label { display:grid; min-width:0; flex:1; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:0.45rem; }
   .model-search input { min-width:0; background:transparent; color:var(--foreground); font-size:calc(0.75rem * var(--type-scale)); outline:none; }
   .model-search:focus-within { color:var(--foreground); }
-  .custom-model-editor { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto; align-items:end; gap:0.6rem; border-bottom:1px solid var(--border); padding:0.65rem 0.25rem; }
-  .custom-model-editor label { display:grid; min-width:0; gap:0.3rem; color:var(--muted-foreground); font-size:calc(0.68rem * var(--type-scale)); }
-  .custom-model-editor input { min-width:0; height:2rem; border:1px solid var(--border); border-radius:var(--floating-item-radius); background:transparent; padding:0.3rem 0.55rem; color:var(--foreground); outline:none; }
-  .custom-model-editor p { grid-column:1/-1; font-size:calc(0.68rem * var(--type-scale)); }
   .model-list { display:grid; }
   .model-row { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:0.65rem; border-bottom:1px solid var(--border); padding:0.62rem 0.25rem; }
   .model-identity { display:flex; min-width:0; align-items:center; gap:0.35rem; }
@@ -958,8 +840,6 @@
     .detail-footer { padding-right:0; }
   }
   @media (max-width:540px) {
-    .custom-model-editor { grid-template-columns:1fr; align-items:stretch; }
-    .custom-model-editor p { grid-column:auto; }
     .model-actions { gap:0.2rem; }
   }
 </style>

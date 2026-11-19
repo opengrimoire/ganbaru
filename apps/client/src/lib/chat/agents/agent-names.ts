@@ -47,8 +47,8 @@ export function agentNameProblem(name: string, takenNames: readonly string[]): A
 }
 
 /**
- * The model a built-in line agent runs now: the newest model of `models` whose name or id holds the line as a word,
- * preferring built-in models over custom ones. Dispatch makes the same choice on the executing device.
+ * The model a built-in line agent runs now: the newest model of `models` whose name or id holds the line as a word.
+ * Dispatch makes the same choice on the executing device.
  *
  * @param familyId The provider family that serves `models`.
  * @param line A model line such as `opus`.
@@ -59,14 +59,12 @@ export function newestModelOfLine(
   line: string,
   models: readonly ProviderModel[],
 ): ProviderModel | null {
-  const matching = models.filter((model) => (
-    model.availability !== "deprecated"
-    && model.availability !== "unavailable"
-    && `${model.displayName} ${model.id}`.toLowerCase().split(/[^a-z0-9]+/u).includes(line)
-  ));
-  const builtIn = matching.filter((model) => !model.custom);
-  const candidates = builtIn.length > 0 ? builtIn : matching;
-  const ranked = candidates
+  const ranked = models
+    .filter((model) => (
+      model.availability !== "deprecated"
+      && model.availability !== "unavailable"
+      && `${model.displayName} ${model.id}`.toLowerCase().split(/[^a-z0-9]+/u).includes(line)
+    ))
     .map((model, index) => ({ model, index }))
     .sort((left, right) => (
       compareCompanyModels(modelCompany(familyId, left.model).id, left.model, right.model)

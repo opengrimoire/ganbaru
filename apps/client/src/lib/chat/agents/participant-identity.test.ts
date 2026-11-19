@@ -26,7 +26,6 @@ const catalog: ProviderModelCatalog = {
         { value: "medium", label: "Medium", description: null },
       ],
     }],
-    custom: false,
   }],
 };
 

@@ -11,12 +11,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// Provider config keys that choose models or behavior rather than the program or account.
-const NON_LAUNCH_PROVIDER_CONFIG_KEYS: &[&str] = &[
-    "allowCustomModels",
-    "customModelIds",
-    "customModelLabels",
-    "refreshMcpBeforeTurn",
-];
+const NON_LAUNCH_PROVIDER_CONFIG_KEYS: &[&str] = &["refreshMcpBeforeTurn"];
 
 /// What makes a configuration a separate launch: the family, the program and home as this device
 /// resolves them, and every value passed to the provider process.
@@ -159,7 +154,7 @@ mod tests {
                 "credentialReferences": {},
                 "providerConfig": {
                     "schemaVersion": 1,
-                    "value": { "allowCustomModels": false, "customModelIds": [] }
+                    "value": {}
                 }
             }))
             .unwrap()
@@ -183,11 +178,7 @@ mod tests {
         let existing = fixture.configuration("first", path.to_str().unwrap());
         let mut draft = fixture.configuration("second", "claude");
         draft.label = "Another label".to_string();
-        draft.provider_config.value = serde_json::json!({
-            "allowCustomModels": true,
-            "customModelIds": ["custom"],
-            "customModelLabels": { "custom": "Custom" },
-        });
+        draft.provider_config.value = serde_json::json!({ "refreshMcpBeforeTurn": true });
         let others = [existing];
         let duplicate = find_duplicate(&draft, &others, &fixture.search());
         assert_eq!(

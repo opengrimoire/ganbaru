@@ -9,7 +9,6 @@ use super::interactions::{
 use super::protocol::*;
 use super::session::*;
 use crate::events::*;
-use crate::model_recommendation::recommended_model_id;
 use crate::models::*;
 use crate::registry::{CoreVersion, admit_version, refused_version};
 use crate::{
@@ -17,6 +16,7 @@ use crate::{
     ProviderDriver, ProviderEventSink,
 };
 use base64::{Engine as _, engine::general_purpose};
+use ganbaru_chat_contracts::model_recommendation::recommended_model_id;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::path::Path;

@@ -19,8 +19,8 @@ use ganbaru_chat::agent_runs::{
 use ganbaru_chat::coordination::access::{access_ceiling, effective_access_level_sql};
 use ganbaru_chat::coordination::reports::{AnsweredQuestion, read_answered_question};
 use ganbaru_chat::coordination::revocation::PARENT_AUTHORITY_REVOKED_REASON;
+use ganbaru_chat_contracts::model_recommendation::newest_model_of_line;
 use ganbaru_chat_contracts::models::*;
-use ganbaru_chat_providers::model_recommendation::newest_model_of_line;
 use sqlx::{Row, SqlitePool};
 
 /// Claims and runs the queued dispatch job of `assignment_id`. A dispatch that settled the

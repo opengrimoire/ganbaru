@@ -15,10 +15,10 @@ use super::{identifier_error, now_timestamp, persistence_error};
 use crate::chat::device_state::read_active_device_scope;
 use ganbaru_chat::conversion::{catalog_agent_id, line_agent_id};
 use ganbaru_chat::coordination::contracts::ChatAgentPolicyInput;
-use ganbaru_chat_contracts::models::*;
-use ganbaru_chat_providers::model_recommendation::{
+use ganbaru_chat_contracts::model_recommendation::{
     is_gated_line, is_model_line, newest_model_of_line,
 };
+use ganbaru_chat_contracts::models::*;
 use ganbaru_chat_providers::{ProviderDriverFactory, ProviderDriverRegistry};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::collections::BTreeMap;

@@ -12,10 +12,10 @@ use crate::events::{
     SessionConfiguredEvent, SessionExitedEvent, SessionStartedEvent, TurnCompletedEvent,
     TurnStartedEvent,
 };
-use crate::model_recommendation::{NativeCompany, recommended_model_id};
 use crate::models::*;
 use crate::process::{ProviderProcessConfig, spawn_provider_process};
 use crate::{DriverFuture, DriverOperationContext, ProviderDriver, ProviderEventSink};
+use ganbaru_chat_contracts::model_recommendation::{NativeCompany, recommended_model_id};
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};

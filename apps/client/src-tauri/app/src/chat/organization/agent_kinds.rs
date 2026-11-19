@@ -3,8 +3,8 @@
 //! every device reads it alike.
 
 use ganbaru_chat::conversion::{catalog_agent_id, line_agent_id};
+use ganbaru_chat_contracts::model_recommendation::{family_native_company, model_lines};
 use ganbaru_chat_contracts::models::ChatAgentKind;
-use ganbaru_chat_providers::model_recommendation::{family_native_company, model_lines};
 
 /// The model lines the provider family `family_id` offers as built-in agents.
 pub(super) fn family_model_lines(family_id: &str) -> &'static [&'static str] {

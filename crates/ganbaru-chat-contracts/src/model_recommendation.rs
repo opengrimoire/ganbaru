@@ -7,7 +7,7 @@
 //! variants win over fast, low-effort, or maximum-effort ones because they balance cost and
 //! capability.
 
-use ganbaru_chat_contracts::models::{ModelAvailability, ModelId, ProviderModel};
+use crate::models::{ModelAvailability, ModelId, ProviderModel};
 use std::cmp::Reverse;
 
 /// Anthropic tiers in recommendation order: the balanced flagship first, then by capability.
@@ -253,7 +253,7 @@ fn version(model: &ProviderModel) -> Vec<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ganbaru_chat_contracts::models::ModelAvailability;
+    use crate::models::ModelAvailability;
 
     fn model(id: &str, name: &str) -> ProviderModel {
         ProviderModel {

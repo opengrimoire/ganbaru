@@ -9,9 +9,9 @@ use super::protocol::*;
 use super::session::*;
 use super::transport::AcpRpcConnection;
 use crate::events::*;
-use crate::model_recommendation::{NativeCompany, recommended_model_id};
 use crate::models::*;
 use crate::{DriverOperationContext, ProviderEventSink};
+use ganbaru_chat_contracts::model_recommendation::{NativeCompany, recommended_model_id};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{

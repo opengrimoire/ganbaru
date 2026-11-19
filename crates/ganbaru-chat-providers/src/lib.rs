@@ -6,7 +6,6 @@
 pub(crate) use ganbaru_chat_contracts::{events, models};
 
 pub mod executable_search;
-pub mod model_recommendation;
 mod probe_directory;
 pub mod process;
 

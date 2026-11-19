@@ -8,13 +8,13 @@ use super::permissions::{
 use super::protocol::parse_rollback_cursor;
 use super::support::*;
 use crate::events::*;
-use crate::model_recommendation::{NativeCompany, recommended_model_id};
 use crate::models::*;
 use crate::registry::{admit_version, refused_version};
 use crate::{
     DriverFuture, DriverOperationContext, ProviderAuthoritySupport, ProviderDriver,
     ProviderEventSink,
 };
+use ganbaru_chat_contracts::model_recommendation::{NativeCompany, recommended_model_id};
 use std::sync::{Arc, atomic::Ordering};
 
 impl ProviderDriver for OpenCodeProviderDriver {

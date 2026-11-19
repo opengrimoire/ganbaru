@@ -112,7 +112,7 @@ crates/
   ganbaru-calendar/: Tauri-free Calendar persistence, iCalendar import and export, native reads, scoped edits, deletion and Undo, and recurrence expansion
   ganbaru-distractions/: Tauri-free distraction blocker contracts, rule persistence, application rules, usage limits, usage normalization, elapsed accounting, daily usage totals, and block history
   ganbaru-notes/: Notes domain, persistence, transfers, history, assets, and bounded filesystem operations
-  ganbaru-chat-contracts/: provider-neutral Chat IDs, commands, events, DTOs, errors, and protected workspace path rules
+  ganbaru-chat-contracts/: provider-neutral Chat IDs, commands, events, DTOs, errors, model line and recommendation rules, and protected workspace path rules
   ganbaru-chat-providers/: provider processes, transports, drivers, cancellation, and registry
   ganbaru-chat/: Chat persistence, runtime, Git workspaces, checkpoints, review, and application services
   ganbaru-working-folders/: Tauri-free working-folder IDs, bindings, and device-state operations

@@ -8,13 +8,13 @@ use super::protocol::*;
 use super::session::*;
 use super::support::*;
 use crate::events::*;
-use crate::model_recommendation::{NativeCompany, recommended_model_id};
 use crate::models::*;
 use crate::registry::{admit_version, refused_version};
 use crate::{
     DriverFuture, DriverOperationContext, ProviderAuthoritySupport, ProviderDriver,
     ProviderEventSink,
 };
+use ganbaru_chat_contracts::model_recommendation::{NativeCompany, recommended_model_id};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex, atomic::Ordering};
 use std::time::Duration;

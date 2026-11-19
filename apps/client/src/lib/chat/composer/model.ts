@@ -1,19 +1,15 @@
 import type {
   ApprovalSubject,
   ChatPromptCatalogEntry,
-  ChatSendKey,
   ProjectWorkingFolderPathRead,
-  InteractionMode,
   JsonValue,
   ModelChoiceOption,
   ModelOptionDefinition,
   ModelOptionSelection,
-  ProviderCapabilities,
   ProviderInstanceRead,
   ProviderModel,
   ProviderSessionState,
   RateLimitStatusEvent,
-  SafetyMode,
   SessionPermissionGrant,
   UserInputQuestion,
   VersionedJson,
@@ -26,30 +22,6 @@ export { clipboardImageFiles } from "$lib/utils/clipboard-images";
 export const CHAT_IMAGE_LIMIT = 8;
 export const CHAT_IMAGE_BYTE_LIMIT = 20 * 1024 * 1024;
 export const CHAT_IMAGE_TOTAL_BYTE_LIMIT = 50 * 1024 * 1024;
-
-export type ComposerPrimaryAction = "send" | "stop" | "stopping" | "resolve_request";
-export type ComposerFollowupAction = "steer" | "queue" | "retain" | null;
-
-export interface ComposerActionState {
-  primary: ComposerPrimaryAction;
-  followup: ComposerFollowupAction;
-  sendEnabled: boolean;
-}
-
-export interface ComposerSelections {
-  workingFolderId: string | null;
-  providerInstanceId: string | null;
-  modelId: string | null;
-  providerManagedModel: boolean;
-  safetyMode: SafetyMode | null;
-  interactionMode: InteractionMode | null;
-  fullAccessTrusted: boolean;
-}
-
-export interface ComposerSelectionError {
-  field: "workspace" | "provider" | "model" | "safety" | "interaction" | "trust";
-  message: string;
-}
 
 export interface DefaultProviderModelSelection {
   provider: ProviderInstanceRead;
@@ -232,13 +204,6 @@ function copyJsonValue(value: JsonValue): JsonValue {
   return value;
 }
 
-export function interactionModeForPrompt(
-  text: string,
-  current: InteractionMode | null,
-): InteractionMode {
-  return /^\/plan(?:\s|$)/i.test(text.trimStart()) ? "plan" : current ?? "build";
-}
-
 export interface ComposerTokenTrigger {
   kind: "mention" | "skill" | "command";
   query: string;
@@ -388,33 +353,6 @@ export interface ApprovalDisplayRead {
   sessionGrants: SessionPermissionGrant[] | null;
 }
 
-const ACTIVE_SESSION_STATES: ProviderSessionState[] = [
-  "active",
-  "waiting_for_approval",
-  "waiting_for_user_input",
-];
-
-export function composerActionState(
-  sessionState: ProviderSessionState,
-  capabilities: ProviderCapabilities,
-  hasDraft: boolean,
-  hasPendingRequest: boolean,
-): ComposerActionState {
-  if (hasPendingRequest) return { primary: "resolve_request", followup: null, sendEnabled: false };
-  if (sessionState === "stopping") return { primary: "stopping", followup: null, sendEnabled: false };
-  if (ACTIVE_SESSION_STATES.includes(sessionState)) {
-    const followup = !hasDraft
-      ? null
-      : supports(capabilities, "steering")
-        ? "steer"
-        : supports(capabilities, "queued_follow_up")
-          ? "queue"
-          : "retain";
-    return { primary: "stop", followup, sendEnabled: false };
-  }
-  return { primary: "send", followup: null, sendEnabled: hasDraft && sessionState !== "starting" };
-}
-
 export function queuedFollowupDispatchReady(
   sessionState: ProviderSessionState,
   latestTurnState: string | null,
@@ -423,25 +361,6 @@ export function queuedFollowupDispatchReady(
   return sessionState === "stopped"
     && !["pending", "dispatching", "active", "waiting_for_approval", "waiting_for_user_input"]
       .includes(latestTurnState ?? "");
-}
-
-export function validateComposerSelections(
-  selections: ComposerSelections,
-  capabilities: ProviderCapabilities,
-): ComposerSelectionError[] {
-  const errors: ComposerSelectionError[] = [];
-  if (!selections.workingFolderId) errors.push({ field: "workspace", message: "Choose a workspace" });
-  if (!selections.providerInstanceId) errors.push({ field: "provider", message: "Choose a provider" });
-  if (!selections.modelId && !selections.providerManagedModel) errors.push({ field: "model", message: "Choose a model or provider-managed model" });
-  if (!selections.safetyMode) errors.push({ field: "safety", message: "Choose a safety mode" });
-  if (!selections.interactionMode) errors.push({ field: "interaction", message: "Choose Build or Plan" });
-  if (selections.interactionMode === "plan" && !supports(capabilities, "native_plan")) {
-    errors.push({ field: "interaction", message: "This provider does not support native Plan mode" });
-  }
-  if ((selections.safetyMode === "full_access" || selections.safetyMode === "custom") && !selections.fullAccessTrusted) {
-    errors.push({ field: "trust", message: "Confirm broad permission trust for this provider and workspace" });
-  }
-  return errors;
 }
 
 export function composerTokenTrigger(text: string, cursor: number): ComposerTokenTrigger | null {
@@ -463,20 +382,6 @@ export function composerTokenTrigger(text: string, cursor: number): ComposerToke
     query: match[3],
     start: before.length - match[3].length - 1,
     end: before.length,
-  };
-}
-
-export interface ComposerModeCommand {
-  mode: InteractionMode;
-  prompt: string;
-}
-
-export function composerModeCommand(text: string): ComposerModeCommand | null {
-  const match = /^\s*\/(plan|build)(?:\s+([\s\S]*))?$/i.exec(text);
-  if (!match) return null;
-  return {
-    mode: match[1].toLowerCase() === "plan" ? "plan" : "build",
-    prompt: match[2]?.trimStart() ?? "",
   };
 }
 
@@ -523,20 +428,6 @@ export function rankedModels(
         || fuzzyRank(`${left.displayName} ${left.id}`, normalized) - fuzzyRank(`${right.displayName} ${right.id}`, normalized)
         || left.displayName.localeCompare(right.displayName);
     });
-}
-
-export function validateModelOptions(
-  definitions: ModelOptionDefinition[],
-  selections: ModelOptionSelection[],
-): string[] {
-  const definitionsByKey = new Map(definitions.map((definition) => [definition.key, definition]));
-  const errors: string[] = [];
-  for (const selection of selections) {
-    const definition = definitionsByKey.get(selection.key);
-    if (!definition || definition.kind === "unknown") continue;
-    if (!optionMatchesDefinition(definition, selection)) errors.push(selection.key);
-  }
-  return errors;
 }
 
 export function composerModelSelection(
@@ -640,12 +531,6 @@ export function parseUserInputQuestions(value: VersionedJson): UserInputQuestion
   });
 }
 
-export function shouldSendComposerKey(event: Pick<KeyboardEvent, "key" | "shiftKey" | "ctrlKey" | "metaKey" | "isComposing">, sendKey: ChatSendKey): boolean {
-  if (event.isComposing || event.shiftKey || event.key !== "Enter") return false;
-  const modified = event.ctrlKey || event.metaKey;
-  return sendKey === "enter" ? !modified : modified;
-}
-
 export function validateImageFiles(
   files: Pick<File, "name" | "size" | "type">[],
   existingCount: number,
@@ -659,17 +544,6 @@ export function validateImageFiles(
   const totalBytes = files.reduce((total, file) => total + file.size, existingBytes);
   if (totalBytes > CHAT_IMAGE_TOTAL_BYTE_LIMIT) return "Chat images must total 50 MiB or less";
   return null;
-}
-
-/** Reports whether the selected provider and model can receive an image prompt. */
-export function supportsImagePrompt(
-  providerFamilyId: string | null,
-  model: ProviderModel | null,
-  capabilities: ProviderCapabilities,
-): boolean {
-  if (model?.capabilities.includes("images")) return true;
-  if (providerFamilyId === "codex" && model && !model.custom) return false;
-  return supports(capabilities, "images");
 }
 
 /**
@@ -705,10 +579,6 @@ export function validateUserInputAnswers(
   return invalid;
 }
 
-function supports(capabilities: ProviderCapabilities, capability: string): boolean {
-  return capabilities.entries.some((entry) => entry.capability === capability && entry.supported);
-}
-
 function fuzzyMatch(value: string, query: string): boolean {
   if (!query) return true;
   const normalized = value.toLowerCase();
@@ -727,16 +597,3 @@ function fuzzyRank(value: string, query: string): number {
   return index === -1 ? 1_000 + normalized.length : 10 + index;
 }
 
-function optionMatchesDefinition(definition: ModelOptionDefinition, selection: ModelOptionSelection): boolean {
-  switch (definition.kind) {
-    case "boolean": return selection.value.kind === "boolean";
-    case "choice": return selection.value.kind === "choice" && definition.options.some((option) => option.value === selection.value.value);
-    case "multiple_choice": return selection.value.kind === "multiple_choice" && selection.value.value.every((value) => definition.options.some((option) => option.value === value));
-    case "integer_range": return selection.value.kind === "integer"
-      && selection.value.value >= definition.minimum
-      && selection.value.value <= definition.maximum
-      && (selection.value.value - definition.minimum) % definition.step === 0;
-    case "text": return selection.value.kind === "text" && (definition.allowEmpty || selection.value.value.length > 0);
-    case "unknown": return true;
-  }
-}

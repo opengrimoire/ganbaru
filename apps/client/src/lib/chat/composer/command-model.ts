@@ -2,65 +2,11 @@ import type {
   ChatPromptCatalogEntry,
   ChatThreadId,
   ProjectWorkingFolderId,
-  ProviderFamilyId,
   ProviderInstanceId,
   ProviderModel,
   ProviderSessionState,
 } from "$lib/chat/contracts";
 import { filterPromptCatalog } from "./model";
-
-export type ProviderDirectAction = "compact" | "mcp";
-
-const APP_COMMAND_VALUES = new Set([
-  "/plan",
-  "/build",
-  "/model",
-  "/permissions",
-  "/status",
-  "/changes",
-]);
-
-export function isAppComposerCommand(value: string): boolean {
-  return APP_COMMAND_VALUES.has(value.trim().toLowerCase());
-}
-
-export function providerDirectAction(
-  entry: ChatPromptCatalogEntry,
-  familyId: ProviderFamilyId | null,
-): ProviderDirectAction | null {
-  if (entry.source !== "provider") return null;
-  return typedProviderDirectAction(entry.value, familyId);
-}
-
-export function typedProviderDirectAction(
-  value: string,
-  familyId: ProviderFamilyId | null,
-): ProviderDirectAction | null {
-  const command = value.trim().toLowerCase();
-  if (command === "/compact" && (familyId === "codex" || familyId === "claude")) {
-    return "compact";
-  }
-  return command === "/mcp" && familyId === "codex" ? "mcp" : null;
-}
-
-export function providerCommandNeedsInput(
-  entry: ChatPromptCatalogEntry,
-  familyId: ProviderFamilyId | null,
-): boolean {
-  const command = entry.value.toLowerCase();
-  if (entry.source === "provider"
-    && familyId === "codex"
-    && ["/compact", "/review", "/mcp"].includes(command)) {
-    return false;
-  }
-  if (entry.source === "provider"
-    && familyId === "claude"
-    && ["/compact", "/clear", "/context", "/usage"].includes(command)) {
-    return false;
-  }
-  return (entry.source === "provider" && familyId === "codex" && command === "/goal")
-    || entry.argumentHint !== null;
-}
 
 export function mergePromptCatalog(
   appCatalog: readonly ChatPromptCatalogEntry[],
@@ -93,18 +39,6 @@ export function promptCatalogKey(input: {
     input.providerInstanceId ?? "",
     input.threadId ?? "",
     input.sessionState,
-  ].join(":");
-}
-
-export function providerCommandBoundaryKey(input: {
-  workingFolderId: ProjectWorkingFolderId | null;
-  providerInstanceId: ProviderInstanceId | null;
-  threadId: ChatThreadId | null;
-}): string {
-  return [
-    input.workingFolderId ?? "",
-    input.providerInstanceId ?? "",
-    input.threadId ?? "",
   ].join(":");
 }
 

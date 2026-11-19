@@ -773,7 +773,7 @@
                                   role="img"
                                   aria-label={t("settings.agents.roster.latest")}
                                   data-app-tooltip={t("settings.agents.roster.latest")}
-                                ><CircleQuestionMark size={14} strokeWidth={1.8} /></span>
+                                ><CircleQuestionMark strokeWidth={1.8} aria-hidden="true" /></span>
                               {/if}
                             </div>
                             <div class="model-actions">
@@ -796,12 +796,14 @@
                               <span class="model-name">@{modelName}</span>
                             </div>
                             <div class="model-actions">
-                              <Switch
-                                checked={modelAgent ? modelAgent.participant.archivedAt === null : false}
-                                ariaLabel={`@${modelName}`}
-                                disabled={selectedBusy || !modelAgent}
-                                onChange={(enabled) => { if (modelAgent) void setAgentEnabled(modelAgent, enabled); }}
-                              />
+                              {#if modelAgent}
+                                <Switch
+                                  checked={modelAgent.participant.archivedAt === null}
+                                  ariaLabel={`@${modelName}`}
+                                  disabled={selectedBusy}
+                                  onChange={(enabled) => void setAgentEnabled(modelAgent, enabled)}
+                                />
+                              {/if}
                               {#if model.custom}
                                 <button
                                   type="button"
@@ -846,7 +848,7 @@
           {#if canCreateAgents && selectedProvider}
             <button
               type="button"
-              class={SETTINGS_PRIMARY_BUTTON_CLASS}
+              class="custom-agent-action {SETTINGS_PRIMARY_BUTTON_CLASS}"
               disabled={refreshingAll || busyIds.includes(selectedProvider.configuration.instanceId)}
               onclick={() => { customAgentOpen = true; }}
             >{t("settings.agents.roster.add")}</button>
@@ -894,7 +896,7 @@
   .directory-summary small[data-state="unconfigured"] i,.editor-state[data-state="unconfigured"] i { background:var(--destructive); }
   .detail-panel { position:relative; z-index:2; display:grid; min-width:0; min-height:0; grid-template-rows:minmax(0,1fr) auto; border-left:1px solid var(--border); padding-left:1rem; }
   .detail-footer { display:flex; min-width:0; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:0.5rem 0.75rem; border-top:1px solid var(--border); padding:0.65rem 0.75rem 0.65rem 0; }
-  .detail-footer > :global(button:last-child) { margin-left:auto; }
+  .custom-agent-action { margin-left:auto; }
   .detail-scroll { display:grid; grid-template-columns:minmax(0,1fr); align-content:start; gap:1rem; padding:0.2rem 0.75rem 1rem 0; }
   .editor-heading { display:grid; min-width:0; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:0.65rem; padding-inline:0.25rem; }
   .editor-title { display:grid; min-width:0; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:0.75rem; }
@@ -940,6 +942,7 @@
   .model-row { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:0.65rem; border-bottom:1px solid var(--border); padding:0.62rem 0.25rem; }
   .model-identity { display:flex; min-width:0; align-items:center; gap:0.35rem; }
   .latest-mark { display:inline-grid; flex:0 0 auto; place-items:center; color:var(--muted-foreground); }
+  .latest-mark :global(svg) { width:1.1em; height:1.1em; }
   .model-name { overflow:hidden; color:var(--foreground); font-size:calc(0.8rem * var(--type-scale)); font-weight:550; line-height:1.1rem; text-overflow:ellipsis; white-space:nowrap; }
   .model-actions { display:flex; flex-shrink:0; align-items:center; gap:0.45rem; }
   .models-empty { padding:0.9rem 0.25rem; color:var(--muted-foreground); font-size:calc(0.75rem * var(--type-scale)); }

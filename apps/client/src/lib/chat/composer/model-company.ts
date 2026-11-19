@@ -120,23 +120,6 @@ export function formatModelDisplayName(displayName: string): string {
 }
 
 /**
- * Reports whether a custom model's exact ID should accompany its display name.
- *
- * Provider-managed aliases and versioned IDs are implementation details. Custom
- * model IDs remain visible when their user-defined label does not identify the
- * exact provider value.
- *
- * @param model - Catalog model whose visible identity is being composed.
- * @returns Whether the exact custom model ID should appear below the name.
- */
-export function shouldShowModelId(
-  model: Pick<ProviderModel, "id" | "displayName" | "custom">,
-): boolean {
-  return model.custom
-    && normalizeVisibleModelIdentity(model.id) !== normalizeVisibleModelIdentity(model.displayName);
-}
-
-/**
  * Compares models in the capability order people expect within a company catalog.
  *
  * Provider catalogs do not consistently arrive newest-first, and alphabetical order
@@ -178,10 +161,6 @@ export function compareCompanyModels(
 
 function modelIdentity(model: ProviderModel): string {
   return `${model.displayName} ${model.id}`.toLowerCase();
-}
-
-function normalizeVisibleModelIdentity(value: string): string {
-  return value.trim().toLowerCase().replace(/[\s._-]+/g, " ");
 }
 
 function anthropicFamilyRank(identity: string): number {

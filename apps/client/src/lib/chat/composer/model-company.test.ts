@@ -6,7 +6,6 @@ import {
   integrationCompany,
   modelCompany,
   modelCompanyForIdentity,
-  shouldShowModelId,
   type ModelCompanyId,
 } from "./model-company";
 
@@ -50,18 +49,6 @@ describe("Chat model companies", () => {
     expect(modelCompany("opencode", model("google/gemini-2.5-pro")).name).toBe("Google");
     expect(modelCompany("opencode", model("qwen3-coder")).name).toBe("Alibaba");
     expect(modelCompany("cursor", model("composer-2")).name).toBe("Cursor");
-  });
-
-  it("hides exact IDs that only repeat the formatted display name", () => {
-    expect(shouldShowModelId(model("gpt-5.6-sol", "GPT-5.6-Sol"))).toBe(false);
-    expect(shouldShowModelId(model("claude_4_5_sonnet", "Claude 4.5 Sonnet"))).toBe(false);
-  });
-
-  it("hides provider-managed aliases and keeps distinct custom model IDs", () => {
-    expect(shouldShowModelId(model("anthropic/claude-sonnet-4-5", "Claude Sonnet 4.5"))).toBe(false);
-    expect(shouldShowModelId(model("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5"))).toBe(false);
-    expect(shouldShowModelId(model("default", "Claude Opus 4.8"))).toBe(false);
-    expect(shouldShowModelId({ ...model("team-model-id", "Team model"), custom: true })).toBe(true);
   });
 
   it("formats provider display names without hyphens and with an OpenAI line before its version", () => {

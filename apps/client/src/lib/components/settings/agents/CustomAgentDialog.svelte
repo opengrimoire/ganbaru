@@ -68,8 +68,6 @@
   const modelChoices = $derived(choices.map((entry) => (entry.line
     ? { value: entry.modelId, label: t("settings.agents.roster.lineChoice", lineDisplayName(entry.line)) }
     : { value: entry.modelId, label: formatModelDisplayName(entry.model.displayName) })));
-  /** Model, reasoning, and speed share one row when the dialog is wide enough; model keeps its own row otherwise. */
-  const modelControlCount = $derived(1 + (controls.reasoning ? 1 : 0) + (controls.speed ? 1 : 0));
   const reasoningChoices = $derived((controls.reasoning?.options ?? []).map((option) => ({
     value: option.value,
     label: compactModelOptionLabel(option.label, familyId, t("chat.composer.light"), t("chat.composer.extraHigh")),
@@ -212,28 +210,28 @@
       </header>
 
       <div class="@container flex min-h-0 flex-col gap-4 overflow-y-auto px-5 py-3 text-panel">
-        <label class="grid gap-1.5">
-          <span class="field-label">{t("settings.agents.roster.nameLabel")}</span>
-          <span class="field flex min-w-0 items-center gap-1 pl-2.5">
-            <AtSign size={14} strokeWidth={1.9} class="shrink-0 text-muted-foreground" aria-hidden="true" />
-            <input
-              bind:this={nameInput}
-              class="field-bare min-w-0 flex-1"
-              bind:value={name}
-              placeholder={t("settings.agents.roster.namePlaceholder")}
-              maxlength={MAX_AGENT_NAME_CHARACTERS}
-              autocomplete="off"
-              spellcheck="false"
-              disabled={creating}
-              aria-invalid={visibleProblem !== null}
-              onblur={() => { nameTouched = true; }}
-            />
-          </span>
-          {#if visibleProblem && visibleProblem !== "empty"}<span class="text-panel-detail text-destructive">{problemMessage(visibleProblem)}</span>{/if}
-        </label>
+        <div class="grid items-start gap-4 @xs:grid-cols-2 @xs:gap-x-3">
+          <label class={cn("grid min-w-0 gap-1.5", !controls.speed && "@xs:col-span-2")}>
+            <span class="field-label">{t("settings.agents.roster.nameLabel")}</span>
+            <span class="field flex min-w-0 items-center gap-1 pl-2.5">
+              <AtSign size={14} strokeWidth={1.9} class="shrink-0 text-muted-foreground" aria-hidden="true" />
+              <input
+                bind:this={nameInput}
+                class="field-bare min-w-0 flex-1"
+                bind:value={name}
+                placeholder={t("settings.agents.roster.namePlaceholder")}
+                maxlength={MAX_AGENT_NAME_CHARACTERS}
+                autocomplete="off"
+                spellcheck="false"
+                disabled={creating}
+                aria-invalid={visibleProblem !== null}
+                onblur={() => { nameTouched = true; }}
+              />
+            </span>
+            {#if visibleProblem && visibleProblem !== "empty"}<span class="text-panel-detail text-destructive">{problemMessage(visibleProblem)}</span>{/if}
+          </label>
 
-        <div class={cn("grid gap-4 @xs:grid-cols-2 @xs:gap-3", modelControlCount === 3 && "@sm:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1fr)]")}>
-          <div class={cn("grid min-w-0 gap-1.5", modelControlCount !== 2 && "@xs:col-span-2", modelControlCount === 3 && "@sm:col-span-1")}>
+          <div class={cn("grid min-w-0 gap-1.5", !controls.speed && !controls.reasoning && "@xs:col-span-2")}>
             <span class="field-label">{t("settings.agents.roster.modelLabel")}</span>
             <Select
               inline

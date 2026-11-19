@@ -301,14 +301,19 @@
   </div>
 {/snippet}
 
-<!-- The reply thread: its tab, the message it answers, Opus's turn, and its own composer. -->
+<!-- The reply thread: its tab, or on a phone its title and close button, the message it answers, Opus's turn, and its own composer. -->
 {#snippet thread(reserveGlobalActions: boolean)}
   <div class="reply-thread-panel" data-cursor="chat-thread">
     <div class="thread-header" style:height={`${HEADER_H}px`} style:padding-right={reserveGlobalActions ? `${GLOBAL_ACTIONS_REM}rem` : undefined}>
-      <span class={cn("thread-tab-shell", (mobileShell || hovered("thread-tab")) && "show-close")} data-scene-hover="thread-tab">
-        <span class="thread-tab"><MessagesSquare size={13} /><strong>{t("chat.organization.thread")}</strong></span>
-        <span class="tab-close"><X size={11} /></span>
-      </span>
+      {#if mobileShell}
+        <strong class="thread-title">{t("chat.organization.thread")}</strong>
+        <span class="thread-close"><X size={MOBILE_ICON_SIZE} strokeWidth={MOBILE_ICON_STROKE_WIDTH} /></span>
+      {:else}
+        <span class={cn("thread-tab-shell", hovered("thread-tab") && "show-close")} data-scene-hover="thread-tab">
+          <span class="thread-tab"><MessagesSquare size={13} /><strong>{t("chat.organization.thread")}</strong></span>
+          <span class="tab-close"><X size={11} /></span>
+        </span>
+      {/if}
     </div>
     <div class="flex min-h-0 flex-1 flex-col justify-end overflow-hidden">
       <div class="thread-scroll">
@@ -567,8 +572,8 @@
   /* The composer and its reference picker, as the organizational composer draws them. */
   .channel-composer-dock { display: flex; flex: 0 0 auto; justify-content: center; padding: 0.5rem var(--gutter) 0.75rem; background: linear-gradient(to bottom, transparent, var(--cal-bg) 18%); }
   .organizational-composer { position: relative; width: 100%; border: 1px solid color-mix(in srgb, var(--border) 88%, transparent); border-radius: 1.3rem; background: var(--card); box-shadow: 0 8px 22px -18px rgb(0 0 0 / 0.24), 0 1px 4px -3px rgb(0 0 0 / 0.16); }
-  .editor-frame { position: relative; padding: 1rem 1.25rem 0.4rem; }
-  .organizational-editor { position: relative; min-height: 2.625rem; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--foreground); font-size: 0.875rem; line-height: 1.3125rem; }
+  .editor-frame { position: relative; padding: 1rem 1.25rem 0; }
+  .organizational-editor { position: relative; min-height: 1.3125rem; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--foreground); font-size: 0.875rem; line-height: 1.3125rem; }
   .organizational-editor.empty::before { position: absolute; inset-inline: 0; pointer-events: none; content: attr(data-placeholder); color: color-mix(in srgb, var(--muted-foreground) 52%, transparent); }
   .reference-atom { display: inline-block; border-radius: 0.3rem; background: color-mix(in srgb, var(--primary) 13%, transparent); padding-inline: 0.12rem; color: color-mix(in srgb, var(--primary) 78%, var(--foreground)); }
   .reference-picker { position: absolute; inset-inline: 0; bottom: calc(100% + 4px); z-index: 45; display: flex; flex-direction: column; overflow: hidden; }
@@ -591,8 +596,7 @@
    * its full height as its other tools fade in, as the collapsible composer frame draws it.
    */
   .collapsible { --row: 2.4rem; --line: 1.3125rem; }
-  .collapsible .editor-frame { padding-block: calc((var(--row) - var(--line)) / 2 * (1 - var(--expand)) + 1rem * var(--expand)) calc((var(--row) - var(--line)) / 2 * (1 - var(--expand)) + 0.4rem * var(--expand)); padding-inline: calc((var(--row) + 0.25rem) * (1 - var(--expand)) + 1.25rem * var(--expand)); }
-  .collapsible .organizational-editor { min-height: calc(var(--line) + (2.625rem - var(--line)) * var(--expand)); }
+  .collapsible .editor-frame { padding-block: calc((var(--row) - var(--line)) / 2 * (1 - var(--expand)) + 1rem * var(--expand)) calc((var(--row) - var(--line)) / 2 * (1 - var(--expand))); padding-inline: calc((var(--row) + 0.25rem) * (1 - var(--expand)) + 1.25rem * var(--expand)); }
   .collapsible .organizational-editor.empty::before { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .collapsible .composer-footer { position: relative; min-height: calc(var(--row) + (2.6rem - var(--row)) * var(--expand)); margin-top: calc(-1 * var(--row) * (1 - var(--expand))); padding: calc(0.25rem * (1 - var(--expand))) calc(0.25rem + 0.5rem * var(--expand)) calc(0.25rem + 0.25rem * var(--expand)); }
   .collapsible .composer-tools > :not(:first-child) { opacity: var(--expand); }
@@ -606,9 +610,11 @@
   .thread-tab strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.733333rem; font-weight: 500; }
   .tab-close { display: grid; width: 1.5rem; flex: 0 0 auto; place-items: center; border-radius: 0.3rem; opacity: 0; }
   .thread-tab-shell.show-close .tab-close { opacity: 1; }
+  .thread-title { min-width: 0; flex: 1 1 auto; overflow: hidden; padding-inline-start: 0.55rem; font-size: 0.875rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+  .thread-close { display: flex; width: var(--mobile-chrome-column); height: 3rem; flex: 0 0 auto; align-items: center; justify-content: center; color: var(--foreground); }
   .thread-scroll { min-height: 100%; flex-shrink: 0; padding-block: 0.4rem; }
   .thread-composer { display: flex; flex: 0 0 auto; justify-content: center; padding: 0.5rem 0.5rem 0.75rem; }
-  .thread-separator { position: absolute; bottom: 0; left: 0; z-index: 1; width: 1px; background: var(--border); }
+  .thread-separator { position: absolute; top: 0; bottom: 0; left: 0; z-index: 1; width: 1px; background: var(--border); }
 
   /* The phone thread sheet and its grabber, as the bottom sheet draws them. */
   .thread-sheet { position: absolute; inset-inline: 0; bottom: 0; display: flex; flex-direction: column; overflow: clip; background: var(--cal-bg); box-shadow: var(--floating-shadow); }

@@ -9,14 +9,11 @@
     vaultId,
     initialInvitation,
     initialStatus,
-    firstUse,
     onComplete,
   }: {
     vaultId: string;
     initialInvitation: PairingInvitation | null;
     initialStatus: PairingStatus;
-    /** Whether the screen is part of first use, which shows its place among the first-use screens. */
-    firstUse: boolean;
     /** Leaves the linking screen with the vault active by then. */
     onComplete: (activeVaultId: string) => void | Promise<void>;
   } = $props();
@@ -29,7 +26,7 @@
     {initialInvitation}
     {initialStatus}
     backLocked
-    progress={firstUse ? welcomeProgress("linking") : undefined}
+    progress={welcomeProgress("linking")}
     {onComplete}
   />
   <TooltipHost />

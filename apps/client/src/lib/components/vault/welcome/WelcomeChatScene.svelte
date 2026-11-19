@@ -275,11 +275,8 @@
 {#snippet footer(prefix: string, inThread: boolean, hasContent: boolean, press: number)}
   <div class="composer-footer">
     <div class="composer-tools">
-      {#if mobileShell}
-        <span class="tool-button"><Smile size={15} /></span>
-      {:else}
-        <span class={cn("tool-button", hovered(`${prefix}:attach`) && "hovered")} data-scene-hover={`${prefix}:attach`}><Plus size={16} /></span>
-      {/if}
+      <span class={cn("tool-button", hovered(`${prefix}:attach`) && "hovered")} data-scene-hover={`${prefix}:attach`}><Plus size={16} /></span>
+      {#if mobileShell}<span class="tool-button"><Smile size={15} /></span>{/if}
       <span class={cn("tool-button", hovered(`${prefix}:schedule`) && "hovered")} data-scene-hover={`${prefix}:schedule`}><Clock3 size={15} /></span>
       {#if inThread}
         <span class={cn("tool-button", hovered(`${prefix}:share`) && "hovered")} data-scene-hover={`${prefix}:share`}><MessageSquareShare size={15} /></span>

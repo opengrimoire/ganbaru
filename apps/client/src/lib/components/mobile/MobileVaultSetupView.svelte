@@ -8,7 +8,7 @@
   import VaultWelcomeContent from "$lib/components/vault/VaultWelcomeContent.svelte";
   import MobileOnboardingProgress from "./MobileOnboardingProgress.svelte";
   import { WELCOME_LINK_CLASS } from "$lib/vault/welcome-layout";
-  import { WELCOME_STEPS } from "$lib/vault/welcome-steps";
+  import { WELCOME_DATA_STEP } from "$lib/vault/welcome-steps";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     formatVaultError,
@@ -40,9 +40,8 @@
   let defaultLocation = $state<VaultDefaultLocation | null>(null);
   let busy = $state<"default" | "restore" | "import" | null>(null);
   let setupError = $state<SetupError | null>(null);
-  /** A vault that failed to open at startup skips the welcome screens and lands on the data screen with the error. */
-  let step = $state(untrack(() => (initialError ? WELCOME_STEPS.length : 0)));
-  const onData = $derived(step >= WELCOME_STEPS.length);
+  /** A vault that failed to open at startup skips the language screen and lands on the data screen with the error. */
+  let step = $state(untrack(() => (initialError ? WELCOME_DATA_STEP : 0)));
   const kitPrompt = createBackupKitPrompt();
   const error = $derived(
     !setupError
@@ -132,18 +131,19 @@
   class="mobile-viewport-height flex w-screen flex-col overflow-hidden bg-background pb-(--safe-area-bottom) pt-(--safe-area-top) text-foreground"
   style="padding-left: var(--safe-area-left); padding-right: var(--safe-area-right);"
 >
-  <MobileOnboardingProgress stage={onData ? "vault" : "welcome"} screen={onData ? 0 : step}>
+  <MobileOnboardingProgress stage="setup" screen={step}>
     <VaultWelcomeContent
       bind:step
       showStepDots={false}
+      stage="setup"
       data={dataStep}
-      dataPrimary={{
+      last={{
         label: t("mobile.vaultSetup.startFromZero"),
         onClick: () => void chooseVault("default"),
         busy: busy === "default",
         disabled: busy !== null,
       }}
-      dataBackDisabled={busy !== null}
+      lastBackDisabled={busy !== null}
     />
   </MobileOnboardingProgress>
 </main>

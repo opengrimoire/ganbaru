@@ -165,11 +165,37 @@ const appPromise = (async () => {
             await hydrateUserThemes();
           });
           void appRuntimeReady.catch(() => undefined);
-          await mountVaultHandoffOnboarding(info.vaultId, setupView, appRuntimeReady);
+          const { markWelcomeTourPending } = await import("./lib/vault/welcome-tour");
+          markWelcomeTourPending(safeStorage(), info.vaultId);
+          await mountWelcomeTour(info.vaultId, setupView, appRuntimeReady);
         },
       },
     });
     return setupView;
+  }
+
+  /** Replaces `currentView` with the feature tour of a vault the setup screens opened, then the linking screen. */
+  async function mountWelcomeTour(
+    vaultId: string,
+    currentView?: MountedRoot,
+    appRuntimeReady: Promise<void> = Promise.resolve(),
+  ) {
+    const [{ default: VaultWelcomeTourView }, { completeWelcomeTour }] = await Promise.all([
+      import("$lib/components/vault/VaultWelcomeTourView.svelte"),
+      import("./lib/vault/welcome-tour"),
+    ]);
+    if (currentView) await unmount(currentView);
+    let tourView: MountedRoot;
+    tourView = mount(VaultWelcomeTourView, {
+      target,
+      props: {
+        onComplete: async () => {
+          completeWelcomeTour(safeStorage(), vaultId);
+          await mountVaultHandoffOnboarding(vaultId, tourView, appRuntimeReady);
+        },
+      },
+    });
+    return tourView;
   }
 
   async function mountVaultHandoffOnboarding(
@@ -260,6 +286,10 @@ const appPromise = (async () => {
     benchmarkResumePending = await hasFreshBenchmarkResumeState();
     if (!benchmarkResumePending) {
       await hydrateUserThemes();
+      const { welcomeTourPending } = await import("./lib/vault/welcome-tour");
+      if (welcomeTourPending(safeStorage(), activeVault.vaultId)) {
+        return await mountWelcomeTour(activeVault.vaultId);
+      }
       const { vaultHandoffOnboardingCompleted } = await import(
         "./lib/vault/handoff-onboarding"
       );

@@ -57,6 +57,8 @@ export const agentsSettings = {
   },
   roster: {
     add: "Custom agent",
+    archive: "Archive",
+    builtIn: "Built-in",
     nameLabel: "Name",
     namePlaceholder: "Reviewer",
     modelLabel: "Model",

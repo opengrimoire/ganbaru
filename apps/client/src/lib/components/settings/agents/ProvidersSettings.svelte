@@ -672,6 +672,7 @@
                                 disabled={selectedBusy}
                                 onChange={(enabled) => void setAgentEnabled(agent, enabled)}
                               />
+                              {@render agentRemoveAction(agent, selectedBusy)}
                             </div>
                           </div>
                         {/each}
@@ -693,6 +694,7 @@
                                   onChange={(enabled) => void setAgentEnabled(modelAgent, enabled)}
                                 />
                               {/if}
+                              {@render agentRemoveAction(modelAgent, selectedBusy)}
                             </div>
                           </div>
                         {/each}
@@ -735,6 +737,32 @@
     </div>
   {/if}
 </section>
+
+{#snippet agentRemoveAction(agent: ChatAiAgentRead | undefined, busy: boolean)}
+  {#if agent?.agentKind === "custom"}
+    <button
+      type="button"
+      class="icon-action destructive"
+      disabled={busy || agent.participant.archivedAt !== null}
+      aria-label={t("settings.agents.roster.archive")}
+      data-app-tooltip={t("settings.agents.roster.archive")}
+      onclick={() => void setAgentEnabled(agent, false)}
+    >
+      <Trash2 size={14} />
+    </button>
+  {:else}
+    <!-- aria-disabled keeps hover events, so the built-in tooltip still shows. -->
+    <button
+      type="button"
+      class="icon-action destructive"
+      aria-disabled="true"
+      aria-label={t("settings.agents.roster.builtIn")}
+      data-app-tooltip={t("settings.agents.roster.builtIn")}
+    >
+      <Trash2 size={14} />
+    </button>
+  {/if}
+{/snippet}
 
 {#if removeProvider}
   <ConfirmDialog
@@ -803,8 +831,9 @@
   .editor-section { display:grid; min-width:0; gap:0.65rem; }
   .catalog-section { gap:0; }
   .icon-action { display:inline-grid; width:1.75rem; height:1.75rem; place-items:center; border:1px solid var(--border); border-radius:0.375rem; background:var(--background); color:var(--muted-foreground); }
-  .icon-action:hover:not(:disabled) { background:var(--accent); color:var(--foreground); }
+  .icon-action:hover:not(:disabled, [aria-disabled="true"]) { background:var(--accent); color:var(--foreground); }
   .icon-action.destructive { color:var(--destructive); }
+  .icon-action[aria-disabled="true"] { cursor:not-allowed; opacity:0.5; }
   .provider-notice,.catalog-warning { padding:0.25rem; font-size:calc(0.68rem * var(--type-scale)); }
   .model-search { display:flex; min-width:0; align-items:center; gap:0.45rem; border-block:1px solid var(--border); padding:0.5rem 0.25rem; color:var(--muted-foreground); }
   .model-search label { display:grid; min-width:0; flex:1; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:0.45rem; }

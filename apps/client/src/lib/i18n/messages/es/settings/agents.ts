@@ -60,6 +60,8 @@ export const agentsSettings = {
   },
   roster: {
     add: "Agente personalizado",
+    archive: "Archivar",
+    builtIn: "Integrado",
     nameLabel: "Nombre",
     namePlaceholder: "Revisor",
     modelLabel: "Modelo",

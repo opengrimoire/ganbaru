@@ -68,6 +68,9 @@ html[data-shell="mobile"] {
   border-radius: var(--floating-radius);
   background-color: var(--popover);
   color: var(--popover-foreground);
+  /* The app thumb is tuned to the Calendar canvas and can vanish on this surface, so the thumb mixes from the surface itself. */
+  --app-scrollbar-thumb: color-mix(in srgb, var(--popover-foreground) 22%, var(--popover));
+  --app-scrollbar-thumb-hover: color-mix(in srgb, var(--popover-foreground) 55%, var(--popover));
   box-shadow: var(--floating-shadow);
   font-size: var(--panel-font-size);
   line-height: 1.5;
@@ -79,6 +82,8 @@ html[data-shell="mobile"] {
   border-radius: var(--floating-radius);
   background-color: var(--card);
   color: var(--card-foreground);
+  --app-scrollbar-thumb: color-mix(in srgb, var(--card-foreground) 22%, var(--card));
+  --app-scrollbar-thumb-hover: color-mix(in srgb, var(--card-foreground) 55%, var(--card));
   box-shadow: var(--floating-shadow);
 }
 

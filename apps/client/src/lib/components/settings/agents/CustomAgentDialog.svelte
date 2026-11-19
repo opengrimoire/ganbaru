@@ -66,7 +66,7 @@
   const options = $derived(chosenOptions ?? (model ? defaultModelOptions(model.options) : []));
   const controls = $derived(customAgentControls(model?.options ?? []));
   const modelChoices = $derived(choices.map((entry) => (entry.line
-    ? { value: entry.modelId, label: lineDisplayName(entry.line), summary: t("settings.agents.roster.latest") }
+    ? { value: entry.modelId, label: t("settings.agents.roster.lineChoice", lineDisplayName(entry.line)) }
     : { value: entry.modelId, label: formatModelDisplayName(entry.model.displayName) })));
   const reasoningChoices = $derived((controls.reasoning?.options ?? []).map((option) => ({
     value: option.value,

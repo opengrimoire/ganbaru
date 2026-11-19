@@ -69,6 +69,7 @@ export const agentsSettings = {
     speedFast: "Rápida",
     dialogTitle: "Agente personalizado",
     latest: "Más reciente",
+    lineChoice: (line: string) => `${line} (más reciente)`,
     create: "Crear",
     cancel: "Cancelar",
     createFailed: "No se pudo agregar el agente.",

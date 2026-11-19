@@ -55,8 +55,8 @@
    */
   const primary = $derived<OnboardingNavPrimary>(
     !linked
-      ? { label: t("vaultHandoff.continueWithoutLinking"), onClick: () => void leave(false) }
-      : { label: t("vaultHandoff.continue"), onClick: () => void leave(true), busy: !readyToContinue },
+      ? { label: t("vaultHandoff.continueWithoutLinking"), onClick: () => void leave(false), busy: completing }
+      : { label: t("vaultHandoff.continue"), onClick: () => void leave(true), busy: completing || !readyToContinue },
   );
 
   function safeStorage(): Storage | undefined {
@@ -99,30 +99,6 @@
   }
 </script>
 
-{#if completing}
-  <section
-    class="grid h-full w-full place-items-center"
-    role="status"
-    aria-label={t("common.loading")}
-  >
-    <svg
-      viewBox="0 0 48 48"
-      class="ganbaru-loading-ring size-12 text-foreground"
-      aria-hidden="true"
-    >
-      <circle
-        class="ganbaru-loading-ring-stroke"
-        cx="24"
-        cy="24"
-        r="18"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="3"
-        stroke-linecap="round"
-      />
-    </svg>
-  </section>
-{:else}
 <div class="@container flex h-full flex-col" data-vault-handoff-onboarding={platform}>
   <!-- The content hangs from the top, so the source choices in the title stay put while the panel below changes height. Android starts
        it higher so the tallest panel fits a phone screen without scrolling. -->
@@ -149,4 +125,3 @@
 
   <OnboardingNav {primary} {backLocked} {progress} />
 </div>
-{/if}

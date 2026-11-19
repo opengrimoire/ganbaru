@@ -210,16 +210,29 @@ const appPromise = (async () => {
     };
   }
 
+  let welcomeTourModules: Promise<
+    [typeof import("$lib/components/vault/VaultWelcomeTourView.svelte"), typeof import("./lib/vault/welcome-tour")]
+  > | null = null;
+
+  /** Loads the feature tour once, so a screen before it can start the load and leave for the tour without waiting. */
+  function loadWelcomeTourModules() {
+    welcomeTourModules ??= Promise.all([
+      import("$lib/components/vault/VaultWelcomeTourView.svelte"),
+      import("./lib/vault/welcome-tour"),
+    ]).catch((error: unknown) => {
+      welcomeTourModules = null;
+      throw error;
+    });
+    return welcomeTourModules;
+  }
+
   /** Replaces `currentView` with the feature tour of `vaultId`, whose last screen opens App through `openApp`. */
   async function mountWelcomeTour(
     vaultId: string,
     openApp: (currentView?: MountedRoot) => Promise<MountedRoot>,
     currentView?: MountedRoot,
   ) {
-    const [{ default: VaultWelcomeTourView }, { completeWelcomeTour }] = await Promise.all([
-      import("$lib/components/vault/VaultWelcomeTourView.svelte"),
-      import("./lib/vault/welcome-tour"),
-    ]);
+    const [{ default: VaultWelcomeTourView }, { completeWelcomeTour }] = await loadWelcomeTourModules();
     if (currentView) await unmount(currentView);
     let tourView: MountedRoot;
     tourView = mount(VaultWelcomeTourView, {
@@ -259,6 +272,8 @@ const appPromise = (async () => {
   ) {
     // Start data preparation while pairing is visible; keep failures retryable on Continue.
     const openApp = startDesktopAppOpening(appRuntimeReady);
+    const { welcomeTourPending } = await import("./lib/vault/welcome-tour");
+    if (welcomeTourPending(safeStorage(), vaultId)) void loadWelcomeTourModules().catch(() => undefined);
     const [{ default: VaultHandoffOnboardingView }, handoffApi] = await Promise.all([
       import("$lib/components/vault/handoff/VaultHandoffOnboardingView.svelte"),
       import("$lib/api/vault-handoff"),

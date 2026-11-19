@@ -35,11 +35,16 @@ export function welcomeStepAt(stage: WelcomeStage, index: number): WelcomeStep {
   return welcomeStageSteps(stage)[clampWelcomeStep(stage, index)];
 }
 
-/** Where the screen of `stage` at `index` sits among every welcome screen, setup first, for the progress dots. */
-export function welcomeProgress(stage: WelcomeStage, index: number): { index: number; count: number } {
-  const offset = stage === "setup" ? 0 : WELCOME_SETUP_STEPS.length;
-  return {
-    index: offset + clampWelcomeStep(stage, index),
-    count: WELCOME_SETUP_STEPS.length + WELCOME_TOUR_STEPS.length,
-  };
+/** Every first-use screen the progress dots count: the setup screens, the tour, and the linking screen after it. */
+const ONBOARDING_SCREEN_COUNT = WELCOME_SETUP_STEPS.length + WELCOME_TOUR_STEPS.length + 1;
+
+/**
+ * Where the screen of `stage` at `index` sits among every first-use screen, for the progress dots: the setup screens,
+ * then the tour, then the linking screen, which is a single screen.
+ */
+export function welcomeProgress(stage: WelcomeStage | "linking", index = 0): { index: number; count: number } {
+  const position = stage === "linking"
+    ? ONBOARDING_SCREEN_COUNT - 1
+    : (stage === "setup" ? 0 : WELCOME_SETUP_STEPS.length) + clampWelcomeStep(stage, index);
+  return { index: position, count: ONBOARDING_SCREEN_COUNT };
 }

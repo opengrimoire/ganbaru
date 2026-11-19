@@ -9,13 +9,13 @@
   import { cn } from "$lib/utils";
   import { completeVaultHandoffOnboarding } from "$lib/vault/handoff-onboarding";
   import { getActiveVaultInfo } from "$lib/vault/state";
-  import OnboardingNav, { type OnboardingNavPrimary } from "../OnboardingNav.svelte";
+  import OnboardingNav, { type OnboardingNavPrimary, type OnboardingNavProgress } from "../OnboardingNav.svelte";
   import VaultHandoffPanel from "./VaultHandoffPanel.svelte";
 
   /**
    * The linking screen of first use, with the shared onboarding navigation at its bottom: its primary action continues
    * without linking until a device links, and Back, when the shell passes `onBack`, returns to the screen before it
-   * until a device links.
+   * until a device links. With `progress`, the navigation shows the screen's place among the first-use screens.
    */
   let {
     platform,
@@ -24,6 +24,7 @@
     initialStatus = null,
     bootstrapReplicaOnLink = false,
     onBack,
+    progress,
     onComplete,
   }: {
     platform: "desktop" | "android";
@@ -32,6 +33,7 @@
     initialStatus?: PairingStatus | null;
     bootstrapReplicaOnLink?: boolean;
     onBack?: () => void;
+    progress?: OnboardingNavProgress;
     onComplete: () => void | Promise<void>;
   } = $props();
 
@@ -143,6 +145,6 @@
     </div>
   </section>
 
-  <OnboardingNav {primary} onBack={linked ? undefined : onBack} />
+  <OnboardingNav {primary} onBack={linked ? undefined : onBack} {progress} />
 </div>
 {/if}

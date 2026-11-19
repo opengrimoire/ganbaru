@@ -17,7 +17,7 @@
   import WelcomeSceneStep from "./WelcomeSceneStep.svelte";
 
   /**
-   * The desktop welcome screen after Chat: every coding agent this computer can run, checked as the screen opens, with
+   * The desktop welcome screen after Chat: every AI agent this computer can run, checked as the screen opens, with
    * whether it is ready and signed in. An agent that is not opens the same install and sign-in steps Settings shows,
    * and checking again adds a CLI the person just installed, as opening Settings does.
    */
@@ -41,8 +41,18 @@
     );
   });
 
+  let inFlight: Promise<void> | null = null;
+
+  /** Checks every provider, joining a check already running so a guide's refresh never ends it early. */
+  function check(): Promise<void> {
+    inFlight ??= runCheck().finally(() => {
+      inFlight = null;
+    });
+    return inFlight;
+  }
+
   /** Reads what this device already knows at once, then checks every provider again, which can take a few seconds. */
-  async function check(): Promise<void> {
+  async function runCheck(): Promise<void> {
     checking = true;
     checkError = null;
     try {

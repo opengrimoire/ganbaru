@@ -31,6 +31,7 @@ export const updates = {
     updating: "Actualizando",
     managed: "Actualízalo con el gestor de paquetes que lo instaló.",
     updateFailed: "La actualización no terminó, así que ejecuta el comando en una terminal para ver por qué.",
-    copyCommand: (cli: string) => `Copiar el comando de actualización de ${cli}`,
+    copyCommand: "Copiar el comando de actualización",
+    updateAll: "Actualizar todo",
   },
 } as const satisfies MessageShape<typeof enUpdates>;

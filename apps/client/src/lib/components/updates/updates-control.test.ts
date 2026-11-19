@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProviderInstanceRead, ProviderUpdateRead } from "$lib/chat/contracts";
-import { appUpdatePending, cliUpdateEntries } from "./updates-control";
+import { appUpdatePending, cliUpdateEntries, offersUpdateAll, runnableCliUpdates } from "./updates-control";
 import type { UpdateStatus } from "$lib/stores/updates.svelte";
 
 const NOW_MS = Date.parse("2026-11-17T12:00:00Z");
@@ -78,5 +78,19 @@ describe("updates control", () => {
 
   it("lists nothing when no configured provider has an update", () => {
     expect(cliUpdateEntries([], [provider("claude-main", "claude")], NOW_MS)).toEqual([]);
+  });
+
+  it("runs every in-app CLI update in panel order and leaves managed installs out", () => {
+    const providers = [provider("claude-main", "claude"), provider("codex-main", "codex", "2026-11-17T10:00:00Z")];
+    const managed = { ...update("claude-main"), runsInApp: false };
+    const entries = cliUpdateEntries([managed, update("codex-main")], providers, NOW_MS);
+    expect(runnableCliUpdates(entries)).toEqual(["codex-main"]);
+  });
+
+  it("offers updating everything only once two updates can run from the panel", () => {
+    expect(offersUpdateAll(false, 1)).toBe(false);
+    expect(offersUpdateAll(true, 0)).toBe(false);
+    expect(offersUpdateAll(true, 1)).toBe(true);
+    expect(offersUpdateAll(false, 2)).toBe(true);
   });
 });

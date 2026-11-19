@@ -1,4 +1,4 @@
-import type { ProviderInstanceRead, ProviderUpdateRead } from "$lib/chat/contracts";
+import type { ProviderInstanceId, ProviderInstanceRead, ProviderUpdateRead } from "$lib/chat/contracts";
 import { providersInPickerOrder } from "$lib/chat/composer/model-picker-model";
 import type { UpdateStatus } from "$lib/stores/updates.svelte";
 
@@ -36,4 +36,24 @@ export function cliUpdateEntries(
     const update = byInstance.get(provider.configuration.instanceId);
     return update ? [{ provider, update }] : [];
   });
+}
+
+/**
+ * The provider instances whose CLI update Ganbaru can run itself, in panel order.
+ *
+ * @param entries The CLI updates the panel lists.
+ */
+export function runnableCliUpdates(entries: readonly CliUpdateEntry[]): ProviderInstanceId[] {
+  return entries.filter((entry) => entry.update.runsInApp).map((entry) => entry.update.instanceId);
+}
+
+/**
+ * Whether the panel offers one action that applies every update, which pays off once at least two updates can run
+ * without a terminal.
+ *
+ * @param appSelfUpdate Whether the app update installs itself from the panel.
+ * @param runnableCliCount How many CLI updates Ganbaru can run itself.
+ */
+export function offersUpdateAll(appSelfUpdate: boolean, runnableCliCount: number): boolean {
+  return runnableCliCount + (appSelfUpdate ? 1 : 0) >= 2;
 }

@@ -16,7 +16,7 @@
   import { cn } from "$lib/utils";
   import { writeTextToClipboard } from "$lib/utils/clipboard";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
-  import { appUpdatePending, cliUpdateEntries } from "./updates-control";
+  import { appUpdatePending, cliUpdateEntries, offersUpdateAll, runnableCliUpdates } from "./updates-control";
 
   /**
    * Title bar indicator that appears while Ganbaru or a configured agent CLI has an update, and
@@ -39,7 +39,9 @@
   let open = $state(false);
   /** The copy button that just succeeded, keyed by provider instance or `app`. */
   let copiedKey = $state<string | null>(null);
-  let failure = $state<{ instanceId: ProviderInstanceId; output: string | null } | null>(null);
+  /** The output of each CLI update that failed, or `null` when the command could not start. */
+  let failures = $state<Partial<Record<ProviderInstanceId, string | null>>>({});
+  let updatingAll = $state(false);
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
 
   const showApp = $derived(appUpdatePending(updates.status));
@@ -47,6 +49,9 @@
     cliUpdateEntries(providerUpdates.updates, chat.settings?.providerInstances ?? [], Date.now()),
   );
   const visible = $derived(showApp || cliEntries.length > 0);
+  const appSelfUpdate = $derived(updates.status === "available" && updates.primaryAction === "self-updater");
+  const runnableCli = $derived(runnableCliUpdates(cliEntries));
+  const showUpdateAll = $derived(offersUpdateAll(appSelfUpdate, runnableCli.length));
 
   $effect(() => {
     if (!visible) open = false;
@@ -80,18 +85,49 @@
     }
   }
 
-  async function runCliUpdate(instanceId: ProviderInstanceId): Promise<void> {
-    failure = null;
+  function setFailure(instanceId: ProviderInstanceId, output: string | null | undefined): void {
+    const next = { ...failures };
+    if (output === undefined) delete next[instanceId];
+    else next[instanceId] = output;
+    failures = next;
+  }
+
+  /**
+   * Runs one CLI update and probes the provider again so its new version shows.
+   *
+   * @returns Whether the update finished.
+   */
+  async function runCliUpdate(instanceId: ProviderInstanceId): Promise<boolean> {
+    setFailure(instanceId, undefined);
     try {
       const result = await providerUpdates.run(instanceId);
       if (!result.successful) {
-        failure = { instanceId, output: result.output };
-        return;
+        setFailure(instanceId, result.output);
+        return false;
       }
       await chat.probeProvider(instanceId);
+      return true;
     } catch (error: unknown) {
       console.error("Failed to update the provider CLI:", error);
-      failure = { instanceId, output: null };
+      setFailure(instanceId, null);
+      return false;
+    }
+  }
+
+  /**
+   * Runs every CLI update one after another, then installs the app update last, since it restarts the app. The app
+   * waits when a CLI update fails, so its notice stays visible.
+   */
+  async function updateEverything(): Promise<void> {
+    updatingAll = true;
+    try {
+      let allFinished = true;
+      for (const instanceId of runnableCli) {
+        if (!(await runCliUpdate(instanceId))) allFinished = false;
+      }
+      if (allFinished && appSelfUpdate) await updates.installUpdate();
+    } finally {
+      updatingAll = false;
     }
   }
 
@@ -200,14 +236,14 @@
                       <button
                         type="button"
                         class={SETTINGS_SECONDARY_BUTTON_CLASS}
-                        disabled={providerUpdates.running !== null}
+                        disabled={providerUpdates.running !== null || updatingAll}
                         onclick={() => void runCliUpdate(update.instanceId)}
                       >{providerUpdates.running === update.instanceId ? t("updates.panel.updating") : t("updates.panel.update")}</button>
                       <button
                         type="button"
                         class={SETTINGS_ICON_BUTTON_CLASS}
-                        title={t("updates.panel.copyCommand", label)}
-                        aria-label={t("updates.panel.copyCommand", label)}
+                        title={t("updates.panel.copyCommand")}
+                        aria-label={t("updates.panel.copyCommand")}
                         onclick={() => void copy(update.instanceId, update.updateCommand)}
                       >{#if copiedKey === update.instanceId}<Check size={14} aria-hidden="true" />{:else}<Copy size={14} aria-hidden="true" />{/if}</button>
                     {/if}
@@ -215,18 +251,30 @@
                   {#if !update.runsInApp}
                     <p class="text-panel-detail text-muted-foreground">{t("updates.panel.managed")}</p>
                   {/if}
-                  {#if failure?.instanceId === update.instanceId}
+                  {#if update.instanceId in failures}
                     <Notice
                       class="text-panel-detail"
                       tone="warning"
                       message={t("updates.panel.updateFailed")}
-                      copy={failure.output ?? update.updateCommand}
-                      onDismiss={() => (failure = null)}
+                      copy={failures[update.instanceId] ?? update.updateCommand}
+                      onDismiss={() => setFailure(update.instanceId, undefined)}
                     />
                   {/if}
                 </div>
               {/each}
             </section>
+          {/if}
+
+          {#if showUpdateAll}
+            <button
+              type="button"
+              class={cn(SETTINGS_PRIMARY_BUTTON_CLASS, "w-full justify-center")}
+              disabled={providerUpdates.running !== null || updatingAll}
+              onclick={() => void updateEverything()}
+            >
+              <Download size={14} strokeWidth={1.9} class="shrink-0" aria-hidden="true" />
+              <span>{updatingAll ? t("updates.panel.updating") : t("updates.panel.updateAll")}</span>
+            </button>
           {/if}
         </div>
       </div>

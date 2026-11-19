@@ -28,6 +28,7 @@ export const updates = {
     updating: "Updating",
     managed: "Update it through the package manager that installed it.",
     updateFailed: "The update did not finish, so run the command in a terminal to see why.",
-    copyCommand: (cli: string) => `Copy the ${cli} update command`,
+    copyCommand: "Copy the update command",
+    updateAll: "Update everything",
   },
 } as const;

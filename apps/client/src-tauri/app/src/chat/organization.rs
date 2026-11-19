@@ -46,7 +46,6 @@ mod inputs;
 #[cfg(desktop)]
 mod instruction_files;
 mod model_choice;
-#[cfg(desktop)]
 mod primary_folder;
 #[cfg(desktop)]
 mod provider_agents;
@@ -326,7 +325,6 @@ pub async fn chat_read_mobile_channel_roster(
 }
 
 #[tauri::command]
-#[cfg(desktop)]
 pub async fn chat_read_project_primary_working_folder(
     app: tauri::AppHandle,
     db_url: String,

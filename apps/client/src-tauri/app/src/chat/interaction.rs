@@ -8,10 +8,7 @@ mod state;
 mod support;
 mod workspace_mentions;
 
-pub(crate) use attachments::{
-    MAX_IMAGE_COUNT, attachment_data_url, import_image, import_text_snippet, pick_images,
-    read_attachments,
-};
+pub(crate) use attachments::pick_images;
 pub(crate) use drafts::{read_user_input_draft, save_user_input_draft};
 pub(crate) use followups::{
     cancel_queued_followup, mark_queued_followup_dispatched, save_queued_followup,

@@ -22,6 +22,8 @@ export { clipboardImageFiles } from "$lib/utils/clipboard-images";
 export const CHAT_IMAGE_LIMIT = 8;
 export const CHAT_IMAGE_BYTE_LIMIT = 20 * 1024 * 1024;
 export const CHAT_IMAGE_TOTAL_BYTE_LIMIT = 50 * 1024 * 1024;
+/** Image types Chat accepts as attachments. */
+export const CHAT_IMAGE_CONTENT_TYPES: readonly string[] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
 export interface DefaultProviderModelSelection {
   provider: ProviderInstanceRead;
@@ -535,7 +537,7 @@ export function validateImageFiles(
   existingBytes = 0,
 ): string | null {
   if (existingCount + files.length > CHAT_IMAGE_LIMIT) return `Attach up to ${CHAT_IMAGE_LIMIT} images`;
-  const unsupported = files.find((file) => !["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.type));
+  const unsupported = files.find((file) => !CHAT_IMAGE_CONTENT_TYPES.includes(file.type));
   if (unsupported) return `${unsupported.name} is not a supported image`;
   const oversized = files.find((file) => file.size > CHAT_IMAGE_BYTE_LIMIT);
   if (oversized) return `${oversized.name} exceeds the 20 MiB limit`;

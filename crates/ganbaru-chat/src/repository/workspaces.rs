@@ -67,20 +67,14 @@ pub async fn resolve_primary_workspace<'e, E>(
 where
     E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
 {
-    let rows = sqlx::query(
+    let rows = sqlx::query(concat!(
         "SELECT folder.id, folder.project_id, folder.display_name, folder.kind,
                 folder.managed_relative_path, folder.sort_order, folder.repository_kind,
                 folder.repository_identity, folder.created_at, folder.updated_at,
                 folder.archived_at, folder.revision
-         FROM project_working_folders folder
-         LEFT JOIN project_primary_working_folders primary_folder
-           ON primary_folder.project_id = folder.project_id
-          AND primary_folder.working_folder_id = folder.id
-          AND folder.archived_at IS NULL
-         WHERE folder.project_id = ?
-           AND (primary_folder.project_id IS NOT NULL OR folder.kind = 'managed')
-         ORDER BY primary_folder.project_id IS NULL, folder.sort_order, folder.id",
-    )
+         ",
+        super::primary_folder::primary_folder_candidates!()
+    ))
     .bind(project_id)
     .fetch_all(executor)
     .await

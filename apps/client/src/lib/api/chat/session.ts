@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ensureDbUrl } from "$lib/api/db";
 import { withProviderStartTrust } from "$lib/api/working-folder-trust";
+import { encodeBase64 } from "$lib/utils/base64";
 import { hasTimelineReadObservers, reportTimelineSinceRead } from "$lib/chat/timeline/read-observer";
 import type {
   ChatActivityDetailRead,
@@ -156,11 +157,11 @@ export async function importChatImage(
   workingFolderId: ProjectWorkingFolderId,
   attachmentId: string,
   displayName: string,
-  bytes: number[],
+  bytes: Uint8Array,
 ): Promise<ChatAttachmentRead> {
   return parseChatAttachmentRead(await invoke<unknown>("chat_import_image", {
     dbUrl: await ensureDbUrl(),
-    request: { workingFolderId, attachmentId, displayName, bytes },
+    request: { workingFolderId, attachmentId, displayName, base64: encodeBase64(bytes) },
   }));
 }
 

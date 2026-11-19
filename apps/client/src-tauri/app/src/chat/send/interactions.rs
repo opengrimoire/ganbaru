@@ -1,7 +1,8 @@
 //! Steering, approval, and structured user-input operations.
 
 use super::persistence::{
-    persist_steer_message, read_attachment_references, read_thread_runtime_data,
+    AttachmentFolderScope, persist_steer_message, read_attachment_references,
+    read_thread_runtime_data,
 };
 use super::support::{
     TURN_OPERATION_TIMEOUT, chat_pool, json_error, now_timestamp, operation_context,
@@ -255,9 +256,13 @@ async fn resolve_answer_attachments(
         })?;
     let mut answers = Vec::with_capacity(request.answers.len());
     for answer in &request.answers {
-        let attachments =
-            read_attachment_references(app, pool, Some(&working_folder_id), &answer.attachment_ids)
-                .await?;
+        let attachments = read_attachment_references(
+            app,
+            pool,
+            AttachmentFolderScope::Folder(Some(&working_folder_id)),
+            &answer.attachment_ids,
+        )
+        .await?;
         answers.push(answer_with_attachment_lines(answer.clone(), &attachments));
     }
     Ok(answers)

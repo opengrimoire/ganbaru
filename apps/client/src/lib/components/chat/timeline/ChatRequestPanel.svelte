@@ -192,7 +192,7 @@
       void attachToQuestion(questionId, files.length, async (folder) => {
         const imported: ChatAttachmentRead[] = [];
         for (const file of files) {
-          imported.push(await chatApi.importChatImage(folder, crypto.randomUUID(), file.name, [...new Uint8Array(await file.arrayBuffer())]));
+          imported.push(await chatApi.importChatImage(folder, crypto.randomUUID(), file.name, new Uint8Array(await file.arrayBuffer())));
         }
         return imported;
       });

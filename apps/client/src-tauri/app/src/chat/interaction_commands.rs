@@ -20,28 +20,10 @@ pub use ganbaru_chat::composer::workspace_mentions::ProjectWorkingFolderPathPage
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ImportChatImageRequest {
-    pub attachment_id: ChatAttachmentId,
-    pub working_folder_id: ProjectWorkingFolderId,
-    pub display_name: String,
-    pub bytes: Vec<u8>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct PickChatImagesRequest {
     pub working_folder_id: ProjectWorkingFolderId,
     pub attachment_ids: Vec<ChatAttachmentId>,
     pub title: String,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImportChatTextSnippetRequest {
-    pub working_folder_id: ProjectWorkingFolderId,
-    pub attachment_id: ChatAttachmentId,
-    pub display_name: String,
-    pub text: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -121,49 +103,12 @@ pub struct ChatUserInputDraftRead {
 }
 
 #[tauri::command]
-pub async fn chat_import_image(
-    app: tauri::AppHandle,
-    db_url: String,
-    request: ImportChatImageRequest,
-) -> ChatResult<attachments::ChatAttachmentRead> {
-    interaction::import_image(app, db_url, request).await
-}
-
-#[tauri::command]
 pub async fn chat_pick_images(
     app: tauri::AppHandle,
     db_url: String,
     request: PickChatImagesRequest,
 ) -> ChatResult<Vec<attachments::ChatAttachmentRead>> {
     interaction::pick_images(app, db_url, request).await
-}
-
-#[tauri::command]
-pub async fn chat_attachment_data_url(
-    app: tauri::AppHandle,
-    db_url: String,
-    attachment_id: ChatAttachmentId,
-) -> ChatResult<String> {
-    interaction::attachment_data_url(app, db_url, attachment_id).await
-}
-
-#[tauri::command]
-pub async fn chat_read_attachments(
-    app: tauri::AppHandle,
-    db_url: String,
-    working_folder_id: ProjectWorkingFolderId,
-    attachment_ids: Vec<ChatAttachmentId>,
-) -> ChatResult<Vec<attachments::ChatAttachmentRead>> {
-    interaction::read_attachments(app, db_url, working_folder_id, attachment_ids).await
-}
-
-#[tauri::command]
-pub async fn chat_import_text_snippet(
-    app: tauri::AppHandle,
-    db_url: String,
-    request: ImportChatTextSnippetRequest,
-) -> ChatResult<attachments::ChatAttachmentRead> {
-    interaction::import_text_snippet(app, db_url, request).await
 }
 
 #[tauri::command]

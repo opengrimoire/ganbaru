@@ -1,61 +1,20 @@
-//! Managed Chat attachment import and read operations.
+//! Chat image import from the desktop file picker.
 
 use super::support::{chat_pool, now_timestamp, require_workspace};
-use crate::chat::interaction_commands::{
-    ImportChatImageRequest, ImportChatTextSnippetRequest, PickChatImagesRequest,
+use crate::chat::attachment_commands::{
+    MAX_IMAGE_BYTES, MAX_IMAGE_COUNT, attachment_io_error, vault_error,
 };
+use crate::chat::interaction_commands::PickChatImagesRequest;
 use crate::chat::workspace::WorkingFolderAuthorizationOperation;
 use crate::vault;
-use base64::{Engine as _, engine::general_purpose};
 use ganbaru_chat::repository::attachments;
-use ganbaru_chat_contracts::models::{
-    ChatAttachmentId, ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId,
-};
+use ganbaru_chat_contracts::models::{ChatError, ChatErrorCode, ChatResult};
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::PathBuf;
 use tauri_plugin_dialog::{DialogExt, FilePath};
 
-const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
-pub(crate) const MAX_IMAGE_COUNT: usize = 8;
-/// The largest text attachment in bytes, so a pasted log fits while staying far below
-/// `MAX_ATTACHMENT_BYTES`. The composer mirrors it as `MAX_TEXT_SNIPPET_BYTES` in `composer/paste.ts`.
-const MAX_TEXT_SNIPPET_BYTES: usize = 1024 * 1024;
-
-pub(crate) async fn import_image(
-    app: tauri::AppHandle,
-    db_url: String,
-    request: ImportChatImageRequest,
-) -> ChatResult<attachments::ChatAttachmentRead> {
-    if request.bytes.len() > MAX_IMAGE_BYTES {
-        return Err(ChatError::validation(
-            "image",
-            "Chat images must be 20 MiB or smaller",
-        ));
-    }
-    let pool = chat_pool(app.clone(), db_url).await?;
-    require_workspace(
-        &app,
-        &pool,
-        &request.working_folder_id,
-        WorkingFolderAuthorizationOperation::FileRead,
-    )
-    .await?;
-    let vault_root = vault::active_writable_vault_path(&app).map_err(vault_error)?;
-    let now = now_timestamp()?;
-    attachments::import_attachment_bytes(
-        &pool,
-        &vault_root,
-        attachments::AttachmentBytesImport {
-            working_folder_id: &request.working_folder_id,
-            attachment_id: request.attachment_id,
-            display_name: request.display_name,
-            bytes: &request.bytes,
-            requested_kind: attachments::ChatAttachmentKind::Image,
-            now: &now,
-        },
-    )
-    .await
-}
+/// The largest total of the images one pick imports.
+const MAX_PICKED_IMAGE_TOTAL_BYTES: u64 = 50 * 1024 * 1024;
 
 pub(crate) async fn pick_images(
     app: tauri::AppHandle,
@@ -125,7 +84,7 @@ pub(crate) async fn pick_images(
         total_bytes = total_bytes
             .checked_add(metadata.len())
             .ok_or_else(|| ChatError::validation("images", "Selected images are too large"))?;
-        if total_bytes > 50 * 1024 * 1024 {
+        if total_bytes > MAX_PICKED_IMAGE_TOTAL_BYTES {
             return Err(ChatError::validation(
                 "images",
                 "Selected Chat images must total 50 MiB or less",
@@ -150,170 +109,8 @@ pub(crate) async fn pick_images(
     Ok(imported)
 }
 
-pub(crate) async fn attachment_data_url(
-    app: tauri::AppHandle,
-    db_url: String,
-    attachment_id: ChatAttachmentId,
-) -> ChatResult<String> {
-    let pool = chat_pool(app.clone(), db_url).await?;
-    let attachment = attachments::read_attachment(&pool, &attachment_id)
-        .await?
-        .ok_or_else(|| ChatError::new(ChatErrorCode::NotFound, "Chat image was not found", true))?;
-    if attachment.kind != attachments::ChatAttachmentKind::Image {
-        return Err(ChatError::validation(
-            "attachmentId",
-            "Attachment is not an image",
-        ));
-    }
-    let path = managed_attachment_path(&app, &attachment.managed_relative_path)?;
-    let bytes = ganbaru_atomic_files::read_regular_file_capped(
-        &path,
-        attachment.byte_size.min(MAX_IMAGE_BYTES as u64),
-        ganbaru_atomic_files::FinalSymlink::Refuse,
-    )
-    .map_err(attachment_io_error)?;
-    if bytes.len() as u64 != attachment.byte_size {
-        return Err(attachment_io_error(()));
-    }
-    Ok(format!(
-        "data:{};base64,{}",
-        attachment.mime_type,
-        general_purpose::STANDARD.encode(bytes)
-    ))
-}
-
-pub(crate) async fn read_attachments(
-    app: tauri::AppHandle,
-    db_url: String,
-    working_folder_id: ProjectWorkingFolderId,
-    attachment_ids: Vec<ChatAttachmentId>,
-) -> ChatResult<Vec<attachments::ChatAttachmentRead>> {
-    if attachment_ids.len() > 20 {
-        return Err(ChatError::validation(
-            "attachmentIds",
-            "Too many Chat attachments were requested",
-        ));
-    }
-    let pool = chat_pool(app, db_url).await?;
-    let mut result = Vec::with_capacity(attachment_ids.len());
-    for id in attachment_ids {
-        let attachment = attachments::read_attachment(&pool, &id)
-            .await?
-            .ok_or_else(|| {
-                ChatError::new(
-                    ChatErrorCode::NotFound,
-                    "Chat attachment was not found",
-                    true,
-                )
-            })?;
-        if attachment.working_folder_id != working_folder_id {
-            return Err(ChatError::new(
-                ChatErrorCode::Permission,
-                "Chat attachment belongs to another workspace",
-                false,
-            ));
-        }
-        result.push(attachment);
-    }
-    Ok(result)
-}
-
-/// Refuses text attachment content that is empty, larger than `MAX_TEXT_SNIPPET_BYTES`, or holds a
-/// NUL character. Oversized text is refused whole, never truncated.
-fn validate_text_snippet(text: &str) -> ChatResult<()> {
-    if text.is_empty() || text.len() > MAX_TEXT_SNIPPET_BYTES || text.contains('\0') {
-        return Err(ChatError::validation(
-            "text",
-            "Chat text context must be between 1 byte and 1 MiB",
-        ));
-    }
-    Ok(())
-}
-
-pub(crate) async fn import_text_snippet(
-    app: tauri::AppHandle,
-    db_url: String,
-    request: ImportChatTextSnippetRequest,
-) -> ChatResult<attachments::ChatAttachmentRead> {
-    validate_text_snippet(&request.text)?;
-    let pool = chat_pool(app.clone(), db_url).await?;
-    require_workspace(
-        &app,
-        &pool,
-        &request.working_folder_id,
-        WorkingFolderAuthorizationOperation::FileRead,
-    )
-    .await?;
-    let now = now_timestamp()?;
-    attachments::import_attachment_bytes(
-        &pool,
-        &vault::active_writable_vault_path(&app).map_err(vault_error)?,
-        attachments::AttachmentBytesImport {
-            working_folder_id: &request.working_folder_id,
-            attachment_id: request.attachment_id,
-            display_name: request.display_name,
-            bytes: request.text.as_bytes(),
-            requested_kind: attachments::ChatAttachmentKind::TextSnippet,
-            now: &now,
-        },
-    )
-    .await
-}
-
-fn managed_attachment_path(app: &tauri::AppHandle, relative_path: &str) -> ChatResult<PathBuf> {
-    let relative = Path::new(relative_path);
-    if relative.is_absolute()
-        || !relative_path.starts_with("assets/chat/attachments/")
-        || relative
-            .components()
-            .any(|part| !matches!(part, Component::Normal(_)))
-    {
-        return Err(ChatError::validation(
-            "attachmentPath",
-            "Managed Chat attachment path is invalid",
-        ));
-    }
-    Ok(vault::active_vault_path(app)
-        .map_err(vault_error)?
-        .join(relative))
-}
-
 fn dialog_path(value: FilePath) -> ChatResult<PathBuf> {
     value
         .into_path()
         .map_err(|_| ChatError::validation("image", "Selected image is not local"))
-}
-
-fn vault_error<T>(_error: T) -> ChatError {
-    ChatError::new(
-        ChatErrorCode::Persistence,
-        "Chat attachment folder is unavailable",
-        true,
-    )
-}
-
-fn attachment_io_error<T>(_error: T) -> ChatError {
-    ChatError::new(
-        ChatErrorCode::Persistence,
-        "Chat image could not be read",
-        true,
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn text_snippet_bound_is_named_and_refuses_over_limit() {
-        assert!(validate_text_snippet(&"a".repeat(MAX_TEXT_SNIPPET_BYTES)).is_ok());
-        let multibyte = "\u{E9}".repeat(MAX_TEXT_SNIPPET_BYTES / 2);
-        assert!(validate_text_snippet(&multibyte).is_ok());
-        let over = validate_text_snippet(&"a".repeat(MAX_TEXT_SNIPPET_BYTES + 1))
-            .expect_err("text over the bound is refused");
-        assert_eq!(over.code, ChatErrorCode::Validation);
-        assert!(validate_text_snippet(&format!("{multibyte}a")).is_err());
-        assert!(validate_text_snippet("").is_err());
-        assert!(validate_text_snippet("log\0line").is_err());
-    }
 }

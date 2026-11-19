@@ -48,7 +48,7 @@
   } from "$lib/chat/composer/command-model";
   import { composerCollapsed } from "$lib/chat/composer/collapse";
   import { composerMeterRead, type ComposerStatusRead } from "$lib/chat/composer/composer-meter";
-  import { CHAT_IMAGE_LIMIT, composerTokenTrigger, validateImageFiles } from "$lib/chat/composer/model";
+  import { CHAT_IMAGE_CONTENT_TYPES, CHAT_IMAGE_LIMIT, composerTokenTrigger, validateImageFiles } from "$lib/chat/composer/model";
   import { pendingInputRows, pendingInputStartsWork, type PendingInputRow } from "$lib/chat/composer/pending-inputs";
   import { formatShortcut, hasOnlyShortcutModifier } from "$lib/keyboard-shortcuts";
   import { latestStructuredPlanSteps, summarizePlanProgress } from "$lib/chat/composer/plan-progress";
@@ -147,6 +147,14 @@
     BUILD_PLATFORM_PROFILE,
     "chat.local-execution",
   );
+  /**
+   * Without local execution, attachments go to the channel project's primary working folder,
+   * the folder this device may import into and an organizational run reads from.
+   */
+  let primaryAttachmentFolderId = $state<string | null>(null);
+  let primaryAttachmentFolderRequest = 0;
+  /** The system image picker used when there is no native file dialog. */
+  let imageInput = $state<HTMLInputElement | null>(null);
   const focusEditorOnMount = BUILD_PLATFORM_PROFILE.shell === "desktop";
   /** The phone composer rests as one row until it is used, which keeps the conversation in view. */
   const collapsible = BUILD_PLATFORM_PROFILE.shell === "mobile";
@@ -425,6 +433,23 @@
     const _threadRevision = chat.replyThread?.revision;
     const _replies = chat.replyThread?.replies.length;
     void loadAssignmentInputs(assignmentId);
+  });
+
+  $effect(() => {
+    if (localExecutionAvailable) return;
+    const projectId = chat.selectedChannel?.projectId ?? null;
+    const request = ++primaryAttachmentFolderRequest;
+    primaryAttachmentFolderId = null;
+    if (!projectId) return;
+    chatApi.readChatProjectPrimaryWorkingFolder(projectId)
+      .then((read) => {
+        if (request !== primaryAttachmentFolderRequest) return;
+        primaryAttachmentFolderId = read.workingFolderId;
+        void loadAttachmentReads(attachmentIds);
+      })
+      .catch((cause: unknown) => {
+        if (request === primaryAttachmentFolderRequest) error = chatErrorMessage(cause, t("chatErrors.actions.fileAction"));
+      });
   });
 
   $effect(() => {
@@ -1280,6 +1305,7 @@
   }
 
   function composerWorkingFolderId(): string | null {
+    if (!localExecutionAvailable) return primaryAttachmentFolderId;
     return chat.selectedWorkingFolderId
       ?? chat.workingFolders.find((folder) => folder.workingFolder.projectId === chat.selectedChannel?.projectId)
         ?.workingFolder.id
@@ -1293,7 +1319,7 @@
       return;
     }
     const workingFolderId = composerWorkingFolderId();
-    if (!localExecutionAvailable || !workingFolderId) return;
+    if (!workingFolderId) return;
     const invalid = validateImageFiles(files, attachmentIds.length);
     if (invalid) {
       error = invalid;
@@ -1305,7 +1331,7 @@
         workingFolderId,
         crypto.randomUUID(),
         file.name,
-        [...new Uint8Array(await file.arrayBuffer())],
+        new Uint8Array(await file.arrayBuffer()),
       )));
       rememberAttachments(imported);
       attachmentIds = [...attachmentIds, ...imported.map((attachment) => attachment.id)];
@@ -1315,6 +1341,12 @@
     }
   }
 
+  function handleImageInput(event: Event & { currentTarget: HTMLInputElement }): void {
+    const files = [...(event.currentTarget.files ?? [])];
+    event.currentTarget.value = "";
+    if (files.length > 0) void importFiles(files);
+  }
+
   /** Attaches pasted or dropped text too large to read inline as a text attachment. */
   async function importLargeText(text: string): Promise<void> {
     if (editLockReason) {
@@ -1322,7 +1354,7 @@
       return;
     }
     const workingFolderId = composerWorkingFolderId();
-    if (!localExecutionAvailable || !workingFolderId) {
+    if (!workingFolderId) {
       error = t("chat.composer.paste.attachmentUnavailable");
       return;
     }
@@ -1499,6 +1531,10 @@
     if (!workingFolderId || editLockReason) return;
     const available = Math.max(0, CHAT_IMAGE_LIMIT - attachmentIds.length);
     if (available === 0) return;
+    if (!localExecutionAvailable) {
+      imageInput?.click();
+      return;
+    }
     const imported = await chatApi.pickChatImages(
       workingFolderId,
       Array.from({ length: available }, () => crypto.randomUUID()),
@@ -2009,7 +2045,8 @@
         {/if}
       {/snippet}
       {#snippet leading()}
-        {#if localExecutionAvailable}<button type="button" class="tool-button" disabled={editLockReason !== null} aria-label={t("chat.composer.attachImages")} title={editLockReason ?? t("chat.composer.attachImages")} onclick={() => void pickImages()}><Plus size={16} /></button>{/if}
+        <button type="button" class="tool-button" disabled={editLockReason !== null || (!localExecutionAvailable && primaryAttachmentFolderId === null)} aria-label={t("chat.composer.attachImages")} title={editLockReason ?? t("chat.composer.attachImages")} onclick={() => void pickImages()}><Plus size={16} /></button>
+        {#if !localExecutionAvailable}<input bind:this={imageInput} type="file" accept={CHAT_IMAGE_CONTENT_TYPES.join(",")} multiple class="hidden" tabindex="-1" aria-hidden="true" onchange={handleImageInput} />{/if}
         {#if EmojiPicker}
           <EmojiPicker value="none" onChange={insertEmoji} ariaLabel={t("chat.composer.insertEmoji")} showIcons={false} showUpload={false} showRemove={false} showCustomEmoji={false} panelAlign="start" initiallyOpen onOpenChange={(open) => { emojiPickerOpen = open; }}>
             {#snippet trigger({ open, toggle, panelId })}

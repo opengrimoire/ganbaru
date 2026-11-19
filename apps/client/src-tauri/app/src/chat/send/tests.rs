@@ -1,7 +1,7 @@
 use super::interactions::{answer_with_attachment_lines, expose_attachments_to_thread};
 use super::persistence::{
-    PersistUserTurnContext, ThreadRuntimeData, TurnPersistenceTarget, persist_user_turn,
-    read_thread_runtime_data,
+    AttachmentFolderScope, PersistUserTurnContext, ThreadRuntimeData, TurnPersistenceTarget,
+    attachment_folder_in_scope, persist_user_turn, read_thread_runtime_data,
 };
 use super::session::{
     SessionOpenRequest, SessionOpenRequestInput, merge_checkpoint_changed_files,
@@ -638,4 +638,42 @@ fn generic_acp_agents_accept_only_ask_and_full_access() {
         "codex",
         SafetyMode::ApproveForMe
     ));
+}
+
+#[tokio::test]
+async fn organizational_runs_accept_attachments_from_any_folder_of_the_run_project() {
+    let pool = pool_with_thread().await;
+    sqlx::raw_sql(
+        "INSERT INTO projects (id, group_id, name, order_key)
+         VALUES ('project-elsewhere', 'group-chat', 'Elsewhere', 'a2');
+         INSERT INTO project_working_folders
+             (id, project_id, display_name, kind, managed_relative_path, sort_order)
+         VALUES ('workspace-elsewhere', 'project-elsewhere', 'Elsewhere', 'managed',
+                 'projects/project-elsewhere', 0);
+         INSERT INTO project_working_folders (id, project_id, display_name, kind, sort_order)
+         VALUES ('workspace-external', 'project-chat', 'External', 'external', 10);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let run_folder = ProjectWorkingFolderId::new("workspace-1").unwrap();
+    let sibling = ProjectWorkingFolderId::new("workspace-external").unwrap();
+    let foreign = ProjectWorkingFolderId::new("workspace-elsewhere").unwrap();
+    let missing = ProjectWorkingFolderId::new("workspace-missing").unwrap();
+    let in_scope = |scope, folder| attachment_folder_in_scope(&pool, scope, folder);
+
+    let project = AttachmentFolderScope::Project(Some(&run_folder));
+    assert!(in_scope(project, &run_folder).await.unwrap());
+    assert!(in_scope(project, &sibling).await.unwrap());
+    assert!(!in_scope(project, &foreign).await.unwrap());
+    assert!(!in_scope(project, &missing).await.unwrap());
+
+    let folder = AttachmentFolderScope::Folder(Some(&run_folder));
+    assert!(in_scope(folder, &run_folder).await.unwrap());
+    assert!(!in_scope(folder, &sibling).await.unwrap());
+    assert!(
+        in_scope(AttachmentFolderScope::Folder(None), &foreign)
+            .await
+            .unwrap()
+    );
 }

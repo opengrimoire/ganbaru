@@ -62,7 +62,7 @@ Routine low-level provider events can fold after settlement. Errors, interactive
 
 Images and bounded text context are copied into managed vault storage. The attachment record keeps original display metadata and its owning conversation or message; external absolute paths are never portable attachment identity.
 
-Unsupported, oversized, missing, or unsafe files fail explicitly. Previewing an attachment does not grant the provider access. A run receives an attachment only when its typed request and authorization include it. A free-form answer to a provider question can carry images and pasted text attachments, which reach the agent as references it reads through its thread; an answer in a thread without a working folder on this device cannot attach.
+Unsupported, oversized, missing, or unsafe files fail explicitly. Previewing an attachment does not grant the provider access. A run receives an attachment only when its typed request and authorization include it. A free-form answer to a provider question can carry images and pasted text attachments, which reach the agent as references it reads through its thread; an answer in a thread without a working folder on this device cannot attach. A device without local execution, such as a phone, attaches only to the project's primary working folder, and agent work accepts a message's attachments from any folder of the project it runs in, so work in another folder still receives them. An image whose file has not synced yet shows its name, and opening it reads it again.
 
 ## Responsive behavior
 

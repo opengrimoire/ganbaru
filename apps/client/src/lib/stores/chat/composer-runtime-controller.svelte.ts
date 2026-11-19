@@ -493,7 +493,7 @@ export class ChatComposerRuntimeController {
         workingFolderId,
         crypto.randomUUID(),
         file.name,
-        [...new Uint8Array(await file.arrayBuffer())],
+        new Uint8Array(await file.arrayBuffer()),
       );
       this.attachments = [...this.attachments, attachment];
       this.composerController.setAttachments(this.attachments.map((entry) => entry.id));

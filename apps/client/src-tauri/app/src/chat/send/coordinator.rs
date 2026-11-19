@@ -2,9 +2,9 @@
 
 use super::checkpoints::ensure_pre_turn_checkpoint;
 use super::persistence::{
-    PersistUserTurnContext, TurnPersistenceTarget, mark_turn_dispatch_failed,
-    persist_fresh_session_handoff, persist_user_turn, read_attachment_references,
-    read_thread_runtime_data, replay_send_receipt,
+    AttachmentFolderScope, PersistUserTurnContext, TurnPersistenceTarget,
+    mark_turn_dispatch_failed, persist_fresh_session_handoff, persist_user_turn,
+    read_attachment_references, read_thread_runtime_data, replay_send_receipt,
 };
 use super::session::{
     EnsureSessionContext, InternalMcpLaunch, ensure_session_with_executable_recovery,
@@ -269,13 +269,13 @@ pub(crate) async fn send_turn(
         new_driver = Some(driver);
         continuation
     };
-    let attachment_references = read_attachment_references(
-        &app,
-        &pool,
-        request.working_folder_id.as_ref(),
-        &request.attachment_ids,
-    )
-    .await?;
+    let attachment_scope = if origin.run().is_some() {
+        AttachmentFolderScope::Project(request.working_folder_id.as_ref())
+    } else {
+        AttachmentFolderScope::Folder(request.working_folder_id.as_ref())
+    };
+    let attachment_references =
+        read_attachment_references(&app, &pool, attachment_scope, &request.attachment_ids).await?;
     let persistence_now = now_timestamp()?;
     let mutation_registry =
         app.state::<crate::chat::workspace::mutation::ChatWorkspaceMutationRegistry>();

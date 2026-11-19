@@ -62,6 +62,8 @@
       if (!destroyed) imageUrls = { ...imageUrls, [imageId]: url };
       return url;
     }).catch((cause: unknown) => {
+      // A synced image may arrive after its message, so opening a failed tile reads it again.
+      imageRequests.delete(imageId);
       if (!destroyed && !failedImageIds.includes(imageId)) {
         failedImageIds = [...failedImageIds, imageId];
       }

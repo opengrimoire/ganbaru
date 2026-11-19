@@ -1,7 +1,7 @@
 //! Bounded request, provider, model, and workspace validation.
 
 use super::support::{json_error, persistence_error};
-use crate::chat::interaction::MAX_IMAGE_COUNT;
+use crate::chat::attachment_commands::MAX_IMAGE_COUNT;
 use crate::chat::send_commands::SendChatTurnCommand;
 use crate::chat::workspace::AuthorizedWorkingFolder;
 use ganbaru_chat_contracts::models::{

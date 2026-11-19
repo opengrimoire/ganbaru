@@ -169,11 +169,18 @@
     if (setup.view.kind === "guide" && next.kind === "guide") setup.view = next;
   }
 
-  function closeSetup(): void {
+  /** Closes the setup and shows what it changed, checking a configuration it saved that no probe has checked yet. */
+  async function closeSetup(): Promise<void> {
+    const familyId = setup?.familyId;
     setup = null;
-    void reloadSettings().catch((error: unknown) => {
+    try {
+      await reloadSettings();
+    } catch (error: unknown) {
       if (mounted) checkError = chatErrorMessage(error, t("vaultSetup.agents.checkFailed"));
-    });
+      return;
+    }
+    const card = cards.find((candidate) => candidate.family.familyId === familyId);
+    if (card?.instance && card.instance.lastProbe === null) await checkCard(card);
   }
 </script>
 
@@ -181,7 +188,7 @@
 
 <WelcomeSceneStep headline={t("vaultSetup.agents.headline")} body={t("vaultSetup.agents.body")}>
   <div class="@container flex flex-col gap-5">
-    {#if checkError}
+    {#if checkError && !setup}
       <Notice message={checkError} onDismiss={() => (checkError = null)} />
     {/if}
     {#if cards.length > 0}
@@ -252,7 +259,9 @@
     family={setupCard.family}
     bind:view={setup.view}
     onRefresh={() => refreshSetup(setupCard)}
-    onClose={closeSetup}
+    error={checkError}
+    onDismissError={() => (checkError = null)}
+    onClose={() => void closeSetup()}
   />
 {/if}
 

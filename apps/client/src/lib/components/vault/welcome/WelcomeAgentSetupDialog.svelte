@@ -36,12 +36,17 @@
     family,
     view = $bindable(),
     onRefresh,
+    error,
+    onDismissError,
     onClose,
   }: {
     family: WelcomeAgentFamily;
     view: WelcomeAgentSetupView;
     /** Checks the agent again after the person ran the steps; the caller reports failures. */
     onRefresh: () => Promise<void>;
+    /** Why the last check failed, shown in the dialog since the screen behind it is covered. */
+    error: string | null;
+    onDismissError: () => void;
     onClose: () => void;
   } = $props();
 
@@ -50,12 +55,13 @@
   let dialog = $state<HTMLDivElement | null>(null);
   const title = $derived(t("settings.agents.providers.setUp", family.displayName));
   function handleKeydown(event: KeyboardEvent): void {
-    if (event.key === "Tab" && dialog) trapModalTabKey(dialog, event);
-    if (event.key === "Escape") {
-      event.preventDefault();
-      onClose();
+    if (event.key === "Tab" && dialog) {
+      trapModalTabKey(dialog, event);
+      return;
     }
-    event.stopPropagation();
+    if (event.key !== "Escape" || dialog?.querySelector("[data-app-floating-surface]")) return;
+    event.preventDefault();
+    onClose();
   }
 
   onMount(() => {
@@ -106,6 +112,7 @@
         <button type="button" class="dialog-icon-button" aria-label={t("common.close")} onclick={onClose}><X size={16} /></button>
       </header>
       <div class="flex min-h-0 flex-col gap-4 overflow-y-auto px-5 pt-3 pb-5 text-panel">
+        {#if error}<Notice message={error} onDismiss={onDismissError} />{/if}
         <ProviderInstallSteps {family} guide={guideView.guide} situation={guideView.situation} {onRefresh} />
         <button
           type="button"

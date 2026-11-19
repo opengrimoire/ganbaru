@@ -11,6 +11,7 @@ pub mod backup;
 pub mod bounds;
 pub mod certificate;
 pub mod charter;
+pub mod chat_agents;
 pub mod chat_channel_notes;
 pub mod chat_push_approvals;
 pub mod chat_recurrence;

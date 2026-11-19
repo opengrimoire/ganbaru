@@ -21,12 +21,13 @@
 //! outranks the other active states.
 
 use ganbaru_sync_contracts::bounds::{MAX_DEVICE_ID_BYTES, MAX_ORDER_KEY_BYTES};
+use ganbaru_sync_contracts::chat_agents::is_named_agent_key;
 use ganbaru_sync_contracts::chat_push_approvals::{
     MAX_PUSH_APPROVAL_BRANCH_BYTES, MAX_PUSH_APPROVAL_URL_BYTES,
 };
 use ganbaru_sync_contracts::chat_recurrence;
 use ganbaru_sync_contracts::chat_usage::agent_usage_key;
-use ganbaru_sync_contracts::{Field, GroupId, GroupValue, OrderKey, RowKey, TableId, Value};
+use ganbaru_sync_contracts::{Cause, Field, GroupId, GroupValue, OrderKey, RowKey, TableId, Value};
 use ganbaru_working_folders::UtcTimestamp;
 
 use crate::adapter::{AdapterError, DomainAdapter, OfferedRows, Presentation};
@@ -306,6 +307,34 @@ fn flag(field: &Field) -> Result<(), AdapterError> {
         Ok(())
     } else {
         Err(AdapterError("chat flag"))
+    }
+}
+
+/// Refuses every deletion of a participant, its agent row, or a policy revision but the removal
+/// of an agent a person named. A person deletes the participant itself, and its agent row and
+/// policy revisions leave only through that deletion, which every one of them names as its
+/// cause; the agent row's cause is its own participant.
+fn validate_agent_tombstone(
+    table: TableId,
+    key: &str,
+    cause: Option<&Cause>,
+) -> Result<(), AdapterError> {
+    let named_agent_cause = cause.is_some_and(|cause| {
+        cause.table == PARTICIPANTS_TABLE && is_named_agent_key(cause.row.as_str())
+    });
+    let allowed = if table == PARTICIPANTS_TABLE {
+        cause.is_none() && is_named_agent_key(key)
+    } else if table == AGENTS_TABLE {
+        named_agent_cause && cause.is_some_and(|cause| cause.row.as_str() == key)
+    } else if table == POLICY_REVISIONS_TABLE {
+        named_agent_cause
+    } else {
+        true
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(AdapterError("chat agent deletion"))
     }
 }
 
@@ -1515,6 +1544,15 @@ impl DomainAdapter for ChatAdapter {
         } else {
             0
         }
+    }
+
+    fn validate_tombstone(
+        &self,
+        table: TableId,
+        key: &str,
+        cause: Option<&Cause>,
+    ) -> Result<(), AdapterError> {
+        validate_agent_tombstone(table, key, cause)
     }
 
     fn validate_row(

@@ -2350,6 +2350,13 @@ fn never_deleted() -> BTreeSet<&'static str> {
         .collect()
 }
 
+/// Ungated delete refusals that hold only while a parent row exists, so the parent's cascade still
+/// deletes the row on every replica.
+const CONDITIONAL_DELETE_REFUSALS: &[(&str, &str)] = &[(
+    "chat_agent_policy_immutable_delete",
+    "a policy revision leaves only with its agent",
+)];
+
 /// A delete the schema refuses for every writer could only ever stop on a replica, so the table
 /// must be marked and no replicated operation may delete from it, directly or through a cascade
 /// from a table a tombstone can reach.
@@ -2368,7 +2375,13 @@ fn never_deleted_tables_cover_every_ungated_delete_refusal() {
         let mut refusing = 0;
         for (name, table, sql) in triggers {
             let replicated = VAULT_MANIFEST.tables.iter().any(|spec| spec.name == table);
-            if !replicated || sql.contains("applying") || !sql.contains("RAISE(ABORT") {
+            if !replicated
+                || sql.contains("applying")
+                || !sql.contains("RAISE(ABORT")
+                || CONDITIONAL_DELETE_REFUSALS
+                    .iter()
+                    .any(|(conditional, _)| *conditional == name)
+            {
                 continue;
             }
             refusing += 1;
@@ -2413,12 +2426,12 @@ fn manifest_refuses_a_never_table_under_a_deletable_cascade_parent() {
         "{problems}"
     );
 
-    const AGENT: TableSpec = TableSpec {
-        deletion: Deletion::Ordinary,
-        ..chat::AGENTS
+    const POLICY: TableSpec = TableSpec {
+        deletion: Deletion::Never,
+        ..chat::POLICY_REVISIONS
     };
     const REFERENCE_REFUSED: DomainManifest = DomainManifest {
-        tables: &[chat::PARTICIPANTS, AGENT, chat::POLICY_REVISIONS],
+        tables: &[chat::PARTICIPANTS, chat::AGENTS, POLICY],
         ..chat::DOMAIN
     };
     let problems = validation_error(&[&REFERENCE_REFUSED]);

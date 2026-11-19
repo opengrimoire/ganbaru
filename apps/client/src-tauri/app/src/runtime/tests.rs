@@ -153,6 +153,8 @@ fn mobile_runtime_excludes_desktop_only_commands() {
         "chat::interaction_commands::",
         "chat::preview::",
         "chat::organization::chat_review_assignment",
+        "chat::organization::chat_remove_custom_agent",
+        "chat::organization::chat_restore_custom_agent",
         "distractions::commands::",
         "crate::sync::commands::sync_reset_state",
         "crate::sync::commands::sync_take_anchor",

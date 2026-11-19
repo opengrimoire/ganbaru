@@ -710,10 +710,10 @@ mod tests {
     use super::{
         ChatAccessDowngradeReason, ChatAgentAccess, ChatAssignmentReviewOutcome,
         ChatAssignmentReviewRead, ChatAssignmentReviewRequest, ChatAttachmentId, ChatChannelId,
-        ChatEffectiveAgentAccess, ChatExecutionTarget, ChatFolderCapability, ChatMessageReference,
-        ChatModelSelection, ChatParticipantId, ChatReviewQueueKind, ChatReviewQueueRead,
-        ChatRuntimeApprovalPolicy, ChatScratchPromotionDestinationRead, ChatWorkAssignmentState,
-        UtcTimestamp,
+        ChatCustomAgentRemoval, ChatEffectiveAgentAccess, ChatExecutionTarget,
+        ChatFolderCapability, ChatMessageReference, ChatModelSelection, ChatParticipantId,
+        ChatReviewQueueKind, ChatReviewQueueRead, ChatRuntimeApprovalPolicy,
+        ChatScratchPromotionDestinationRead, ChatWorkAssignmentState, UtcTimestamp,
     };
     use serde_json::json;
 
@@ -1001,6 +1001,11 @@ mod tests {
                 "channelId": "channel:general"
             })
         );
+
+        assert_eq!(
+            serde_json::to_value(ChatCustomAgentRemoval::Deleted).unwrap(),
+            json!({ "kind": "deleted" })
+        );
     }
 }
 
@@ -1044,9 +1049,18 @@ pub struct ChatAiAgentRead {
     pub latest_policy: Option<ChatAgentPolicyRead>,
     pub channel_count: u64,
     pub active_assignment_count: u64,
-    /// When a person archived the agent, which turns it off and hides it from the Settings
-    /// agent list until it is restored. A hidden agent is always off.
+    /// When a person removed the agent after it had been used, which archived it and hides it
+    /// from the Settings agent list until it is restored. A hidden agent is always off.
     pub hidden_at: Option<UtcTimestamp>,
+}
+
+/// What removing an agent a person named did: an agent that was never used is deleted on every
+/// device, and one that was used is archived and hidden so its history keeps its author.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ChatCustomAgentRemoval {
+    Deleted,
+    Archived { agent: Box<ChatAiAgentRead> },
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

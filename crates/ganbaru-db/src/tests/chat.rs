@@ -2407,10 +2407,12 @@ fn channel_notes_are_written_only_by_people_outside_the_sync_applier() {
         .unwrap();
         set_sync_applying(&pool, false).await;
 
+        set_sync_applying(&pool, true).await;
         sqlx::query("DELETE FROM chat_participants WHERE id = 'participant-person'")
             .execute(&pool)
             .await
             .unwrap();
+        set_sync_applying(&pool, false).await;
         let kept: Option<String> = sqlx::query_scalar(
             "SELECT body FROM chat_channel_notes
              WHERE id = 'note-person' AND edited_by_participant_id IS NULL",
@@ -2522,10 +2524,12 @@ fn push_approvals_are_made_only_by_people_outside_the_sync_applier() {
         insert_push_approval(&pool, "person", Some("participant-person"))
             .await
             .unwrap();
+        set_sync_applying(&pool, true).await;
         sqlx::query("DELETE FROM chat_participants WHERE id = 'participant-person'")
             .execute(&pool)
             .await
             .unwrap();
+        set_sync_applying(&pool, false).await;
         let kept: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM chat_push_approvals
              WHERE revoked_at IS NULL AND sync_key GLOB 'push-approval-*'",
@@ -2847,5 +2851,68 @@ fn project_agent_settings_are_deleted_with_their_project() {
             .await
             .unwrap();
         assert_eq!(app, 1, "deleting a project keeps the app settings");
+    });
+}
+
+#[test]
+fn only_a_named_agent_participant_is_deleted_outside_the_sync_applier() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let named = "agent:0123456789abcdef0123456789abcdef";
+        for id in [
+            "participant-agent",
+            "participant:local-owner",
+            "agent:0123456789ABCDEF0123456789ABCDEF",
+            "agent:0123456789abcdef0123456789abcdef0",
+        ] {
+            sqlx::query(
+                "INSERT OR IGNORE INTO chat_participants
+                    (id, participant_kind, display_name, created_at, updated_at)
+                 VALUES (?, 'ai_agent', 'Other', ?, ?)",
+            )
+            .bind(id)
+            .bind(NOW)
+            .bind(NOW)
+            .execute(&pool)
+            .await
+            .unwrap();
+            let error = sqlx::query("DELETE FROM chat_participants WHERE id = ?")
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("Only a named agent can be deleted"),
+                "{id}: {error}"
+            );
+        }
+
+        sqlx::query(
+            "INSERT INTO chat_participants
+                (id, participant_kind, display_name, created_at, updated_at)
+             VALUES (?, 'ai_agent', 'Named', ?, ?)",
+        )
+        .bind(named)
+        .bind(NOW)
+        .bind(NOW)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM chat_participants WHERE id = ?")
+            .bind(named)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        set_sync_applying(&pool, true).await;
+        sqlx::query(
+            "DELETE FROM chat_participants WHERE id = 'agent:0123456789ABCDEF0123456789ABCDEF'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        set_sync_applying(&pool, false).await;
     });
 }

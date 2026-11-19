@@ -4,7 +4,7 @@
 
 use std::fmt;
 
-use ganbaru_sync_contracts::{Field, GroupId, GroupValue, RowKey, TableId, Value};
+use ganbaru_sync_contracts::{Cause, Field, GroupId, GroupValue, RowKey, TableId, Value};
 
 use crate::assets::AssetRef;
 
@@ -121,6 +121,19 @@ pub trait DomainAdapter: Send + Sync {
     /// change of the table, whatever its action.
     fn validate_key(&self, table: TableId, key: &str) -> Result<(), AdapterError> {
         let _ = (table, key);
+        Ok(())
+    }
+
+    /// Checks whether a row of the table may be deleted, from its key and, for a row removed
+    /// through a cascading reference, the deleted row that caused it. Called for every tombstone
+    /// of the table after [`DomainAdapter::validate_key`].
+    fn validate_tombstone(
+        &self,
+        table: TableId,
+        key: &str,
+        cause: Option<&Cause>,
+    ) -> Result<(), AdapterError> {
+        let _ = (table, key, cause);
         Ok(())
     }
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  parseChatCustomAgentRemoval,
   parseChatReplyThreadPage,
   parseChatReviewQueue,
   parseChatSecretRequests,
@@ -257,5 +258,42 @@ describe("parseChatReviewQueue", () => {
     expect(() => parseChatReviewQueue({ items: [review], total: 1, truncated: false })).toThrow("failureCount");
     expect(() => parseChatReviewQueue({ items: [review], total: 1, failureCount: 2, truncated: false }))
       .toThrow("failureCount exceeds the total");
+  });
+});
+
+describe("parseChatCustomAgentRemoval", () => {
+  const agentWire = {
+    participant: {
+      id: "agent:0123456789abcdef0123456789abcdef",
+      kind: "ai_agent",
+      displayName: "Reviewer",
+      avatar: { schemaVersion: 1, value: {} },
+      revision: 2,
+      archivedAt: TIMESTAMP,
+    },
+    providerFamilyId: "claude",
+    agentKind: "custom",
+    localProviderInstanceId: null,
+    configurationState: "healthy",
+    latestPolicy: null,
+    channelCount: 0,
+    activeAssignmentCount: 0,
+    hiddenAt: TIMESTAMP,
+  };
+
+  it("reads a deletion without an agent", () => {
+    expect(parseChatCustomAgentRemoval({ kind: "deleted" })).toEqual({ kind: "deleted" });
+  });
+
+  it("reads an archived removal with the hidden agent", () => {
+    const removal = parseChatCustomAgentRemoval({ kind: "archived", agent: agentWire });
+    expect(removal.kind).toBe("archived");
+    expect(removal.kind === "archived" && removal.agent.hiddenAt).toBe(TIMESTAMP);
+  });
+
+  it("refuses an unknown kind and an archived removal without its agent", () => {
+    expect(() => parseChatCustomAgentRemoval({ kind: "purged" })).toThrow();
+    expect(() => parseChatCustomAgentRemoval({ kind: "archived" })).toThrow();
+    expect(() => parseChatCustomAgentRemoval(null)).toThrow();
   });
 });

@@ -758,8 +758,9 @@ const BASE: TableSpec = TableSpec {
     retained: None,
 };
 
-/// `chat_participants`, archive-only. The local owner keeps the id the baseline seeds, which an
-/// insert trigger enforces because the key is outside every group.
+/// `chat_participants`. Only an agent a person named is ever deleted, which the adapter checks
+/// from its key; every other participant is archived. The local owner keeps the id the baseline
+/// seeds, which an insert trigger enforces because the key is outside every group.
 pub const PARTICIPANTS: TableSpec = TableSpec {
     id: PARTICIPANTS_TABLE,
     name: "chat_participants",
@@ -800,8 +801,8 @@ pub const PARTICIPANTS: TableSpec = TableSpec {
     triggers: &[
         gated("chat_participant_push_approvals_archive"),
         applier_visible("chat_participants_local_user_identity"),
+        gated("chat_participants_named_agent_delete"),
     ],
-    deletion: Deletion::Never,
     ..BASE
 };
 
@@ -830,7 +831,6 @@ pub const AGENTS: TableSpec = TableSpec {
         ),
         updated(agent_group::UPDATED),
     ],
-    deletion: Deletion::Never,
     ..BASE
 };
 
@@ -890,8 +890,8 @@ pub const PROJECT_SETTINGS: TableSpec = TableSpec {
     ..BASE
 };
 
-/// `chat_agent_policy_revisions`, an agent's default model and options, immutable and never
-/// deleted.
+/// `chat_agent_policy_revisions`, an agent's default model and options, immutable and deleted
+/// only with their agent.
 pub const POLICY_REVISIONS: TableSpec = TableSpec {
     id: POLICY_REVISIONS_TABLE,
     name: "chat_agent_policy_revisions",
@@ -913,7 +913,6 @@ pub const POLICY_REVISIONS: TableSpec = TableSpec {
         applier_visible("chat_agent_policy_immutable_delete"),
         applier_visible("chat_agent_policy_immutable_update"),
     ],
-    deletion: Deletion::Never,
     ..BASE
 };
 

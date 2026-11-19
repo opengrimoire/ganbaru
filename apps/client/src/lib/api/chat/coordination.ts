@@ -13,6 +13,7 @@ import type {
   ChatAssignmentInputRead,
   ChatAssignmentReviewRequest,
   ChatAiAgentRead,
+  ChatCustomAgentRemoval,
   ChatAppAgentSettingsRead,
   ChatChannelAgentRequest,
   ChatChannelAgentSettingsRead,
@@ -61,6 +62,7 @@ import {
   parseChatChannels,
   parseChatAiAgent,
   parseChatAiAgents,
+  parseChatCustomAgentRemoval,
   parseChatAppAgentSettings,
   parseChatChannelAgentSettings,
   parseChatProjectAgentSettings,
@@ -273,6 +275,29 @@ export async function archiveChatAgent(
 ): Promise<ChatAiAgentRead> {
   return parseChatAiAgent(await invoke<unknown>("chat_archive_agent", {
     dbUrl: await ensureDbUrl(), agentId, expectedRevision, archived,
+  }));
+}
+
+/**
+ * Removes an agent a person named. A never-used agent is deleted on every device; a used one is
+ * archived and hidden from the agent list, and the result carries it.
+ */
+export async function removeCustomChatAgent(
+  agentId: ChatParticipantId,
+  expectedRevision: number,
+): Promise<ChatCustomAgentRemoval> {
+  return parseChatCustomAgentRemoval(await invoke<unknown>("chat_remove_custom_agent", {
+    dbUrl: await ensureDbUrl(), agentId, expectedRevision,
+  }));
+}
+
+/** Brings a hidden agent a person named back to the agent list. It stays archived, so it stays off. */
+export async function restoreCustomChatAgent(
+  agentId: ChatParticipantId,
+  expectedRevision: number,
+): Promise<ChatAiAgentRead> {
+  return parseChatAiAgent(await invoke<unknown>("chat_restore_custom_agent", {
+    dbUrl: await ensureDbUrl(), agentId, expectedRevision,
   }));
 }
 

@@ -21,6 +21,7 @@ import {
   CHAT_SCHEDULED_MESSAGE_STATES,
   CHAT_AGENT_CONFIGURATION_STATES,
   CHAT_AGENT_KINDS,
+  CHAT_CUSTOM_AGENT_REMOVAL_KINDS,
   CHAT_WORK_ASSIGNMENT_STATES,
   CHAT_ACCESS_DOWNGRADE_REASONS,
   CHAT_AGENT_ACCESS_LEVELS,
@@ -30,6 +31,7 @@ import {
   type ChatAgentRunRead,
   type ChatAssignmentInputRead,
   type ChatAiAgentRead,
+  type ChatCustomAgentRemoval,
   type ChatAssignmentAcceptanceFolderRead,
   type ChatAssignmentDelegationRead,
   type ChatAssignmentAcceptanceOfferRead,
@@ -183,6 +185,21 @@ export function parseChatAiAgent(value: unknown, label = "Chat AI agent"): ChatA
 
 export function parseChatAiAgents(value: unknown, label = "Chat AI agents"): ChatAiAgentRead[] {
   return readArray(value, label, parseChatAiAgent);
+}
+
+/** Reads what removing an agent a person named did, with the archived agent when it was kept. */
+export function parseChatCustomAgentRemoval(
+  value: unknown,
+  label = "Chat custom agent removal",
+): ChatCustomAgentRemoval {
+  const record = readRecord(value, label);
+  const kind = readEnum(record.kind, CHAT_CUSTOM_AGENT_REMOVAL_KINDS, `${label}.kind`);
+  switch (kind) {
+    case "deleted":
+      return { kind };
+    case "archived":
+      return { kind, agent: parseChatAiAgent(record.agent, `${label}.agent`) };
+  }
 }
 
 export function parseChatConversationMembership(

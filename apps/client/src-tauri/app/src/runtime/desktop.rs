@@ -408,6 +408,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::organization::chat_create_agent,
             chat::organization::chat_set_agent_policy,
             chat::organization::chat_archive_agent,
+            chat::organization::chat_remove_custom_agent,
+            chat::organization::chat_restore_custom_agent,
             chat::organization::access::chat_read_app_agent_settings,
             chat::organization::access::chat_update_app_agent_settings,
             chat::organization::access::chat_read_project_agent_settings,

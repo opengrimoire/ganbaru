@@ -274,6 +274,13 @@ export interface ChatAssignmentTargetRead {
   unavailableReason: string | null;
 }
 
+export const CHAT_CUSTOM_AGENT_REMOVAL_KINDS = ["deleted", "archived"] as const;
+
+/** What removing an agent a person named did: a never-used agent is deleted on every device, and a used one is archived and hidden. */
+export type ChatCustomAgentRemoval =
+  | { kind: "deleted" }
+  | { kind: "archived"; agent: ChatAiAgentRead };
+
 export interface ListChatAssignmentTargetsRequest {
   agentId: ChatParticipantId;
   channelId: ChatChannelId;
@@ -538,7 +545,7 @@ export interface ChatAiAgentRead {
   latestPolicy: ChatAgentPolicyRead | null;
   channelCount: number;
   activeAssignmentCount: number;
-  /** When a person archived the agent, which turns it off and hides it from the Settings agent list; null while shown. A hidden agent is always off. */
+  /** When a person removed the agent after it had been used, which archived it and hides it from the Settings agent list; null while shown. A hidden agent is always off. */
   hiddenAt: UtcTimestamp | null;
 }
 

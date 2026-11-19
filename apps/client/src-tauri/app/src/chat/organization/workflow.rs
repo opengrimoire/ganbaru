@@ -1683,10 +1683,14 @@ pub(super) async fn read_message_references(
         let reference_kind: String = row.try_get("reference_kind").map_err(persistence_error)?;
         let reference = match reference_kind.as_str() {
             "participant" => {
+                // A mention can outlive its target when a linked device deletes a named agent
+                // concurrently. Only named agents are ever deleted, so a missing target is one.
                 let target = sqlx::query(
-                    "SELECT target.participant_id, participant.participant_kind
+                    "SELECT target.participant_id,
+                            coalesce(participant.participant_kind, 'ai_agent') AS participant_kind
                      FROM chat_participant_reference_targets target
-                     JOIN chat_participants participant ON participant.id = target.participant_id
+                     LEFT JOIN chat_participants participant
+                       ON participant.id = target.participant_id
                      WHERE target.reference_id = ?",
                 )
                 .bind(reference_id.as_str())

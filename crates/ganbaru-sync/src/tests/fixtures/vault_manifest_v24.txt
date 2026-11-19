@@ -636,18 +636,18 @@ table 308 notes_assets replicated key id rule any
   group 0 immutable asset_path:text(..=200) kind:text(..=200) content_type:text(..=64) byte_size:integer(1..=52428800) sha256:text(..=200)
   group 1 register source_type:text(..=200) original_name:optional_text(..=262144) created_at:timestamp
   check kind,content_type within 0
-table 352 chat_participants replicated key id rule any never_deleted
+table 352 chat_participants replicated key id rule any
   group 0 immutable participant_kind:text(..=32) created_at:timestamp
   group 1 register surfaced recoverable display_name:trimmed_text(1..=160) avatar_schema_version:integer(1..=9223372036854775807) avatar_data:text(..=16384)
   group 2 register archived_at:optional_timestamp hidden_at:optional_timestamp
   group 3 max updated_at:timestamp
   check archived_at,hidden_at within 2
-table 353 chat_agents replicated key participant_id rule any never_deleted
+table 353 chat_agents replicated key participant_id rule any
   key parent 352
   group 0 immutable provider_family_id:trimmed_text(1..=1024) created_at:timestamp
   group 1 register current_policy_revision_id:optional_row_key
   group 2 max updated_at:timestamp
-table 354 chat_agent_policy_revisions replicated key id rule any never_deleted
+table 354 chat_agent_policy_revisions replicated key id rule any
   group 0 immutable agent_id:row_key->353:cascade model_selection_schema_version:integer(1..=9223372036854775807) model_selection_data:text(..=16384) provider_options_schema_version:integer(1..=9223372036854775807) provider_options_data:text(..=16384) interaction_mode:text(..=32) created_at:timestamp
 table 357 chat_agent_app_settings replicated key id rule fixed(vault) never_deleted
   group 0 coupled agent_access:text(..=32)

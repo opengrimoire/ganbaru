@@ -341,6 +341,139 @@ fn active_work_blocks_agent_archiving() {
     });
 }
 
+/// The random id of an agent a person named in the removal tests.
+const NAMED_AGENT_ID: &str = "agent:0123456789abcdef0123456789abcdef";
+
+/// Rows of `agent_id` as `participant agent policies`, each a count.
+async fn agent_row_counts(pool: &SqlitePool, agent_id: &str) -> (i64, i64, i64) {
+    sqlx::query_as(
+        "SELECT (SELECT count(*) FROM chat_participants WHERE id = ?1),
+                (SELECT count(*) FROM chat_agents WHERE participant_id = ?1),
+                (SELECT count(*) FROM chat_agent_policy_revisions WHERE agent_id = ?1)",
+    )
+    .bind(agent_id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[test]
+fn removing_a_never_used_named_agent_deletes_it() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_unused_agent(&pool, NAMED_AGENT_ID, "policy:named").await;
+        let agent_id = ChatParticipantId::new(NAMED_AGENT_ID).unwrap();
+
+        let removal =
+            super::agent_lifecycle::remove_custom_agent(&pool, &agent_id, 1, &Default::default())
+                .await
+                .unwrap();
+        assert_eq!(removal, ChatCustomAgentRemoval::Deleted);
+        assert_eq!(agent_row_counts(&pool, NAMED_AGENT_ID).await, (0, 0, 0));
+    });
+}
+
+#[test]
+fn removing_a_used_named_agent_archives_and_hides_it_until_restored() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_unused_agent(&pool, NAMED_AGENT_ID, "policy:named").await;
+        sqlx::query(
+            "INSERT INTO chat_agent_usage_daily
+                (id, device_id, agent_id, local_date, counted_tokens, working_seconds, run_count)
+             VALUES ('usage:named', 'device:desk', ?, '2026-08-14', 10, 5, 1)",
+        )
+        .bind(NAMED_AGENT_ID)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let agent_id = ChatParticipantId::new(NAMED_AGENT_ID).unwrap();
+
+        let removal =
+            super::agent_lifecycle::remove_custom_agent(&pool, &agent_id, 1, &Default::default())
+                .await
+                .unwrap();
+        let ChatCustomAgentRemoval::Archived { agent } = removal else {
+            panic!("a used agent is archived, not deleted: {removal:?}");
+        };
+        assert!(agent.participant.archived_at.is_some());
+        assert!(agent.hidden_at.is_some());
+        assert_eq!(agent_row_counts(&pool, NAMED_AGENT_ID).await, (1, 1, 1));
+
+        let restored = super::agent_lifecycle::restore_custom_agent(
+            &pool,
+            &agent_id,
+            agent.participant.revision,
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+        assert!(restored.hidden_at.is_none());
+        assert_eq!(
+            restored.participant.archived_at,
+            agent.participant.archived_at
+        );
+    });
+}
+
+#[test]
+fn removing_refuses_built_in_agents_stale_revisions_and_active_work() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_unused_agent(&pool, "participant:unused-agent", "policy:unused").await;
+        let built_in = ChatParticipantId::new("participant:unused-agent").unwrap();
+        let error =
+            super::agent_lifecycle::remove_custom_agent(&pool, &built_in, 1, &Default::default())
+                .await
+                .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Validation);
+        let error =
+            super::agent_lifecycle::restore_custom_agent(&pool, &built_in, 1, &Default::default())
+                .await
+                .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Validation);
+        assert_eq!(
+            agent_row_counts(&pool, "participant:unused-agent").await,
+            (1, 1, 1)
+        );
+
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        seed_unused_agent(&pool, NAMED_AGENT_ID, "policy:named").await;
+        let named = ChatParticipantId::new(NAMED_AGENT_ID).unwrap();
+        let error =
+            super::agent_lifecycle::remove_custom_agent(&pool, &named, 2, &Default::default())
+                .await
+                .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::StaleRevision);
+
+        sqlx::query(
+            "INSERT INTO chat_work_assignments
+                (id, reply_thread_id, agent_id, triggering_message_item_id,
+                 model_selection_schema_version, model_selection_data, executing_device_id,
+                 state, created_at, updated_at)
+             VALUES ('assignment:named', 'reply-thread:review', ?, 'item:review-root', 1,
+                     json_object('providerManagedModel', json('true')), 'device:desk', 'working',
+                     '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z')",
+        )
+        .bind(NAMED_AGENT_ID)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let error =
+            super::agent_lifecycle::remove_custom_agent(&pool, &named, 1, &Default::default())
+                .await
+                .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Conflict);
+        let lifecycle: (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT archived_at, hidden_at FROM chat_participants WHERE id = ?")
+                .bind(NAMED_AGENT_ID)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(lifecycle, (None, None));
+    });
+}
+
 #[test]
 fn scheduled_delivery_requires_a_near_future_time_within_one_year() {
     let now = UtcTimestamp::new("2026-08-03T00:00:00.000Z").unwrap();

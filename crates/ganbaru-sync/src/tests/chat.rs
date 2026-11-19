@@ -20,7 +20,9 @@
 use std::sync::{Arc, Mutex};
 
 use ganbaru_sync_contracts::chat_push_approvals::PUSH_APPROVAL_KEY_PREFIX;
-use ganbaru_sync_contracts::{Change, ChangeAction, Content, Envelope, RowKey, derived_key};
+use ganbaru_sync_contracts::{
+    Cause, Change, ChangeAction, Content, Envelope, RowKey, TableId, derived_key,
+};
 use sqlx::SqliteConnection;
 
 use super::authorization::{forge, view};
@@ -35,10 +37,10 @@ use crate::error::failpoints;
 use crate::hooks::{ChangeSink, HookFuture, MaterializeHook};
 use crate::manifest::TableSpec;
 use crate::manifest::vault::chat::{
-    APP_SETTINGS_TABLE, CHANNEL_MEMBERSHIP_KEY_PREFIX, CHANNELS_TABLE,
+    AGENTS_TABLE, APP_SETTINGS_TABLE, CHANNEL_MEMBERSHIP_KEY_PREFIX, CHANNELS_TABLE,
     CONVERSATION_CURSOR_KEY_PREFIX, CONVERSATIONS_TABLE, MEMBERSHIP_KEY_PREFIX, MESSAGES_TABLE,
-    PARTICIPANTS_TABLE, REPLY_CURSOR_KEY_PREFIX, REPLY_CURSORS_TABLE, REPLY_THREAD_KEY_PREFIX,
-    REPLY_THREADS_TABLE, REVISIONS_TABLE,
+    PARTICIPANTS_TABLE, POLICY_REVISIONS_TABLE, REPLY_CURSOR_KEY_PREFIX, REPLY_CURSORS_TABLE,
+    REPLY_THREAD_KEY_PREFIX, REPLY_THREADS_TABLE, REVISIONS_TABLE,
 };
 use crate::manifest::vault::projects::PROJECTS_TABLE;
 use crate::provenance::row_creating_devices;
@@ -411,6 +413,312 @@ fn chat_a_concurrent_archive_and_turn_on_settle_as_one_state() {
                 assert_eq!(lifecycle(replica).await, expected, "later edit {later}");
             }
         }
+    });
+}
+
+/// The random key of an agent a person named, which sync lets a person delete.
+const NAMED: &str = "agent:0123456789abcdef0123456789abcdef";
+
+/// SQL creating [`NAMED`] with its first policy revision, a member of [`CONVERSATION`] with AI
+/// channel access there. It needs the rows of [`conversation_replicas`].
+fn named_agent_sql() -> String {
+    format!(
+        "INSERT INTO chat_participants
+            (id, participant_kind, display_name, created_at, updated_at)
+         VALUES ({named}, 'ai_agent', 'Named', {created}, {created});
+         INSERT INTO chat_agents (participant_id, provider_family_id, created_at, updated_at)
+         VALUES ({named}, 'codex', {created}, {created});
+         INSERT INTO chat_agent_policy_revisions (id, agent_id, model_selection_data, created_at)
+         VALUES ('policy-named', {named}, {model}, {created});
+         UPDATE chat_agents SET current_policy_revision_id = 'policy-named'
+         WHERE participant_id = {named};
+         INSERT INTO chat_conversation_memberships
+            (conversation_id, participant_id, sync_key, membership_role, created_at, updated_at)
+         VALUES ({conversation}, {named}, {member_key}, 'member', {created}, {created});",
+        named = quoted(NAMED),
+        model = quoted(FIRST_MODEL),
+        created = quoted(CREATED),
+        conversation = quoted(CONVERSATION),
+        member_key = quoted(&key(MEMBERSHIP_KEY_PREFIX, &[CONVERSATION, NAMED])),
+    )
+}
+
+/// SQL granting [`NAMED`] AI channel access in [`CONVERSATION`], a message it posts there that
+/// mentions it, a work assignment of it the message triggers, and a scheduled message mentioning
+/// it: what a device that has not seen the agent's deletion writes once it starts using the agent.
+fn named_agent_use_sql() -> String {
+    format!(
+        "INSERT INTO chat_agent_channel_memberships
+            (conversation_id, agent_id, sync_key, created_at, updated_at)
+         VALUES ({conversation}, {named}, {access_key}, {created}, {created});
+         {root}
+         {thread}
+         INSERT INTO chat_conversation_items
+            (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
+         VALUES ('item:named', {conversation}, {reply_thread}, 'message', 'c002', {created});
+         INSERT INTO chat_communication_messages
+            (item_id, author_participant_id, created_at, author_label_snapshot)
+         VALUES ('item:named', {named}, {created}, 'Named');
+         INSERT INTO chat_communication_message_revisions
+            (id, message_item_id, normalized_markdown, created_at)
+         VALUES ('item:named:0', 'item:named', 'Posted by the agent', {created});
+         UPDATE chat_communication_messages SET current_revision_id = 'item:named:0'
+         WHERE item_id = 'item:named';
+         INSERT INTO chat_message_references
+            (id, message_revision_id, reference_kind, label_snapshot, plain_text_projection,
+             start_offset, end_offset, ordinal, created_at)
+         VALUES ('reference:named', 'item:named:0', 'participant', '@Named', '@Named', 0, 6, 0,
+                 {created});
+         INSERT INTO chat_participant_reference_targets (reference_id, participant_id)
+         VALUES ('reference:named', {named});
+         INSERT INTO chat_scheduled_messages
+            (id, client_command_id, channel_id, executing_device_id, request_data, scheduled_for,
+             created_at, updated_at)
+         VALUES ('scheduled:named', 'command:named', {channel}, 'device-1',
+                 '{{\"markdown\":\"@Named check\"}}', {created}, {created}, {created});
+         INSERT INTO chat_scheduled_message_references
+            (scheduled_message_id, ordinal, reference_kind, label_snapshot, plain_text_projection,
+             start_offset, end_offset, participant_id, participant_kind)
+         VALUES ('scheduled:named', 0, 'participant', '@Named', '@Named', 0, 6, {named},
+                 'ai_agent');
+         INSERT INTO chat_work_assignments
+            (id, reply_thread_id, agent_id, triggering_message_item_id, executing_device_id,
+             model_selection_schema_version, model_selection_data, instructions, state,
+             created_at, updated_at)
+         VALUES ('assignment:named', {reply_thread}, {named}, {root_item}, 'device-1', 1,
+                 '{{\"providerManagedModel\":false,\"modelId\":\"first\",\"modelOptions\":[]}}',
+                 '', 'queued', {created}, {created});",
+        conversation = quoted(CONVERSATION),
+        named = quoted(NAMED),
+        access_key = quoted(&key(CHANNEL_MEMBERSHIP_KEY_PREFIX, &[CONVERSATION, NAMED])),
+        created = quoted(CREATED),
+        root = message_sql(ROOT, None, "c001", "Root"),
+        thread = thread_sql(),
+        reply_thread = quoted(&thread()),
+        root_item = quoted(ROOT),
+        channel = quoted(CHANNEL),
+    )
+}
+
+/// The rows of [`NAMED`] and of what hangs from it on `replica`, as `participant agent policy
+/// memberships access assignments authored`, each a count.
+async fn named_agent_rows(replica: &mut Replica) -> String {
+    replica
+        .scalar_text(&format!(
+            "SELECT (SELECT count(*) FROM chat_participants WHERE id = {named})
+                 || ' ' || (SELECT count(*) FROM chat_agents WHERE participant_id = {named})
+                 || ' ' || (SELECT count(*) FROM chat_agent_policy_revisions
+                            WHERE agent_id = {named})
+                 || ' ' || (SELECT count(*) FROM chat_conversation_memberships
+                            WHERE participant_id = {named})
+                 || ' ' || (SELECT count(*) FROM chat_agent_channel_memberships
+                            WHERE agent_id = {named})
+                 || ' ' || (SELECT count(*) FROM chat_work_assignments WHERE agent_id = {named})
+                 || ' ' || (SELECT count(*) FROM chat_communication_messages
+                            WHERE author_participant_id = {named})",
+            named = quoted(NAMED),
+        ))
+        .await
+        .expect("an aggregate always has a row")
+}
+
+/// Deleting an agent a person named removes its participant, agent row, policy revisions, and
+/// memberships on every replica.
+#[test]
+fn chat_a_named_agent_deletion_removes_it_everywhere() {
+    block_on(async {
+        let mut replicas = conversation_replicas(2).await;
+        replicas[0].exec(&named_agent_sql()).await;
+        converge(&mut replicas).await;
+        assert_eq!(named_agent_rows(&mut replicas[1]).await, "1 1 1 1 0 0 0");
+
+        replicas[1]
+            .exec(&format!(
+                "DELETE FROM chat_participants WHERE id = {}",
+                quoted(NAMED)
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(named_agent_rows(replica).await, "0 0 0 0 0 0 0");
+        }
+    });
+}
+
+/// One device deletes a named agent while another, unaware, grants it channel access, posts a
+/// message as it, and starts a work assignment of it. Each replica receives the other's writes
+/// after its own, which covers both arrival orders. The deletion holds everywhere: the access, the
+/// assignment, and the scheduled mention leave with the agent without a recovery offer, the
+/// scheduled message stays, and the message stays readable without its author, its mention
+/// naming the absent agent.
+#[test]
+fn chat_a_named_agent_deletion_against_concurrent_use_holds_and_keeps_its_messages() {
+    block_on(async {
+        let mut replicas = conversation_replicas(2).await;
+        replicas[0].exec(&named_agent_sql()).await;
+        converge(&mut replicas).await;
+
+        replicas[0]
+            .exec(&format!(
+                "DELETE FROM chat_participants WHERE id = {}",
+                quoted(NAMED)
+            ))
+            .await;
+        replicas[1].exec(&named_agent_use_sql()).await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+
+        for replica in &mut replicas {
+            assert_eq!(
+                named_agent_rows(replica).await,
+                "0 0 0 0 0 0 0",
+                "replica {}",
+                replica.index
+            );
+            assert_eq!(
+                replica
+                    .scalar_text(
+                        "SELECT coalesce(author_participant_id, '-') || ' ' || author_label_snapshot
+                         FROM chat_communication_messages WHERE item_id = 'item:named'",
+                    )
+                    .await
+                    .as_deref(),
+                Some("- Named"),
+                "replica {}",
+                replica.index
+            );
+            assert_eq!(
+                replica
+                    .scalar_text(
+                        "SELECT revision.normalized_markdown
+                         FROM chat_communication_messages message
+                         JOIN chat_communication_message_revisions revision
+                           ON revision.id = message.current_revision_id
+                         WHERE message.item_id = 'item:named'",
+                    )
+                    .await
+                    .as_deref(),
+                Some("Posted by the agent"),
+                "replica {}",
+                replica.index
+            );
+            assert_eq!(
+                replica
+                    .scalar_text(
+                        "SELECT (SELECT participant_id FROM chat_participant_reference_targets
+                                 WHERE reference_id = 'reference:named')
+                             || ' ' || (SELECT count(*) FROM chat_scheduled_messages
+                                        WHERE id = 'scheduled:named')
+                             || ' ' || (SELECT count(*) FROM chat_scheduled_message_references
+                                        WHERE scheduled_message_id = 'scheduled:named')",
+                    )
+                    .await,
+                Some(format!("{NAMED} 1 0")),
+                "replica {}",
+                replica.index
+            );
+            let entries = replica
+                .engine
+                .recovery_entries(&mut replica.conn, &replica.ctx)
+                .await
+                .unwrap();
+            assert!(entries.is_empty(), "replica {}: {entries:?}", replica.index);
+        }
+    });
+}
+
+/// A tombstone that would delete the local person, a built-in agent, or an agent's row or policy
+/// apart from its participant's deletion is invalid by its bytes alone, so the rows stay on the
+/// receiver. A policy revision tombstone that names a named agent as its cause but belongs to
+/// another agent passes those checks, and the receiver refuses to delete it while its agent exists.
+#[test]
+fn chat_only_a_named_agent_deletion_is_accepted() {
+    block_on(async {
+        let tombstone = |table, row: &str, cause: Option<(TableId, &str)>| Change {
+            table,
+            row: RowKey::new(row).unwrap(),
+            action: ChangeAction::Tombstone,
+            groups: Vec::new(),
+            replaced_by: None,
+            cause: cause.map(|(table, row)| Cause {
+                table,
+                row: RowKey::new(row).unwrap(),
+            }),
+        };
+        for change in [
+            tombstone(PARTICIPANTS_TABLE, OWNER, None),
+            tombstone(PARTICIPANTS_TABLE, AGENT, None),
+            tombstone(AGENTS_TABLE, AGENT, Some((PARTICIPANTS_TABLE, AGENT))),
+            tombstone(AGENTS_TABLE, NAMED, None),
+            tombstone(AGENTS_TABLE, NAMED, Some((PARTICIPANTS_TABLE, OWNER))),
+            tombstone(POLICY_REVISIONS_TABLE, "policy-named", None),
+            tombstone(
+                POLICY_REVISIONS_TABLE,
+                "policy-0",
+                Some((PARTICIPANTS_TABLE, AGENT)),
+            ),
+        ] {
+            let mut replicas = conversation_replicas(2).await;
+            replicas[0].exec(&named_agent_sql()).await;
+            converge(&mut replicas).await;
+            let description = format!("{change:?}");
+            let forged = forge_change(&mut replicas[0], change).await;
+            assert_eq!(
+                replicas[1].receive(&[forged]).await,
+                vec![StoreOutcome::Stored {
+                    held: Some(HoldReason::Invalid)
+                }],
+                "{description}"
+            );
+            replicas[1].apply_all().await.unwrap();
+            assert_eq!(
+                named_agent_rows(&mut replicas[1]).await,
+                "1 1 1 1 0 0 0",
+                "{description}"
+            );
+            assert_eq!(
+                replicas[1]
+                    .scalar_text(&format!(
+                        "SELECT count(*) || '' FROM chat_participants WHERE id IN ({}, {})",
+                        quoted(OWNER),
+                        quoted(AGENT)
+                    ))
+                    .await
+                    .as_deref(),
+                Some("2"),
+                "{description}"
+            );
+        }
+        let mut replicas = conversation_replicas(2).await;
+        replicas[0].exec(&named_agent_sql()).await;
+        converge(&mut replicas).await;
+        let forged = forge_change(
+            &mut replicas[0],
+            tombstone(
+                POLICY_REVISIONS_TABLE,
+                "policy-0",
+                Some((PARTICIPANTS_TABLE, NAMED)),
+            ),
+        )
+        .await;
+        replicas[1].receive(&[forged]).await;
+        replicas[1].apply_all().await.unwrap();
+        assert_eq!(
+            replicas[1]
+                .scalar_text(&format!(
+                    "SELECT agent.current_policy_revision_id
+                     FROM chat_agents agent
+                     JOIN chat_agent_policy_revisions policy
+                       ON policy.id = agent.current_policy_revision_id
+                     WHERE agent.participant_id = {}",
+                    quoted(AGENT)
+                ))
+                .await
+                .as_deref(),
+            Some("policy-0")
+        );
+        assert_eq!(named_agent_rows(&mut replicas[1]).await, "1 1 1 1 0 0 0");
     });
 }
 

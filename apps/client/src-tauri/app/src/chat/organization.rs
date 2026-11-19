@@ -59,7 +59,7 @@ mod scheduling;
 mod workflow;
 
 #[cfg(desktop)]
-use agent_lifecycle::set_agent_archived;
+use agent_lifecycle::{remove_custom_agent, restore_custom_agent, set_agent_archived};
 #[cfg(desktop)]
 pub(crate) use assignments::{
     continue_queued_replies_after_turn, deliver_delegation_outcomes_of_assignments,
@@ -269,6 +269,35 @@ pub async fn chat_archive_agent(
         &local_instances,
     )
     .await
+}
+
+/// Removes an agent a person named: deletes it when it was never used, and archives and hides it
+/// otherwise.
+#[tauri::command]
+#[cfg(desktop)]
+pub async fn chat_remove_custom_agent(
+    app: tauri::AppHandle,
+    db_url: String,
+    agent_id: ChatParticipantId,
+    expected_revision: u64,
+) -> ChatResult<ChatCustomAgentRemoval> {
+    let local_instances = local_provider_instances(&app);
+    let pool = chat_pool(app, db_url).await?;
+    remove_custom_agent(&pool, &agent_id, expected_revision, &local_instances).await
+}
+
+/// Brings a hidden agent a person named back to the agent list, still archived.
+#[tauri::command]
+#[cfg(desktop)]
+pub async fn chat_restore_custom_agent(
+    app: tauri::AppHandle,
+    db_url: String,
+    agent_id: ChatParticipantId,
+    expected_revision: u64,
+) -> ChatResult<ChatAiAgentRead> {
+    let local_instances = local_provider_instances(&app);
+    let pool = chat_pool(app, db_url).await?;
+    restore_custom_agent(&pool, &agent_id, expected_revision, &local_instances).await
 }
 
 #[tauri::command]

@@ -9,10 +9,12 @@ import {
   CHAT_SCENE_QUERY,
   CHAT_SCENE_STEPS,
   CHAT_STILL,
+  CHAT_COMPOSER_EXPAND_MS,
   CHAT_THREAD_OPEN_MS,
   chatActiveSince,
   chatComposerCaretOn,
   chatComposerDraft,
+  chatComposerExpanded,
   chatComposerFocused,
   chatMentioned,
   chatMessageIn,
@@ -99,6 +101,17 @@ describe("welcome chat scene", () => {
     expect(chatSent(B.sendTap)).toBe(true);
     expect(chatComposerDraft(B.sendTap, QUESTION)).toEqual({ query: "", mention: false, text: "" });
     expect(chatComposerCaretOn(B.sendTap)).toBe(false);
+  });
+
+  it("keeps the phone composer to one row until it is tapped, and shrinks it back as the thread opens", () => {
+    expect(chatComposerExpanded(0)).toBe(0);
+    expect(chatComposerExpanded(B.editorTap)).toBe(0);
+    expect(chatComposerExpanded(B.editorTap + CHAT_COMPOSER_EXPAND_MS / 2)).toBeCloseTo(0.5);
+    expect(chatComposerExpanded(B.editorTap + CHAT_COMPOSER_EXPAND_MS)).toBe(1);
+    expect(chatComposerExpanded(B.sendTap)).toBe(1);
+    expect(chatComposerExpanded(B.threadOpen)).toBe(1);
+    expect(chatComposerExpanded(B.threadOpen + CHAT_COMPOSER_EXPAND_MS)).toBe(0);
+    expect(chatComposerExpanded(CHAT_STILL)).toBe(0);
   });
 
   it("posts the message, then opens its thread, where the reply starts and the channel shows its reply strip", () => {

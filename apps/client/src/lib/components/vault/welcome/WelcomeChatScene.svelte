@@ -35,10 +35,12 @@
   import Plus from "@lucide/svelte/icons/plus";
   import Search from "@lucide/svelte/icons/search";
   import Settings2 from "@lucide/svelte/icons/settings-2";
+  import Smile from "@lucide/svelte/icons/smile";
   import Square from "@lucide/svelte/icons/square";
   import SquareArrowOutUpRight from "@lucide/svelte/icons/square-arrow-out-up-right";
   import X from "@lucide/svelte/icons/x";
   import { chatLayoutDecision, CHAT_REPLY_THREAD_WIDTH_PX } from "$lib/chat/responsive-layout";
+  import { REPLY_THREAD_SHEET_PEEK_RATIO } from "$lib/components/chat/timeline/reply-thread-sheet";
   import ChatModelAvatar from "$lib/components/chat/identity/ChatModelAvatar.svelte";
   import LocalPersonAvatar from "$lib/components/contacts/LocalPersonAvatar.svelte";
   import WorkspaceBreadcrumbTerminalIcon from "$lib/components/ui/WorkspaceBreadcrumbTerminalIcon.svelte";
@@ -60,6 +62,7 @@
     chatActiveSince,
     chatComposerCaretOn,
     chatComposerDraft,
+    chatComposerExpanded,
     chatMessageIn,
     chatPickerNarrowed,
     chatPickerShown,
@@ -83,7 +86,7 @@
   /**
    * One frame of the welcome scene on Chat, drawn with the workspace's own surfaces: in the Novel project's #general
    * channel, Opus is mentioned through the reference picker in a question that is then sent, and the message's reply
-   * thread opens beside the channel, or over it where both do not fit, where Opus thinks, reads the chapter, searches
+   * thread opens beside the channel, over it where both do not fit, or on a phone in a sheet that rises over it, where Opus thinks, reads the chapter, searches
    * the manuscript, folds that work into one line, and streams its reply. Every style is a function of `elapsed`, with no
    * CSS transitions.
    */
@@ -170,6 +173,10 @@
   const sendPress = $derived(filmTap(elapsed, CHAT_BEATS.sendTap));
   /** A phone taps Opus in the picker; the desktop accepts it with Enter, so nothing presses there. */
   const pickPress = $derived(mobileShell ? filmTap(elapsed, CHAT_BEATS.pick) : 0);
+  /** How far the phone composer has grown from its one row; the desktop composer always shows in full. */
+  const composerExpanded = $derived(mobileShell ? chatComposerExpanded(elapsed) : 1);
+  /** The gap the phone thread sheet leaves above it at its tallest, as the sheet's track sets it. */
+  const SHEET_TOP_REM = 0.5;
 
   /** Where the reply thread opens, as the workspace decides for a canvas this size: beside the channel or over it. */
   const threadPresentation = $derived(
@@ -268,7 +275,11 @@
 {#snippet footer(prefix: string, inThread: boolean, hasContent: boolean, press: number)}
   <div class="composer-footer">
     <div class="composer-tools">
-      <span class={cn("tool-button", hovered(`${prefix}:attach`) && "hovered")} data-scene-hover={`${prefix}:attach`}><Plus size={16} /></span>
+      {#if mobileShell}
+        <span class="tool-button"><Smile size={15} /></span>
+      {:else}
+        <span class={cn("tool-button", hovered(`${prefix}:attach`) && "hovered")} data-scene-hover={`${prefix}:attach`}><Plus size={16} /></span>
+      {/if}
       <span class={cn("tool-button", hovered(`${prefix}:schedule`) && "hovered")} data-scene-hover={`${prefix}:schedule`}><Clock3 size={15} /></span>
       {#if inThread}
         <span class={cn("tool-button", hovered(`${prefix}:share`) && "hovered")} data-scene-hover={`${prefix}:share`}><MessageSquareShare size={15} /></span>
@@ -339,7 +350,7 @@
       </div>
     </div>
     <div class="thread-composer">
-      <div class="organizational-composer">
+      <div class={cn("organizational-composer", mobileShell && "collapsible")} style:--expand={mobileShell ? 0 : undefined}>
         <div class="editor-frame">
           <div class="organizational-editor empty" data-placeholder={t("chat.organization.messageChannel")}></div>
         </div>
@@ -413,7 +424,7 @@
 
         <div class="relative min-h-0 flex-1">
           <!-- The channel: its feed, and its composer docked under it. -->
-          <div class="absolute inset-0 flex flex-col" style:opacity={threadColumn ? undefined : 1 - threadShown} style:--gutter={`${gutterRem}rem`}>
+          <div class="absolute inset-0 flex flex-col" style:opacity={threadColumn || mobileShell ? undefined : 1 - threadShown} style:--gutter={`${gutterRem}rem`}>
             <div class="flex min-h-0 flex-1 flex-col justify-end overflow-hidden">
               <div class="feed-canvas">
                 {#if sent}
@@ -425,7 +436,7 @@
 
             <div class="channel-composer-dock">
               <div class="relative w-full">
-                <div class="organizational-composer">
+                <div class={cn("organizational-composer", mobileShell && "collapsible")} style:--expand={mobileShell ? composerExpanded : undefined}>
                   <div class="editor-frame" data-cursor="chat-editor">
                     <div class={cn("organizational-editor", draftEmpty && "empty")} data-placeholder={t("chat.organization.messageChannel")}>
                       {#if draft.mention}<span class="reference-atom">{mention}</span>{" "}{draft.text}{:else}{draft.query}{/if}{#if caretOn}<WelcomeCaret />{/if}
@@ -467,7 +478,7 @@
             </div>
           </div>
 
-          {#if !threadColumn && threadShown > 0}
+          {#if !mobileShell && !threadColumn && threadShown > 0}
             <!-- The reply thread over the channel, where there is no room for both. -->
             <div class="absolute inset-0 flex" style={riseStyle(threadShown)}>{@render thread(false)}</div>
           {/if}
@@ -500,6 +511,21 @@
         </span>
       {/if}
     </div>
+
+    {#if mobileShell && threadShown > 0}
+      <!-- The reply thread in a sheet that rises nearly full over the dimmed channel, as a phone opens it. -->
+      <div class="surface-backdrop absolute inset-0 z-40" style:opacity={threadShown}></div>
+      <div class="absolute inset-x-0 bottom-0 z-40" style:top={`${SHEET_TOP_REM}rem`}>
+        <div
+          class="thread-sheet rounded-t-floating"
+          style:height={`${REPLY_THREAD_SHEET_PEEK_RATIO * 100}%`}
+          style:transform={threadShown < 1 ? `translateY(${(1 - threadShown) * 100}%)` : undefined}
+        >
+          <div class="sheet-handle"><span></span></div>
+          <div class="flex min-h-0 flex-1">{@render thread(false)}</div>
+        </div>
+      </div>
+    {/if}
 
     {#if !mobileShell}
       <WelcomeCursor script={CHAT_CURSOR} {elapsed} width={canvasW} bind:position={cursorPoint} />
@@ -560,6 +586,17 @@
   .send-button { position: relative; display: grid; width: 1.9rem; height: 1.9rem; flex: 0 0 auto; place-items: center; border-radius: 999px; background: color-mix(in srgb, var(--primary) 92%, transparent); color: var(--primary-foreground); box-shadow: 0 2px 7px color-mix(in srgb, var(--primary) 22%, transparent); }
   .send-button.disabled { opacity: 0.45; }
 
+  /*
+   * The phone composer rests as one row, with its first tool and Send at the ends of a pill, and grows by `--expand` into
+   * its full height as its other tools fade in, as the collapsible composer frame draws it.
+   */
+  .collapsible { --row: 2.4rem; --line: 1.3125rem; }
+  .collapsible .editor-frame { padding-block: calc((var(--row) - var(--line)) / 2 * (1 - var(--expand)) + 1rem * var(--expand)) calc((var(--row) - var(--line)) / 2 * (1 - var(--expand)) + 0.4rem * var(--expand)); padding-inline: calc((var(--row) + 0.25rem) * (1 - var(--expand)) + 1.25rem * var(--expand)); }
+  .collapsible .organizational-editor { min-height: calc(var(--line) + (2.625rem - var(--line)) * var(--expand)); }
+  .collapsible .organizational-editor.empty::before { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .collapsible .composer-footer { position: relative; min-height: calc(var(--row) + (2.6rem - var(--row)) * var(--expand)); margin-top: calc(-1 * var(--row) * (1 - var(--expand))); padding: calc(0.25rem * (1 - var(--expand))) calc(0.25rem + 0.5rem * var(--expand)) calc(0.25rem + 0.25rem * var(--expand)); }
+  .collapsible .composer-tools > :not(:first-child) { opacity: var(--expand); }
+
   /* The reply thread, as its panel draws it. */
   .reply-thread-panel { display: flex; width: 100%; height: 100%; min-height: 0; flex-direction: column; background: var(--cal-bg); }
   .thread-header { display: flex; flex: 0 0 auto; align-items: center; gap: 0.2rem; padding-inline: 0.45rem; }
@@ -572,6 +609,11 @@
   .thread-scroll { min-height: 100%; flex-shrink: 0; padding-block: 0.4rem; }
   .thread-composer { display: flex; flex: 0 0 auto; justify-content: center; padding: 0.5rem 0.5rem 0.75rem; }
   .thread-separator { position: absolute; bottom: 0; left: 0; z-index: 1; width: 1px; background: var(--border); }
+
+  /* The phone thread sheet and its grabber, as the bottom sheet draws them. */
+  .thread-sheet { position: absolute; inset-inline: 0; bottom: 0; display: flex; flex-direction: column; overflow: clip; background: var(--cal-bg); box-shadow: var(--floating-shadow); }
+  .sheet-handle { display: flex; height: 1.125rem; flex: 0 0 auto; justify-content: center; padding-top: 0.25rem; }
+  .sheet-handle span { width: 2.25rem; height: 0.25rem; border-radius: 9999px; background: color-mix(in srgb, var(--muted-foreground) 40%, var(--cal-bg)); }
 
   /* Opus's turn in the thread, as the embedded execution timeline draws it. */
   .turn-row { display: grid; min-width: 0; grid-template-columns: 34px minmax(0, 1fr); align-items: start; gap: 0.65rem; padding: 0.45rem 1rem 0; }

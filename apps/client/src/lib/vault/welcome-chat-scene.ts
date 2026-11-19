@@ -75,6 +75,9 @@ export const CHAT_PICKER_EXIT_MS = 100;
 /** How long the reply thread takes to open, as the workspace moves its panels. */
 export const CHAT_THREAD_OPEN_MS = 320;
 
+/** How long the phone composer takes to grow from its one row when tapped, or to shrink back once the thread takes over. */
+export const CHAT_COMPOSER_EXPAND_MS = 240;
+
 /** How long a new message takes to rise into its feed. */
 export const CHAT_MESSAGE_IN_MS = 140;
 
@@ -91,6 +94,16 @@ export const CHAT_SCENE_WORKED_SECONDS = 8;
 /** Whether the composer holds the caret: from the click into it until Send. */
 export function chatComposerFocused(elapsed: number): boolean {
   return elapsed >= B.editorTap && elapsed < B.sendTap;
+}
+
+/**
+ * How far the phone composer has grown from its one row, from 0 to 1: it grows when tapped, stays grown while it keeps
+ * focus after Send, and shrinks back as the reply thread sheet takes focus over the channel.
+ */
+export function chatComposerExpanded(elapsed: number): number {
+  const grown = easeInOutCubic(filmSpan(elapsed, B.editorTap, B.editorTap + CHAT_COMPOSER_EXPAND_MS));
+  const shrunk = easeInOutCubic(filmSpan(elapsed, B.threadOpen, B.threadOpen + CHAT_COMPOSER_EXPAND_MS));
+  return grown * (1 - shrunk);
 }
 
 /** Whether the composer's caret shows: steady while something is typed into it, and blinking in between. */

@@ -906,13 +906,13 @@
   .row-action { display:flex; justify-content:flex-end; padding-inline:0.25rem; }
   .row-action button,.collection-action button { display:inline-flex; height:var(--control-height); align-items:center; gap:0.35rem; border:1px solid var(--border); border-radius:0.375rem; background:var(--card); padding-inline:0.5rem; color:var(--foreground); font-size:calc(0.7rem * var(--type-scale)); }
   .row-action button:hover,.collection-action button:hover { background:var(--accent); }
-  .advanced-content { display:grid; gap:1rem; padding-inline:0.25rem; }
+  .advanced-content { display:grid; gap:1rem; }
   .advanced-group { display:grid; gap:0.45rem; }
   .collection-action { display:flex; width:min(22rem,55%); min-width:0; justify-content:flex-end; }
   .advanced-empty { padding-inline:0.25rem; color:var(--muted-foreground); font-size:calc(0.7rem * var(--type-scale)); }
-  .argument-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:0.25rem; }
+  .argument-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:0.25rem; padding-inline:0.25rem; }
   .argument-row small { grid-column:1/-1; }
-  .environment-row { display:grid; grid-template-columns:minmax(0,1fr) 8.5rem minmax(0,1.4fr) auto; align-items:center; gap:0.35rem; }
+  .environment-row { display:grid; grid-template-columns:minmax(0,1fr) 8.5rem minmax(0,1.4fr) auto; align-items:center; gap:0.35rem; padding-inline:0.25rem; }
   .inherit-value { display:flex; min-width:0; min-height:var(--control-height); align-items:center; padding-inline:0.5rem; color:var(--muted-foreground); font-size:calc(0.72rem * var(--type-scale)); }
   .environment-error { grid-column:1/-1; }
   .environment-warning { display:flex; flex-wrap:wrap; grid-column:1/-1; align-items:center; gap:0.4rem; color:var(--muted-foreground); font-size:calc(0.68rem * var(--type-scale)); }

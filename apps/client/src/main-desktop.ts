@@ -165,6 +165,11 @@ const appPromise = (async () => {
             await hydrateUserThemes();
           });
           void appRuntimeReady.catch(() => undefined);
+          // A vault picked to recover from a startup error was already in use, so it skips the tour.
+          if (initialError !== null) {
+            await mountVaultHandoffOnboarding(info.vaultId, setupView, appRuntimeReady);
+            return;
+          }
           const { markWelcomeTourPending } = await import("./lib/vault/welcome-tour");
           markWelcomeTourPending(safeStorage(), info.vaultId);
           await mountWelcomeTour(info.vaultId, setupView, appRuntimeReady);

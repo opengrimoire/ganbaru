@@ -193,7 +193,7 @@
     {/if}
     {#if cards.length > 0}
       <ul
-        class="grid grid-cols-1 gap-3 @min-[480px]:grid-cols-2 @min-[760px]:grid-cols-3"
+        class="grid grid-cols-1 gap-3 @min-[480px]:grid-cols-2"
         aria-label={t("vaultSetup.agents.listLabel")}
         aria-busy={checkingAll}
       >
@@ -212,16 +212,6 @@
                 avatarSize={34}
               >
                 {#snippet actions()}
-                  <button
-                    type="button"
-                    class="agent-action"
-                    disabled={busy}
-                    aria-label={t("settings.agents.providers.refresh")}
-                    data-app-tooltip={t("settings.agents.providers.refresh")}
-                    onclick={() => void checkCard(card)}
-                  >
-                    <RefreshCw size={14} class={busy ? "animate-spin" : undefined} />
-                  </button>
                   {#if card.instance}
                     <button
                       type="button"
@@ -243,6 +233,16 @@
                       <Plus size={14} />
                     </button>
                   {/if}
+                  <button
+                    type="button"
+                    class="agent-action"
+                    disabled={busy}
+                    aria-label={t("settings.agents.providers.refresh")}
+                    data-app-tooltip={t("settings.agents.providers.refresh")}
+                    onclick={() => void checkCard(card)}
+                  >
+                    <RefreshCw size={14} class={busy ? "animate-spin" : undefined} />
+                  </button>
                 {/snippet}
               </ProviderHeading>
             </div>

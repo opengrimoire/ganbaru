@@ -21,6 +21,8 @@
     editorRoot = $bindable(),
     editor,
     hero = false,
+    collapsible = false,
+    collapsed = false,
     disabled,
     label,
     placeholder,
@@ -51,6 +53,13 @@
     /** The editor the caller constructed on `editorRoot`, once it exists. */
     editor: () => ChatComposerEditor | undefined;
     hero?: boolean;
+    /** Whether the composer animates between its single row and its full layout. */
+    collapsible?: boolean;
+    /**
+     * Whether a collapsible composer rests as one rounded row with the editor between the first
+     * leading control and the actions; the other controls fade out and cannot be reached.
+     */
+    collapsed?: boolean;
     disabled: boolean;
     /** Accessible name of the editor. */
     label: string;
@@ -113,6 +122,8 @@
   let pasteRefusal = $state<string | null>(null);
   let composing = $state(false);
   let formattingToolbar: ChatFormattingToolbar | undefined = $state();
+  /** The frame's own notices need the full layout, so they keep a collapsible composer open. */
+  const restingCollapsed = $derived(collapsible && collapsed && removedHiddenCharacters === 0 && !pasteRefusal);
 
   function handleKeydown(event: KeyboardEvent): void {
     if (formattingToolbar?.handleEditorKeydown(event)) return;
@@ -206,7 +217,7 @@
   }
 </script>
 
-<section class:hero class="chat-composer" data-chat-composer-container role="group" ondragover={(event) => event.preventDefault()} ondrop={handleDrop}>
+<section class:hero class:collapsible class:collapsed={restingCollapsed} class="chat-composer" data-chat-composer-container role="group" ondragover={(event) => event.preventDefault()} ondrop={handleDrop}>
   {@render above?.()}
   {#if removedHiddenCharacters > 0}
     <Notice class="composer-notice" tone="warning" role="status" message={t("chat.composer.paste.hiddenRemoved", removedHiddenCharacters)} onDismiss={() => { removedHiddenCharacters = 0; }} />
@@ -215,7 +226,9 @@
     <Notice class="composer-notice" message={pasteRefusal} onDismiss={() => { pasteRefusal = null; }} />
   {/if}
   <div class="editor-shell">
-    <div class="composer-editor-frame">
+    <!-- Taps on the padding around the editor, which is most of a collapsed row, still reach the editor. -->
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <div class="composer-editor-frame" onclick={(event) => { if (event.target === event.currentTarget && !disabled) editorRoot?.focus(); }}>
       <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
       <div
         bind:this={editorRoot}
@@ -291,6 +304,21 @@
   /* Open menus anchored in the toolbar must not be clipped by its overflow. */
   .toolbar-left:has(:global(details[open]), :global([aria-expanded="true"])) { overflow: visible; }
   .toolbar-right { flex: 0 1 auto; justify-content: flex-end; }
+  /*
+    A collapsed composer is one row as tall as a touch control plus its inset. The toolbar is pulled up over the
+    editor row, so the first leading control and the actions sit at its ends while the editor fills the middle;
+    padding and margin carry the change, which every WebView can animate.
+  */
+  .chat-composer.collapsible { --composer-row-inset: 0.25rem; --composer-row: calc(var(--composer-control-size, 2.75rem) + var(--composer-row-inset) * 2); --composer-line: var(--chat-conversation-line-height, calc(1.3125rem * var(--type-scale))); --composer-motion: 240ms cubic-bezier(0.2, 0.8, 0.2, 1); transition: border-radius var(--composer-motion); }
+  .chat-composer.collapsible .composer-editor-frame, .chat-composer.collapsible .composer-toolbar { transition: padding var(--composer-motion), margin var(--composer-motion), min-height var(--composer-motion); }
+  .chat-composer.collapsible .toolbar-left > :global(*), .chat-composer.collapsible .toolbar-right > :global(*) { transition: opacity 180ms ease 60ms, visibility 0s linear 0s; }
+  .chat-composer.collapsed { border-radius: calc(var(--composer-row) / 2 + 1px); }
+  .chat-composer.collapsed .composer-editor-frame { padding: calc((var(--composer-row) - var(--composer-line)) / 2) calc(var(--composer-row) + var(--composer-row-inset)); }
+  .chat-composer.collapsed .composer-editor { max-height: var(--composer-line); }
+  .chat-composer.collapsed .composer-editor:global([data-empty="true"])::before { inset-inline: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chat-composer.collapsed .composer-toolbar { min-height: var(--composer-row); margin-top: calc(var(--composer-row) * -1); padding: var(--composer-row-inset); pointer-events: none; }
+  .chat-composer.collapsed .toolbar-left > :global(*), .chat-composer.collapsed .toolbar-right > :global(*) { pointer-events: auto; }
+  .chat-composer.collapsed .toolbar-left > :global(:not(:first-child)), .chat-composer.collapsed .toolbar-right > :global(:not(:last-child)) { visibility: hidden; opacity: 0; transition: opacity 120ms ease, visibility 0s linear 120ms; }
   .context-meter { position: relative; display: inline-flex; flex: 0 0 auto; }
   .context-ring { display: grid; width: 1.45rem; height: 1.45rem; place-items: center; border-radius: 999px; color: var(--muted-foreground); outline: none; }
   .context-ring.warning { color: var(--status-tentative); }
@@ -307,5 +335,5 @@
   .chat-composer :global(.composer-notice-end) { margin: 0 1.25rem 0.75rem; }
   @container chat-composer (max-width: 390px) { .toolbar-left { gap: 0.1rem; } .context-meter { display: none; } }
   @container chat-composer (max-width: 300px) { .composer-editor-frame { padding-inline: 0.8rem; } .composer-toolbar { padding-inline: 0.4rem; } }
-  @media (prefers-reduced-motion: reduce) { .chat-composer { scroll-behavior: auto; } }
+  @media (prefers-reduced-motion: reduce) { .chat-composer { scroll-behavior: auto; } .chat-composer.collapsible { --composer-motion: 0ms linear; } .chat-composer.collapsible .toolbar-left > :global(*), .chat-composer.collapsible .toolbar-right > :global(*), .chat-composer.collapsed .toolbar-left > :global(:not(:first-child)), .chat-composer.collapsed .toolbar-right > :global(:not(:last-child)) { transition: none; } }
 </style>

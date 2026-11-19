@@ -123,6 +123,7 @@
     initiallyOpen = false,
     panelAlign = "end",
     panelAnchor = null,
+    onOpenChange,
     class: className = "",
   }: {
     value: string;
@@ -144,6 +145,8 @@
     panelAlign?: "start" | "end";
     /** Stable panel anchor when the action that opened the picker is removed. */
     panelAnchor?: HTMLElement | null;
+    /** Reports when the picker panel opens or closes, such as for a host that keeps its controls shown meanwhile. */
+    onOpenChange?: (open: boolean) => void;
     class?: string;
   } = $props();
 
@@ -183,6 +186,9 @@
   const gridGroupGapHeight = 12;
 
   let open = $state(false);
+  $effect(() => {
+    onOpenChange?.(open);
+  });
   let activeTab = $state<IconPickerTab>("icons");
   let pickerInteractionSource: PickerInteractionSource = "pointer";
   let triggerElement = $state<HTMLElement | undefined>();

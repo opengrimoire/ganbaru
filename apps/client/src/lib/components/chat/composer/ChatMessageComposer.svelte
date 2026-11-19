@@ -46,6 +46,7 @@
     mergePromptCatalog,
     modelCommandEntries,
   } from "$lib/chat/composer/command-model";
+  import { composerCollapsed } from "$lib/chat/composer/collapse";
   import { composerMeterRead, type ComposerStatusRead } from "$lib/chat/composer/composer-meter";
   import { CHAT_IMAGE_LIMIT, composerTokenTrigger, validateImageFiles } from "$lib/chat/composer/model";
   import { pendingInputRows, pendingInputStartsWork, type PendingInputRow } from "$lib/chat/composer/pending-inputs";
@@ -147,6 +148,8 @@
     "chat.local-execution",
   );
   const focusEditorOnMount = BUILD_PLATFORM_PROFILE.shell === "desktop";
+  /** The phone composer rests as one row until it is used, which keeps the conversation in view. */
+  const collapsible = BUILD_PLATFORM_PROFILE.shell === "mobile";
   const initialDraft = untrack(() => chat.organizationalDraft(destination));
   const initialDocument = parseChatComposerDocument(
     initialDraft.richContent,
@@ -174,6 +177,8 @@
   let pickerRoot = $state<HTMLDivElement | null>(null);
   let pickerScroll = $state<HTMLDivElement | null>(null);
   let composerRoot = $state<HTMLDivElement | null>(null);
+  let focusWithin = $state(false);
+  let emojiPickerOpen = $state(false);
   let scheduleMenuOpen = $state(false);
   let scheduleMenuAnchor = $state<HTMLDivElement | null>(null);
   let scheduledMessagesOpen = $state(false);
@@ -497,6 +502,13 @@
     window.addEventListener("pointerdown", closeMenusFromOutside, true);
     return () => window.removeEventListener("pointerdown", closeMenusFromOutside, true);
   });
+
+  /** Ends focus within the composer only when focus moves outside it, so moving between its controls keeps it open. */
+  function trackFocusLeaving(event: FocusEvent): void {
+    const next = event.relatedTarget;
+    if (next instanceof Node && composerRoot?.contains(next)) return;
+    focusWithin = false;
+  }
 
   function persist(): void {
     if (editingInput || editingScheduled) return;
@@ -1914,9 +1926,18 @@
     <ChatQueuedReplies rows={pendingRows} editingInputId={editingInput?.inputId ?? null} busyInputId={inputBusyId} canEdit={canEditInput} onEdit={startInputEdit} onCancel={(row) => { void cancelInput(row); }} onSave={() => { void saveInputEdit(); }} onDiscard={discardInputEdit} onSetHeld={(row, held) => { void setInputHeld(row, held); }} onSteer={(row) => { void steerInput(row); }} onReorder={reorderInputs} />
   {/if}
 
-  <div bind:this={composerRoot} class="organizational-composer" data-organizational-composer>
+  <div bind:this={composerRoot} class="organizational-composer" data-organizational-composer onfocusin={() => { focusWithin = true; }} onfocusout={trackFocusLeaving}>
     <ChatComposerFrame
       bind:editorRoot
+      {collapsible}
+      collapsed={composerCollapsed({
+        collapsible,
+        focusWithin,
+        hasContent: hasMessageContent,
+        optionSet: Boolean(scheduledFor) || alsoSendToChannel,
+        menuOpen: pickerOpen || promptMenuKind !== null || scheduleMenuOpen || statusPanelOpen || emojiPickerOpen,
+        showsStatus: Boolean(error || routingNotice || validation || disclosureBlocker || providerBlockers.length || messageTooLarge || editingInput || editingScheduled),
+      })}
       editor={() => editorController ?? undefined}
       disabled={false}
       label={placeholder}
@@ -1990,7 +2011,7 @@
       {#snippet leading()}
         {#if localExecutionAvailable}<button type="button" class="tool-button" disabled={editLockReason !== null} aria-label={t("chat.composer.attachImages")} title={editLockReason ?? t("chat.composer.attachImages")} onclick={() => void pickImages()}><Plus size={16} /></button>{/if}
         {#if EmojiPicker}
-          <EmojiPicker value="none" onChange={insertEmoji} ariaLabel={t("chat.composer.insertEmoji")} showIcons={false} showUpload={false} showRemove={false} showCustomEmoji={false} panelAlign="start" initiallyOpen>
+          <EmojiPicker value="none" onChange={insertEmoji} ariaLabel={t("chat.composer.insertEmoji")} showIcons={false} showUpload={false} showRemove={false} showCustomEmoji={false} panelAlign="start" initiallyOpen onOpenChange={(open) => { emojiPickerOpen = open; }}>
             {#snippet trigger({ open, toggle, panelId })}
               <button type="button" class="tool-button" class:active={open} aria-label={t("chat.composer.insertEmoji")} aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId} disabled={editLockReason !== null} title={editLockReason ?? t("chat.composer.insertEmoji")} onclick={toggle}><Smile size={15} /></button>
             {/snippet}
@@ -2041,7 +2062,7 @@
   .scheduled-summary button { min-height:1.75rem; border-radius:0.4rem; padding:0.2rem 0.45rem; font-size:calc(0.68rem * var(--type-scale)); font-weight:500; }
   .scheduled-summary { background:color-mix(in srgb,var(--accent) 58%,var(--cal-bg)); color:var(--muted-foreground); }
   .scheduled-summary-anchor,.menu-anchor { position:relative; }
-  .organizational-composer { --composer-button-size:1.9rem; position:relative; width:100%; }
+  .organizational-composer { --composer-button-size:1.9rem; --composer-control-size:var(--composer-button-size); position:relative; width:100%; }
   .reference-picker { z-index:100; display:flex; flex-direction:column; overflow:hidden; }
   .reference-picker-scroll { min-height:0; flex:1 1 auto; overflow-y:auto; }
   .reference-picker-scroll > p { padding:0.5rem; color:var(--muted-foreground); font-size:var(--panel-detail-font-size); }
@@ -2057,6 +2078,6 @@
   .composer-blocker { display:flex; gap:0.45rem; margin:0 0.65rem 0.5rem; border-radius:0.5rem; background:color-mix(in srgb,var(--destructive) 8%,transparent); padding:0.45rem 0.55rem; color:var(--destructive); outline:none; }.composer-blocker:focus-visible { outline:2px solid var(--ring); }.composer-blocker > div { display:grid; gap:0.2rem; }.composer-blocker p { font-size:calc(0.68rem * var(--type-scale)); }.composer-blocker span { display:flex; flex-wrap:wrap; gap:0.25rem; }.composer-blocker button { min-height:1.75rem; border-radius:0.35rem; padding:0.2rem 0.4rem; font-size:calc(0.62rem * var(--type-scale)); font-weight:600; }.composer-blocker button:hover { background:color-mix(in srgb,var(--destructive) 10%,transparent); }
   .composer-stack :global(.composer-error) { padding:0 0.5rem 0.5rem; font-size:calc(0.7rem * var(--type-scale)); }
   .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; }
-  @media (pointer:coarse) { .tool-button,.send-button { min-width:2.75rem; min-height:2.75rem; } }
+  @media (pointer:coarse) { .tool-button,.send-button { min-width:2.75rem; min-height:2.75rem; } .organizational-composer { --composer-control-size:2.75rem; } }
   @media (prefers-reduced-motion:reduce) { .send-button { transition:none; } }
 </style>

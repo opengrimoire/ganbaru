@@ -94,6 +94,14 @@ export function storesPlaintextSecret(row: ProviderEnvironmentDraft): boolean {
   return row.valueType === "text" && row.value.length > 0 && isSecretLikeEnvironmentName(row.name);
 }
 
+/**
+ * Whether an environment row is still untouched: no name, no value, and no stored secret. Validation and saving skip
+ * blank rows, so adding a row never blocks the form before the user fills it in.
+ */
+export function isBlankEnvironmentRow(row: ProviderEnvironmentDraft): boolean {
+  return row.name.trim().length === 0 && row.value.length === 0 && row.credentialReference.length === 0;
+}
+
 export function createProviderSetupDraft(): ProviderSetupDraft {
   return {
     familyId: "",
@@ -142,6 +150,7 @@ export function validateProviderSetup(
   const names = new Set<string>();
   const dedicatedVariable = DEDICATED_HOME_VARIABLES[draft.familyId];
   for (const row of draft.environment) {
+    if (isBlankEnvironmentRow(row)) continue;
     const field = `environment.${row.key}`;
     if (!ENVIRONMENT_NAME_PATTERN.test(row.name)) {
       fields[`${field}.name`] = "Enter a valid environment variable name.";
@@ -175,6 +184,7 @@ export function providerConfigurationFromDraft(
   const environment: Record<string, string> = {};
   const credentialReferences: Record<string, string> = {};
   for (const row of draft.environment) {
+    if (isBlankEnvironmentRow(row)) continue;
     if (row.valueType === "text") environment[row.name] = row.value;
     if (row.valueType === "inherit") environment[row.name] = `inherit:${row.name}`;
     if (row.valueType === "secret") credentialReferences[row.name] = row.credentialReference;
@@ -187,7 +197,7 @@ export function providerConfigurationFromDraft(
     enabled: current?.enabled ?? true,
     executable: draft.executable.trim(),
     providerHome: draft.providerHome.trim() || null,
-    launchArguments: [...draft.launchArguments],
+    launchArguments: draft.launchArguments.filter((argument) => argument.length > 0),
     environment,
     credentialReferences,
     providerConfig: draft.providerConfig,

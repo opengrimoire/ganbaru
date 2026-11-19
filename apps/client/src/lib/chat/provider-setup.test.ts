@@ -60,6 +60,30 @@ describe("provider setup", () => {
     }
   });
 
+  it("skips blank environment rows and empty launch arguments until they are filled in", () => {
+    const draft = createProviderSetupDraft();
+    Object.assign(draft, {
+      familyId: "codex",
+      label: "Codex",
+      instanceId: "codex",
+      executable: "codex",
+      launchArguments: ["", "--verbose"],
+      environment: [
+        { key: "blank", name: "", valueType: "inherit", value: "", credentialReference: "" },
+        { key: "partial", name: "", valueType: "text", value: "1", credentialReference: "" },
+      ],
+    });
+    const result = validateProviderSetup(draft, new Set());
+    expect(result.fields["environment.blank.name"]).toBeUndefined();
+    expect(result.fields["environment.partial.name"]).toBeDefined();
+
+    draft.environment = draft.environment.filter((row) => row.key === "blank");
+    expect(validateProviderSetup(draft, new Set()).valid).toBe(true);
+    const configuration = providerConfigurationFromDraft(draft);
+    expect(configuration.environment).toEqual({});
+    expect(configuration.launchArguments).toEqual(["--verbose"]);
+  });
+
   it("keeps secret values out of provider configuration", () => {
     const draft = createProviderSetupDraft();
     Object.assign(draft, {

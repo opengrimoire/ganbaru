@@ -28,6 +28,7 @@
   import type { ChatProviderSetupTarget } from "$lib/settings/types";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import Select from "$lib/components/ui/Select.svelte";
   import SwitchField from "$lib/components/ui/SwitchField.svelte";
 
   let {
@@ -59,6 +60,7 @@
   let testSucceeded = $state(false);
   let revealSecrets = $state<Record<string, boolean>>({});
   let pendingSecrets = $state<Record<string, string>>({});
+  let touchedFields = $state<Record<string, boolean>>({});
   let nextRowId = 1;
   const contentPaddingX = $derived(compactLayout ? "0.75rem" : iconRailLayout ? "1.25rem" : "2rem");
   const contentPaddingTop = $derived(compactLayout ? "1rem" : iconRailLayout ? "1.25rem" : "2rem");
@@ -79,6 +81,12 @@
   const openCodePassword = $derived(
     draft.environment.find((row) => row.name === "OPENCODE_SERVER_PASSWORD") ?? null,
   );
+  const customEnvironment = $derived(draft.environment.filter((row) => row.name !== "OPENCODE_SERVER_PASSWORD"));
+  const environmentValueTypeOptions = $derived([
+    { value: "text", label: t("settings.agents.setup.textValue") },
+    { value: "secret", label: t("settings.agents.setup.secretValue") },
+    { value: "inherit", label: t("settings.agents.setup.inheritedValue") },
+  ]);
 
   onMount(() => {
     void initialize();
@@ -210,11 +218,17 @@
     draft.environment = [...draft.environment, row];
   }
 
-  function setEnvironmentValueType(
-    row: ProviderEnvironmentDraft,
-    valueType: ProviderEnvironmentValueType,
-  ): void {
-    row.valueType = valueType;
+  function isEnvironmentValueType(value: string): value is ProviderEnvironmentValueType {
+    return value === "text" || value === "secret" || value === "inherit";
+  }
+
+  function setEnvironmentValueType(row: ProviderEnvironmentDraft, valueType: string): void {
+    if (isEnvironmentValueType(valueType)) row.valueType = valueType;
+  }
+
+  /** Lets a field show its validation message once the user has left it. */
+  function touchField(field: string): void {
+    touchedFields[field] = true;
   }
 
   function removeEnvironment(key: string): void {
@@ -729,33 +743,46 @@
                       <button type="button" onclick={addEnvironment}><Plus size={13} />{t("settings.agents.setup.addEnvironment")}</button>
                     </div>
                   </div>
-                  {#each draft.environment.filter((row) => row.name !== "OPENCODE_SERVER_PASSWORD") as row (row.key)}
+                  {#each customEnvironment as row (row.key)}
+                    {@const nameError = touchedFields[`environment.${row.key}.name`] ? fieldError(`environment.${row.key}.name`) : null}
+                    {@const valueError = touchedFields[`environment.${row.key}.value`] ? fieldError(`environment.${row.key}.value`) : null}
                     <div class="environment-row">
-                      <input aria-label={t("settings.agents.setup.variableName")} bind:value={row.name} readonly={row.credentialReference !== ""} />
-                      <div class="environment-kind" aria-label={t("settings.agents.setup.valueType") }>
-                        {#each ["text", "secret", "inherit"] as valueType}
-                          <button
-                            type="button"
-                            class:active={row.valueType === valueType}
-                            onclick={() => setEnvironmentValueType(row, valueType as ProviderEnvironmentValueType)}
-                          >
-                            {valueType === "text"
-                              ? t("settings.agents.setup.textValue")
-                              : valueType === "secret"
-                                ? t("settings.agents.setup.secretValue")
-                                : t("settings.agents.setup.inheritedValue")}
-                          </button>
-                        {/each}
-                      </div>
+                      <input
+                        class="environment-name"
+                        aria-label={t("settings.agents.setup.variableName")}
+                        placeholder={t("settings.agents.setup.variableName")}
+                        aria-invalid={nameError ? "true" : undefined}
+                        bind:value={row.name}
+                        readonly={row.credentialReference !== ""}
+                        onblur={() => touchField(`environment.${row.key}.name`)}
+                      />
+                      <Select
+                        inline
+                        class="environment-kind w-full"
+                        value={row.valueType}
+                        options={environmentValueTypeOptions}
+                        ariaLabel={t("settings.agents.setup.valueType")}
+                        onChange={(value) => setEnvironmentValueType(row, value)}
+                      />
                       {#if row.valueType === "text"}
-                        <input aria-label={t("settings.agents.setup.environmentValue")} bind:value={row.value} />
+                        <input
+                          class="environment-value"
+                          aria-label={t("settings.agents.setup.environmentValue")}
+                          placeholder={t("settings.agents.setup.environmentValue")}
+                          aria-invalid={valueError ? "true" : undefined}
+                          bind:value={row.value}
+                          onblur={() => touchField(`environment.${row.key}.value`)}
+                        />
                       {:else if row.valueType === "secret"}
-                        <div class="input-with-actions">
+                        <div class="input-with-actions environment-value">
                           <input
                             type={revealSecrets[row.key] ? "text" : "password"}
+                            aria-label={t("settings.agents.setup.environmentValue")}
+                            aria-invalid={valueError ? "true" : undefined}
                             value={pendingSecrets[row.key] ?? ""}
                             placeholder={row.credentialReference ? t("settings.agents.setup.stored") : t("settings.agents.setup.missing")}
                             oninput={(event) => { pendingSecrets[row.key] = event.currentTarget.value; }}
+                            onblur={() => touchField(`environment.${row.key}.value`)}
                           />
                           <button type="button" onclick={() => { revealSecrets[row.key] = !revealSecrets[row.key]; }}>
                             {#if revealSecrets[row.key]}<EyeOff size={13} />{:else}<Eye size={13} />{/if}
@@ -765,7 +792,7 @@
                           </button>
                         </div>
                       {:else}
-                        <span class="inherit-value">{row.name || t("common.none")}</span>
+                        <span class="inherit-value environment-value">{t("settings.agents.setup.inheritedHint")}</span>
                       {/if}
                       <button
                         type="button"
@@ -782,14 +809,12 @@
                           <button type="button" onclick={() => void moveToCredentialStore(row)}>{t("settings.agents.setup.storeAsSecret")}</button>
                         </p>
                       {/if}
-                      {#if fieldError(`environment.${row.key}.name`) || fieldError(`environment.${row.key}.value`)}
-                        <small class="environment-error">
-                          {fieldError(`environment.${row.key}.name`) ?? fieldError(`environment.${row.key}.value`)}
-                        </small>
+                      {#if nameError || valueError}
+                        <small class="environment-error">{nameError ?? valueError}</small>
                       {/if}
                     </div>
                   {/each}
-                  {#if draft.environment.filter((row) => row.name !== "OPENCODE_SERVER_PASSWORD").length === 0}
+                  {#if customEnvironment.length === 0}
                     <p class="advanced-empty">{t("settings.agents.setup.noEnvironment")}</p>
                   {/if}
                 </div>
@@ -863,13 +888,15 @@
   .form-row { display:flex; min-width:0; align-items:center; justify-content:space-between; gap:1rem; padding:0.15rem 0.25rem; }
   .form-row > label,.form-row > span { min-width:0; flex:1; color:var(--foreground); font-size:calc(0.82rem * var(--type-scale)); }
   .field-control { display:flex; width:min(22rem,55%); min-width:0; flex-direction:column; gap:0.25rem; }
-  input { height:1.75rem; min-width:0; border:1px solid var(--border); border-radius:var(--floating-item-radius); background:transparent; padding:0.25rem 0.5rem; color:var(--foreground); font-size:calc(0.78rem * var(--type-scale)); outline:none; }
+  input { height:var(--control-height); min-width:0; border:1px solid var(--border); border-radius:var(--floating-item-radius); background:transparent; padding:calc(0.25rem - 1px) 0.5rem; color:var(--foreground); font-size:calc(0.78rem * var(--type-scale)); outline:none; }
+  input::placeholder { color:var(--muted-foreground); }
+  input[aria-invalid="true"] { border-color:var(--destructive); }
   input:disabled { cursor:not-allowed; opacity:0.55; }
   .field-control small,.argument-row small,.environment-error,.field-error { color:var(--destructive); font-size:calc(0.68rem * var(--type-scale)); }
   .field-error { padding-inline:0.25rem; }
   .input-with-action,.input-with-actions { display:flex; min-width:0; gap:0.25rem; }
   .input-with-action input,.input-with-actions input { min-width:0; flex:1; }
-  .input-with-action button,.input-with-actions button,.remove-row,.argument-row > button { display:inline-grid; width:1.75rem; height:1.75rem; flex:0 0 auto; place-items:center; border:1px solid var(--border); border-radius:0.375rem; background:var(--card); color:var(--muted-foreground); }
+  .input-with-action button,.input-with-actions button,.remove-row,.argument-row > button { display:inline-grid; width:var(--control-height); height:var(--control-height); flex:0 0 auto; place-items:center; border:1px solid var(--border); border-radius:0.375rem; background:var(--card); color:var(--muted-foreground); }
   .input-with-action button:hover,.input-with-actions button:hover,.remove-row:hover,.argument-row > button:hover { background:var(--accent); color:var(--foreground); }
   .segmented-control { display:grid; width:min(22rem,55%); grid-template-columns:repeat(2,minmax(0,1fr)); gap:0.2rem; border:1px solid var(--border); border-radius:0.375rem; padding:0.2rem; }
   .segmented-control button { min-height:1.65rem; border-radius:0.25rem; color:var(--muted-foreground); font-size:calc(0.72rem * var(--type-scale)); }
@@ -877,7 +904,7 @@
   .segmented-control button.active { background:var(--accent); color:var(--accent-foreground); }
   .security-warning { display:grid; gap:0.6rem; border-block:1px solid color-mix(in srgb,var(--status-tentative) 48%,var(--border)); padding:0.7rem 0.25rem; color:var(--status-tentative); font-size:calc(0.72rem * var(--type-scale)); }
   .row-action { display:flex; justify-content:flex-end; padding-inline:0.25rem; }
-  .row-action button,.collection-action button { display:inline-flex; height:1.75rem; align-items:center; gap:0.35rem; border:1px solid var(--border); border-radius:0.375rem; background:var(--card); padding-inline:0.5rem; color:var(--foreground); font-size:calc(0.7rem * var(--type-scale)); }
+  .row-action button,.collection-action button { display:inline-flex; height:var(--control-height); align-items:center; gap:0.35rem; border:1px solid var(--border); border-radius:0.375rem; background:var(--card); padding-inline:0.5rem; color:var(--foreground); font-size:calc(0.7rem * var(--type-scale)); }
   .row-action button:hover,.collection-action button:hover { background:var(--accent); }
   .advanced-content { display:grid; gap:1rem; padding-inline:0.25rem; }
   .advanced-group { display:grid; gap:0.45rem; }
@@ -885,11 +912,8 @@
   .advanced-empty { padding-inline:0.25rem; color:var(--muted-foreground); font-size:calc(0.7rem * var(--type-scale)); }
   .argument-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:0.25rem; }
   .argument-row small { grid-column:1/-1; }
-  .environment-row { display:grid; grid-template-columns:minmax(7rem,0.8fr) minmax(10rem,1fr) minmax(8rem,1.2fr) auto; align-items:start; gap:0.35rem; padding-block:0.2rem; }
-  .environment-kind { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:0.12rem; border:1px solid var(--border); border-radius:0.375rem; padding:0.12rem; }
-  .environment-kind button { min-width:0; min-height:1.5rem; overflow:hidden; border-radius:0.25rem; color:var(--muted-foreground); font-size:calc(0.61rem * var(--type-scale)); text-overflow:ellipsis; white-space:nowrap; }
-  .environment-kind button.active { background:var(--accent); color:var(--accent-foreground); }
-  .inherit-value { display:flex; min-height:1.75rem; align-items:center; padding-inline:0.5rem; color:var(--muted-foreground); font-size:calc(0.72rem * var(--type-scale)); }
+  .environment-row { display:grid; grid-template-columns:minmax(0,1fr) 8.5rem minmax(0,1.4fr) auto; align-items:center; gap:0.35rem; }
+  .inherit-value { display:flex; min-width:0; min-height:var(--control-height); align-items:center; padding-inline:0.5rem; color:var(--muted-foreground); font-size:calc(0.72rem * var(--type-scale)); }
   .environment-error { grid-column:1/-1; }
   .environment-warning { display:flex; flex-wrap:wrap; grid-column:1/-1; align-items:center; gap:0.4rem; color:var(--muted-foreground); font-size:calc(0.68rem * var(--type-scale)); }
   .environment-warning button { color:var(--foreground); text-decoration:underline; }
@@ -902,7 +926,7 @@
   .footer-content { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:0.6rem; border-top:1px solid var(--border); padding-top:0.75rem; }
   .footer-message { min-width:0; flex:1; font-size:calc(0.75rem * var(--type-scale)); }
   .footer-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:0.45rem; }
-  .secondary-button,.primary-button { display:inline-flex; height:2rem; align-items:center; justify-content:center; gap:0.4rem; border-radius:0.375rem; padding-inline:0.75rem; font-size:calc(0.78rem * var(--type-scale)); font-weight:500; }
+  .secondary-button,.primary-button { display:inline-flex; height:var(--control-height); align-items:center; justify-content:center; gap:0.4rem; border-radius:0.375rem; padding-inline:0.75rem; font-size:calc(0.78rem * var(--type-scale)); font-weight:500; }
   .secondary-button { border:1px solid var(--border); background:var(--background); color:var(--foreground); }
   .secondary-button:hover:not(:disabled) { background:var(--accent); }
   .primary-button { background:var(--primary); color:var(--primary-foreground); }
@@ -917,8 +941,10 @@
   @media (max-width:620px) {
     .form-row { align-items:stretch; flex-direction:column; gap:0.4rem; }
     .field-control,.segmented-control,.collection-action { width:100%; }
-    .environment-row { grid-template-columns:minmax(0,1fr) auto; }
-    .environment-kind,.environment-row > input:nth-of-type(2),.environment-row > .input-with-actions,.inherit-value { grid-column:1/2; }
-    .remove-row { grid-column:2; grid-row:1; }
+    .environment-row { grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto; }
+    .environment-name { grid-column:1/3; }
+    .environment-row > :global(.environment-kind) { grid-column:1; grid-row:2; }
+    .environment-value { grid-column:2/4; grid-row:2; }
+    .remove-row { grid-column:3; grid-row:1; }
   }
 </style>

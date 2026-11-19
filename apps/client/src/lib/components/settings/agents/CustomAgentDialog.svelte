@@ -68,6 +68,8 @@
   const modelChoices = $derived(choices.map((entry) => (entry.line
     ? { value: entry.modelId, label: t("settings.agents.roster.lineChoice", lineDisplayName(entry.line)) }
     : { value: entry.modelId, label: formatModelDisplayName(entry.model.displayName) })));
+  /** Model, reasoning, and speed share one row when the dialog is wide enough; model keeps its own row otherwise. */
+  const modelControlCount = $derived(1 + (controls.reasoning ? 1 : 0) + (controls.speed ? 1 : 0));
   const reasoningChoices = $derived((controls.reasoning?.options ?? []).map((option) => ({
     value: option.value,
     label: compactModelOptionLabel(option.label, familyId, t("chat.composer.light"), t("chat.composer.extraHigh")),
@@ -230,8 +232,8 @@
           {#if visibleProblem && visibleProblem !== "empty"}<span class="text-panel-detail text-destructive">{problemMessage(visibleProblem)}</span>{/if}
         </label>
 
-        <div class="grid gap-4 @xs:grid-cols-2 @xs:gap-3">
-          <div class={cn("grid min-w-0 gap-1.5", !controls.reasoning && "@xs:col-span-2")}>
+        <div class={cn("grid gap-4 @xs:grid-cols-2 @xs:gap-3", modelControlCount === 3 && "@sm:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1fr)]")}>
+          <div class={cn("grid min-w-0 gap-1.5", modelControlCount !== 2 && "@xs:col-span-2", modelControlCount === 3 && "@sm:col-span-1")}>
             <span class="field-label">{t("settings.agents.roster.modelLabel")}</span>
             <Select
               inline
@@ -258,22 +260,22 @@
               />
             </div>
           {/if}
-        </div>
 
-        {#if controls.speed}
-          <div class="grid gap-1.5">
-            <span class="field-label">{t("settings.agents.roster.speedLabel")}</span>
-            <Select
-              inline
-              class="w-full"
-              value={speedValue()}
-              options={speedChoices}
-              ariaLabel={t("settings.agents.roster.speedLabel")}
-              disabled={creating}
-              onChange={chooseSpeed}
-            />
-          </div>
-        {/if}
+          {#if controls.speed}
+            <div class="grid min-w-0 gap-1.5">
+              <span class="field-label">{t("settings.agents.roster.speedLabel")}</span>
+              <Select
+                inline
+                class="w-full"
+                value={speedValue()}
+                options={speedChoices}
+                ariaLabel={t("settings.agents.roster.speedLabel")}
+                disabled={creating}
+                onChange={chooseSpeed}
+              />
+            </div>
+          {/if}
+        </div>
 
         {#if error}<Notice class="text-panel-detail" message={error} copy={false} />{/if}
       </div>

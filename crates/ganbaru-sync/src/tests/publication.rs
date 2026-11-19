@@ -9,11 +9,11 @@ use ganbaru_sync_contracts::{
 use sqlx::Connection;
 
 use super::block_on;
-use super::engine::pull_without_writer;
 use super::fixture::{
     CYCLE_A_TABLE, CYCLE_B_TABLE, DRAFT_NOTES_TABLE, DRAFT_PARTS_TABLE, DRAFTS_TABLE,
     FIXTURE_TABLE_IDS, ITEMS_TABLE, MEMBERSHIPS_TABLE, MEMOS_TABLE, draft_group, membership_key,
 };
+use super::recovery::pull_without_writer;
 use super::replica::{Replica, converge, forge_changes, pair, sealed_change};
 use crate::apply::{Constrained, finish_sealed};
 use crate::manifest::group_id;

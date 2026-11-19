@@ -276,6 +276,10 @@ const appPromise = (async () => {
       ? null
       : await handoffApi.createPairingInvitation();
 
+    // Only a vault the setup screens just opened still has the tour ahead, so only then is linking a step of first use.
+    const { welcomeTourPending } = await import("./lib/vault/welcome-tour");
+    const firstUse = welcomeTourPending(safeStorage(), vaultId);
+
     if (currentView) await unmount(currentView);
 
     let onboardingView: MountedRoot;
@@ -285,6 +289,7 @@ const appPromise = (async () => {
         vaultId,
         initialInvitation,
         initialStatus,
+        firstUse,
         onComplete: async (activeVaultId: string) => {
           perfMark("boot.onboarding-continue");
           await continueAfterLinking(vaultId, activeVaultId, openApp, onboardingView);

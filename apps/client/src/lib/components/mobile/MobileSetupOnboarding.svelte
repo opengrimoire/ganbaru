@@ -65,7 +65,7 @@
   <MobileVaultHandoffOnboarding
     {vaultId}
     bootstrapReplicaOnLink
-    backLocked
+    firstUse
     onComplete={finishLinking}
   />
 {:else if stage === "tour"}

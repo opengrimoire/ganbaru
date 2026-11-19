@@ -60,7 +60,10 @@ export const agentsSettings = {
   },
   roster: {
     add: "Agente personalizado",
-    archive: "Archivar",
+    remove: "Eliminar",
+    restore: "Restaurar",
+    showArchived: "Mostrar agentes archivados",
+    hideArchived: "Ocultar agentes archivados",
     builtIn: "Integrado",
     nameLabel: "Nombre",
     namePlaceholder: "Revisor",

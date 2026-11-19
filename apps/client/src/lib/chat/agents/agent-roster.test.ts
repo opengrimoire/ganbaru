@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ChatAgentKind, ModelOptionDefinition, ProviderModel } from "$lib/chat/contracts";
-import { customAgentModelChoices, familyAgentRoster, listedCatalogModels, selectedEffortLabel } from "./agent-roster";
+import { customAgentModelChoices, familyAgentRoster, isRemovableAgent, listedCatalogModels, selectedEffortLabel } from "./agent-roster";
 
 function model(id: string, displayName: string): ProviderModel {
   return { id, displayName, description: null, contextLimit: null, availability: "available", capabilities: [], options: [] };
@@ -110,5 +110,21 @@ describe("selectedEffortLabel", () => {
   it("returns null without an effort choice or an effort option", () => {
     expect(selectedEffortLabel([], [effort])).toBeNull();
     expect(selectedEffortLabel([{ key: "service_tier", value: { kind: "choice", value: "low" } }], [tier])).toBeNull();
+  });
+});
+
+describe("isRemovableAgent", () => {
+  const withId = (id: string) => ({ participant: { ...agent("Reviewer", "custom").participant, id } });
+
+  it("accepts the ids the custom agent dialog creates", () => {
+    expect(isRemovableAgent(withId("agent:0123456789abcdef0123456789abcdef"))).toBe(true);
+  });
+
+  it("refuses built-in ids and malformed named ids", () => {
+    expect(isRemovableAgent(withId("agent:claude:opus"))).toBe(false);
+    expect(isRemovableAgent(withId("agent:claude:claude-opus-4-7"))).toBe(false);
+    expect(isRemovableAgent(withId("agent:0123456789ABCDEF0123456789ABCDEF"))).toBe(false);
+    expect(isRemovableAgent(withId("agent:0123456789abcdef0123456789abcde"))).toBe(false);
+    expect(isRemovableAgent(withId("agent:0123456789abcdef0123456789abcdef0"))).toBe(false);
   });
 });

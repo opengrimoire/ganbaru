@@ -58,6 +58,17 @@ export function familyAgentRoster<Agent extends RosterAgent>(
   };
 }
 
+/** The id the custom agent dialog gives an agent; built-in line and model agents derive readable ids instead. */
+const REMOVABLE_AGENT_ID = /^agent:[0-9a-f]{32}$/;
+
+/**
+ * Whether a person can remove the agent. Only agents made in the custom agent dialog can be, which the backend checks
+ * by id, since a built-in model agent whose model changed also reads as a custom agent.
+ */
+export function isRemovableAgent(agent: Pick<ChatAiAgentRead, "participant">): boolean {
+  return REMOVABLE_AGENT_ID.test(agent.participant.id);
+}
+
 /**
  * The catalog models Settings > Agents lists as model agents. A model whose id is a model line of the family, such as
  * the `opus` alias, is left out, since the line agent already runs it.

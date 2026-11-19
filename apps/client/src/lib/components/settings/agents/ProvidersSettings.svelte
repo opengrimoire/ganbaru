@@ -8,9 +8,12 @@
   import Search from "@lucide/svelte/icons/search";
   import CircleQuestionMark from "@lucide/svelte/icons/circle-question-mark";
   import Trash2 from "@lucide/svelte/icons/trash";
+  import ArchiveRestore from "@lucide/svelte/icons/archive-restore";
+  import Eye from "@lucide/svelte/icons/eye";
+  import EyeOff from "@lucide/svelte/icons/eye-off";
   import * as chatApi from "$lib/api/chat";
   import { newestModelOfLine } from "$lib/chat/agents/agent-names";
-  import { familyAgentRoster, listedCatalogModels, sortCatalogModels } from "$lib/chat/agents/agent-roster";
+  import { familyAgentRoster, isRemovableAgent, listedCatalogModels, sortCatalogModels } from "$lib/chat/agents/agent-roster";
   import type {
     ChatAiAgentRead,
     ProviderFamilyMetadataRead,
@@ -58,6 +61,8 @@
   let selectedFamilyId = $state<string | null>(null);
   let selectedProviderId = $state<string | null>(null);
   let search = $state("");
+  /** Whether the list also shows the named agents a person archived. */
+  let showArchived = $state(false);
   let busyIds = $state<string[]>([]);
   let refreshingAll = $state(false);
   let refreshResult = $state<ProviderRefreshResult | null>(null);
@@ -107,12 +112,18 @@
     chat.agentIdentities,
     new Intl.Collator(localization.locale).compare,
   ));
+  const hasArchivedAgents = $derived(roster.namedAgents.some((agent) => agent.hiddenAt !== null));
   /** The line and named agents whose name holds the search, listed above the catalog models. */
   const listedAgents = $derived.by(() => {
     const query = search.trim().toLocaleLowerCase(localization.locale);
     return [...roster.lineAgents, ...roster.namedAgents].filter((agent) => (
-      !query || agent.participant.displayName.toLocaleLowerCase(localization.locale).includes(query)
+      (showArchived || agent.hiddenAt === null)
+      && (!query || agent.participant.displayName.toLocaleLowerCase(localization.locale).includes(query))
     ));
+  });
+
+  $effect(() => {
+    if (!hasArchivedAgents) showArchived = false;
   });
 
   $effect(() => {
@@ -246,6 +257,24 @@
     if (!selectedProvider || (agent.participant.archivedAt === null) === enabled) return;
     await perform(selectedProvider.configuration.instanceId, async () => {
       await chatApi.archiveChatAgent(agent.participant.id, agent.participant.revision, !enabled);
+      await chat.refreshAgents();
+    });
+  }
+
+  /** Deletes a named agent that was never used, and archives one that was, which hides it from the list. */
+  async function removeAgent(agent: ChatAiAgentRead): Promise<void> {
+    if (!selectedProvider) return;
+    await perform(selectedProvider.configuration.instanceId, async () => {
+      await chatApi.removeCustomChatAgent(agent.participant.id, agent.participant.revision);
+      await chat.refreshAgents();
+    });
+  }
+
+  /** Lists an archived named agent again; it stays off until a person turns it on. */
+  async function restoreAgent(agent: ChatAiAgentRead): Promise<void> {
+    if (!selectedProvider) return;
+    await perform(selectedProvider.configuration.instanceId, async () => {
+      await chatApi.restoreCustomChatAgent(agent.participant.id, agent.participant.revision);
       await chat.refreshAgents();
     });
   }
@@ -652,7 +681,7 @@
                       <div class="model-list">
                         {#each listedAgents as agent (agent.participant.id)}
                           {@const agentCompany = modelCompany(selectedProvider.configuration.familyId, agentAvatarModel(agent))}
-                          <div class="model-row">
+                          <div class="model-row" class:archived={agent.hiddenAt !== null}>
                             <ChatModelAvatar familyId={agentCompany.iconFamilyId} label={agentCompany.name} size={25} />
                             <div class="model-identity">
                               <span class="model-name">@{agent.participant.displayName}</span>
@@ -724,6 +753,21 @@
               {t("settings.agents.providers.addAnother")}
             </button>
           {/if}
+          {#if hasArchivedAgents}
+            {@const archivedLabel = showArchived
+              ? t("settings.agents.roster.hideArchived")
+              : t("settings.agents.roster.showArchived")}
+            <button
+              type="button"
+              class="icon-action archived-toggle"
+              aria-pressed={showArchived}
+              aria-label={archivedLabel}
+              data-app-tooltip={archivedLabel}
+              onclick={() => { showArchived = !showArchived; }}
+            >
+              {#if showArchived}<Eye size={14} />{:else}<EyeOff size={14} />{/if}
+            </button>
+          {/if}
           {#if canCreateAgents && selectedProvider}
             <button
               type="button"
@@ -739,14 +783,25 @@
 </section>
 
 {#snippet agentRemoveAction(agent: ChatAiAgentRead | undefined, busy: boolean)}
-  {#if agent?.agentKind === "custom"}
+  {#if agent && isRemovableAgent(agent) && agent.hiddenAt !== null}
+    <button
+      type="button"
+      class="icon-action"
+      disabled={busy}
+      aria-label={t("settings.agents.roster.restore")}
+      data-app-tooltip={t("settings.agents.roster.restore")}
+      onclick={() => void restoreAgent(agent)}
+    >
+      <ArchiveRestore size={14} />
+    </button>
+  {:else if agent && isRemovableAgent(agent)}
     <button
       type="button"
       class="icon-action destructive"
-      disabled={busy || agent.participant.archivedAt !== null}
-      aria-label={t("settings.agents.roster.archive")}
-      data-app-tooltip={t("settings.agents.roster.archive")}
-      onclick={() => void setAgentEnabled(agent, false)}
+      disabled={busy}
+      aria-label={t("settings.agents.roster.remove")}
+      data-app-tooltip={t("settings.agents.roster.remove")}
+      onclick={() => void removeAgent(agent)}
     >
       <Trash2 size={14} />
     </button>
@@ -801,7 +856,9 @@
   .directory-summary small[data-state="unconfigured"] i,.editor-state[data-state="unconfigured"] i { background:var(--destructive); }
   .detail-panel { position:relative; z-index:2; display:grid; min-width:0; min-height:0; grid-template-rows:minmax(0,1fr) auto; border-left:1px solid var(--border); padding-left:1rem; }
   .detail-footer { display:flex; min-width:0; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:0.5rem 0.75rem; border-top:1px solid var(--border); padding:0.65rem 0.75rem 0.65rem 0; }
-  .custom-agent-action { margin-left:auto; }
+  .custom-agent-action,.archived-toggle { margin-left:auto; }
+  .archived-toggle + .custom-agent-action { margin-left:0; }
+  .model-row.archived .model-name { color:var(--muted-foreground); }
   .detail-scroll { display:grid; grid-template-columns:minmax(0,1fr); align-content:start; gap:1rem; padding:0.2rem 0.75rem 1rem 0; }
   .editor-heading { display:grid; min-width:0; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:0.65rem; padding-inline:0.25rem; }
   .editor-title { display:grid; min-width:0; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:0.75rem; }

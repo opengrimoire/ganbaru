@@ -138,7 +138,6 @@ export const agentsSettings = {
     setUpAdvanced: (provider: string) => `Configurar ${provider} (avanzado)`,
     install: {
       installed: (cli: string, path: string) => `${cli} está instalado en ${path}.`,
-      notInstalled: (cli: string) => `${cli} no está instalado en este dispositivo.`,
       missingAt: (cli: string, path: string) => `Ganbaru no encuentra ${cli} en ${path}.`,
       signedOut: (provider: string) => `Este dispositivo no tiene una sesión iniciada en tu cuenta de ${provider}.`,
       openTerminal: "Abre una terminal en esta computadora.",

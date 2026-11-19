@@ -40,9 +40,9 @@
   const statusMessage = $derived.by(() => {
     switch (situation.kind) {
       case "installed": return t("settings.agents.providers.install.installed", cliName, situation.path);
-      case "not-installed": return t("settings.agents.providers.install.notInstalled", cliName);
       case "missing-at": return t("settings.agents.providers.install.missingAt", cliName, situation.path);
       case "signed-out": return t("settings.agents.providers.install.signedOut", family.displayName);
+      case "not-installed":
       case "unknown": return null;
     }
   });

@@ -63,6 +63,7 @@ const agent: ChatAiAgentRead = {
   },
   channelCount: 1,
   activeAssignmentCount: 0,
+  hiddenAt: null,
 };
 
 function channel(): ChatChannelRead {

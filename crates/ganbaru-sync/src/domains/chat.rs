@@ -333,7 +333,14 @@ fn validate_participant(group: GroupId, fields: &[Field]) -> Result<(), AdapterE
             schema_version(avatar_version)?;
             json_object(avatar, "chat participant avatar")
         }
-        (participant_group::LIFECYCLE, [archived_at]) => optional_timestamp(archived_at),
+        (participant_group::LIFECYCLE, [archived_at, hidden_at]) => {
+            optional_timestamp(archived_at)?;
+            optional_timestamp(hidden_at)?;
+            if matches!(archived_at, Field::Null) && !matches!(hidden_at, Field::Null) {
+                return Err(AdapterError("chat participant hidden while on"));
+            }
+            Ok(())
+        }
         (participant_group::UPDATED, [at]) => timestamp(at),
         _ => Err(AdapterError("chat participant value")),
     }
@@ -2662,7 +2669,7 @@ mod tests {
                     participant_group::PROFILE,
                     vec![t("Reviewer"), Field::Integer(1), t("{}")],
                 ),
-                group(participant_group::LIFECYCLE, vec![Field::Null]),
+                group(participant_group::LIFECYCLE, vec![Field::Null, Field::Null]),
                 group(participant_group::UPDATED, vec![t(AT)]),
             ],
             replaced_by: None,
@@ -2689,7 +2696,6 @@ mod tests {
 
             for (table, group) in [
                 (PARTICIPANTS_TABLE, participant_group::UPDATED),
-                (PARTICIPANTS_TABLE, participant_group::LIFECYCLE),
                 (CHANNELS_TABLE, channel_group::UPDATED),
                 (CHANNELS_TABLE, channel_group::LIFECYCLE),
                 (CONVERSATIONS_TABLE, conversation_group::ACTIVITY),
@@ -2705,7 +2711,35 @@ mod tests {
                     "{table:?} {group:?} {bad}"
                 );
             }
+            for lifecycle in [vec![t(bad), Field::Null], vec![t(AT), t(bad)]] {
+                assert!(
+                    adapter
+                        .validate(
+                            PARTICIPANTS_TABLE,
+                            participant_group::LIFECYCLE,
+                            &value(lifecycle)
+                        )
+                        .is_err(),
+                    "participant lifecycle {bad}"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn chat_a_participant_is_hidden_only_while_off() {
+        let adapter = ChatAdapter;
+        let lifecycle = |fields| {
+            adapter.validate(
+                PARTICIPANTS_TABLE,
+                participant_group::LIFECYCLE,
+                &value(fields),
+            )
+        };
+        assert!(lifecycle(vec![Field::Null, Field::Null]).is_ok());
+        assert!(lifecycle(vec![t(AT), Field::Null]).is_ok());
+        assert!(lifecycle(vec![t(AT), t(AT)]).is_ok());
+        assert!(lifecycle(vec![Field::Null, t(AT)]).is_err());
     }
 
     #[test]

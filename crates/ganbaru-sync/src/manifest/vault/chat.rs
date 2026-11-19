@@ -784,12 +784,19 @@ pub const PARTICIPANTS: TableSpec = TableSpec {
         bumps(register(
             participant_group::LIFECYCLE,
             "lifecycle",
-            &[optional_timestamp("archived_at")],
+            &[
+                optional_timestamp("archived_at"),
+                optional_timestamp("hidden_at"),
+            ],
         )),
         updated(participant_group::UPDATED),
     ],
     local_columns: &[REVISION],
     revision_column: Some("revision"),
+    resolutions: &[within(
+        &["archived_at", "hidden_at"],
+        participant_group::LIFECYCLE,
+    )],
     triggers: &[
         gated("chat_participant_push_approvals_archive"),
         applier_visible("chat_participants_local_user_identity"),

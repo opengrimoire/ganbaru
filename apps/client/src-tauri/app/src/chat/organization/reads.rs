@@ -140,10 +140,12 @@ pub(super) async fn read_agent(
     let lifecycle = super::agent_lifecycle::read_agent_lifecycle(pool, agent_id).await?;
     let row = sqlx::query(
         "SELECT agent.provider_family_id, policy.id AS policy_revision_id,
+                participant.hidden_at,
                 (SELECT count(*) FROM chat_agent_channel_memberships membership
                  WHERE membership.agent_id = agent.participant_id
                    AND membership.removed_at IS NULL) AS channel_count
          FROM chat_agents agent
+         JOIN chat_participants participant ON participant.id = agent.participant_id
          LEFT JOIN chat_agent_effective_policies policy
            ON policy.agent_id = agent.participant_id
          WHERE agent.participant_id = ?",
@@ -187,6 +189,7 @@ pub(super) async fn read_agent(
         latest_policy,
         channel_count: u64_value(row.try_get("channel_count").map_err(persistence_error)?)?,
         active_assignment_count: lifecycle.active_assignment_count,
+        hidden_at: optional_timestamp(row.try_get("hidden_at").map_err(persistence_error)?)?,
     })
 }
 

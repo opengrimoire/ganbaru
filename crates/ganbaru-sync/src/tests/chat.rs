@@ -355,6 +355,65 @@ fn chat_concurrent_current_revisions_converge_on_the_later_edit() {
     });
 }
 
+/// The agent's on, off, and hidden state, as `archived hidden` with each `-` when null.
+async fn lifecycle(replica: &mut Replica) -> String {
+    replica
+        .scalar_text(&format!(
+            "SELECT coalesce(archived_at, '-') || ' ' || coalesce(hidden_at, '-')
+             FROM chat_participants WHERE id = {}",
+            quoted(AGENT)
+        ))
+        .await
+        .expect("the agent arrived")
+}
+
+/// One device archives an agent that is off, hiding it, while another turns it on. The off,
+/// hidden, and on states share one register, so the later edit wins whole and no replica reads
+/// a hidden agent that is on.
+#[test]
+fn chat_a_concurrent_archive_and_turn_on_settle_as_one_state() {
+    block_on(async {
+        for later in [0_usize, 1] {
+            let mut replicas = replicas(2).await;
+            replicas[0]
+                .exec(&format!(
+                    "{}UPDATE chat_participants SET archived_at = {created} WHERE id = {agent};",
+                    identity_sql(),
+                    created = quoted(CREATED),
+                    agent = quoted(AGENT),
+                ))
+                .await;
+            converge(&mut replicas).await;
+
+            replicas[0]
+                .exec(&format!(
+                    "UPDATE chat_participants SET hidden_at = {} WHERE id = {};",
+                    quoted(&at(1, 0)),
+                    quoted(AGENT)
+                ))
+                .await;
+            replicas[1]
+                .exec(&format!(
+                    "UPDATE chat_participants SET archived_at = NULL, hidden_at = NULL
+                     WHERE id = {};",
+                    quoted(AGENT)
+                ))
+                .await;
+            replicas[later].now_ms += LATER_MS;
+            converge(&mut replicas).await;
+            assert_converged(&mut replicas).await;
+            let expected = if later == 0 {
+                format!("{CREATED} {}", at(1, 0))
+            } else {
+                "- -".to_string()
+            };
+            for replica in &mut replicas {
+                assert_eq!(lifecycle(replica).await, expected, "later edit {later}");
+            }
+        }
+    });
+}
+
 #[test]
 fn chat_simulated_concurrent_current_revision_edits_agree_on_one_of_them() {
     block_on(async {

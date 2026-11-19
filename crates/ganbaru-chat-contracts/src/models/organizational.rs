@@ -1044,6 +1044,9 @@ pub struct ChatAiAgentRead {
     pub latest_policy: Option<ChatAgentPolicyRead>,
     pub channel_count: u64,
     pub active_assignment_count: u64,
+    /// When a person archived the agent, which turns it off and hides it from the Settings
+    /// agent list until it is restored. A hidden agent is always off.
+    pub hidden_at: Option<UtcTimestamp>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

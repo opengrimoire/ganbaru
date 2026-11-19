@@ -102,6 +102,7 @@ describe("ChatParticipantAvatar", () => {
       },
       channelCount: 1,
       activeAssignmentCount: 0,
+      hiddenAt: null,
     } satisfies ChatAiAgentRead];
     target = document.createElement("div");
     document.body.append(target);
@@ -137,6 +138,7 @@ describe("ChatParticipantAvatar", () => {
       },
       channelCount: 1,
       activeAssignmentCount: 0,
+      hiddenAt: null,
     } satisfies ChatAiAgentRead;
     chat.archivedAgents = [archivedAgent];
     target = document.createElement("div");

@@ -177,6 +177,7 @@ export function parseChatAiAgent(value: unknown, label = "Chat AI agent"): ChatA
       record.activeAssignmentCount,
       `${label}.activeAssignmentCount`,
     ),
+    hiddenAt: readNullable(record.hiddenAt, `${label}.hiddenAt`, readUtcTimestamp),
   };
 }
 

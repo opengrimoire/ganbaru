@@ -538,6 +538,8 @@ export interface ChatAiAgentRead {
   latestPolicy: ChatAgentPolicyRead | null;
   channelCount: number;
   activeAssignmentCount: number;
+  /** When a person archived the agent, which turns it off and hides it from the Settings agent list; null while shown. A hidden agent is always off. */
+  hiddenAt: UtcTimestamp | null;
 }
 
 export interface ChatConversationMembershipRead {

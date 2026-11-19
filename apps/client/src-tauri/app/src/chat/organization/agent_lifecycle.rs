@@ -66,8 +66,10 @@ pub(super) async fn set_agent_archived(
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
     let updated = sqlx::query(
         "UPDATE chat_participants
-         SET archived_at = ?, revision = revision + 1, updated_at = ?
-         WHERE id = ? AND participant_kind = 'ai_agent' AND revision = ?",
+         SET archived_at = ?1,
+             hidden_at = CASE WHEN ?1 IS NULL THEN NULL ELSE hidden_at END,
+             revision = revision + 1, updated_at = ?2
+         WHERE id = ?3 AND participant_kind = 'ai_agent' AND revision = ?4",
     )
     .bind(archived_at)
     .bind(now.as_str())

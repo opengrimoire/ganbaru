@@ -670,12 +670,12 @@
                 </button>
               {/snippet}
             </IconPicker>
-            <input bind:this={newPlaylistNameInput} bind:value={viewState.newPlaylistName} aria-label={t("music.builder.inlinePlaylistName")} class="field h-8 min-w-0 flex-1 px-2.5 text-xs" placeholder={t("music.builder.inlinePlaylistName")} />
+            <input bind:this={newPlaylistNameInput} bind:value={viewState.newPlaylistName} aria-label={t("music.builder.inlinePlaylistName")} class="field min-w-0 flex-1 px-2.5 text-xs" placeholder={t("music.builder.inlinePlaylistName")} />
           </div>
           {#if selectionMode ? bulk.createError : review.createError}<Notice class="mt-1.5 text-[0.65rem]" message={(selectionMode ? bulk.createError : review.createError) ?? ""} />{/if}
           <div class="mt-2 flex justify-end gap-2">
-            <button type="button" onclick={() => { viewState.inlineCreateOpen = false; review.createError = null; bulk.createError = null; }} class="h-8 rounded-md bg-secondary px-2.5 text-xs font-medium">{t("music.builder.cancel")}</button>
-            <button type="submit" disabled={!viewState.newPlaylistName.trim() || (selectionMode ? bulk.creatingPlaylist : review.creatingPlaylist)} class="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground disabled:opacity-40"><ListPlus size={14} />{t("music.builder.createAndAdd")}</button>
+            <button type="button" onclick={() => { viewState.inlineCreateOpen = false; review.createError = null; bulk.createError = null; }} class="h-(--control-height) rounded-md bg-secondary px-2.5 text-xs font-medium">{t("music.builder.cancel")}</button>
+            <button type="submit" disabled={!viewState.newPlaylistName.trim() || (selectionMode ? bulk.creatingPlaylist : review.creatingPlaylist)} class="inline-flex h-(--control-height) items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground disabled:opacity-40"><ListPlus size={14} />{t("music.builder.createAndAdd")}</button>
           </div>
         </form>
       {:else}

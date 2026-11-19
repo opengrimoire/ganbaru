@@ -653,7 +653,7 @@
               }
             }}
             aria-label={t("common.color.hexValue")}
-            class="field h-7 min-w-0 flex-1 py-0 text-[0.8rem] leading-6.5 text-foreground"
+            class="field min-w-0 flex-1 py-0 text-[0.8rem] leading-6.5 text-foreground"
           />
         {:else if activeFormat === "rgb"}
           <div class="grid min-w-0 flex-1 grid-cols-3 gap-1.5">
@@ -669,7 +669,7 @@
                   rgb.b,
                 )}
               aria-label={t("common.color.redChannel")}
-              class="field h-7 min-w-0 py-0 text-foreground"
+              class="field min-w-0 py-0 text-foreground"
             />
             <input
               type="number"
@@ -683,7 +683,7 @@
                   rgb.b,
                 )}
               aria-label={t("common.color.greenChannel")}
-              class="field h-7 min-w-0 py-0 text-foreground"
+              class="field min-w-0 py-0 text-foreground"
             />
             <input
               type="number"
@@ -697,7 +697,7 @@
                   Number((e.currentTarget as HTMLInputElement).value),
                 )}
               aria-label={t("common.color.blueChannel")}
-              class="field h-7 min-w-0 py-0 text-foreground"
+              class="field min-w-0 py-0 text-foreground"
             />
           </div>
         {:else}
@@ -710,7 +710,7 @@
               onchange={(e) =>
                 setHsv("h", Number((e.currentTarget as HTMLInputElement).value))}
               aria-label={t("common.color.hueChannel")}
-              class="field h-7 min-w-0 py-0 text-foreground"
+              class="field min-w-0 py-0 text-foreground"
             />
             <input
               type="number"
@@ -720,7 +720,7 @@
               onchange={(e) =>
                 setHsv("s", Number((e.currentTarget as HTMLInputElement).value))}
               aria-label={t("common.color.saturationChannel")}
-              class="field h-7 min-w-0 py-0 text-foreground"
+              class="field min-w-0 py-0 text-foreground"
             />
             <input
               type="number"
@@ -730,7 +730,7 @@
               onchange={(e) =>
                 setHsv("v", Number((e.currentTarget as HTMLInputElement).value))}
               aria-label={t("common.color.valueChannel")}
-              class="field h-7 min-w-0 py-0 text-foreground"
+              class="field min-w-0 py-0 text-foreground"
             />
           </div>
         {/if}

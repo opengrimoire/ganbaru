@@ -203,7 +203,7 @@
       <div class="flex min-h-0 flex-col gap-4 overflow-y-auto px-5 py-3 text-panel">
         <label class="grid gap-1.5">
           <span class="field-label">{t("settings.agents.roster.nameLabel")}</span>
-          <span class="field flex h-9 min-w-0 items-center gap-0.5 pl-2.5">
+          <span class="field flex min-w-0 items-center gap-0.5 pl-2.5">
             <span class="text-muted-foreground">@</span>
             <input
               bind:this={nameInput}

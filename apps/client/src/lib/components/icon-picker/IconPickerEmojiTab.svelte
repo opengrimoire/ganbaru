@@ -106,7 +106,7 @@
 </script>
 
 <div class="flex shrink-0 items-center gap-2 px-3 pt-3">
-  <div class="field flex h-8 min-w-0 flex-1 items-center gap-2 py-0">
+  <div class="field flex min-w-0 flex-1 items-center gap-2 py-0">
     <Search size={14} strokeWidth={1.75} class="shrink-0 text-muted-foreground" />
     <input
       bind:value={emojiQuery}

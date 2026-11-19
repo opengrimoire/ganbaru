@@ -60,7 +60,7 @@
 
 <div class="flex min-h-0 flex-1 flex-col">
   {#if showSearch}
-    <label class="field mx-3 mt-3 flex h-9 shrink-0 items-center gap-2 px-2.5">
+    <label class="field mx-3 mt-3 flex shrink-0 items-center gap-2 px-2.5">
       <Search size={14} class="text-muted-foreground" />
       <input use:searchInputAction value={search} oninput={(event) => onSearch(event.currentTarget.value)} aria-label={t("music.builder.searchPlaylists")} class="field-bare text-xs" placeholder={t("music.builder.searchPlaylists")} />
     </label>

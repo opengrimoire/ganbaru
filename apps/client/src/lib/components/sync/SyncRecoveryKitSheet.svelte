@@ -155,7 +155,7 @@
     <label class="text-[0.8rem] text-muted-foreground" for="sync-recovery-kit-last-group">{t("sync.kit.confirmLabel")}</label>
     <input
       id="sync-recovery-kit-last-group"
-      class="field h-9 w-full max-w-48 px-3 font-mono text-sm"
+      class="field w-full max-w-48 px-3 font-mono text-sm"
       dir="ltr"
       autocomplete="off"
       autocapitalize="characters"

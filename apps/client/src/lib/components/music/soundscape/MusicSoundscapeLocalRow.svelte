@@ -74,11 +74,11 @@
 {#if editing}
   <form bind:this={form} class="flex basis-full items-center gap-1.5" onsubmit={(event) => { event.preventDefault(); void saveDetails(); }}>
     <IconPicker value={iconDraft} onChange={(value) => iconDraft = value} ariaLabel={t("music.soundscape.soundIcon")} showUpload={false} showRemove={false}>
-      {#snippet trigger({ open, toggle, panelId })}<button type="button" class="grid h-8 w-8 shrink-0 place-items-center rounded-floating-item bg-secondary/40 text-foreground hover:bg-accent" aria-label={t("music.soundscape.soundIcon")} aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId} onclick={toggle}><MusicSoundscapeIcon icon={iconDraft} size={14} /></button>{/snippet}
+      {#snippet trigger({ open, toggle, panelId })}<button type="button" class="grid size-(--control-height) shrink-0 place-items-center rounded-floating-item bg-secondary/40 text-foreground hover:bg-accent" aria-label={t("music.soundscape.soundIcon")} aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId} onclick={toggle}><MusicSoundscapeIcon icon={iconDraft} size={14} /></button>{/snippet}
     </IconPicker>
-    <input class="field h-8 min-w-0 flex-1 px-2 text-xs" bind:value={nameDraft} aria-label={t("music.soundscape.name")} maxlength="200" />
-    <button type="button" class="h-8 shrink-0 rounded-floating-item px-2 hover:bg-accent" onclick={() => editing = false}>{t("common.cancel")}</button>
-    <button type="submit" disabled={!nameDraft.trim() || soundscape.saving} class="h-8 shrink-0 rounded-floating-item bg-primary px-2 text-primary-foreground disabled:opacity-40">{t("music.soundscape.saveName")}</button>
+    <input class="field min-w-0 flex-1 px-2 text-xs" bind:value={nameDraft} aria-label={t("music.soundscape.name")} maxlength="200" />
+    <button type="button" class="h-(--control-height) shrink-0 rounded-floating-item px-2 hover:bg-accent" onclick={() => editing = false}>{t("common.cancel")}</button>
+    <button type="submit" disabled={!nameDraft.trim() || soundscape.saving} class="h-(--control-height) shrink-0 rounded-floating-item bg-primary px-2 text-primary-foreground disabled:opacity-40">{t("music.soundscape.saveName")}</button>
   </form>
 {:else}
   <MusicSoundscapeChip

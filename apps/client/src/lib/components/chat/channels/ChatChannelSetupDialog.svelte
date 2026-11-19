@@ -216,11 +216,11 @@
     <div class="dialog-body flex min-h-0 flex-col gap-4 overflow-y-auto px-5 py-3 text-panel">
       <label class="grid gap-1.5">
         <span class="field-label">{t("chat.channels.name")}</span>
-        <div class="field flex h-9 items-center gap-1 pl-2.5"><Hash size={14} class="shrink-0 text-muted-foreground" /><input bind:this={nameInput} class="field-bare min-w-0 flex-1" bind:value={name} maxlength="80" required disabled={currentChannel?.isDefault} /></div>
+        <div class="field flex items-center gap-1 pl-2.5"><Hash size={14} class="shrink-0 text-muted-foreground" /><input bind:this={nameInput} class="field-bare min-w-0 flex-1" bind:value={name} maxlength="80" required disabled={currentChannel?.isDefault} /></div>
       </label>
       <label class="grid gap-1.5">
         <span class="field-label">{t("chat.channels.topic")}</span>
-        <input class="field h-9" bind:value={topic} maxlength="250" placeholder={t("chat.channels.topicPlaceholder")} />
+        <input class="field" bind:value={topic} maxlength="250" placeholder={t("chat.channels.topicPlaceholder")} />
       </label>
       {#if sections.length > 0}
         <div class="grid gap-1.5">

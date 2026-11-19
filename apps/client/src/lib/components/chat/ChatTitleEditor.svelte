@@ -47,7 +47,7 @@
 <div class="max-w-sm" data-chat-title-editor>
   <input
     bind:this={input}
-    class="field h-7 w-full px-2 text-identity font-medium"
+    class="field w-full px-2 text-identity font-medium"
     bind:value={draft}
     disabled={committing}
     onkeydown={(event) => {

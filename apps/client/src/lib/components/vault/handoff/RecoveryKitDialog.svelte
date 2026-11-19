@@ -110,7 +110,7 @@
       bind:value={kit}
       id="recovery-kit-code"
       clearLabel={t("common.clearKit")}
-      class="field mt-4 h-11 w-full px-3 font-mono text-sm"
+      class="field mt-4 w-full px-3 font-mono text-sm"
       dir="ltr"
       autocomplete="off"
       autocapitalize="off"

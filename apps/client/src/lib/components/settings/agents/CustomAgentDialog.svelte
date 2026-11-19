@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import AtSign from "@lucide/svelte/icons/at-sign";
   import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
   import { agentNameProblem, MAX_AGENT_NAME_CHARACTERS, type AgentNameProblem } from "$lib/chat/agents/agent-names";
@@ -203,9 +204,8 @@
       <div class="flex min-h-0 flex-col gap-4 overflow-y-auto px-5 py-3 text-panel">
         <label class="grid gap-1.5">
           <span class="field-label">{t("settings.agents.roster.nameLabel")}</span>
-          <span class="field flex min-w-0 items-center gap-0.5 pl-2.5">
-            <!-- Inter raises @ only before a capital it can see, so the fixed prefix asks for that case form itself. -->
-            <span class="text-muted-foreground [font-feature-settings:'case']">@</span>
+          <span class="field flex min-w-0 items-center gap-1 pl-2.5">
+            <AtSign size={14} strokeWidth={1.9} class="shrink-0 text-muted-foreground" aria-hidden="true" />
             <input
               bind:this={nameInput}
               class="field-bare min-w-0 flex-1"

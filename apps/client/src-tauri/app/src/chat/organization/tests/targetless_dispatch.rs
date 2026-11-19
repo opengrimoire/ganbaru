@@ -1,7 +1,7 @@
 //! Dispatch and folder choice of work for a catalog model agent added to a channel the way the app does
 //! it.
 
-use super::super::provider_agents::{CatalogAgent, ensure_provider_agents};
+use super::super::provider_agents::{CatalogAgent, FamilyCatalog, ensure_provider_agents};
 use super::*;
 use ganbaru_chat::conversion::catalog_agent_id;
 use ganbaru_chat::project_defaults::{default_channel_ids, ensure_project_chat_defaults};
@@ -75,7 +75,13 @@ async fn add_channel_agent(pool: &SqlitePool, channel_id: &str, access: &str) {
     };
     ensure_provider_agents(
         pool,
-        &std::collections::BTreeMap::from([(TEST_FAMILY.to_string(), vec![agent])]),
+        &std::collections::BTreeMap::from([(
+            TEST_FAMILY.to_string(),
+            FamilyCatalog {
+                agents: vec![agent],
+                gated_lines: Vec::new(),
+            },
+        )]),
     )
     .await
     .unwrap();

@@ -2,7 +2,7 @@
 //! without a remembered model, or a dispatch whose model this device's provider does not offer.
 //!
 //! Provider defaults follow whatever was last chosen in the provider's own tool, so they are never
-//! recommended. Anthropic catalogs prefer Opus, then Fable, Sonnet, and Haiku; OpenAI catalogs
+//! recommended. Anthropic catalogs prefer Opus, then Mythos, Fable, Sonnet, and Haiku; OpenAI catalogs
 //! prefer Sol, then Astra, Terra, and Luna. Each tier takes its newest version, and plain
 //! variants win over fast, low-effort, or maximum-effort ones because they balance cost and
 //! capability.
@@ -11,7 +11,7 @@ use ganbaru_chat_contracts::models::{ModelAvailability, ModelId, ProviderModel};
 use std::cmp::Reverse;
 
 /// Anthropic tiers in recommendation order: the balanced flagship first, then by capability.
-const ANTHROPIC_TIERS: &[&str] = &["opus", "fable", "sonnet", "haiku"];
+const ANTHROPIC_TIERS: &[&str] = &["opus", "mythos", "fable", "sonnet", "haiku"];
 /// OpenAI tiers in recommendation order: the balanced flagship first, then by capability.
 const OPENAI_TIERS: &[&str] = &["sol", "astra", "terra", "luna"];
 /// Words that name a company's models without naming a tier.
@@ -62,14 +62,21 @@ pub fn recommended_model_id(native: NativeCompany, models: &[ProviderModel]) -> 
 }
 
 /// The model lines a provider that natively runs `native` models offers as built-in agents, in
-/// order of strength: Fable, Opus, Sonnet, and Haiku for Anthropic, and Astra, Sol, Terra, and
-/// Luna for OpenAI. Other providers offer none, since their catalogs name no lines of their own.
+/// order of strength: Mythos, Fable, Opus, Sonnet, and Haiku for Anthropic, and Astra, Sol,
+/// Terra, and Luna for OpenAI. Other providers offer none, since their catalogs name no lines of
+/// their own. A line in [`is_gated_line`] gets its agent only where the catalog offers it.
 pub fn model_lines(native: NativeCompany) -> &'static [&'static str] {
     match native {
-        NativeCompany::Anthropic => &["fable", "opus", "sonnet", "haiku"],
+        NativeCompany::Anthropic => &["mythos", "fable", "opus", "sonnet", "haiku"],
         NativeCompany::OpenAi => &["astra", "sol", "terra", "luna"],
         NativeCompany::Xai | NativeCompany::None => &[],
     }
+}
+
+/// Whether only some accounts can run `line`, such as Mythos, so its built-in agent is created
+/// only once a device's catalog offers a model of the line instead of for every account.
+pub fn is_gated_line(line: &str) -> bool {
+    line.eq_ignore_ascii_case("mythos")
 }
 
 /// The company the provider family `family_id` runs natively.

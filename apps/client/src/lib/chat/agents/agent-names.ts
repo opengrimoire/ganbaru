@@ -3,10 +3,11 @@ import { compareCompanyModels, modelCompany } from "$lib/chat/composer/model-com
 
 /**
  * The model lines each provider family offers as built-in agents, strongest first. The vault creates one agent per
- * line, such as `@Opus` or `@Sol`, that always runs the line's newest model.
+ * line, such as `@Opus` or `@Sol`, that always runs the line's newest model. Mythos, which only some accounts can
+ * run, gets its agent once a device's catalog offers it.
  */
 const MODEL_LINES: Readonly<Partial<Record<ProviderFamilyId, readonly string[]>>> = {
-  claude: ["fable", "opus", "sonnet", "haiku"],
+  claude: ["mythos", "fable", "opus", "sonnet", "haiku"],
   codex: ["astra", "sol", "terra", "luna"],
 };
 

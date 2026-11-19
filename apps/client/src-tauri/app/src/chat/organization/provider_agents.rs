@@ -16,7 +16,9 @@ use crate::chat::device_state::read_active_device_scope;
 use ganbaru_chat::conversion::{catalog_agent_id, line_agent_id};
 use ganbaru_chat::coordination::contracts::ChatAgentPolicyInput;
 use ganbaru_chat_contracts::models::*;
-use ganbaru_chat_providers::model_recommendation::is_model_line;
+use ganbaru_chat_providers::model_recommendation::{
+    is_gated_line, is_model_line, newest_model_of_line,
+};
 use ganbaru_chat_providers::{ProviderDriverFactory, ProviderDriverRegistry};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::collections::BTreeMap;
@@ -35,8 +37,8 @@ pub(crate) struct DeviceProvider {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DeviceProviders {
     by_family: BTreeMap<String, DeviceProvider>,
-    /// The agent of each model the family's catalog offers on this device.
-    catalog_agents: BTreeMap<String, Vec<CatalogAgent>>,
+    /// What the family's catalog offers its built-in agents on this device.
+    catalogs: BTreeMap<String, FamilyCatalog>,
 }
 
 impl DeviceProviders {
@@ -53,7 +55,7 @@ impl DeviceProviders {
                 .push(provider.instance_id.clone());
         }
         let mut by_family = BTreeMap::new();
-        let mut catalog_agents = BTreeMap::new();
+        let mut catalogs = BTreeMap::new();
         for (family, instances) in candidates {
             let Some(instance_id) = select_local_instance(&family, &instances) else {
                 continue;
@@ -72,7 +74,7 @@ impl DeviceProviders {
                 .as_ref()
                 .map(|catalog| catalog.models.as_slice())
                 .unwrap_or_default();
-            catalog_agents.insert(family.clone(), catalog_agents_of(models));
+            catalogs.insert(family.clone(), family_catalog_of(&family, models));
             let driver = ProviderDriverRegistry.create_driver(read.configuration.clone());
             let ready = driver.is_ok()
                 && !read.configuration.executable.trim().is_empty()
@@ -92,7 +94,7 @@ impl DeviceProviders {
         }
         Ok(Self {
             by_family,
-            catalog_agents,
+            catalogs,
         })
     }
 
@@ -103,7 +105,7 @@ impl DeviceProviders {
     ) -> Self {
         Self {
             by_family: entries.into_iter().collect(),
-            catalog_agents: BTreeMap::new(),
+            catalogs: BTreeMap::new(),
         }
     }
 
@@ -162,19 +164,36 @@ pub(crate) async fn ensure_device_provider_agents(
     pool: &SqlitePool,
     providers: &DeviceProviders,
 ) -> ChatResult<()> {
-    let families: BTreeMap<String, Vec<CatalogAgent>> = providers
+    let families: BTreeMap<String, FamilyCatalog> = providers
         .by_family
         .keys()
         .map(|family| {
-            let agents = providers
-                .catalog_agents
-                .get(family)
-                .cloned()
-                .unwrap_or_default();
-            (family.clone(), agents)
+            let catalog = providers.catalogs.get(family).cloned().unwrap_or_default();
+            (family.clone(), catalog)
         })
         .collect();
     ensure_provider_agents(pool, &families).await
+}
+
+/// What one family's model catalog on this device offers its built-in agents.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct FamilyCatalog {
+    /// The agent of each model the catalog offers.
+    pub(crate) agents: Vec<CatalogAgent>,
+    /// The gated model lines of the family, such as Mythos, that the catalog offers a model of.
+    pub(crate) gated_lines: Vec<&'static str>,
+}
+
+/// What the catalog `models` of the provider family `family` offers its built-in agents.
+pub(crate) fn family_catalog_of(family: &str, models: &[ProviderModel]) -> FamilyCatalog {
+    FamilyCatalog {
+        agents: catalog_agents_of(models),
+        gated_lines: family_model_lines(family)
+            .iter()
+            .copied()
+            .filter(|line| is_gated_line(line) && newest_model_of_line(line, models).is_some())
+            .collect(),
+    }
 }
 
 /// The agent one catalog model gets: the model it always runs, the name it is tagged by, and
@@ -280,7 +299,7 @@ pub(crate) fn default_effort(options: &[ModelOptionDefinition]) -> Option<ModelO
 /// detect one family write the same agents.
 pub(crate) async fn ensure_provider_agents(
     pool: &SqlitePool,
-    families: &BTreeMap<String, Vec<CatalogAgent>>,
+    families: &BTreeMap<String, FamilyCatalog>,
 ) -> ChatResult<()> {
     if families.is_empty() {
         return Ok(());
@@ -289,13 +308,16 @@ pub(crate) async fn ensure_provider_agents(
     let invalid_family =
         |_| ChatError::validation("providerFamilyId", "The provider family is not valid");
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
-    for (family, catalog_agents) in families {
+    for (family, catalog) in families {
         for line in family_model_lines(family) {
+            if is_gated_line(line) && !catalog.gated_lines.contains(line) {
+                continue;
+            }
             let agent_id = line_agent_id(family, line).map_err(invalid_family)?;
             let display_name = line_display_name(line);
             insert_agent(&mut transaction, &agent_id, family, &display_name, &now).await?;
         }
-        for agent in catalog_agents {
+        for agent in &catalog.agents {
             let agent_id =
                 catalog_agent_id(family, agent.model_id.as_str()).map_err(invalid_family)?;
             insert_catalog_agent(&mut transaction, &agent_id, family, agent, &now).await?;
@@ -605,8 +627,46 @@ mod tests {
         });
     }
 
-    fn family(name: &str, agents: Vec<CatalogAgent>) -> BTreeMap<String, Vec<CatalogAgent>> {
-        BTreeMap::from([(name.to_string(), agents)])
+    fn family(name: &str, agents: Vec<CatalogAgent>) -> BTreeMap<String, FamilyCatalog> {
+        BTreeMap::from([(
+            name.to_string(),
+            FamilyCatalog {
+                agents,
+                gated_lines: Vec::new(),
+            },
+        )])
+    }
+
+    #[test]
+    fn a_gated_line_gets_its_agent_only_where_the_catalog_offers_it() {
+        tauri::async_runtime::block_on(async {
+            let pool = super::super::tests::migrated_pool().await;
+            let mythos = line_agent_id("claude", "mythos").unwrap();
+            let exists = |pool: SqlitePool, id: String| async move {
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM chat_participants WHERE id = ?")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+                    == 1
+            };
+
+            let without = family_catalog_of("claude", &[catalog_model("opus", "Opus")]);
+            assert!(without.gated_lines.is_empty());
+            ensure_provider_agents(&pool, &BTreeMap::from([("claude".to_string(), without)]))
+                .await
+                .unwrap();
+            assert!(!exists(pool.clone(), mythos.clone()).await);
+            assert!(exists(pool.clone(), line_agent_id("claude", "fable").unwrap()).await);
+
+            let with = family_catalog_of("claude", &[catalog_model("mythos", "Mythos")]);
+            assert_eq!(with.gated_lines, vec!["mythos"]);
+            assert!(with.agents.is_empty());
+            ensure_provider_agents(&pool, &BTreeMap::from([("claude".to_string(), with)]))
+                .await
+                .unwrap();
+            assert!(exists(pool.clone(), mythos).await);
+        });
     }
 
     fn catalog_model(id: &str, display_name: &str) -> ProviderModel {

@@ -48,7 +48,7 @@ const FAMILY_DEFAULTS: Record<string, ModelCompanyId> = {
 };
 
 const MODEL_MATCHERS: readonly [ModelCompanyId, RegExp][] = [
-  ["anthropic", /(?:^|[\s/_.-])(anthropic|claude|fable|sonnet|opus|haiku)(?:$|[\s/_.-])/i],
+  ["anthropic", /(?:^|[\s/_.-])(anthropic|claude|mythos|fable|sonnet|opus|haiku)(?:$|[\s/_.-])/i],
   ["openai", /(?:^|[\s/_.-])(openai|chatgpt|gpt|codex|o[134])(?:$|[\s/_.-]|\d)/i],
   ["google", /(?:^|[\s/_.-])(google|gemini|gemma)(?:$|[\s/_.-]|\d)/i],
   ["xai", /(?:^|[\s/_.-])(xai|grok)(?:$|[\s/_.-]|\d)/i],
@@ -164,7 +164,7 @@ function modelIdentity(model: ProviderModel): string {
 }
 
 function anthropicFamilyRank(identity: string): number {
-  return familyRank(identity, ["fable", "opus", "sonnet", "haiku"]);
+  return familyRank(identity, ["mythos", "fable", "opus", "sonnet", "haiku"]);
 }
 
 /** The index of the first of `families`, strongest first, that `identity` names as a word. */

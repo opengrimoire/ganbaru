@@ -112,7 +112,7 @@
       {:else if step === "install"}
         <NumberedStep {number} total={steps.length}>
           <div class="min-w-0 flex-1 pt-0.5 pb-4">
-            <p class="text-[0.8rem] leading-5 text-foreground">{t("settings.agents.providers.install.runInstall", cliName)}</p>
+            <p class="text-[0.8rem] leading-5 text-foreground">{t("settings.agents.providers.install.runInstall")}</p>
             <CommandBox class="mt-2 text-[0.75rem]" command={guide.command} {prompt} />
           </div>
         </NumberedStep>

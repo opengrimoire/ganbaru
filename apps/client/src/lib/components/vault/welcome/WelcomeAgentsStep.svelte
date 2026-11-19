@@ -250,7 +250,6 @@
         {/each}
       </ul>
     {/if}
-    <p class="text-sm leading-6 text-muted-foreground">{t("vaultSetup.agents.later")}</p>
   </div>
 </WelcomeSceneStep>
 

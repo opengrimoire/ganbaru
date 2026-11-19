@@ -158,7 +158,6 @@ export const vaultSetup = {
     headline: "Usa los agentes de IA que ya tienes",
     body: "Ganbaru trabaja con los agentes de IA de esta computadora, con tus propias cuentas.",
     listLabel: "Agentes de IA en esta computadora",
-    later: "Puedes saltarte esto y configurarlos cuando quieras en Ajustes, en Agentes.",
     checkFailed: "Ganbaru no pudo revisar los agentes de IA de esta computadora.",
     setupFailed: "Ganbaru no pudo abrir el formulario de configuración.",
   },

@@ -150,7 +150,6 @@ export const vaultSetup = {
     headline: "Use the AI agents you already have",
     body: "Ganbaru works with the AI agents on this computer, using your own accounts.",
     listLabel: "AI agents on this computer",
-    later: "You can skip this and set them up anytime in Settings, under Agents.",
     checkFailed: "Ganbaru could not check the AI agents on this computer.",
     setupFailed: "Ganbaru could not open the setup form.",
   },

@@ -8,6 +8,8 @@ export interface VaultInfo {
   databasePath: string;
   vaultId: string;
   displayName: string;
+  /** Whether the call that returned this info created the vault, rather than opening one already on disk. */
+  created: boolean;
 }
 
 let cachedActiveVaultInfo: VaultInfo | null | undefined;
@@ -90,10 +92,11 @@ function parseVaultInfo(value: unknown): VaultInfo {
   const databasePath = readString(value.databasePath);
   const vaultId = readString(value.vaultId);
   const displayName = readString(value.displayName);
-  if (!path || !databasePath || !vaultId || !displayName) {
+  const created = readBoolean(value.created);
+  if (!path || !databasePath || !vaultId || !displayName || created === null) {
     throw new Error("vault info response is incomplete");
   }
-  return { path, databasePath, vaultId, displayName };
+  return { path, databasePath, vaultId, displayName, created };
 }
 
 function parseVaultDefaultLocation(value: unknown): VaultDefaultLocation {

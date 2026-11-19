@@ -165,6 +165,8 @@ pub struct VaultInfo {
     pub database_path: String,
     pub vault_id: String,
     pub display_name: String,
+    /// Whether the call that returned this info created the vault, rather than opening one already on disk.
+    pub created: bool,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -451,6 +453,7 @@ fn vault_info_from_manifest(path: &Path, manifest: VaultManifest) -> Result<Vaul
         } else {
             manifest.display_name
         },
+        created: false,
     })
 }
 
@@ -540,7 +543,9 @@ fn initialize_vault(path: &Path) -> Result<VaultInfo, String> {
     ensure_vault_skeleton(&path)?;
     let json = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
     write_text_file_atomically(&manifest_path(&path), &json, FileAccess::OwnerOnly)?;
-    vault_info_from_manifest(&path, manifest)
+    let mut info = vault_info_from_manifest(&path, manifest)?;
+    info.created = true;
+    Ok(info)
 }
 
 /// Changes the active folder only after every native owner has drained.

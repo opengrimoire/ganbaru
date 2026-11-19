@@ -143,6 +143,8 @@ fn opening_a_vault_through_a_symlinked_root_still_works() {
 
     let opened = vault_info_from_path(&alias).unwrap();
     assert_eq!(opened.vault_id, created.vault_id);
+    assert!(created.created);
+    assert!(!opened.created);
     fs::remove_file(alias).unwrap();
     fs::remove_dir_all(vault).unwrap();
 }
@@ -229,6 +231,20 @@ fn vault_markers_refuse_ids_that_could_name_other_key_files_or_accounts() {
             "{vault_id:?}"
         );
     }
+}
+
+#[test]
+fn initialize_vault_reports_creation_only_for_a_new_vault() {
+    let path = unique_path("created-flag");
+    fs::create_dir_all(&path).unwrap();
+
+    let created = initialize_vault(&path).unwrap();
+    let reopened = initialize_vault(&path).unwrap();
+
+    assert!(created.created);
+    assert!(!reopened.created);
+    assert_eq!(reopened.vault_id, created.vault_id);
+    fs::remove_dir_all(path).unwrap();
 }
 
 #[test]

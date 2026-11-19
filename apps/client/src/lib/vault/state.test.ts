@@ -118,6 +118,7 @@ describe("vault state api", () => {
       databasePath: "/home/user/Documents/Ganbaru/ganbaru.sqlite",
       vaultId: "vault-1",
       displayName: "Ganbaru",
+      created: false,
     });
     const { getActiveVaultInfo, getCachedActiveVaultInfo } = await loadModule();
 
@@ -128,12 +129,14 @@ describe("vault state api", () => {
       databasePath: "/home/user/Documents/Ganbaru/ganbaru.sqlite",
       vaultId: "vault-1",
       displayName: "Ganbaru",
+      created: false,
     });
     expect(getCachedActiveVaultInfo()).toEqual({
       path: "/home/user/Documents/Ganbaru",
       databasePath: "/home/user/Documents/Ganbaru/ganbaru.sqlite",
       vaultId: "vault-1",
       displayName: "Ganbaru",
+      created: false,
     });
   });
 
@@ -348,6 +351,7 @@ describe("encrypted backups", () => {
     databasePath: "/home/user/Restored/ganbaru.sqlite",
     vaultId: "vault-restored",
     displayName: "Restored",
+    created: false,
   };
 
   it("parses every save outcome and rejects unknown refusals", async () => {

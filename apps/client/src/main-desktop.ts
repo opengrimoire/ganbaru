@@ -165,8 +165,8 @@ const appPromise = (async () => {
             await hydrateUserThemes();
           });
           void appRuntimeReady.catch(() => undefined);
-          // A vault picked to recover from a startup error was already in use, so it skips the tour.
-          if (initialError === null) {
+          // A vault re-picked to recover from a startup error was already in use, so only a new one shows the tour then.
+          if (initialError === null || info.created) {
             const { markWelcomeTourPending } = await import("./lib/vault/welcome-tour");
             markWelcomeTourPending(safeStorage(), info.vaultId);
           }

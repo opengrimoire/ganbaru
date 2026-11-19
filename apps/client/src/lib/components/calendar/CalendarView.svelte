@@ -92,12 +92,7 @@
     projectCalendarSurfaceStatuses,
     visibleCalendarEvents,
   } from "$lib/components/calendar/view/display-projection";
-  import {
-    calendarSwipeAxis,
-    calendarSwipeDirection,
-    calendarSwipeNavigation,
-    type CalendarSwipeAxis,
-  } from "./mobile-gestures";
+  import { CalendarMobileSwipeController } from "$lib/components/calendar/view/mobile-swipe-controller";
 
   const paneScope = getWorkspacePaneScope();
   const calendarStore = useCalendar();
@@ -724,129 +719,29 @@
     });
   }
 
-  let mobileSwipeSuppressClick = false;
-  let mobileSwipeState = $state<{
-    pointerId: number;
-    startX: number;
-    startY: number;
-    startedAt: number;
-    lastX: number;
-    lastY: number;
-    lastAt: number;
-    axis: CalendarSwipeAxis;
-  } | null>(null);
-
-  function removeMobileSwipeListeners(): void {
-    window.removeEventListener("pointermove", handleMobileSwipeMove);
-    window.removeEventListener("pointerup", handleMobileSwipeEnd);
-    window.removeEventListener("pointercancel", handleMobileSwipeCancel);
-  }
-
-  function resetMobileSwipe(): void {
-    removeMobileSwipeListeners();
-    mobileSwipeState = null;
-  }
-
-  function completeMobileSwipeNavigation(direction: "back" | "forward"): void {
-    removeMobileSwipeListeners();
-    mobileSwipeState = null;
-    navigate(direction, "touch");
-  }
-
-  function handleMobileSwipeStart(event: PointerEvent): void {
-    if (!mobileLayout || event.pointerType !== "touch" || !event.isPrimary || event.button !== 0
-      || session.state.mode !== "closed" || confirm.action) return;
-    mobileSwipeState = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      startedAt: performance.now(),
-      lastX: event.clientX,
-      lastY: event.clientY,
-      lastAt: performance.now(),
-      axis: null,
-    };
-    window.addEventListener("pointermove", handleMobileSwipeMove);
-    window.addEventListener("pointerup", handleMobileSwipeEnd);
-    window.addEventListener("pointercancel", handleMobileSwipeCancel);
-  }
-
-  function handleMobileSwipeMove(event: PointerEvent): void {
-    const state = mobileSwipeState;
-    if (!state || event.pointerId !== state.pointerId) return;
-    state.lastX = event.clientX;
-    state.lastY = event.clientY;
-    state.lastAt = performance.now();
-    const deltaX = event.clientX - state.startX;
-    const deltaY = event.clientY - state.startY;
-    if (state.axis === null) {
-      const axis = calendarSwipeAxis(deltaX, deltaY);
-      if (axis === null) return;
-      if (axis === "vertical") {
-        resetMobileSwipe();
-        return;
-      }
-      state.axis = axis;
-    }
-    event.preventDefault();
-  }
-
-  function finishMobileSwipe(state: NonNullable<typeof mobileSwipeState>): void {
-    const direction = state.axis === "horizontal"
-      ? calendarSwipeNavigation({
-        deltaX: state.lastX - state.startX,
-        elapsedMs: state.lastAt - state.startedAt,
-        viewportWidth: viewportController.viewWrapper?.clientWidth ?? window.innerWidth,
-      })
-      : null;
-    if (state.axis === "horizontal") mobileSwipeSuppressClick = true;
-    if (direction) completeMobileSwipeNavigation(direction);
-    else resetMobileSwipe();
-  }
-
-  function handleMobileSwipeEnd(event: PointerEvent): void {
-    const state = mobileSwipeState;
-    if (!state || event.pointerId !== state.pointerId) return;
-    finishMobileSwipe(state);
-  }
-
-  function handleMobileSwipeCancel(event: PointerEvent): void {
-    const state = mobileSwipeState;
-    if (!state || state.pointerId !== event.pointerId) return;
-    if (state.axis !== "horizontal") {
-      resetMobileSwipe();
-      return;
-    }
-    const direction = calendarSwipeDirection(state.lastX - state.startX);
-    mobileSwipeSuppressClick = true;
-    if (direction) completeMobileSwipeNavigation(direction);
-    else resetMobileSwipe();
-  }
-
-  function handleMobileSwipeClick(event: MouseEvent): void {
-    if (!mobileSwipeSuppressClick) return;
-    mobileSwipeSuppressClick = false;
-    event.preventDefault();
-    event.stopImmediatePropagation();
-  }
+  const mobileSwipe = new CalendarMobileSwipeController({
+    canStart: () => mobileLayout && session.state.mode === "closed" && !confirm.action,
+    navigate: (direction) => navigate(direction, "touch"),
+    getViewportWidth: () => viewportController.viewWrapper?.clientWidth ?? window.innerWidth,
+  });
 
   function handleMobileContextMenu(event: MouseEvent): void {
     if (mobileLayout) event.preventDefault();
   }
 
   function handleMobileTouchEditStart(): void {
-    resetMobileSwipe();
+    mobileSwipe.reset();
     mobileGridEditing = true;
   }
 
   function handleMobileTouchEditEnd(): void {
-    mobileSwipeSuppressClick = true;
+    mobileSwipe.suppressNextClick();
     mobileGridEditing = false;
   }
 
   onDestroy(() => {
     viewAlive = false;
-    resetMobileSwipe();
+    mobileSwipe.reset();
     nativeEditor.reset();
     directEditor.reset();
     deleteEditor.reset();
@@ -1442,8 +1337,8 @@
     bind:this={viewportController.viewWrapper}
     class="min-w-0 flex-1 overflow-hidden"
     style="background-color: var(--cal-bg); touch-action: {mobileLayout ? 'pan-y pinch-zoom' : 'auto'};"
-    onpointerdowncapture={handleMobileSwipeStart}
-    onclickcapture={handleMobileSwipeClick}
+    onpointerdowncapture={mobileSwipe.handleStart}
+    onclickcapture={mobileSwipe.handleClick}
     oncontextmenu={handleMobileContextMenu}
   >
     <div class="h-full min-h-0">

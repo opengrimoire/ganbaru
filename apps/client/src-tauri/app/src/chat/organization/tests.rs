@@ -6117,3 +6117,45 @@ fn a_delivery_time_edited_elsewhere_moves_the_local_due_time() {
         );
     });
 }
+
+/// A mention that arrived for a named agent a linked device deleted concurrently still reads,
+/// naming the absent agent.
+#[test]
+fn a_mention_of_a_deleted_named_agent_still_reads() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_with_unrouted_mention().await;
+        sqlx::raw_sql(
+            "INSERT INTO chat_message_references
+                 (id, message_revision_id, reference_kind, label_snapshot,
+                  plain_text_projection, start_offset, end_offset, ordinal, created_at)
+             VALUES ('reference:named', 'revision:review-reply-2', 'participant', 'Named',
+                     '@Named', 14, 20, 1, '2026-08-04T17:02:00.000Z');
+             INSERT INTO chat_participant_reference_targets (reference_id, participant_id)
+             VALUES ('reference:named', 'agent:0123456789abcdef0123456789abcdef');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let references = super::workflow::read_message_references(
+            &pool,
+            &ganbaru_chat_contracts::models::ChatMessageRevisionId::new("revision:review-reply-2")
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        let named = references
+            .iter()
+            .find_map(|reference| match reference {
+                ChatMessageReference::Participant {
+                    participant_id,
+                    participant_kind,
+                    ..
+                } if participant_id.as_str() == NAMED_AGENT_ID => Some(*participant_kind),
+                _ => None,
+            })
+            .expect("the mention of the absent agent reads");
+        assert_eq!(named, ChatParticipantKind::AiAgent);
+        assert_eq!(references.len(), 2);
+    });
+}

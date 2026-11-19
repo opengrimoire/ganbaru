@@ -61,6 +61,8 @@
   const chat = useChat();
   const localization = getLocalization();
   const { t } = localization;
+  /** A phone shows one thread at a time in a sheet, so its header names the thread instead of showing it as a tab. */
+  const mobileShell = BUILD_PLATFORM_PROFILE.shell === "mobile";
   const localExecutionAvailable = platformHasCapability(
     BUILD_PLATFORM_PROFILE,
     "chat.local-execution",
@@ -444,12 +446,16 @@
   style:--chat-composer-dock-height={`${composerDocked ? dockHeight : 0}px`}
 >
   <header class="thread-header" class:reserve-global-actions={reserveGlobalActions} data-reply-thread-header>
+    {#if mobileShell}
+      <h2 class="thread-title" data-thread-title tabindex="-1">{t("chat.organization.thread")}</h2>
+    {:else}
     <div class="thread-tab-shell" role="tablist">
       <button type="button" class="thread-tab" data-thread-tab role="tab" aria-selected="true" tabindex="0" onmousedown={preventMiddleButtonScroll} onauxclick={closeFromMiddleClick}>
         <MessagesSquare size={13} /><strong>{t("chat.organization.thread")}</strong>
       </button>
       <button type="button" class="tab-close" data-thread-close aria-label={t("chat.organization.closeThread")} onmousedown={preventMiddleButtonScroll} onauxclick={closeFromMiddleClick} onclick={onClose}><X size={11} /></button>
     </div>
+    {/if}
     <span></span>
     {#if localExecutionAvailable && hasPrivateScratch}
       <button
@@ -462,6 +468,7 @@
         onclick={() => void openScratchManager()}
       ><HardDrive size={14} /></button>
     {/if}
+    {#if mobileShell}<button type="button" class="thread-close" data-thread-close aria-label={t("chat.organization.closeThread")} title={t("chat.organization.closeThread")} onclick={onClose}><X size={16} strokeWidth={1.75} /></button>{/if}
   </header>
 
   {#if actionError || exactExecutionError}<Notice class="thread-error" message={actionError ?? exactExecutionError ?? ""} />{/if}
@@ -568,6 +575,8 @@
   .thread-tab-shell:hover .tab-close, .tab-close:focus-visible { opacity:1; }
   .tab-close:hover { background:var(--accent); }
   .thread-header > span { flex:1; }
+  .thread-title { min-width:0; overflow:hidden; padding-inline-start:0.55rem; font-size:calc(0.875rem * var(--type-scale)); font-weight:600; text-overflow:ellipsis; white-space:nowrap; outline:none; }
+  .thread-close { display:flex; width:var(--mobile-chrome-column); height:3rem; flex:0 0 auto; align-items:center; justify-content:center; border-radius:0.5rem; color:var(--foreground); }
   .scratch-inspector { display:grid; min-width:2rem; min-height:2rem; place-items:center; border-radius:0.42rem; color:var(--muted-foreground); }
   .scratch-inspector:hover { background:var(--accent); color:var(--foreground); }
   /* Entries rest on the end of the scroll area, so a short thread starts at the bottom beside the composer. */

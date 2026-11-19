@@ -645,7 +645,7 @@
   $effect(() => {
     const open = chat.openReplyThreadId !== null;
     if (open && !replyThreadWasOpen) {
-      queueMicrotask(() => document.querySelector<HTMLElement>("[data-chat-reply-thread] [data-thread-tab]")?.focus());
+      queueMicrotask(() => document.querySelector<HTMLElement>("[data-chat-reply-thread] :is([data-thread-tab], [data-thread-title])")?.focus());
     }
     replyThreadWasOpen = open;
   });

@@ -23,15 +23,20 @@
   import Feather from "@lucide/svelte/icons/feather";
   import FileText from "@lucide/svelte/icons/file-text";
   import Folder from "@lucide/svelte/icons/folder";
+  import FolderOpen from "@lucide/svelte/icons/folder-open";
   import Hash from "@lucide/svelte/icons/hash";
   import Heart from "@lucide/svelte/icons/heart";
   import MessageCircle from "@lucide/svelte/icons/message-circle";
   import MessageSquareShare from "@lucide/svelte/icons/message-square-share";
   import MessagesSquare from "@lucide/svelte/icons/messages-square";
+  import PanelBottom from "@lucide/svelte/icons/panel-bottom";
   import PanelLeft from "@lucide/svelte/icons/panel-left";
+  import PanelRight from "@lucide/svelte/icons/panel-right";
   import Plus from "@lucide/svelte/icons/plus";
   import Search from "@lucide/svelte/icons/search";
+  import Settings2 from "@lucide/svelte/icons/settings-2";
   import Square from "@lucide/svelte/icons/square";
+  import SquareArrowOutUpRight from "@lucide/svelte/icons/square-arrow-out-up-right";
   import X from "@lucide/svelte/icons/x";
   import { chatLayoutDecision, CHAT_REPLY_THREAD_WIDTH_PX } from "$lib/chat/responsive-layout";
   import ChatModelAvatar from "$lib/components/chat/identity/ChatModelAvatar.svelte";
@@ -77,8 +82,8 @@
 
   /**
    * One frame of the welcome scene on Chat, drawn with the workspace's own surfaces: in the Novel project's #general
-   * channel, Claude is mentioned through the reference picker in a question that is then sent, and the message's reply
-   * thread opens beside the channel, or over it where both do not fit, where Claude thinks, reads the chapter, searches
+   * channel, Opus is mentioned through the reference picker in a question that is then sent, and the message's reply
+   * thread opens beside the channel, or over it where both do not fit, where Opus thinks, reads the chapter, searches
    * the manuscript, folds that work into one line, and streams its reply. Every style is a function of `elapsed`, with no
    * CSS transitions.
    */
@@ -110,6 +115,12 @@
   const STRIP_AVATAR_SIZE = 20;
   /** The width the workspace's global actions keep at the top right, as `--chat-global-actions-width` sets it. */
   const GLOBAL_ACTIONS_REM = 6.5;
+  /** A header action button, the gap between header actions, their icons, and the header's end padding beside a thread column. */
+  const HEADER_ACTION_REM = 1.75;
+  const HEADER_ACTION_GAP_REM = 0.25;
+  const HEADER_ACTION_ICON_SIZE = 14;
+  const HEADER_ACTION_STROKE_WIDTH = 1.75;
+  const HEADER_END_REM = 0.75;
   /** The conversation gutter, and the width at or below which it narrows, as the channel feed sets them. */
   const GUTTER_REM = 1;
   const GUTTER_NARROW_REM = 0.5;
@@ -134,8 +145,8 @@
   const searchQuery = $derived(t("vaultSetup.notes.characters.mateo"));
   const mention = `@${CHAT_SCENE_MENTIONED.name}`;
   const agentRoles = $derived<Readonly<Record<ChatSceneAgent["key"], string>>>({
-    claude: t("vaultSetup.chat.roles.claude"),
-    codex: t("vaultSetup.chat.roles.codex"),
+    opus: t("vaultSetup.chat.roles.claude"),
+    sol: t("vaultSetup.chat.roles.codex"),
   });
 
   const draft = $derived(chatComposerDraft(elapsed, question));
@@ -157,7 +168,7 @@
   const shimmer = $derived(chatShimmerPosition(elapsed, chatActiveSince(elapsed)));
   const touches = $derived(chatTouches(elapsed));
   const sendPress = $derived(filmTap(elapsed, CHAT_BEATS.sendTap));
-  /** A phone taps Claude in the picker; the desktop accepts it with Enter, so nothing presses there. */
+  /** A phone taps Opus in the picker; the desktop accepts it with Enter, so nothing presses there. */
   const pickPress = $derived(mobileShell ? filmTap(elapsed, CHAT_BEATS.pick) : 0);
 
   /** Where the reply thread opens, as the workspace decides for a canvas this size: beside the channel or over it. */
@@ -176,6 +187,11 @@
   /** The thread column's width as it opens, and the channel's, which gives up that room. */
   const threadColumnW = $derived(threadColumn ? CHAT_REPLY_THREAD_WIDTH_PX * threadShown : 0);
   const mainW = $derived(canvasW - threadColumnW);
+  /**
+   * How far the global actions reach in from the right, growing by the thread's new tab action as it opens. The channel
+   * header keeps its folder and members clear of them, and the members slide left as the thread column takes the room.
+   */
+  const globalActionsRem = $derived(GLOBAL_ACTIONS_REM + (HEADER_ACTION_REM + HEADER_ACTION_GAP_REM) * threadShown);
   const gutterRem = $derived(mainW <= GUTTER_NARROW_MAX_PX ? GUTTER_NARROW_REM : GUTTER_REM);
 
   /** The picker's rows: the channel's agents, then the project's working folder, narrowed by the typed query. */
@@ -230,7 +246,7 @@
   </span>
 {/snippet}
 
-<!-- The sent message, with its mention of Claude, and in the channel its reply strip once Claude replies. -->
+<!-- The sent message, with its mention of Opus, and in the channel its reply strip once Opus replies. -->
 {#snippet message(inChannel: boolean)}
   <div class={cn("message-row", !inChannel && "px-4")} style={inChannel ? riseStyle(messageIn) : undefined}>
     <LocalPersonAvatar size={MESSAGE_AVATAR_SIZE} />
@@ -248,7 +264,7 @@
   </div>
 {/snippet}
 
-<!-- A composer's footer: its tools, and Send, or Stop while Claude works on the message's assignment. -->
+<!-- A composer's footer: its tools, and Send, or Stop while Opus works on the message's assignment. -->
 {#snippet footer(prefix: string, inThread: boolean, hasContent: boolean, press: number)}
   <div class="composer-footer">
     <div class="composer-tools">
@@ -274,7 +290,7 @@
   </div>
 {/snippet}
 
-<!-- The reply thread: its tab, the message it answers, Claude's turn, and its own composer. -->
+<!-- The reply thread: its tab, the message it answers, Opus's turn, and its own composer. -->
 {#snippet thread(reserveGlobalActions: boolean)}
   <div class="reply-thread-panel" data-cursor="chat-thread">
     <div class="thread-header" style:height={`${HEADER_H}px`} style:padding-right={reserveGlobalActions ? `${GLOBAL_ACTIONS_REM}rem` : undefined}>
@@ -350,11 +366,11 @@
 
     <div class="relative flex min-h-0 flex-1">
       <div data-cursor="chat-panel" class="flex min-w-0 shrink-0 flex-col" style:width={`${mainW}px`}>
-        <!-- The workspace header over the channel: where the channel is, with the members kept at the top right. -->
+        <!-- The workspace header over the channel: where the channel is, then the folder and the members, clear of the global actions. -->
         <div
-          class={cn("flex shrink-0 items-center", mobileShell ? "px-(--mobile-chrome-inset)" : "px-3")}
+          class={cn("flex shrink-0 items-center", mobileShell ? "px-(--mobile-chrome-inset)" : "gap-1 px-3")}
           style:height={`${HEADER_H}px`}
-          style:padding-right={!mobileShell && !threadColumn ? `${GLOBAL_ACTIONS_REM}rem` : undefined}
+          style:padding-right={mobileShell ? undefined : `max(${HEADER_END_REM}rem, calc(${globalActionsRem}rem - ${threadColumnW}px))`}
         >
           {#if mobileShell}
             <span class="flex h-12 w-(--mobile-chrome-column) shrink-0 items-center justify-center text-foreground">
@@ -364,7 +380,7 @@
               <Hash size={MOBILE_ICON_SIZE} strokeWidth={MOBILE_ICON_STROKE_WIDTH} class="shrink-0" />
               <span class="min-w-0 truncate text-xs font-medium">{channelName}</span>
             </span>
-            <span class="members"><span class="members-stack"><LocalPersonAvatar size={MEMBER_AVATAR_SIZE} /></span><span class="members-count tabular-nums">{formatNumber(localization.locale, CHAT_SCENE_AGENTS.length + 1)}</span></span>
+            <span class="members"><span class="members-stack"><LocalPersonAvatar size={MEMBER_AVATAR_SIZE} />{#each CHAT_SCENE_AGENTS as agent (agent.key)}<ChatModelAvatar familyId={agent.familyId} label={agent.name} size={MEMBER_AVATAR_SIZE} />{/each}</span><span class="members-count tabular-nums">{formatNumber(localization.locale, CHAT_SCENE_AGENTS.length + 1)}</span></span>
           {:else}
             <span class="flex h-7 min-w-0 items-center gap-0.5 overflow-hidden text-identity font-medium">
               <span class={cn("flex h-7 min-w-0 items-center gap-1.5 rounded-md px-1.5", hovered("crumb:group") && "bg-accent")} data-scene-hover="crumb:group">
@@ -382,6 +398,15 @@
                 <span class="truncate">{channelName}</span>
                 <WorkspaceBreadcrumbTerminalIcon kind="chevron" context="chat" class="shrink-0 text-muted-foreground" />
               </span>
+            </span>
+            <span class="flex-1"></span>
+            <span class={cn("header-button", hovered("folder") && "hovered")} data-scene-hover="folder"><FolderOpen size={HEADER_ACTION_ICON_SIZE} /></span>
+            <span class={cn("members h-7 rounded-md", hovered("members") && "hovered")} data-scene-hover="members">
+              <span class="members-stack">
+                <LocalPersonAvatar size={MEMBER_AVATAR_SIZE} />
+                {#each CHAT_SCENE_AGENTS as agent (agent.key)}<ChatModelAvatar familyId={agent.familyId} label={agent.name} size={MEMBER_AVATAR_SIZE} />{/each}
+              </span>
+              <span class="members-count tabular-nums">{formatNumber(localization.locale, CHAT_SCENE_AGENTS.length + 1)}</span>
             </span>
           {/if}
         </div>
@@ -450,20 +475,28 @@
       </div>
 
       {#if threadColumnW > 0}
-        <!-- The reply thread beside the channel, from the top of the header row, behind a separator below it. -->
+        <!-- The reply thread beside the channel, from the top of the header row, behind a separator of the same height. -->
         <div class="relative min-w-0 overflow-hidden" style:width={`${threadColumnW}px`}>
-          <span class="thread-separator" style:top={`${HEADER_H}px`}></span>
+          <span class="thread-separator"></span>
           <div class="flex h-full" style:width={`${CHAT_REPLY_THREAD_WIDTH_PX}px`}>{@render thread(true)}</div>
         </div>
       {/if}
 
       {#if !mobileShell}
-        <!-- The workspace's global actions, at the top right over whichever header is there. -->
+        <!-- The workspace's global actions, at the top right over whichever header is there; an open thread adds its new tab action. -->
         <span class="global-actions" style:height={`${HEADER_H}px`} style:min-width={`${GLOBAL_ACTIONS_REM}rem`}>
-          <span class={cn("members h-7 rounded-md", hovered("members") && "hovered")} data-scene-hover="members">
-            <span class="members-stack"><LocalPersonAvatar size={MEMBER_AVATAR_SIZE} /></span>
-            <span class="members-count tabular-nums">{formatNumber(localization.locale, CHAT_SCENE_AGENTS.length + 1)}</span>
-          </span>
+          <span class={cn("header-button", hovered("action:bottom") && "hovered")} data-scene-hover="action:bottom"><PanelBottom size={HEADER_ACTION_ICON_SIZE} strokeWidth={HEADER_ACTION_STROKE_WIDTH} /></span>
+          <span class={cn("header-button", hovered("action:inspector") && "hovered")} data-scene-hover="action:inspector"><PanelRight size={HEADER_ACTION_ICON_SIZE} strokeWidth={HEADER_ACTION_STROKE_WIDTH} /></span>
+          {#if threadShown > 0}
+            <span
+              class={cn("header-button overflow-hidden", hovered("action:new-tab") && "hovered")}
+              data-scene-hover="action:new-tab"
+              style:width={`${HEADER_ACTION_REM * threadShown}rem`}
+              style:margin-inline-start={`${-HEADER_ACTION_GAP_REM * (1 - threadShown)}rem`}
+              style:opacity={threadShown}
+            ><SquareArrowOutUpRight size={HEADER_ACTION_ICON_SIZE} strokeWidth={HEADER_ACTION_STROKE_WIDTH} /></span>
+          {/if}
+          <span class={cn("header-button", hovered("action:settings") && "hovered")} data-scene-hover="action:settings"><Settings2 size={HEADER_ACTION_ICON_SIZE} strokeWidth={HEADER_ACTION_STROKE_WIDTH} /></span>
         </span>
       {/if}
     </div>
@@ -481,7 +514,10 @@
   .members-stack > :global(span) { flex: 0 0 auto; border-radius: 22%; box-shadow: 0 0 0 1.5px var(--cal-bg); }
   .members.hovered .members-stack > :global(span) { box-shadow: 0 0 0 1.5px var(--accent); }
   .members-count { font-size: 0.733333rem; font-weight: 500; }
-  .global-actions { position: absolute; top: 0; right: 0; z-index: 5; display: flex; align-items: center; justify-content: flex-end; background: var(--cal-bg); padding-right: 0.75rem; }
+  .members-stack > :global(span + span) { margin-inline-start: -0.3rem; }
+  .header-button { display: flex; width: 1.75rem; height: 1.75rem; flex: 0 0 auto; align-items: center; justify-content: center; border-radius: 0.375rem; color: var(--foreground); }
+  .header-button.hovered { background-color: var(--accent); }
+  .global-actions { position: absolute; top: 0; right: 0; z-index: 5; display: flex; align-items: center; justify-content: flex-end; gap: 0.25rem; background: var(--cal-bg); padding-right: 0.75rem; }
 
   /* The channel feed, its introduction, and its date divider, as the channel draws them. */
   .feed-canvas { width: calc(100% - 2 * var(--gutter)); min-height: 100%; flex-shrink: 0; margin-inline: auto; padding-bottom: 1rem; }
@@ -537,7 +573,7 @@
   .thread-composer { display: flex; flex: 0 0 auto; justify-content: center; padding: 0.5rem 0.5rem 0.75rem; }
   .thread-separator { position: absolute; bottom: 0; left: 0; z-index: 1; width: 1px; background: var(--border); }
 
-  /* Claude's turn in the thread, as the embedded execution timeline draws it. */
+  /* Opus's turn in the thread, as the embedded execution timeline draws it. */
   .turn-row { display: grid; min-width: 0; grid-template-columns: 34px minmax(0, 1fr); align-items: start; gap: 0.65rem; padding: 0.45rem 1rem 0; }
   .turn-content { min-width: 0; transform: translateY(-4px); }
   .turn-header { display: flex; min-height: 1.25rem; min-width: 0; align-items: baseline; gap: 0.45rem; margin-bottom: 0.12rem; line-height: 1.25rem; }

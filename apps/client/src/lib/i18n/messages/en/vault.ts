@@ -138,7 +138,7 @@ export const vaultSetup = {
     headline: "Bring in AI only when you want it",
     body: "Chat with AI agents like Claude, Codex, or Cursor that work right inside your project's folder.",
     sceneDescription:
-      "A short animation of Chat in the Novel project, where Claude is mentioned in a question about what Mateo knows about Clara and answers in the message's thread after reading chapter 2 and searching for Mateo.",
+      "A short animation of Chat in the Novel project, where Opus is mentioned in a question about what Mateo knows about Clara and answers in the message's thread after reading chapter 2 and searching for Mateo.",
     channel: "general",
     roles: { claude: "Story feedback", codex: "Ebook builds" },
     prompt: "read chapter 2 and tell me what Mateo knows about Clara.",

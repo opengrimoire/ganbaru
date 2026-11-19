@@ -146,7 +146,7 @@ export const vaultSetup = {
     headline: "Suma la IA solo cuando la quieras",
     body: "Conversa con agentes de IA como Claude, Codex o Cursor que trabajan dentro de la carpeta de tu proyecto.",
     sceneDescription:
-      "Una breve animación del chat en el proyecto Novela, donde se menciona a Claude en una pregunta sobre lo que Mateo sabe de Clara y responde en el hilo del mensaje tras leer el capítulo 2 y buscar a Mateo.",
+      "Una breve animación del chat en el proyecto Novela, donde se menciona a Opus en una pregunta sobre lo que Mateo sabe de Clara y responde en el hilo del mensaje tras leer el capítulo 2 y buscar a Mateo.",
     channel: "general",
     roles: { claude: "Comentarios de la historia", codex: "Versiones del libro electrónico" },
     prompt: "lee el capítulo 2 y dime qué sabe Mateo de Clara.",

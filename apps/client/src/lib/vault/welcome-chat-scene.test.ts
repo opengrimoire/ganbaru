@@ -177,7 +177,7 @@ describe("welcome chat scene", () => {
     }
   });
 
-  it("leaves Claude to the keyboard, waits for the question before Send, and for the thread before resting on it", () => {
+  it("leaves Opus to the keyboard, waits for the question before Send, and for the thread before resting on it", () => {
     expect(CHAT_CURSOR.some((stop) => stop.target === "chat-pick")).toBe(false);
     expect(CHAT_CURSOR.find((stop) => stop.target === "chat-send")?.depart).toBeGreaterThanOrEqual(B.typeEnd);
     expect(CHAT_CURSOR.find((stop) => stop.target === "chat-thread")?.depart).toBeGreaterThanOrEqual(B.threadOpen + CHAT_THREAD_OPEN_MS);

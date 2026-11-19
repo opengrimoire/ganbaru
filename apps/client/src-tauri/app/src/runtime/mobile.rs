@@ -124,6 +124,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::organization::chat_read_channel_page,
             chat::organization::chat_read_reply_thread_page,
             chat::organization::chat_search_messages,
+            chat::organization::chat_cancel_assignment,
             chat::organization::chat_list_assignment_inputs,
             chat::organization::chat_list_review_queue,
             chat::organization::chat_edit_assignment_input,

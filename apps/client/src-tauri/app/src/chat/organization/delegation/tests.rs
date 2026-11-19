@@ -1032,7 +1032,7 @@ async fn delegation_cancel_of_the_parent_cancels_the_queued_child_and_its_dispat
     .unwrap();
     let child = &created.child.assignment_id;
     let parent = ChatWorkAssignmentId::new(PARENT).unwrap();
-    let cancelled = super::super::assignments::cancel_delegated_work(&pool, &parent)
+    let cancelled = super::super::workflow::cancel_delegated_work(&pool, &parent)
         .await
         .unwrap();
     assert_eq!(cancelled, BTreeSet::from([child.as_str().to_owned()]));
@@ -1054,11 +1054,53 @@ async fn delegation_cancel_of_the_parent_cancels_the_queued_child_and_its_dispat
     assert_eq!(open_jobs, 0);
     assert!(!claim(&pool, child).await);
     assert!(
-        super::super::assignments::cancel_delegated_work(&pool, &parent)
+        super::super::workflow::cancel_delegated_work(&pool, &parent)
             .await
             .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn delegation_a_person_cancelling_the_parent_settles_it_with_its_open_children() {
+    let pool = pool_with_helper().await;
+    let created = delegate(
+        &pool,
+        &Caller::root(),
+        HELPER,
+        &parent_folders(),
+        "request-1",
+    )
+    .await
+    .unwrap();
+    let child = &created.child.assignment_id;
+    let parent = ChatWorkAssignmentId::new(PARENT).unwrap();
+    let revision: i64 =
+        sqlx::query_scalar("SELECT revision FROM chat_work_assignments WHERE id = ?")
+            .bind(PARENT)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let revision = u64::try_from(revision).unwrap();
+
+    let cancelled = super::super::workflow::cancel_assignment_work(&pool, &parent, revision)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        cancelled.assignment.state,
+        ChatWorkAssignmentState::Cancelled
+    );
+    assert!(cancelled.assignment.settled_at.is_some());
+    assert_eq!(
+        cancelled.descendants,
+        BTreeSet::from([child.as_str().to_owned()])
+    );
+    assert_eq!(assignment_state(&pool, child).await.0, "cancelled");
+    let stale = super::super::workflow::cancel_assignment_work(&pool, &parent, revision)
+        .await
+        .unwrap_err();
+    assert_eq!(stale.code, ChatErrorCode::StaleRevision);
 }
 
 #[tokio::test]

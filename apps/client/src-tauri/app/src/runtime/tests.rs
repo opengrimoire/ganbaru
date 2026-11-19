@@ -132,6 +132,7 @@ fn mobile_runtime_registers_portable_core_commands() {
         "chat::attachment_commands::chat_attachment_data_url",
         "chat::organization::chat_read_channel_page",
         "chat::organization::chat_read_reply_thread_page",
+        "chat::organization::chat_cancel_assignment",
         "chat::organization::chat_list_assignment_inputs",
         "chat::organization::chat_list_review_queue",
         "chat::organization::chat_edit_assignment_input",

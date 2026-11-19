@@ -4,21 +4,17 @@ mod messages;
 
 #[cfg(desktop)]
 use super::assignments::read_assignment_subject;
-#[cfg(desktop)]
-use super::common::wire_work_state;
 use super::common::{
-    assignment_input_id, serialization_error, wire_review_outcome, work_assignment_id,
+    assignment_input_id, serialization_error, wire_review_outcome, wire_work_state,
+    work_assignment_id,
 };
 #[cfg(desktop)]
 use super::common::{json_object, new_id};
 #[cfg(desktop)]
 use super::context::{FreezeOutcome, WorkToFreeze, freeze_context_package};
 use super::inputs::place_delivered_reply;
-#[cfg(desktop)]
 use super::now_timestamp;
-#[cfg(desktop)]
-use super::reads::read_assignment;
-use super::reads::{read_active_or_latest_assignment, read_participant};
+use super::reads::{read_active_or_latest_assignment, read_assignment, read_participant};
 use super::{
     LOCAL_PARTICIPANT_ID, ReviewedWork, i64_value, identifier_error, persistence_error, u64_value,
 };
@@ -1265,10 +1261,71 @@ pub(super) async fn complete_reviewed_assignment(
     Ok(settled.rows_affected() == 1)
 }
 
+/// Work a person cancelled: the cancelled assignment and the ids of the open work delegated
+/// from it, which the cancel also ended.
+#[derive(Debug)]
+pub(super) struct CancelledWork {
+    pub(super) assignment: ChatWorkAssignmentRead,
+    #[cfg_attr(mobile, allow(dead_code))]
+    pub(super) descendants: std::collections::BTreeSet<String>,
+}
+
+/// Cancels `assignment_id`, still at `expected_revision`, with the open work delegated from it.
+/// Any linked device may cancel: the executing device stops the run when the settled state
+/// reaches it, and this device stops runs it holds itself.
+pub(super) async fn cancel_assignment_work(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+    expected_revision: u64,
+) -> ChatResult<CancelledWork> {
+    let assignment = set_assignment_state(
+        pool,
+        assignment_id,
+        expected_revision,
+        ChatWorkAssignmentState::Cancelled,
+        Some("Cancelled by the user"),
+    )
+    .await?;
+    let descendants = cancel_delegated_work(pool, assignment_id).await?;
+    Ok(CancelledWork {
+        assignment,
+        descendants,
+    })
+}
+
+/// Cancels the open work delegated from `assignment_id`, which a person just cancelled, and
+/// ends the dispatch it still holds here. Returns the cancelled ids. Their revoked
+/// authorizations queue revocation jobs, which stop the runs they hold on this device.
+pub(super) async fn cancel_delegated_work(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+) -> ChatResult<std::collections::BTreeSet<String>> {
+    let now = now_timestamp()?;
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    let cancelled = ganbaru_chat::coordination::delegation::cancel_delegated_descendants(
+        &mut transaction,
+        assignment_id.as_str(),
+        now.as_str(),
+    )
+    .await?;
+    for descendant_id in &cancelled {
+        let descendant_id =
+            ChatWorkAssignmentId::new(descendant_id.clone()).map_err(identifier_error)?;
+        end_assignment_dispatch_jobs(
+            &mut transaction,
+            &descendant_id,
+            ChatWorkAssignmentState::Cancelled,
+            &now,
+        )
+        .await?;
+    }
+    transaction.commit().await.map_err(persistence_error)?;
+    Ok(cancelled.into_iter().collect())
+}
+
 /// Moves `assignment_id` to `state` when it is still at `expected_revision`. The write clears
 /// any review, since a review only judges completed work and this write replaces that state.
 /// Delegated work that reaches an outcome state reports it in its parent's reply thread.
-#[cfg(desktop)]
 pub(super) async fn set_assignment_state(
     pool: &SqlitePool,
     assignment_id: &ChatWorkAssignmentId,
@@ -1319,7 +1376,6 @@ pub(super) async fn set_assignment_state(
 /// `state`: they become cancelled when it was cancelled and failed otherwise, so no worker runs
 /// settled work. The execution targets kept for its start and for its pending replies go with
 /// them, since they only served work that was still waiting to run.
-#[cfg(desktop)]
 pub(super) async fn end_assignment_dispatch_jobs(
     connection: &mut sqlx::SqliteConnection,
     assignment_id: &ChatWorkAssignmentId,

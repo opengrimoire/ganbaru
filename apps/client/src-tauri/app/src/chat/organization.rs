@@ -1368,15 +1368,22 @@ async fn search_messages(
         .collect()
 }
 
+/// Cancels active work from any linked device. The settled state replicates, and the executing
+/// device stops the run when it applies it; a desktop also stops what it runs itself.
 #[tauri::command]
-#[cfg(desktop)]
 pub async fn chat_cancel_assignment(
     app: tauri::AppHandle,
     db_url: String,
     assignment_id: ChatWorkAssignmentId,
     expected_revision: u64,
 ) -> ChatResult<ChatWorkAssignmentRead> {
-    assignments::cancel_assignment(app, db_url, assignment_id, expected_revision).await
+    let pool = chat_pool(app.clone(), db_url.clone()).await?;
+    let cancelled =
+        workflow::cancel_assignment_work(&pool, &assignment_id, expected_revision).await?;
+    let assignment = cancelled.assignment.clone();
+    #[cfg(desktop)]
+    assignments::end_cancelled_work(&app, &db_url, &pool, cancelled, "assignment-cancel").await?;
+    Ok(assignment)
 }
 
 /// Accepts ready-for-review work or requests changes with a note, which continues the work in the same thread.

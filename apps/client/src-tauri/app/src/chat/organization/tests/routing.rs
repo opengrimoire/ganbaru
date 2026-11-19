@@ -154,6 +154,50 @@ fn steer_on_working_work_reaches_the_current_turn() {
 }
 
 #[test]
+fn a_reply_from_a_device_that_cannot_execute_reaches_the_working_run() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_work_in("working").await;
+        let writers = chat_writers_of(&["device:desk", "device:phone"]);
+        let phone = PostingDevice {
+            id: "device:phone",
+            can_execute: false,
+            chat_writers: &writers,
+            unattended: false,
+        };
+
+        for (command_id, routing, routing_kind) in [
+            ("command:phone-steer", ChatFollowupRouting::Steer, "steer"),
+            (
+                "command:phone-queue",
+                ChatFollowupRouting::Queue,
+                "queued_continuation",
+            ),
+        ] {
+            let posted = persist_post(
+                &pool,
+                &reply_request(command_id, Some(routing)),
+                None,
+                phone,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(posted.result.routed_as, Some(routing));
+            assert!(posted.assignment_write.input_queued);
+            assert!(!posted.assignment_write.executes_here);
+            assert_eq!(
+                routed_input(&pool, &posted).await,
+                (
+                    ROUTED_ASSIGNMENT_ID.to_owned(),
+                    routing_kind.to_owned(),
+                    "pending".to_owned()
+                )
+            );
+        }
+    });
+}
+
+#[test]
 fn steer_requested_while_waiting_routes_as_queued() {
     tauri::async_runtime::block_on(async {
         for state in ["queued", "waiting_for_answer", "waiting_for_approval"] {

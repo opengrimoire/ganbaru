@@ -576,7 +576,6 @@ pub(crate) fn native_assignment_safety_mode(approval: ChatRuntimeApprovalPolicy)
     }
 }
 
-#[cfg(desktop)]
 pub(super) fn wire_work_state(value: ChatWorkAssignmentState) -> &'static str {
     match value {
         ChatWorkAssignmentState::Queued => "queued",

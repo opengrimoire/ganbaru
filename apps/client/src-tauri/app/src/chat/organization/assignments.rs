@@ -8,11 +8,11 @@ use super::dispatch::{deliver_pending_assignment_inputs, dispatch_assignment_job
 use super::provider_agents::{DeviceProviders, read_device_providers};
 use super::reads::{read_active_or_latest_assignment, read_assignment};
 use super::workflow::{
-    NewAssignment, PostingDevice, complete_reviewed_assignment, create_assignment,
+    CancelledWork, NewAssignment, PostingDevice, complete_reviewed_assignment, create_assignment,
     drop_input_requested_targets, end_assignment_dispatch_jobs, move_pending_inputs,
     pending_thread_inputs, read_assignment_executing_device, read_input_requested_target,
     require_no_pending_replies, require_participating_agent, require_reviewable_assignment,
-    set_assignment_state, take_requested_target,
+    take_requested_target,
 };
 use super::{
     LOCAL_PARTICIPANT_ID, PostOutcome, ReviewedWork, chat_pool, i64_value, identifier_error,
@@ -738,41 +738,22 @@ fn plain_composer_document(text: &str) -> VersionedJson {
     }
 }
 
-pub(super) async fn cancel_assignment(
-    app: tauri::AppHandle,
-    db_url: String,
-    assignment_id: ChatWorkAssignmentId,
-    expected_revision: u64,
-) -> ChatResult<ChatWorkAssignmentRead> {
-    let pool = chat_pool(app.clone(), db_url.clone()).await?;
-    let cancelled = set_assignment_state(
-        &pool,
-        &assignment_id,
-        expected_revision,
-        ChatWorkAssignmentState::Cancelled,
-        Some("Cancelled by the user"),
-    )
-    .await?;
-    end_settled_work(&app, &db_url, &pool, &assignment_id, "assignment-cancel").await?;
-    Ok(cancelled)
-}
-
-/// Ends the work of `assignment_id`, which this device just settled without its provider:
-/// cancels the work it delegated, delivers the delegation outcomes the settle queued, and stops
-/// the provider session of its latest run. `stop_label` prefixes the stop command id, so
-/// repeated stops for one reason share an id.
-async fn end_settled_work(
+/// Ends on this device the work a person cancelled with `cancelled`: drains the revocations of
+/// the cancelled delegated work, delivers the delegation outcomes the cancel queued, and stops
+/// the provider session of the latest run held here. `stop_label` prefixes the stop command
+/// id, so repeated stops for one reason share an id.
+pub(super) async fn end_cancelled_work(
     app: &tauri::AppHandle,
     db_url: &str,
     pool: &SqlitePool,
-    assignment_id: &ChatWorkAssignmentId,
+    cancelled: CancelledWork,
     stop_label: &str,
 ) -> ChatResult<()> {
-    let cancelled_descendants = cancel_delegated_work(pool, assignment_id).await?;
-    if !cancelled_descendants.is_empty() {
+    let assignment_id = &cancelled.assignment.id;
+    if !cancelled.descendants.is_empty() {
         crate::chat::revocation::start_job_drain(app);
     }
-    let mut settled = cancelled_descendants;
+    let mut settled = cancelled.descendants;
     settled.insert(assignment_id.as_str().to_owned());
     deliver_delegation_outcomes_of_assignments(app, pool, settled);
     let provider_thread_id: Option<String> = sqlx::query_scalar(
@@ -1296,36 +1277,6 @@ pub(super) async fn parents_with_pending_outcomes(
         parents.extend(parent_id);
     }
     Ok(parents)
-}
-
-/// Cancels the open work delegated from `assignment_id`, which a person just cancelled, and
-/// ends the dispatch it still holds here. Returns the cancelled ids. Their revoked
-/// authorizations queue revocation jobs, which stop the runs they hold on this device.
-pub(super) async fn cancel_delegated_work(
-    pool: &SqlitePool,
-    assignment_id: &ChatWorkAssignmentId,
-) -> ChatResult<BTreeSet<String>> {
-    let now = now_timestamp()?;
-    let mut transaction = pool.begin().await.map_err(persistence_error)?;
-    let cancelled = ganbaru_chat::coordination::delegation::cancel_delegated_descendants(
-        &mut transaction,
-        assignment_id.as_str(),
-        now.as_str(),
-    )
-    .await?;
-    for descendant_id in &cancelled {
-        let descendant_id =
-            ChatWorkAssignmentId::new(descendant_id.clone()).map_err(identifier_error)?;
-        end_assignment_dispatch_jobs(
-            &mut transaction,
-            &descendant_id,
-            ChatWorkAssignmentState::Cancelled,
-            &now,
-        )
-        .await?;
-    }
-    transaction.commit().await.map_err(persistence_error)?;
-    Ok(cancelled.into_iter().collect())
 }
 
 /// Moves the replies left pending on `assignment_id` after its turn ended onto the follow-up

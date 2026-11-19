@@ -26,7 +26,6 @@
   import { cn } from "$lib/utils";
   import { createBackdropPress } from "$lib/utils/backdrop-press";
   import { portal } from "$lib/utils/portal";
-  import { WELCOME_LINK_CLASS } from "$lib/vault/welcome-layout";
 
   /**
    * Sets up one AI agent from the welcome tour without leaving it: the install and sign-in steps Settings shows, with a
@@ -116,7 +115,7 @@
         <ProviderInstallSteps {family} guide={guideView.guide} situation={guideView.situation} {onRefresh} />
         <button
           type="button"
-          class={cn(WELCOME_LINK_CLASS, "self-start")}
+          class="self-start text-[0.8rem] leading-5 font-medium text-foreground underline-offset-2 hover:underline"
           onclick={() => (view = { kind: "advanced", target: guideView.advanced })}
         >{t("settings.agents.providers.setUpAdvanced", family.displayName)}</button>
       </div>

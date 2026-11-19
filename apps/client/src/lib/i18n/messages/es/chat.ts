@@ -306,8 +306,6 @@ export const chat = {
     duplicateReference: (label: string) => `${label} ya está referenciado en este mensaje.`,
     currentProjectChannels: "Proyecto actual",
     channelParticipants: "Participantes del canal",
-    otherAgents: "Otros agentes",
-    addAgentToChannel: (agent: string, channel: string) => `Agregar a @${agent} en #${channel}`,
     projectFolders: "Carpetas del proyecto",
     folderReference: "Carpeta de trabajo",
     folderUnavailable: "No disponible en este dispositivo",

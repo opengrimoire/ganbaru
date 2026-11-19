@@ -22,7 +22,6 @@ export type ReferenceCandidate =
       description: string;
       participant: ChatParticipantRead;
       agent: ChatAiAgentRead | null;
-      needsMembership: boolean;
     }
   | {
       key: string;

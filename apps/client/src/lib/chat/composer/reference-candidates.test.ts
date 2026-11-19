@@ -150,7 +150,6 @@ describe("candidateReference", () => {
       description: "",
       participant,
       agent: null,
-      needsMembership: false,
     });
     expect(reference).toEqual({
       kind: "participant",

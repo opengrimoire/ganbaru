@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ChatMessageReference } from "$lib/chat/contracts";
-import { agentsToAddForMention, suggestAgentMention } from "./mention-suggestion";
+import { suggestAgentMention } from "./mention-suggestion";
 
 const ada = { id: "participant:ada", displayName: "Ada" };
 const grace = { id: "participant:grace", displayName: "Grace Hopper" };
@@ -82,29 +82,5 @@ describe("suggestAgentMention", () => {
     const text = "@Ada and Grace Hopper";
     expect(suggestAgentMention(text, [mention("participant:ada", 0, "Ada")], [ada, grace])?.participantId)
       .toBe("participant:grace");
-  });
-});
-
-describe("agentsToAddForMention", () => {
-  const agent = (id: string, displayName: string, archivedAt: string | null = null) => ({
-    participant: { id, displayName, archivedAt },
-  });
-  const codex = agent("participant:codex", "Codex");
-  const claude = agent("participant:claude", "Claude Code");
-  const retired = agent("participant:retired", "Codex Old", "2026-10-01T00:00:00.000Z");
-
-  it("offers every known agent outside the channel while the query is empty", () => {
-    expect(agentsToAddForMention([codex, claude], new Set(), "")).toEqual([codex, claude]);
-  });
-
-  it("leaves out agents already in the channel and archived agents", () => {
-    expect(agentsToAddForMention([codex, claude, retired], new Set(["participant:codex"]), ""))
-      .toEqual([claude]);
-  });
-
-  it("matches the typed query anywhere in the name, ignoring case and surrounding space", () => {
-    expect(agentsToAddForMention([codex, claude], new Set(), " CODE ")).toEqual([codex, claude]);
-    expect(agentsToAddForMention([codex, claude], new Set(), "claude")).toEqual([claude]);
-    expect(agentsToAddForMention([codex, claude], new Set(), "gemini")).toEqual([]);
   });
 });

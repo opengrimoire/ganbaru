@@ -51,7 +51,7 @@
   import { pendingInputRows, pendingInputStartsWork, type PendingInputRow } from "$lib/chat/composer/pending-inputs";
   import { formatShortcut, hasOnlyShortcutModifier } from "$lib/keyboard-shortcuts";
   import { latestStructuredPlanSteps, summarizePlanProgress } from "$lib/chat/composer/plan-progress";
-  import { agentsToAddForMention, suggestAgentMention, type MentionSuggestion } from "$lib/chat/composer/mention-suggestion";
+  import { suggestAgentMention, type MentionSuggestion } from "$lib/chat/composer/mention-suggestion";
   import { pastedTextLineCount } from "$lib/chat/composer/paste";
   import { providerTargetAuthorityBlockers } from "$lib/chat/composer/provider-authority";
   import {
@@ -733,7 +733,6 @@
       isActiveChannelMember(membership)
         && membership.participant.archivedAt === null
     ));
-    const memberIds = new Set(memberships.map((membership) => membership.participant.id));
     const entries: ReferenceCandidate[] = memberships.flatMap((membership) => {
       const agent = chat.agents.find((candidate) => (
         candidate.participant.id === membership.participant.id
@@ -747,21 +746,8 @@
         description: agent ? t("chat.organization.aiAgent") : t("chat.organization.humanMember"),
         participant: membership.participant,
         agent,
-        needsMembership: false,
       }];
     });
-    for (const agent of agentsToAddForMention(chat.agents, memberIds, normalized)) {
-      entries.push({
-        key: `outside-participant:${agent.participant.id}`,
-        kind: "participant",
-        group: t("chat.organization.otherAgents"),
-        label: agent.participant.displayName,
-        description: t("chat.organization.addAgentToChannel", agent.participant.displayName, chat.selectedChannel?.name ?? ""),
-        participant: agent.participant,
-        agent,
-        needsMembership: true,
-      });
-    }
     const projectId = chat.selectedChannel?.projectId;
     const folders = chat.workingFolders.filter((folder) => (
       folder.workingFolder.projectId === projectId
@@ -829,18 +815,6 @@
     if (candidate.kind === "executionEnvironment" && !candidate.target.eligible) {
       announcement = candidate.target.unavailableReason ?? t("chat.organization.targetUnavailable");
       return;
-    }
-    if (candidate.kind === "participant" && candidate.needsMembership) {
-      const channelId = chat.selectedChannel?.id;
-      if (!channelId) return;
-      try {
-        await chatApi.addChatChannelAgent({ channelId, agentId: candidate.participant.id });
-        await chat.channelAgentsChanged(channelId);
-      } catch (cause: unknown) {
-        closePicker();
-        error = chatErrorMessage(cause, t("chat.agentAccess.saveFailed"));
-        return;
-      }
     }
     if (candidate.kind === "channel") {
       const blocker = await channelDisclosureBlocker(candidate.channel, null);
@@ -1824,7 +1798,7 @@
     if (candidate.kind === "channel") {
       return candidate.channel.projectId === chat.selectedChannel?.projectId ? 0 : 1;
     }
-    if (candidate.kind === "participant") return candidate.needsMembership ? 1 : 0;
+    if (candidate.kind === "participant") return 0;
     if (candidate.kind === "workingFolder") return 2;
     if (candidate.kind === "workspacePath") return 3;
     return 4;
@@ -2002,9 +1976,7 @@
                           {:else if candidate.kind === "workspacePath"}{#if candidate.path.kind === "directory"}<Folder size={15} />{:else}<FileIcon size={15} />{/if}
                           {:else}<GitBranch size={15} />{/if}
                         </span>
-                        <span class="candidate-copy"><strong>{candidate.label}</strong><small>{candidate.description}</small></span>
-                        {#if candidate.kind === "participant" && candidate.needsMembership}<Plus size={13} />{/if}
-                      </button>
+                        <span class="candidate-copy"><strong>{candidate.label}</strong><small>{candidate.description}</small></span>                      </button>
                     {/each}
                   </div>
                 {/each}

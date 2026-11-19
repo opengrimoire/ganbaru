@@ -48,7 +48,7 @@ An agent works in a channel only after it is added, as in Slack. Adding needs no
 
 An agent acts only when mentioned, and a reply in its assignment thread continues its work without a new mention. Automatic replies to messages that do not mention it are a later option; the setting appears only when that second mode exists.
 
-Mentioning an agent that is not in the channel is offered in the mention menu as "Add @Opus to #general", which adds it and keeps the mention in the draft. Nothing is added by a message alone.
+The mention menu offers only the channel's current members, so an agent joins a channel from the channel's member settings, never from the composer or a message alone.
 
 ## Access
 
@@ -79,7 +79,7 @@ Each agent runs its own model: a line agent the newest model of its line, any ot
 
 ## Common journeys
 
-- **First use:** the person installs Claude Code. Settings > Agents shows Claude as ready with `@Fable`, `@Opus`, and each Claude model, `@Opus` appears in the mention menu with an Add option in every channel, and adding it to `#general` lets it edit the project folder and ask before commands.
+- **First use:** the person installs Claude Code. Settings > Agents shows Claude as ready with `@Fable`, `@Opus`, and each Claude model, adding `@Opus` to `#general` from the channel's member settings puts it in that channel's mention menu and lets it edit the project folder and ask before commands.
 - **A brainstorming channel:** the person sets the channel's access to Talk only. Every agent in it replies without touching files.
 - **A trusted project on Linux:** the person sets the project's access to Work on their own. Every channel of the project inherits it unless it overrides.
 - **A second device:** the laptop shows the same agents and channel settings. Work mentioned there runs on the laptop when the provider is installed there; otherwise it waits for Start here on a device that has it.

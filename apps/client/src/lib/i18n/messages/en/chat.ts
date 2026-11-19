@@ -303,8 +303,6 @@ export const chat = {
     duplicateReference: (label: string) => `${label} is already referenced in this message.`,
     currentProjectChannels: "Current project",
     channelParticipants: "Channel participants",
-    otherAgents: "Other agents",
-    addAgentToChannel: (agent: string, channel: string) => `Add @${agent} to #${channel}`,
     projectFolders: "Project folders",
     folderReference: "Working folder",
     folderUnavailable: "Unavailable on this device",

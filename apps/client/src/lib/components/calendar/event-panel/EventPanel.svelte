@@ -58,16 +58,11 @@
   } from "./actions-controller.svelte";
   import type { PanelSaveData } from "./payloads";
   import type { EventPanelTimeTarget } from "./date-time-controller.svelte";
-  import { getMusicContextAssignments, getMusicPlaylistSummaries } from "$lib/music/platform-library";
-  import {
-    completeMusicAssignmentDrafts,
-    musicAssignmentDraftsEqual,
-    persistedMusicAssignmentDrafts,
-  } from "$lib/music/assignment-draft";
+  import { EventPanelMusicAssignmentsController } from "./music-assignments-controller.svelte";
+  import { persistedMusicAssignmentDrafts } from "$lib/music/assignment-draft";
   import { eventMusicPhases, eventPlaysMusic } from "$lib/music/event-playlists";
   import { hasMeetingState } from "$lib/calendar/meeting-state";
   import type { MusicContextAssignmentDraft } from "$lib/music/context-assignment";
-  import type { MusicPlaylistSummary } from "$lib/music/library/contracts";
 
   import Trash2 from "@lucide/svelte/icons/trash";
   import Archive from "@lucide/svelte/icons/archive";
@@ -230,13 +225,13 @@
   const handleProjectSelect = (projectId: string | undefined): void => {
     const changed = session.projectId !== projectId;
     session.handleProjectSelect(projectId);
-    if (changed && musicAssignmentsAvailable) void adoptProjectMusicSnapshot(projectId);
+    if (changed && musicAssignmentsAvailable) void musicAssignments.adoptProjectMusicSnapshot(projectId);
   };
 
   const handleProjectCreate = (projectId: string): void => {
     const changed = session.projectId !== projectId;
     session.handleProjectCreated(projectId);
-    if (changed && musicAssignmentsAvailable) void adoptProjectMusicSnapshot(projectId);
+    if (changed && musicAssignmentsAvailable) void musicAssignments.adoptProjectMusicSnapshot(projectId);
   };
 
   /** Gives a project created from this panel the color of its first saved event. */
@@ -249,108 +244,14 @@
     });
   }
 
-  let musicSnapshots = $state<MusicContextAssignmentDraft[]>(completeMusicAssignmentDrafts([]));
-  let savedMusicSnapshots = $state<MusicContextAssignmentDraft[]>(completeMusicAssignmentDrafts([]));
-  let musicOverrides = $state<MusicContextAssignmentDraft[]>(completeMusicAssignmentDrafts([]));
-  let savedMusicOverrides = $state<MusicContextAssignmentDraft[]>(completeMusicAssignmentDrafts([]));
-  let musicPlaylists = $state<MusicPlaylistSummary[]>([]);
-  let musicAssignmentsLoading = $state(false);
-  let musicAssignmentsError = $state<string | null>(null);
-  let musicAssignmentsReadyKey = $state<string | null>(null);
-  let musicLoadGeneration = 0;
-  let musicSnapshotGeneration = 0;
-  let musicOverrideGeneration = 0;
+  const musicAssignments = new EventPanelMusicAssignmentsController({
+    available: musicAssignmentsAvailable,
+    initKey: () => session.lastInitKey,
+    eventId: () => mode === "edit" && event ? event.recurringParentId ?? event.id : null,
+    projectId: () => session.projectId,
+  });
   /** Id of the event, or of the series an occurrence belongs to, whose sync conflicts the panel shows. */
   const conflictEventId = $derived(mode === "edit" && !parked && event ? event.recurringParentId ?? event.id : null);
-  const musicAssignmentsDirty = $derived(
-    musicAssignmentsReadyKey === session.lastInitKey
-      && (!musicAssignmentDraftsEqual(musicSnapshots, savedMusicSnapshots)
-        || !musicAssignmentDraftsEqual(musicOverrides, savedMusicOverrides)),
-  );
-
-  function copiedProjectSnapshot(
-    assignments: readonly MusicContextAssignmentDraft[],
-    projectId: string,
-  ): MusicContextAssignmentDraft[] {
-    return completeMusicAssignmentDrafts(assignments).map((assignment) => ({
-      ...assignment,
-      provenanceKind: "copied-project",
-      provenanceId: projectId,
-    }));
-  }
-
-  async function initializeMusicAssignments(key: string): Promise<void> {
-    if (!musicAssignmentsAvailable) return;
-    const generation = ++musicLoadGeneration;
-    const snapshotGeneration = ++musicSnapshotGeneration;
-    const overrideGeneration = ++musicOverrideGeneration;
-    musicAssignmentsLoading = true;
-    musicAssignmentsError = null;
-    const eventId = mode === "edit" && event ? event.recurringParentId ?? event.id : null;
-    const assignmentRequests = eventId
-      ? Promise.all([
-          getMusicContextAssignments("event-snapshot", eventId),
-          getMusicContextAssignments("event-override", eventId),
-        ])
-      : session.projectId
-        ? getMusicContextAssignments("project-default", session.projectId).then((assignments) => [
-            copiedProjectSnapshot(assignments, session.projectId as string),
-            [],
-          ] as const)
-        : Promise.resolve([[], []] as const);
-    const [assignmentResult, playlistResult] = await Promise.allSettled([
-      assignmentRequests,
-      getMusicPlaylistSummaries(Date.now(), 0, 500),
-    ]);
-    if (generation !== musicLoadGeneration || key !== session.lastInitKey) return;
-    if (assignmentResult.status === "fulfilled") {
-      const [snapshots, overrides] = assignmentResult.value;
-      savedMusicSnapshots = completeMusicAssignmentDrafts(snapshots);
-      if (snapshotGeneration === musicSnapshotGeneration) {
-        musicSnapshots = completeMusicAssignmentDrafts(snapshots);
-      }
-      savedMusicOverrides = completeMusicAssignmentDrafts(overrides);
-      if (overrideGeneration === musicOverrideGeneration) {
-        musicOverrides = completeMusicAssignmentDrafts(overrides);
-      }
-      musicAssignmentsReadyKey = key;
-    }
-    if (playlistResult.status === "fulfilled") musicPlaylists = playlistResult.value;
-    const failures = [assignmentResult, playlistResult]
-      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
-      .map((result) => result.reason instanceof Error ? result.reason.message : String(result.reason));
-    musicAssignmentsError = failures.length > 0 ? failures.join(" ") : null;
-    musicAssignmentsLoading = false;
-  }
-
-  async function adoptProjectMusicSnapshot(projectId: string | undefined): Promise<void> {
-    if (!musicAssignmentsAvailable) return;
-    const generation = ++musicSnapshotGeneration;
-    musicAssignmentsLoading = true;
-    musicAssignmentsError = null;
-    try {
-      const [assignments, playlists] = await Promise.all([
-        projectId ? getMusicContextAssignments("project-default", projectId) : Promise.resolve([]),
-        musicPlaylists.length === 0
-          ? getMusicPlaylistSummaries(Date.now(), 0, 500)
-          : Promise.resolve(musicPlaylists),
-      ]);
-      if (generation !== musicSnapshotGeneration) return;
-      musicPlaylists = playlists;
-      musicSnapshots = projectId
-        ? copiedProjectSnapshot(assignments, projectId)
-        : completeMusicAssignmentDrafts([]).map((assignment) => ({
-            ...assignment,
-            provenanceKind: "copied-project" as const,
-            provenanceId: null,
-          }));
-    } catch (cause) {
-      if (generation !== musicSnapshotGeneration) return;
-      musicAssignmentsError = cause instanceof Error ? cause.message : String(cause);
-    } finally {
-      if (generation === musicSnapshotGeneration) musicAssignmentsLoading = false;
-    }
-  }
 
   type Section = "meeting" | "pomodoro" | "notifications" | "repeat" | "music";
   /** Sections whose header toggle the panel owns; Music toggles its own playlist overrides. */
@@ -643,7 +544,7 @@
       (onInitialSync ?? onChange)?.(session.changesPayload());
     }
     session.initialized = true;
-    if (!parked && musicAssignmentsAvailable) void initializeMusicAssignments(key);
+    if (!parked && musicAssignmentsAvailable) void musicAssignments.initializeMusicAssignments(key);
 
     if (!parked && mode === "create") {
       const selectKey = key;
@@ -704,7 +605,7 @@
   // In edit mode it tracks the session's diff-based dirty flag so that
   // reverting all edits back to the original values disables the button
   // again, matching the click-outside cancellation behavior.
-  const saveReady = $derived(mode === "create" || externalDirty || musicAssignmentsDirty || dateTime.hasSaveableTimeDraft);
+  const saveReady = $derived(mode === "create" || externalDirty || musicAssignments.musicAssignmentsDirty || dateTime.hasSaveableTimeDraft);
   const titleEditBlocked = $derived(!detailsLoaded && session.titleEditBlocked);
   const locationEditBlocked = $derived(!detailsLoaded && session.locationEditBlocked);
   const saveControlsDisabled = $derived(
@@ -758,11 +659,11 @@
 
   /** Whether this save turns the event into a meeting that starts music, which others may hear. */
   function saveAddsMeetingMusic(): boolean {
-    if (!session.meetingEnabled || !playsMusic(musicOverrides, musicSnapshots)) return false;
+    if (!session.meetingEnabled || !playsMusic(musicAssignments.musicOverrides, musicAssignments.musicSnapshots)) return false;
     if (mode === "create") return true;
     const savedEvent = session.fullEvent ?? event;
     const savedMeeting = !!savedEvent && hasMeetingState(savedEvent);
-    return !savedMeeting || !playsMusic(savedMusicOverrides, savedMusicSnapshots);
+    return !savedMeeting || !playsMusic(musicAssignments.savedMusicOverrides, musicAssignments.savedMusicSnapshots);
   }
 
   function canSave(): boolean {
@@ -788,13 +689,13 @@
     if (!canSave()) return;
     const hadSaveableTimeDraft = dateTime.hasSaveableTimeDraft;
     const committedTimeDraft = dateTime.commitSaveableTimeDrafts();
-    if (!externalDirty && !musicAssignmentsDirty && mode !== "create" && (!hadSaveableTimeDraft || !committedTimeDraft)) return;
+    if (!externalDirty && !musicAssignments.musicAssignmentsDirty && mode !== "create" && (!hadSaveableTimeDraft || !committedTimeDraft)) return;
     const data: PanelSaveData = {
       ...session.saveData(),
       ...(musicAssignmentsAvailable
         ? {
-            musicSnapshotAssignments: persistedMusicAssignmentDrafts(musicSnapshots),
-            musicOverrideAssignments: persistedMusicAssignmentDrafts(musicOverrides),
+            musicSnapshotAssignments: persistedMusicAssignmentDrafts(musicAssignments.musicSnapshots),
+            musicOverrideAssignments: persistedMusicAssignmentDrafts(musicAssignments.musicOverrides),
           }
         : {}),
     };
@@ -803,8 +704,7 @@
     try {
       if (await onSave(data, s)) {
         adoptCreatedProjectColor(data);
-        savedMusicSnapshots = completeMusicAssignmentDrafts(musicSnapshots);
-        savedMusicOverrides = completeMusicAssignmentDrafts(musicOverrides);
+        musicAssignments.markMusicAssignmentsSaved();
       }
     } finally {
       session.savePending = false;
@@ -1029,9 +929,7 @@
     document.addEventListener("visibilitychange", refreshNotificationAccess);
     void refreshMobileNotificationStatus();
     return () => {
-      musicLoadGeneration += 1;
-      musicSnapshotGeneration += 1;
-      musicOverrideGeneration += 1;
+      musicAssignments.invalidate();
       window.removeEventListener("keydown", handleKeydown);
       window.removeEventListener("focus", refreshNotificationAccess);
       document.removeEventListener("visibilitychange", refreshNotificationAccess);
@@ -1608,20 +1506,17 @@
         <!-- 5) Music -->
         {#if timedSectionsVisible && musicAssignmentsAvailable}
           <MusicSection
-            overrides={musicOverrides}
-            snapshots={musicSnapshots}
-            playlists={musicPlaylists}
+            overrides={musicAssignments.musicOverrides}
+            snapshots={musicAssignments.musicSnapshots}
+            playlists={musicAssignments.musicPlaylists}
             pomodoroEnabled={session.pomodoroEnabled}
             expanded={openSection === "music"}
-            disabled={controlsDisabled || musicAssignmentsReadyKey !== session.lastInitKey}
-            loading={musicAssignmentsLoading}
-            error={musicAssignmentsError}
-            onOverridesChange={(assignments) => {
-              musicOverrideGeneration += 1;
-              musicOverrides = assignments;
-            }}
+            disabled={controlsDisabled || musicAssignments.musicAssignmentsReadyKey !== session.lastInitKey}
+            loading={musicAssignments.musicAssignmentsLoading}
+            error={musicAssignments.musicAssignmentsError}
+            onOverridesChange={(assignments) => musicAssignments.setMusicOverrides(assignments)}
             onExpand={() => handleExpand("music")}
-            onRetry={() => initializeMusicAssignments(session.lastInitKey)} />
+            onRetry={() => musicAssignments.initializeMusicAssignments(session.lastInitKey)} />
         {/if}
     </div>
     </div>

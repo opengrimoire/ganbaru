@@ -1,7 +1,7 @@
 <!--
   @component
   The phone reply thread: a bottom sheet over the channel that slides in nearly full, opens fully from its handle or
-  when its composer takes focus, and closes from a swipe down, a tap above it, Back, or the thread close button.
+  when its composer takes focus, and closes from a swipe down, a tap above it, or Back.
 -->
 <script lang="ts">
   import { onMount } from "svelte";

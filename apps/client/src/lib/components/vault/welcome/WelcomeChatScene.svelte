@@ -99,7 +99,7 @@
 
   /** The title bar on desktop, or the phone's top bar, tall enough for its context switcher. */
   const TOP_BAR_H = mobileShell ? 48 : 36;
-  /** The workspace header and the thread header, as `--toolbar-h` sizes them on each shell. */
+  /** The workspace header and the desktop thread header, as `--toolbar-h` sizes them on each shell. */
   const HEADER_H = mobileShell ? 56 : 40;
   /** The title bar's end padding, as the title bar draws it. */
   const TITLE_BAR_END_PX = 6;
@@ -298,20 +298,17 @@
   </div>
 {/snippet}
 
-<!-- The reply thread: its tab, or on a phone its title and close button, the message it answers, Opus's turn, and its own composer. -->
+<!-- The reply thread: its tab, which a phone leaves out, the message it answers, Opus's turn, and its own composer. -->
 {#snippet thread(reserveGlobalActions: boolean)}
   <div class="reply-thread-panel" data-cursor="chat-thread">
+    {#if !mobileShell}
     <div class="thread-header" style:height={`${HEADER_H}px`} style:padding-right={reserveGlobalActions ? `${GLOBAL_ACTIONS_REM}rem` : undefined}>
-      {#if mobileShell}
-        <strong class="thread-title">{t("chat.organization.thread")}</strong>
-        <span class="thread-close"><X size={MOBILE_ICON_SIZE} strokeWidth={MOBILE_ICON_STROKE_WIDTH} /></span>
-      {:else}
-        <span class={cn("thread-tab-shell", hovered("thread-tab") && "show-close")} data-scene-hover="thread-tab">
-          <span class="thread-tab"><MessagesSquare size={13} /><strong>{t("chat.organization.thread")}</strong></span>
-          <span class="tab-close"><X size={11} /></span>
-        </span>
-      {/if}
+      <span class={cn("thread-tab-shell", hovered("thread-tab") && "show-close")} data-scene-hover="thread-tab">
+        <span class="thread-tab"><MessagesSquare size={13} /><strong>{t("chat.organization.thread")}</strong></span>
+        <span class="tab-close"><X size={11} /></span>
+      </span>
     </div>
+    {/if}
     <div class="flex min-h-0 flex-1 flex-col justify-end overflow-hidden">
       <div class="thread-scroll">
         <div class="date-divider"><span>{sentDay}</span></div>
@@ -607,8 +604,6 @@
   .thread-tab strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.733333rem; font-weight: 500; }
   .tab-close { display: grid; width: 1.5rem; flex: 0 0 auto; place-items: center; border-radius: 0.3rem; opacity: 0; }
   .thread-tab-shell.show-close .tab-close { opacity: 1; }
-  .thread-title { min-width: 0; flex: 1 1 auto; overflow: hidden; padding-inline-start: 0.55rem; font-size: 0.875rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-  .thread-close { display: flex; width: var(--mobile-chrome-column); height: 3rem; flex: 0 0 auto; align-items: center; justify-content: center; color: var(--foreground); }
   .thread-scroll { min-height: 100%; flex-shrink: 0; padding-block: 0.4rem; }
   .thread-composer { display: flex; flex: 0 0 auto; justify-content: center; padding: 0.5rem 0.5rem 0.75rem; }
   .thread-separator { position: absolute; top: 0; bottom: 0; left: 0; z-index: 1; width: 1px; background: var(--border); }

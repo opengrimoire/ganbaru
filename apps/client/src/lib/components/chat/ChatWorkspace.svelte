@@ -645,7 +645,11 @@
   $effect(() => {
     const open = chat.openReplyThreadId !== null;
     if (open && !replyThreadWasOpen) {
-      queueMicrotask(() => document.querySelector<HTMLElement>("[data-chat-reply-thread] :is([data-thread-tab], [data-thread-title])")?.focus());
+      // The tab on desktop, or the thread itself where a phone sheet shows no header.
+      queueMicrotask(() => {
+        const thread = document.querySelector<HTMLElement>("[data-chat-reply-thread]");
+        (thread?.querySelector<HTMLElement>("[data-thread-tab]") ?? thread)?.focus();
+      });
     }
     replyThreadWasOpen = open;
   });

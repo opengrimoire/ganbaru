@@ -1,7 +1,9 @@
 import type {
   ProviderFamilyId,
+  ProviderFamilyMetadataRead,
   ProviderInstanceConfig,
   ProviderInstanceId,
+  ProviderInstanceRead,
   VersionedJson,
 } from "./contracts";
 import { isLoopbackHostname } from "./workspace/loopback";
@@ -79,6 +81,32 @@ export function providerFamilyDisplayName(
   genericAcpName: string,
 ): string {
   return family.familyId === GENERIC_ACP_FAMILY_ID ? genericAcpName : family.displayName;
+}
+
+/** The parts of a configuration that name the program it runs. */
+type ProviderCliSource = { configuration: Pick<ProviderInstanceRead["configuration"], "executable">; lastProbe: { version: string | null } | null };
+
+/** The program name a family runs when nothing else names one. */
+export function providerFamilyCliName(family: Pick<ProviderFamilyMetadataRead, "familyId" | "defaultExecutableCandidates">): string {
+  return family.defaultExecutableCandidates[0] || family.familyId;
+}
+
+/** The program name a configuration runs, from the last part of its executable path. */
+export function providerCliName(
+  family: Pick<ProviderFamilyMetadataRead, "familyId" | "defaultExecutableCandidates">,
+  provider: ProviderCliSource,
+): string {
+  const executable = provider.configuration.executable.trim().replaceAll("\\", "/");
+  return executable.split("/").at(-1) || providerFamilyCliName(family);
+}
+
+/** The program name a configuration runs, followed by its version once a probe read it. */
+export function providerCliSummary(
+  family: Pick<ProviderFamilyMetadataRead, "familyId" | "defaultExecutableCandidates">,
+  provider: ProviderCliSource,
+): string {
+  const cliName = providerCliName(family, provider);
+  return provider.lastProbe?.version ? `${cliName} ${provider.lastProbe.version}` : cliName;
 }
 
 /** Whether an environment variable name looks like it holds a secret, compared per underscore segment. */

@@ -82,51 +82,60 @@ function instance(
 }
 
 describe("provider availability", () => {
-  it("is ready with the signed in account when any configuration runs", () => {
+  it("is ready with the configuration that runs when any does", () => {
     expect(providerAvailability(family("claude"), [
       instance("claude", { state: "authentication_required" }),
       instance("claude", { accountLabel: "person@example.com" }),
-    ], ["/usr/bin/claude"])).toEqual({ kind: "ready", accountLabel: "person@example.com" });
+    ], ["/usr/bin/claude"])?.availability).toEqual({ kind: "ready" });
   });
 
   it("asks to sign in before reporting a missing program or another problem", () => {
     expect(providerAvailability(family("codex"), [
       instance("codex", { state: "executable_missing" }),
       instance("codex", { state: "authentication_required" }),
-    ], [])).toEqual({ kind: "signed-out" });
+    ], [])?.availability).toEqual({ kind: "signed-out" });
     expect(providerAvailability(family("codex"), [
       instance("codex", { state: "executable_missing", executable: "/opt/codex" }),
       instance("codex", { state: "unsupported_version" }),
-    ], [])).toEqual({ kind: "missing-at", path: "/opt/codex" });
+    ], [])?.availability).toEqual({ kind: "missing-at", path: "/opt/codex" });
   });
 
   it("does not count a healthy configuration whose agents need a newer CLI as ready", () => {
-    expect(providerAvailability(family("cursor"), [instance("cursor", { agentMinimumVersion: "2.0.0" })], []))
+    expect(providerAvailability(family("cursor"), [instance("cursor", { agentMinimumVersion: "2.0.0" })], [])?.availability)
       .toEqual({ kind: "attention" });
   });
 
-  it("ignores turned off and duplicate configurations", () => {
+  it("reports a family whose configurations are all turned off or duplicates as turned off", () => {
+    const off = instance("grok", { enabled: false });
     expect(providerAvailability(family("grok"), [
-      instance("grok", { enabled: false }),
+      off,
       instance("grok", { duplicateOf: "grok-original" }),
-    ], [])).toEqual({ kind: "attention" });
+    ], [])).toEqual({ availability: { kind: "disabled" }, instance: off });
+  });
+
+  it("describes the configuration it judged so its version and account match its state", () => {
+    const signedOut = instance("codex", { state: "authentication_required" });
+    const ready = instance("codex", { accountLabel: "person@example.com" });
+    expect(providerAvailability(family("codex"), [signedOut, ready], [])?.instance).toBe(ready);
+    expect(providerAvailability(family("codex"), [signedOut, instance("codex", { state: "executable_missing" })], [])?.instance)
+      .toBe(signedOut);
   });
 
   it("reports a configuration that no probe checked yet", () => {
-    expect(providerAvailability(family("opencode"), [instance("opencode", { state: null })], []))
+    expect(providerAvailability(family("opencode"), [instance("opencode", { state: null })], [])?.availability)
       .toEqual({ kind: "unchecked" });
   });
 
   it("uses the programs found on the device when no configuration exists", () => {
     expect(providerAvailability(family("claude"), [], ["/home/me/.local/bin/claude", "/usr/bin/claude"]))
-      .toEqual({ kind: "installed", path: "/home/me/.local/bin/claude" });
-    expect(providerAvailability(family("claude"), [], [])).toEqual({ kind: "not-installed" });
+      .toEqual({ availability: { kind: "installed", path: "/home/me/.local/bin/claude" }, instance: null });
+    expect(providerAvailability(family("claude"), [], [])).toEqual({ availability: { kind: "not-installed" }, instance: null });
   });
 
   it("leaves out families that are not implemented or that the device does not search for", () => {
     expect(providerAvailability(family("future", "metadata_only"), [], [])).toBeNull();
     expect(providerAvailability(family("acp"), [], undefined)).toBeNull();
-    expect(providerAvailability(family("acp"), [instance("acp")], undefined)).toEqual({ kind: "ready", accountLabel: null });
+    expect(providerAvailability(family("acp"), [instance("acp")], undefined)?.availability).toEqual({ kind: "ready" });
   });
 
   it("lists the offered families in the given order with their own configurations", () => {

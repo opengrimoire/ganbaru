@@ -3,6 +3,7 @@ import {
   createProviderSetupDraft,
   isSecretLikeEnvironmentName,
   providerConfigurationFromDraft,
+  providerCliSummary,
   providerFamilyDisplayName,
   providerInstanceIdFromLabel,
   storesPlaintextSecret,
@@ -13,6 +14,14 @@ describe("provider setup", () => {
   it("localizes only the generic ACP family label", () => {
     expect(providerFamilyDisplayName({ familyId: "acp", displayName: "ACP agent" }, "Agente ACP")).toBe("Agente ACP");
     expect(providerFamilyDisplayName({ familyId: "opencode", displayName: "OpenCode" }, "Agente ACP")).toBe("OpenCode");
+  });
+
+  it("names the program a configuration runs with its version once a probe read it", () => {
+    const family = { familyId: "codex", defaultExecutableCandidates: ["codex"] };
+    expect(providerCliSummary(family, { configuration: { executable: "C:\\Tools\\codex.exe" }, lastProbe: { version: "1.2.3" } }))
+      .toBe("codex.exe 1.2.3");
+    expect(providerCliSummary(family, { configuration: { executable: "/usr/bin/codex" }, lastProbe: null })).toBe("codex");
+    expect(providerCliSummary(family, { configuration: { executable: " " }, lastProbe: { version: null } })).toBe("codex");
   });
 
   it("creates stable editable instance IDs from labels", () => {

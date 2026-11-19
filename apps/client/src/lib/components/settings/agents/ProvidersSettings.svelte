@@ -1,7 +1,4 @@
 <script lang="ts">
-  import Mail from "@lucide/svelte/icons/mail";
-  import KeyRound from "@lucide/svelte/icons/key-round";
-  import UserRound from "@lucide/svelte/icons/user-round";
   import Pencil from "@lucide/svelte/icons/pencil";
   import Plus from "@lucide/svelte/icons/plus";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
@@ -23,14 +20,14 @@
     ProviderUpdateRead,
   } from "$lib/chat/contracts";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
-  import { providerFamilyDisplayName } from "$lib/chat/provider-setup";
+  import { providerCliName, providerCliSummary, providerFamilyCliName, providerFamilyDisplayName } from "$lib/chat/provider-setup";
   import { providerVersionNotice, type ProviderVersionNotice } from "$lib/chat/provider-version";
   import { formatModelDisplayName, modelCompany } from "$lib/chat/composer/model-company";
   import { familiesInPickerOrder, providersInPickerOrder } from "$lib/chat/composer/model-picker-model";
   import ChatModelAvatar from "$lib/components/chat/identity/ChatModelAvatar.svelte";
   import CustomAgentDialog from "./CustomAgentDialog.svelte";
+  import ProviderHeading, { type ProviderDisplayState } from "./ProviderHeading.svelte";
   import ProviderInstallSteps from "./ProviderInstallSteps.svelte";
-  import ProviderPlanLimitRings from "./ProviderPlanLimitRings.svelte";
   import UnconfiguredProviderFamily from "./UnconfiguredProviderFamily.svelte";
   import { unconfiguredFamilySituation } from "./provider-install-steps";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
@@ -53,7 +50,6 @@
     onOpenProviderSetup: (target: ChatProviderSetupTarget) => void;
   } = $props();
 
-  type ProviderDisplayState = "healthy" | "attention" | "disabled" | "unconfigured";
 
   const localization = getLocalization();
   const { t } = localization;
@@ -374,19 +370,6 @@
     return chatErrorMessage(error, t("settings.agents.providers.operationFailed"));
   }
 
-  function providerCliName(
-    family: ProviderFamilyMetadataRead,
-    provider: ProviderInstanceRead,
-  ): string {
-    const executable = provider.configuration.executable.trim().replaceAll("\\", "/");
-    return executable.split("/").at(-1)
-      || providerFamilyCliName(family);
-  }
-
-  function providerFamilyCliName(family: ProviderFamilyMetadataRead): string {
-    return family.defaultExecutableCandidates[0] || family.familyId;
-  }
-
   /** The newer release found for `provider`, while its last probe still reads the version the check compared. */
   function availableUpdate(provider: ProviderInstanceRead): ProviderUpdateRead | null {
     const update = providerUpdates.forInstance(provider.configuration.instanceId);
@@ -406,13 +389,6 @@
     });
   }
 
-  function providerCliSummary(
-    family: ProviderFamilyMetadataRead,
-    provider: ProviderInstanceRead,
-  ): string {
-    const cliName = providerCliName(family, provider);
-    return provider.lastProbe?.version ? `${cliName} ${provider.lastProbe.version}` : cliName;
-  }
 </script>
 
 <section class="provider-settings" data-agents-settings-subsection="providers">
@@ -474,63 +450,22 @@
         {#if selectedFamily}
           <div class="detail-scroll-frame">
             <div bind:this={detailScrollElement} data-mobile-scroll-fade class="detail-scroll hide-scrollbar">
-              <div class="editor-heading">
-                <ChatModelAvatar
-                  familyId={selectedFamily.familyId}
-                  label={selectedFamily.displayName}
-                  size={38}
-                />
-                <div class="editor-title">
-                  <div class="editor-identity">
-                    <div class="editor-label-line">
-                      <h3>{selectedProvider?.configuration.label ?? selectedFamily.displayName}</h3>
-                      <span
-                        class="editor-state"
-                        data-state={selectedProvider ? providerState(selectedProvider) : familyState(selectedFamily)}
-                        aria-label={selectedProvider ? providerStateLabel(selectedProvider) : familyStateLabel(selectedFamily)}
-                        data-app-tooltip={selectedProvider ? providerStateLabel(selectedProvider) : familyStateLabel(selectedFamily)}
-                      ><i></i></span>
-                    </div>
-                    <div class="editor-subtitle-line">
-                      <p>
-                        {selectedProvider
-                          ? providerCliSummary(selectedFamily, selectedProvider)
-                          : providerFamilyCliName(selectedFamily)}
-                      </p>
-                      {#if selectedProvider?.lastProbe?.accountLabel}
-                        <button
-                          type="button"
-                          class="editor-account"
-                          aria-label={`${t("settings.agents.providers.account")}: ${selectedProvider.lastProbe.accountLabel}`}
-                          data-app-tooltip={selectedProvider.lastProbe.accountLabel}
-                          data-app-tooltip-keep-on-click="true"
-                        ><Mail size={12} strokeWidth={1.8} /></button>
-                      {/if}
-                      {#if selectedProvider}<ProviderPlanLimitRings provider={selectedProvider} />{/if}
-                      {#if selectedProvider?.lastProbe?.authSource}
-                        {@const authSourceLabel = selectedProvider.lastProbe.authSource === "api_key"
-                          ? t("settings.agents.providers.authSourceApiKey")
-                          : t("settings.agents.providers.authSourceAccountLogin")}
-                        <button
-                          type="button"
-                          class="editor-account"
-                          aria-label={`${t("settings.agents.providers.authSource")}: ${authSourceLabel}`}
-                          data-app-tooltip={authSourceLabel}
-                          data-app-tooltip-keep-on-click="true"
-                        >
-                          {#if selectedProvider.lastProbe.authSource === "api_key"}
-                            <KeyRound size={12} strokeWidth={1.8} />
-                          {:else}
-                            <UserRound size={12} strokeWidth={1.8} />
-                          {/if}
-                        </button>
-                      {/if}
-                    </div>
-                  </div>
-                  {#if selectedProvider}
+              <ProviderHeading
+                familyId={selectedFamily.familyId}
+                familyName={selectedFamily.displayName}
+                title={selectedProvider?.configuration.label ?? selectedFamily.displayName}
+                state={selectedProvider ? providerState(selectedProvider) : familyState(selectedFamily)}
+                stateLabel={selectedProvider ? providerStateLabel(selectedProvider) : familyStateLabel(selectedFamily)}
+                subtitle={selectedProvider
+                  ? providerCliSummary(selectedFamily, selectedProvider)
+                  : providerFamilyCliName(selectedFamily)}
+                provider={selectedProvider}
+                actions={selectedProvider ? headerActions : undefined}
+              />
+              {#snippet headerActions()}
+                {#if selectedProvider}
                     {@const headerInstanceId = selectedProvider.configuration.instanceId}
                     {@const headerBusy = refreshingAll || busyIds.includes(headerInstanceId)}
-                    <div class="header-actions">
                       <Switch
                         checked={selectedProvider.configuration.enabled}
                         ariaLabel={selectedProvider.configuration.enabled
@@ -568,10 +503,8 @@
                       >
                         <Trash2 size={14} />
                       </button>
-                    </div>
-                  {/if}
-                </div>
-              </div>
+                {/if}
+              {/snippet}
 
               {#if refreshResult && (refreshResult.providersDiscovered > 0 || refreshResult.issues > 0)}
                 <p class="refresh-summary" class:attention={refreshResult.issues > 0} role="status">
@@ -859,28 +792,16 @@
   .directory-summary strong,.directory-summary small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .directory-summary strong { font-size:calc(0.8rem * var(--type-scale)); font-weight:600; }
   .directory-summary small { display:flex; min-width:0; align-items:center; gap:0.3rem; margin-top:0.05rem; color:var(--muted-foreground); font-size:calc(0.65rem * var(--type-scale)); }
-  .directory-summary small i,.editor-state i { width:0.38rem; height:0.38rem; flex:0 0 auto; border-radius:50%; background:var(--status-tentative); }
-  .directory-summary small[data-state="healthy"] i,.editor-state[data-state="healthy"] i { background:var(--action-confirm-signal); }
-  .directory-summary small[data-state="disabled"] i,.editor-state[data-state="disabled"] i { background:var(--muted-foreground); opacity:0.7; }
-  .directory-summary small[data-state="unconfigured"] i,.editor-state[data-state="unconfigured"] i { background:var(--destructive); }
+  .directory-summary small i { width:0.38rem; height:0.38rem; flex:0 0 auto; border-radius:50%; background:var(--status-tentative); }
+  .directory-summary small[data-state="healthy"] i { background:var(--action-confirm-signal); }
+  .directory-summary small[data-state="disabled"] i { background:var(--muted-foreground); opacity:0.7; }
+  .directory-summary small[data-state="unconfigured"] i { background:var(--destructive); }
   .detail-panel { position:relative; z-index:2; display:grid; min-width:0; min-height:0; grid-template-rows:minmax(0,1fr) auto; border-left:1px solid var(--border); padding-left:1rem; }
   .detail-footer { display:flex; min-width:0; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:0.5rem 0.75rem; border-top:1px solid var(--border); padding:0.65rem 0.75rem 0.65rem 0; }
   .custom-agent-action,.archived-toggle { margin-left:auto; }
   .archived-toggle + .custom-agent-action { margin-left:0; }
   .model-row.archived .model-name { color:var(--muted-foreground); }
   .detail-scroll { display:grid; grid-template-columns:minmax(0,1fr); align-content:start; gap:1rem; padding:0.2rem 0.75rem 1rem 0; }
-  .editor-heading { display:grid; min-width:0; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:0.65rem; padding-inline:0.25rem; }
-  .editor-title { display:grid; min-width:0; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:0.75rem; }
-  .editor-identity { display:grid; min-width:0; }
-  .editor-label-line,.editor-subtitle-line { display:flex; min-width:0; align-items:center; }
-  .editor-label-line { gap:0.3rem; }
-  .editor-subtitle-line { gap:0.65rem; }
-  .editor-heading h3 { overflow:hidden; font-size:calc(0.833333rem * var(--type-scale)); font-weight:600; text-overflow:ellipsis; white-space:nowrap; }
-  .editor-heading p { overflow:hidden; min-width:0; margin-top:0.08rem; color:var(--muted-foreground); font-size:calc(0.7rem * var(--type-scale)); text-overflow:ellipsis; white-space:nowrap; }
-  .editor-state { display:inline-grid; width:0.7rem; height:0.7rem; flex:0 0 auto; place-items:center; }
-  .editor-account { display:inline-grid; width:1rem; height:1rem; flex:0 0 auto; place-items:center; border-radius:0.2rem; color:var(--muted-foreground); }
-  .editor-account:hover,.editor-account:focus-visible { color:var(--foreground); }
-  .header-actions { display:flex; flex-shrink:0; align-items:center; gap:0.3rem; }
   .refresh-summary { border-left:2px solid var(--action-confirm-signal); padding:0.15rem 0.25rem 0.15rem 0.65rem; font-size:calc(0.68rem * var(--type-scale)); }
   .detail-scroll > :global(.operation-error) { padding:0.15rem 0.25rem 0.15rem 0.65rem; font-size:calc(0.68rem * var(--type-scale)); }
   .refresh-summary { color:var(--muted-foreground); }

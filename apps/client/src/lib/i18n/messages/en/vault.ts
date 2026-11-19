@@ -146,6 +146,25 @@ export const vaultSetup = {
     reply:
       "In chapter 2, Mateo sees Clara leave the station with the letter, but he never tells Tomás. That silence could set up their argument in chapter 3.",
   },
+  agents: {
+    headline: "Use the AI agents you already have",
+    body: "Ganbaru runs the coding agents installed on this computer with your own accounts, so set up only the ones you want.",
+    listLabel: "AI agents on this computer",
+    later: "You can skip this and set them up anytime in Settings, under Agents.",
+    checkFailed: "Ganbaru could not check the AI agents on this computer.",
+    checkAgain: "Check again",
+    status: {
+      checking: "Checking",
+      ready: "Ready",
+      readyAs: (account: string) => `Ready, signed in as ${account}`,
+      signedOut: "Installed, not signed in",
+      installed: "Installed, not added yet",
+      notInstalled: "Not installed",
+      missingAt: "Not found where it was set up",
+      unchecked: "Not checked yet",
+      attention: "Needs attention in Settings",
+    },
+  },
   about: {
     headline: "Free and open source",
     body: "Your data stays on your devices and syncs directly between them, with no account, ads, or telemetry.\nApp and code are yours forever.",

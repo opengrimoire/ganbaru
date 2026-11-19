@@ -377,6 +377,12 @@ export default defineConfig({
           ? "src/lib/chat/review/diff-loader.mobile.ts"
           : "src/lib/chat/review/diff-loader.ts",
       ),
+      "$lib/vault/welcome-agents-loader": path.resolve(
+        configDir,
+        isMobileBuild
+          ? "src/lib/vault/welcome-agents-loader.mobile.ts"
+          : "src/lib/vault/welcome-agents-loader.ts",
+      ),
       "$lib/api/db": path.resolve(
         configDir,
         isMobileBuild

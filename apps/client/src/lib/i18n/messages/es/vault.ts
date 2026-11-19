@@ -154,6 +154,25 @@ export const vaultSetup = {
     reply:
       "En el capítulo 2, Mateo ve a Clara salir de la estación con la carta, pero nunca se lo cuenta a Tomás. Ese silencio podría preparar su discusión en el capítulo 3.",
   },
+  agents: {
+    headline: "Usa los agentes de IA que ya tienes",
+    body: "Ganbaru usa los agentes de programación instalados en esta computadora con tus propias cuentas, así que configura solo los que quieras.",
+    listLabel: "Agentes de IA en esta computadora",
+    later: "Puedes saltarte esto y configurarlos cuando quieras en Ajustes, en Agentes.",
+    checkFailed: "Ganbaru no pudo revisar los agentes de IA de esta computadora.",
+    checkAgain: "Revisar de nuevo",
+    status: {
+      checking: "Revisando",
+      ready: "Listo",
+      readyAs: (account: string) => `Listo, con la sesión de ${account}`,
+      signedOut: "Instalado, sin sesión iniciada",
+      installed: "Instalado, aún sin agregar",
+      notInstalled: "No instalado",
+      missingAt: "No está donde se configuró",
+      unchecked: "Aún sin revisar",
+      attention: "Requiere atención en Ajustes",
+    },
+  },
   about: {
     headline: "Gratis y de código abierto",
     body: "Tus datos se quedan en tus dispositivos y se sincronizan directamente entre ellos, sin cuentas, anuncios ni telemetría. App y código son tuyos para siempre.",

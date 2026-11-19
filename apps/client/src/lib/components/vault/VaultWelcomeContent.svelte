@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { loadWelcomeAgentsStep } from "$lib/vault/welcome-agents-loader";
   import { clampWelcomeStep, welcomeProgress, welcomeStageSteps, type WelcomeStage } from "$lib/vault/welcome-steps";
   import OnboardingNav, { type OnboardingNavPrimary } from "./OnboardingNav.svelte";
   import WelcomeAboutStep from "./welcome/WelcomeAboutStep.svelte";
@@ -49,6 +50,15 @@
   const onLast = $derived(index === steps.length - 1);
   const progress = $derived(showStepDots ? welcomeProgress(stage, index) : undefined);
 
+  // The agents screen loads its own module, so the screen before it starts the load and Continue shows it at once.
+  $effect(() => {
+    const agentsIndex = steps.indexOf("agents");
+    if (agentsIndex === -1 || index < agentsIndex - 1) return;
+    loadWelcomeAgentsStep().catch((error: unknown) => {
+      console.warn("Could not load the coding agents welcome screen:", error);
+    });
+  });
+
   function next(): void {
     if (!onLast) step = index + 1;
   }
@@ -83,6 +93,10 @@
         <WelcomeQuickNotesStep />
       {:else if current === "chat"}
         <WelcomeChatStep />
+      {:else if current === "agents"}
+        {#await loadWelcomeAgentsStep() then WelcomeAgentsStep}
+          <WelcomeAgentsStep />
+        {/await}
       {:else}
         <WelcomeAboutStep />
       {/if}

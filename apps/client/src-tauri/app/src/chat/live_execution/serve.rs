@@ -36,13 +36,14 @@ pub(crate) fn wake<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-/// The live reads a sync listener of this desktop answers. Admission is read fresh for every
-/// read from the selected log and this installation's quarantine.
+/// The live reads and remote approvals a sync listener of this desktop answers. Admission is
+/// read fresh for every request from the selected log and this installation's quarantine.
 pub(crate) fn chat_live_routes<R: Runtime>(app: &AppHandle<R>) -> ChatLiveRoutes {
     let changes = app.state::<ChatLiveChanges>().0.subscribe();
     ChatLiveRoutes::new(
         crate::sync::member_admission_source(app),
         live_reader(app.clone()),
+        super::approvals::approval_resolver(app),
         changes,
     )
 }

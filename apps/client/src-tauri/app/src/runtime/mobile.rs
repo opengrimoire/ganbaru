@@ -94,6 +94,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::usage_summaries::chat_read_agent_usage,
             chat::organization::chat_read_mobile_channel_roster,
             chat::live_execution::follow::chat_read_live_execution,
+            chat::live_execution::answer::chat_resolve_remote_approval,
             chat::organization::chat_post_message,
             chat::organization::chat_read_project_primary_working_folder,
             chat::attachment_commands::chat_import_image,

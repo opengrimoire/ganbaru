@@ -5,12 +5,15 @@
 //! quarantine, whichever listener carried it, and fails closed when admission cannot be read.
 //! A read that asks to wait is held until the Chat tables change or [`CHAT_LIVE_WAIT`] passes,
 //! and is admitted again after every wake before rows are read.
+//!
+//! The same routes take the answer a following device gives to an approval the run holds open,
+//! admitted the same way and never held.
 
 use super::member::MemberAdmissionSource;
 use super::{CONTROL_TIMEOUT, Peer, Routes, ServerStream, send_error, timeout_control};
 use crate::peers::admission::{MemberAdmission, MemberRefusal};
 use ganbaru_handoff::pairing::certificate_fingerprint;
-use ganbaru_handoff::protocol::{ControlMessage, write_control};
+use ganbaru_handoff::protocol::{ChatRemoteApprovalDecision, ControlMessage, write_control};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -23,7 +26,9 @@ use tokio::sync::{Notify, watch};
 pub const CHAT_LIVE_WAIT: Duration = Duration::from_secs(12);
 const _: () = assert!(CHAT_LIVE_WAIT.as_secs() + 3 <= CONTROL_TIMEOUT.as_secs());
 
-pub use ganbaru_handoff::protocol::{CHAT_LIVE_NOT_HERE_CODE, CHAT_LIVE_UNAVAILABLE_CODE};
+pub use ganbaru_handoff::protocol::{
+    CHAT_APPROVAL_STALE_CODE, CHAT_LIVE_NOT_HERE_CODE, CHAT_LIVE_UNAVAILABLE_CODE,
+};
 
 /// The execution read one admitted request asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,6 +73,36 @@ pub type ChatLiveReader = Arc<
         + Sync,
 >;
 
+/// The approval answer one admitted request carries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChatApprovalQuery {
+    pub assignment_id: String,
+    pub request_id: String,
+    pub decision: ChatRemoteApprovalDecision,
+    pub provider_option_id: String,
+    pub command_id: String,
+}
+
+/// What the local Chat runtime answers for an approval.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChatApprovalAnswer {
+    /// The request was resolved with the decision, now or by an earlier try of the same command.
+    Resolved,
+    /// This device does not execute the assignment.
+    NotHere,
+    /// The request is no longer open, or the decision is not one it offered.
+    Stale,
+}
+
+/// Resolves the approval a query names through the local Chat runtime.
+pub type ChatApprovalResolver = Arc<
+    dyn Fn(
+            ChatApprovalQuery,
+        ) -> Pin<Box<dyn Future<Output = Result<ChatApprovalAnswer, String>> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// The device and assignment one held wait reads.
 type WaitKey = (String, String);
 
@@ -79,23 +114,26 @@ type HeldWaits = Arc<Mutex<HashMap<WaitKey, Arc<Notify>>>>;
 pub struct ChatLiveRoutes {
     admission: MemberAdmissionSource,
     reader: ChatLiveReader,
+    resolver: ChatApprovalResolver,
     changes: watch::Receiver<u64>,
     waits: HeldWaits,
     wait: Duration,
 }
 
 impl ChatLiveRoutes {
-    /// Reads answered from `reader` for devices `admission` admits, with waits woken whenever
-    /// `changes` moves. `admission` must apply the quarantine, since the coordinator listener's
-    /// own log admission does not.
+    /// Reads answered from `reader` and approvals resolved through `resolver` for devices
+    /// `admission` admits, with waits woken whenever `changes` moves. `admission` must apply the
+    /// quarantine, since the coordinator listener's own log admission does not.
     pub fn new(
         admission: MemberAdmissionSource,
         reader: ChatLiveReader,
+        resolver: ChatApprovalResolver,
         changes: watch::Receiver<u64>,
     ) -> Self {
         Self {
             admission,
             reader,
+            resolver,
             changes,
             waits: HeldWaits::default(),
             wait: CHAT_LIVE_WAIT,
@@ -246,7 +284,10 @@ pub fn admit(
 
 impl Routes for ChatLiveRoutes {
     fn handles(&self, request: &ControlMessage) -> bool {
-        matches!(request, ControlMessage::ChatLiveRead { .. })
+        matches!(
+            request,
+            ControlMessage::ChatLiveRead { .. } | ControlMessage::ChatApprovalResolve { .. }
+        )
     }
 
     async fn serve(
@@ -255,13 +296,84 @@ impl Routes for ChatLiveRoutes {
         peer: Peer<'_>,
         request: ControlMessage,
     ) -> Result<(), String> {
-        serve_read(
-            self,
-            stream,
-            peer.certificate.map(|certificate| certificate.as_ref()),
-            request,
-        )
-        .await
+        let certificate = peer.certificate.map(|certificate| certificate.as_ref());
+        if matches!(request, ControlMessage::ChatApprovalResolve { .. }) {
+            serve_approval(self, stream, certificate, request).await
+        } else {
+            serve_read(self, stream, certificate, request).await
+        }
+    }
+}
+
+/// Resolves one approval on `stream` for the peer that presented `certificate`.
+async fn serve_approval<W>(
+    routes: &ChatLiveRoutes,
+    stream: &mut W,
+    certificate: Option<&[u8]>,
+    request: ControlMessage,
+) -> Result<(), String>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let ControlMessage::ChatApprovalResolve {
+        vault_id,
+        device_id,
+        assignment_id,
+        request_id,
+        decision,
+        provider_option_id,
+        command_id,
+        ..
+    } = request
+    else {
+        return Err("not a Chat approval".to_string());
+    };
+    let Some(certificate) = certificate else {
+        return refuse(stream, MemberRefusal::Unknown).await;
+    };
+    let fingerprint = certificate_fingerprint(certificate);
+    if let Err(refusal) = routes.admit(&fingerprint, &vault_id, &device_id).await {
+        return refuse(stream, refusal).await;
+    }
+    let query = ChatApprovalQuery {
+        assignment_id,
+        request_id,
+        decision,
+        provider_option_id,
+        command_id,
+    };
+    match (routes.resolver)(query).await {
+        Ok(ChatApprovalAnswer::Resolved) => {
+            timeout_control(write_control(stream, &ControlMessage::ChatApprovalResolved)).await
+        }
+        Ok(ChatApprovalAnswer::NotHere) => {
+            send_error(
+                stream,
+                CHAT_LIVE_NOT_HERE_CODE,
+                "this device does not run that work",
+                false,
+            )
+            .await
+        }
+        Ok(ChatApprovalAnswer::Stale) => {
+            send_error(
+                stream,
+                CHAT_APPROVAL_STALE_CODE,
+                "that approval is no longer open",
+                false,
+            )
+            .await
+        }
+        Err(error) => {
+            eprintln!("sync: resolve a Chat approval: {error}");
+            send_error(
+                stream,
+                CHAT_LIVE_UNAVAILABLE_CODE,
+                "this device could not resolve the approval",
+                true,
+            )
+            .await
+        }
     }
 }
 

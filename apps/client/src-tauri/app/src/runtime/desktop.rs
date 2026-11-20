@@ -1070,6 +1070,9 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             if let Err(error) = vault::secure_app_config_dir(app.handle()) {
                 eprintln!("app config directory permissions are unchanged: {error}");
             }
+            app.manage(chat::live_execution::RemoteApprovals::new(
+                app.handle().clone(),
+            ));
             vault::handoff::initialize(app.handle());
             if let Err(error) =
                 vault::backup::recover_interrupted_replacements_for_app(app.handle())

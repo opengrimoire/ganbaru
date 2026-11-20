@@ -1190,6 +1190,57 @@ fn chat_live_read_refuses_bad_ids_cursors_and_versions() {
     assert!(read.validate().is_err());
 }
 
+fn chat_approval_resolve(request_id: &str, provider_option_id: &str) -> ControlMessage {
+    ControlMessage::ChatApprovalResolve {
+        protocol_version: PROTOCOL_VERSION,
+        vault_id: "vault-1".to_string(),
+        device_id: "device-phone".to_string(),
+        assignment_id: "work-assignment:0123456789abcdef".to_string(),
+        request_id: request_id.to_string(),
+        decision: ChatRemoteApprovalDecision::AllowOnce,
+        provider_option_id: provider_option_id.to_string(),
+        command_id: "remote-approval:0df9a7d7-004d-41f0".to_string(),
+    }
+}
+
+#[test]
+fn chat_approval_resolve_round_trips_and_counts_as_vault_material() {
+    let resolve = chat_approval_resolve("0df9a7d7-004d-41f0-aeb3-bfcca692e3af", "allow_once");
+    assert_eq!(frame_round_trip(&resolve), Ok(resolve.clone()));
+    assert!(resolve.is_vault_material());
+    assert_eq!(resolve.sync_peer(), None);
+    let resolved = ControlMessage::ChatApprovalResolved;
+    assert_eq!(frame_round_trip(&resolved), Ok(resolved));
+}
+
+#[test]
+fn chat_approval_resolve_refuses_session_grants_bad_ids_and_options() {
+    let mut message = serde_json::to_value(chat_approval_resolve("request-1", "allow_once"))
+        .expect("serialize the approval");
+    message["decision"] = serde_json::json!("allow_session");
+    assert!(serde_json::from_value::<ControlMessage>(message).is_err());
+    for request_id in ["", "request 1", "request/1", &"a".repeat(161)] {
+        assert!(
+            chat_approval_resolve(request_id, "allow_once")
+                .validate()
+                .is_err(),
+            "accepted {request_id:?}"
+        );
+    }
+    for option in ["", "allow\nonce", &"a".repeat(257)] {
+        assert!(
+            chat_approval_resolve("request-1", option)
+                .validate()
+                .is_err(),
+            "accepted {option:?}"
+        );
+    }
+    assert_eq!(
+        chat_approval_resolve("request-1", "Allow once (proceed)").validate(),
+        Ok(())
+    );
+}
+
 #[test]
 fn chat_live_payload_bound_counts_json_escapes() {
     assert_eq!(chat_live_payload_bytes("ab"), 4);

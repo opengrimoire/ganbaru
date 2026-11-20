@@ -32,24 +32,10 @@ pub async fn chat_read_live_execution(
     after_change: Option<u64>,
     wait: bool,
 ) -> ChatResult<ChatLiveFollowRead> {
-    let pool = chat_pool(app.clone(), db_url).await?;
-    let executing: Option<Option<String>> =
-        sqlx::query_scalar("SELECT executing_device_id FROM chat_work_assignments WHERE id = ?")
-            .bind(&assignment_id)
-            .fetch_optional(&pool)
-            .await
-            .map_err(|_| {
-                ChatError::new(ChatErrorCode::Persistence, "read the work assignment", true)
-            })?;
-    let Some(Some(executing_device_id)) = executing else {
+    let Some(executing_device_id) = remote_executing_device(&app, db_url, &assignment_id).await?
+    else {
         return Ok(ChatLiveFollowRead::NotServed);
     };
-    let own_device_id = crate::sync::devices::stable_device_id(&app).map_err(|_| {
-        ChatError::new(ChatErrorCode::Internal, "read this device's identity", true)
-    })?;
-    if executing_device_id == own_device_id {
-        return Ok(ChatLiveFollowRead::NotServed);
-    }
     let response = read_chat_live(
         &app,
         ChatLiveRequest {
@@ -61,6 +47,31 @@ pub async fn chat_read_live_execution(
     )
     .await;
     Ok(interpret(response, &assignment_id))
+}
+
+/// The other device that synced rows name as executing `assignment_id`, or `None` when the work
+/// runs nowhere yet or runs here.
+pub(super) async fn remote_executing_device(
+    app: &tauri::AppHandle,
+    db_url: String,
+    assignment_id: &str,
+) -> ChatResult<Option<String>> {
+    let pool = chat_pool(app.clone(), db_url).await?;
+    let executing: Option<Option<String>> =
+        sqlx::query_scalar("SELECT executing_device_id FROM chat_work_assignments WHERE id = ?")
+            .bind(assignment_id)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|_| {
+                ChatError::new(ChatErrorCode::Persistence, "read the work assignment", true)
+            })?;
+    let Some(Some(executing_device_id)) = executing else {
+        return Ok(None);
+    };
+    let own_device_id = crate::sync::devices::stable_device_id(app).map_err(|_| {
+        ChatError::new(ChatErrorCode::Internal, "read this device's identity", true)
+    })?;
+    Ok((executing_device_id != own_device_id).then_some(executing_device_id))
 }
 
 /// What the answer of the executing device means for the reader of `assignment_id`. `Ok(None)`

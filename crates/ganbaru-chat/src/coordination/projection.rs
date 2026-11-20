@@ -184,6 +184,7 @@ async fn project_event_arms(
                     "kind": event.kind,
                     "allowedDecisions": event.allowed_decisions,
                     "safePayload": event.safe_payload,
+                    "subject": event.subject,
                 }),
             )
             .await?

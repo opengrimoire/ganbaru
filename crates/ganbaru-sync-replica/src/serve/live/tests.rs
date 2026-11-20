@@ -126,6 +126,21 @@ struct Harness {
     admission: SharedAdmission,
     changes: watch::Sender<u64>,
     reads: Arc<AtomicUsize>,
+    approvals: Arc<Mutex<Vec<ChatApprovalQuery>>>,
+    answer: Arc<Mutex<Result<ChatApprovalAnswer, String>>>,
+}
+
+fn approval_request() -> ControlMessage {
+    ControlMessage::ChatApprovalResolve {
+        protocol_version: PROTOCOL_VERSION,
+        vault_id: VAULT.to_string(),
+        device_id: PHONE.to_string(),
+        assignment_id: ASSIGNMENT.to_string(),
+        request_id: "request-1".to_string(),
+        decision: ChatRemoteApprovalDecision::Deny,
+        provider_option_id: "deny".to_string(),
+        command_id: "command-1".to_string(),
+    }
 }
 
 impl Harness {
@@ -146,13 +161,33 @@ impl Harness {
             Box::pin(async move { Ok(answer) })
         });
         let (changes, receiver) = watch::channel(0);
+        let approvals = Arc::new(Mutex::new(Vec::new()));
+        let resolved = approvals.clone();
+        let answer = Arc::new(Mutex::new(Ok(ChatApprovalAnswer::Resolved)));
+        let scripted = answer.clone();
+        let resolver: ChatApprovalResolver = Arc::new(move |query: ChatApprovalQuery| {
+            resolved.lock().expect("approvals").push(query);
+            let answer = scripted.lock().expect("answer").clone();
+            Box::pin(async move { answer })
+        });
         Self {
-            routes: ChatLiveRoutes::new(admission_source, reader, receiver)
+            routes: ChatLiveRoutes::new(admission_source, reader, resolver, receiver)
                 .waiting_at_most(Duration::from_secs(2)),
             admission,
             changes,
             reads,
+            approvals,
+            answer,
         }
+    }
+
+    /// Resolves one approval and returns the frame the peer receives.
+    async fn resolve(&self, certificate: Option<&[u8]>) -> (Result<(), String>, ControlMessage) {
+        let (mut server, mut client) = tokio::io::duplex(64 * 1024);
+        let served =
+            serve_approval(&self.routes, &mut server, certificate, approval_request()).await;
+        let response = read_control(&mut client).await.expect("response frame");
+        (served, response)
     }
 
     /// Serves one read and returns the frame the peer receives.
@@ -350,4 +385,81 @@ async fn a_new_wait_for_the_same_assignment_ends_the_one_it_replaces() {
     assert_eq!(cursor(&response), 4);
     assert!(first_elapsed < Duration::from_secs(1));
     assert!(harness.routes.waits.lock().expect("waits").is_empty());
+}
+
+#[tokio::test]
+async fn an_admitted_approval_reaches_the_resolver_with_what_the_phone_chose() {
+    let harness = Harness::new(vec![page(1, false)]);
+    let (served, response) = harness.resolve(Some(PHONE_CERTIFICATE)).await;
+    served.expect("served");
+    assert_eq!(response, ControlMessage::ChatApprovalResolved);
+    let approvals = harness.approvals.lock().expect("approvals");
+    assert_eq!(
+        approvals.as_slice(),
+        [ChatApprovalQuery {
+            assignment_id: ASSIGNMENT.to_string(),
+            request_id: "request-1".to_string(),
+            decision: ChatRemoteApprovalDecision::Deny,
+            provider_option_id: "deny".to_string(),
+            command_id: "command-1".to_string(),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn an_approval_from_a_device_not_admitted_never_reaches_the_resolver() {
+    let harness = Harness::new(vec![page(1, false)]);
+    let (served, response) = harness.resolve(None).await;
+    assert!(served.is_err());
+    assert_eq!(error_code(&response), MemberRefusal::Unknown.code());
+
+    *harness.admission.lock().expect("admission") = Ok(Some(admission(
+        enrolled(PHONE, PHONE_CERTIFICATE, false, false),
+        &[PHONE],
+    )));
+    let (served, response) = harness.resolve(Some(PHONE_CERTIFICATE)).await;
+    assert!(served.is_err());
+    assert_eq!(error_code(&response), MemberRefusal::Quarantined.code());
+
+    *harness.admission.lock().expect("admission") = Ok(Some(admission(
+        enrolled(PHONE, PHONE_CERTIFICATE, true, false),
+        &[],
+    )));
+    let (_, response) = harness.resolve(Some(PHONE_CERTIFICATE)).await;
+    assert_eq!(error_code(&response), MemberRefusal::Removed.code());
+    assert!(harness.approvals.lock().expect("approvals").is_empty());
+}
+
+#[tokio::test]
+async fn an_approval_answer_names_why_it_was_not_resolved() {
+    let harness = Harness::new(vec![page(1, false)]);
+    let cases = [
+        (
+            Ok(ChatApprovalAnswer::Stale),
+            CHAT_APPROVAL_STALE_CODE,
+            false,
+        ),
+        (
+            Ok(ChatApprovalAnswer::NotHere),
+            CHAT_LIVE_NOT_HERE_CODE,
+            false,
+        ),
+        (Err("locked".to_string()), CHAT_LIVE_UNAVAILABLE_CODE, true),
+    ];
+    for (answer, code, expected_retryable) in cases {
+        *harness.answer.lock().expect("answer") = answer;
+        let (served, response) = harness.resolve(Some(PHONE_CERTIFICATE)).await;
+        served.expect("served");
+        match response {
+            ControlMessage::Error {
+                code: answered,
+                retryable,
+                ..
+            } => {
+                assert_eq!(answered, code);
+                assert_eq!(retryable, expected_retryable);
+            }
+            other => panic!("expected an error, got {other:?}"),
+        }
+    }
 }

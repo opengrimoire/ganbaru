@@ -21,7 +21,7 @@ pub use sync::{
 };
 pub use sync::{MAX_MEMBER_ENDPOINTS, MAX_SYNC_RECORDS, MemberEndpoint, SYNC_RECORD_CLASSES};
 
-pub const PROTOCOL_VERSION: u16 = 19;
+pub const PROTOCOL_VERSION: u16 = 20;
 pub const MAX_CONTROL_BYTES: usize = 1024 * 1024;
 /// Frame bound before the peer presents a linked certificate. Enrollment (with its 8 KiB
 /// certificate) and contact requests fit well inside it.
@@ -56,6 +56,21 @@ pub const CHAT_LIVE_NOT_HERE_CODE: &str = "chat_live_not_here";
 /// Error code a desktop answers a [`ControlMessage::ChatLiveRead`] with when it could not read
 /// the execution now.
 pub const CHAT_LIVE_UNAVAILABLE_CODE: &str = "chat_live_unavailable";
+/// Error code a desktop answers a [`ControlMessage::ChatApprovalResolve`] with when the approval
+/// is no longer open, because it was answered, withdrawn, or the run moved on.
+pub const CHAT_APPROVAL_STALE_CODE: &str = "chat_approval_stale";
+/// Upper bound on the provider option a [`ControlMessage::ChatApprovalResolve`] names.
+const MAX_CHAT_APPROVAL_OPTION_BYTES: usize = 256;
+
+/// The decisions a linked device may send for an approval the executing desktop holds open.
+/// Each answers one request only: grants that outlive it are given on the executing desktop.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatRemoteApprovalDecision {
+    AllowOnce,
+    Deny,
+    Cancel,
+}
 /// Tolerated clock skew for signed status requests.
 const STATUS_REPLAY_WINDOW_MS: i64 = 5 * 60 * 1000;
 
@@ -328,6 +343,22 @@ pub enum ControlMessage {
         reset_required: bool,
         settled: bool,
     },
+    /// Authenticated: a linked device answers an approval that the run of a Chat work assignment
+    /// holds open on the desktop that executes it. The desktop checks the decision against the
+    /// choices it offered and resolves the request as its own approval panel does. `command_id`
+    /// keeps a retried answer from resolving twice.
+    ChatApprovalResolve {
+        protocol_version: u16,
+        vault_id: String,
+        device_id: String,
+        assignment_id: String,
+        request_id: String,
+        decision: ChatRemoteApprovalDecision,
+        provider_option_id: String,
+        command_id: String,
+    },
+    /// The answer to [`ControlMessage::ChatApprovalResolve`]: the desktop resolved the request.
+    ChatApprovalResolved,
     /// Authenticated: a linked device compares its stored operations with the hub's, and
     /// reports the endpoints its own sync listener serves on, empty when it does not listen.
     SyncHello {
@@ -605,6 +636,7 @@ impl ControlMessage {
                 | Self::DownloadBundle { .. }
                 | Self::PersonKeyRequest { .. }
                 | Self::ChatLiveRead { .. }
+                | Self::ChatApprovalResolve { .. }
         )
     }
 
@@ -888,6 +920,30 @@ impl ControlMessage {
                     return Err("chat live change cursor is invalid".to_string());
                 }
             }
+            Self::ChatApprovalResolve {
+                protocol_version,
+                vault_id,
+                device_id,
+                assignment_id,
+                request_id,
+                decision: _,
+                provider_option_id,
+                command_id,
+            } => {
+                validate_protocol(*protocol_version)?;
+                validate_identifier("vault id", vault_id)?;
+                validate_identifier("device id", device_id)?;
+                validate_chat_identifier("assignment id", assignment_id)?;
+                validate_chat_identifier("request id", request_id)?;
+                validate_chat_identifier("command id", command_id)?;
+                if provider_option_id.is_empty()
+                    || provider_option_id.len() > MAX_CHAT_APPROVAL_OPTION_BYTES
+                    || provider_option_id.chars().any(char::is_control)
+                {
+                    return Err("chat approval option is invalid".to_string());
+                }
+            }
+            Self::ChatApprovalResolved => {}
             Self::PersonKeyRelease {
                 public_key,
                 private_key_pkcs8,

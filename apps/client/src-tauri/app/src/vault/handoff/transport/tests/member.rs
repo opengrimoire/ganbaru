@@ -8,7 +8,8 @@ use ganbaru_sync::{AuthorizationView, EnrolledDevice};
 use ganbaru_sync_contracts::{AdminPublicKey, DeviceKind as SyncDeviceKind, DevicePublicKey};
 use ganbaru_sync_replica::peers::admission::MemberAdmission;
 use ganbaru_sync_replica::serve::live::{
-    CHAT_LIVE_NOT_HERE_CODE, ChatLiveAnswer, ChatLivePage, ChatLiveReader, ChatLiveRoutes,
+    CHAT_LIVE_NOT_HERE_CODE, ChatApprovalAnswer, ChatLiveAnswer, ChatLivePage, ChatLiveReader,
+    ChatLiveRoutes,
 };
 
 const VAULT: &str = "vault-1";
@@ -78,6 +79,7 @@ impl MemberListener {
                 ChatLiveRoutes::new(
                     admission_source,
                     reader,
+                    std::sync::Arc::new(|_| Box::pin(async { Ok(ChatApprovalAnswer::NotHere) })),
                     tokio::sync::watch::Sender::new(0).subscribe(),
                 )
             }),

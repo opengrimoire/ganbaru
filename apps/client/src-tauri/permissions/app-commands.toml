@@ -181,6 +181,7 @@ commands.allow = [
   "chat_replace_credential",
   "chat_resolve_approval",
   "chat_resolve_conflict",
+  "chat_resolve_remote_approval",
   "chat_resolve_user_input",
   "chat_restore_channel",
   "chat_restore_custom_agent",

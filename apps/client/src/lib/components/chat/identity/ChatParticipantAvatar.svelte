@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { ChatAiAgentRead, ChatParticipantRead } from "$lib/chat/contracts";
   import { chatParticipantDisplayName } from "$lib/chat/agents/participant-display";
-  import { chatAgentModelParticipant } from "$lib/chat/agents/identity";
+  import { chatAgentCompany } from "$lib/chat/agents/identity";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
@@ -27,8 +27,8 @@
     preferences.profileDisplayName,
     t("chat.timeline.you"),
   ));
-  const agentIdentity = $derived(participant.kind === "ai_agent"
-    ? chatAgentModelParticipant(
+  const agentCompany = $derived(participant.kind === "ai_agent"
+    ? chatAgentCompany(
       participant.id,
       agent ? [agent, ...chat.agentIdentities] : chat.agentIdentities,
       chat.settings,
@@ -46,10 +46,10 @@
   {#if participant.kind === "local_user"}
     <ProfileAvatar {displayName} imagePath={preferences.profileAvatarImagePath} crop={preferences.profileImageCrop} color={preferences.profileColor} {size} />
   {:else if participant.kind === "ai_agent"}
-    {#if agentIdentity}
+    {#if agentCompany}
       <ChatModelAvatar
-        familyId={agentIdentity.company.iconFamilyId}
-        label={agentIdentity.company.name}
+        familyId={agentCompany.iconFamilyId}
+        label={agentCompany.name}
         {size}
       />
     {:else}

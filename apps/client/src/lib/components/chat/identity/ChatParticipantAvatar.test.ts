@@ -116,6 +116,30 @@ describe("ChatParticipantAvatar", () => {
     expect(target.querySelector(".agent-fallback")).toBeNull();
   });
 
+  it("shows the provider mark on a device without the agent's provider, such as a phone", () => {
+    chat.settings = null;
+    chat.agents = [{
+      participant: agentParticipant,
+      providerFamilyId: "claude",
+      agentKind: "line",
+      localProviderInstanceId: null,
+      configurationState: "provider_unavailable",
+      latestPolicy: null,
+      channelCount: 1,
+      activeAssignmentCount: 0,
+      hiddenAt: null,
+    } satisfies ChatAiAgentRead];
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatParticipantAvatar, {
+      target,
+      props: { participant: agentParticipant, size: 32 },
+    });
+
+    expect(target.querySelector('.model-avatar[aria-label="Anthropic"]')).not.toBeNull();
+    expect(target.querySelector(".agent-fallback")).toBeNull();
+  });
+
   it("uses an explicitly provided archived agent identity", () => {
     chat.settings = modelSettings();
     chat.agents = [];

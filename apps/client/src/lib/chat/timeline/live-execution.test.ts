@@ -9,6 +9,7 @@ import {
   LIVE_EXECUTION_RETRY_MAX_MS,
   applyLiveExecutionPage,
   liveExecutionNotServedDelay,
+  liveExecutionShowsWholeMessages,
   liveExecutionRetryDelay,
   liveExecutionTimelinePage,
   liveExecutionWaitDelay,
@@ -174,5 +175,16 @@ describe("retry and wait delays", () => {
     expect(liveExecutionWaitDelay(400)).toBe(LIVE_EXECUTION_MIN_WAIT_INTERVAL_MS - 400);
     expect(liveExecutionWaitDelay(12_000)).toBe(0);
     expect(liveExecutionWaitDelay(-5)).toBe(LIVE_EXECUTION_MIN_WAIT_INTERVAL_MS);
+  });
+});
+
+describe("liveExecutionShowsWholeMessages", () => {
+  it("is false once a message arrived as its tail only", () => {
+    const whole = held(applyLiveExecutionPage(null, read({ items: [item("a", 1)] })));
+    expect(liveExecutionShowsWholeMessages(whole)).toBe(true);
+    const tail = item("b", 2);
+    tail.data = { schemaVersion: 1, value: { role: "assistant", markdown: "end", markdownTruncated: true } };
+    const cut = held(applyLiveExecutionPage(whole, read({ items: [tail] })));
+    expect(liveExecutionShowsWholeMessages(cut)).toBe(false);
   });
 });

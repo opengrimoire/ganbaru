@@ -7,6 +7,8 @@ import {
   LIVE_EXECUTION_NOT_SERVED_MAX_MS,
   LIVE_EXECUTION_NOT_SERVED_STEADY_ANSWERS,
   LIVE_EXECUTION_RETRY_BASE_MS,
+  LIVE_EXECUTION_RETRY_MAX_MS,
+  LIVE_EXECUTION_SETTLED_ATTEMPTS,
 } from "./live-execution";
 
 interface ReadCall {
@@ -184,7 +186,7 @@ describe("LiveExecutionFollower", () => {
     test.follower.follow("assignment-1");
     test.calls[0]?.answer({ kind: "notServed" });
     await settle();
-    expect(test.last()).toEqual({ state: null, status: "notServed" });
+    expect(test.last()).toEqual({ state: null, status: "notServed", claimExpected: true });
     test.advance(LIVE_EXECUTION_NOT_SERVED_BASE_MS);
     expect(test.calls).toHaveLength(2);
     const viewsBefore = test.views.length;
@@ -200,6 +202,7 @@ describe("LiveExecutionFollower", () => {
     await settle();
     test.advance(LIVE_EXECUTION_NOT_SERVED_BASE_MS);
     expect(test.calls, "the delay grows once the claim is late").toHaveLength(steadyCalls);
+    expect(test.last()?.claimExpected, "a late claim no longer reads as on its way").toBe(false);
 
     test.advance(LIVE_EXECUTION_NOT_SERVED_MAX_MS);
     expect(test.calls).toHaveLength(steadyCalls + 1);
@@ -220,7 +223,7 @@ describe("LiveExecutionFollower", () => {
     test.advance(LIVE_EXECUTION_MIN_WAIT_INTERVAL_MS);
     test.calls[1]?.answer({ kind: "notServed" });
     await settle();
-    expect(test.last()).toEqual({ state: null, status: "notServed" });
+    expect(test.last()).toEqual({ state: null, status: "notServed", claimExpected: true });
     test.advance(LIVE_EXECUTION_NOT_SERVED_BASE_MS);
     expect(test.calls[2]).toMatchObject({ afterChange: null, wait: false });
   });
@@ -235,6 +238,30 @@ describe("LiveExecutionFollower", () => {
     expect(test.calls).toHaveLength(1);
     test.follower.follow("assignment-1");
     expect(test.calls).toHaveLength(2);
+  });
+
+  it("reads finished work once and stops when no device serves it", async () => {
+    const test = harness();
+    test.follower.follow("assignment-1", false);
+    test.calls[0]?.answer({ kind: "notServed" });
+    await settle();
+    expect(test.last()?.status).toBe("notServed");
+    expect(test.pendingTimers()).toBe(0);
+  });
+
+  it("tries a read of finished work a few times at most", async () => {
+    const test = harness();
+    test.follower.follow("assignment-1", false);
+    for (let attempt = 1; attempt <= LIVE_EXECUTION_SETTLED_ATTEMPTS; attempt += 1) {
+      test.calls.at(-1)?.answer({ kind: "unreachable" });
+      await settle();
+      test.advance(LIVE_EXECUTION_RETRY_MAX_MS);
+    }
+    expect(test.calls).toHaveLength(LIVE_EXECUTION_SETTLED_ATTEMPTS);
+    expect(test.pendingTimers()).toBe(0);
+    expect(test.last()?.status).toBe("retrying");
+    test.follower.follow("assignment-1", false);
+    expect(test.calls, "following again tries again").toHaveLength(LIVE_EXECUTION_SETTLED_ATTEMPTS + 1);
   });
 
   it("drops a read that returns after a pause and resumes from the held cursor", async () => {
@@ -270,7 +297,7 @@ describe("LiveExecutionFollower", () => {
     test.calls[0]?.answer(page());
     await settle();
     test.follower.follow("assignment-2");
-    expect(test.last()).toEqual({ state: null, status: "connecting" });
+    expect(test.last()).toEqual({ state: null, status: "connecting", claimExpected: true });
     expect(test.calls[1]).toMatchObject({ assignmentId: "assignment-2", afterChange: null, wait: false });
   });
 });

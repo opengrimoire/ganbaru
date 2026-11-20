@@ -6,6 +6,7 @@ import type {
   ChatThreadShellRead,
   ChatTimelinePageRead,
   ChatTimelineTurnRead,
+  ChatWorkAssignmentId,
   ChatWorkAssignmentRead,
   ProjectWorkingFolder,
   VersionedJson,
@@ -26,6 +27,13 @@ export type ReplyThreadRenderEntry =
     run: ChatAgentRunRead;
     /** Whether the run's exact provider turn is loaded; otherwise only the run's status line renders. */
     loaded: boolean;
+  }
+  | {
+    kind: "live";
+    key: string;
+    /** Work another device executes, whose run this device reads from it. */
+    assignmentId: ChatWorkAssignmentId;
+    createdAt: string;
   };
 
 /** Returns the newest agent run whose provider execution can be rendered. */
@@ -270,6 +278,116 @@ export function replyThreadRenderEntries(
     .map(({ entry }) => entry);
 }
 
+/** Work of a reply thread that another device executes, as a device that reads its runs places it. */
+export interface RemoteReplyWork {
+  assignmentId: ChatWorkAssignmentId;
+  createdAt: string;
+}
+
+/** What a device that reads remote runs holds of one work's newest run. */
+export interface RemoteRunShown {
+  /** The run whose whole turn this device shows, so the replies projected from it stand down. */
+  runId: string;
+  /** Whether the work waits on an approval or an answer, so the reply that asks for it stays to answer. */
+  waiting: boolean;
+}
+
+/** Update kinds whose reply asks a person to act while the work waits on it. */
+const WAITING_UPDATE_KINDS: ReadonlySet<unknown> = new Set(["approval", "question"]);
+/** Update kinds whose reply stays beside a shown run, since it offers what the run's turn does not, such as Retry. */
+const KEPT_UPDATE_KINDS: ReadonlySet<unknown> = new Set(["failure"]);
+
+/** Assignment ids the agent updates of a thread name, with the creation time of the first update of each. */
+function workNamedByUpdates(replies: readonly ChatMessageRead[]): Map<string, string> {
+  const named = new Map<string, string>();
+  for (const reply of replies) {
+    const value = reply.richContent.value;
+    if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
+    if (value.type !== "agent_update" || typeof value.assignmentId !== "string") continue;
+    const known = named.get(value.assignmentId);
+    if (known === undefined || reply.createdAt < known) named.set(value.assignmentId, reply.createdAt);
+  }
+  return named;
+}
+
+/**
+ * Returns the work of a reply thread whose runs a device that executes nothing reads from the device that runs them:
+ * the work its agent updates name and the thread's current work, oldest first, keeping the newest `maximum`.
+ *
+ * @param replies Replies of the thread.
+ * @param current The thread's current work, or `null` without work.
+ * @param maximum Most work read; older work keeps its replies.
+ */
+export function remoteReplyWork(
+  replies: readonly ChatMessageRead[],
+  current: Pick<ChatWorkAssignmentRead, "id" | "createdAt"> | null,
+  maximum: number,
+): RemoteReplyWork[] {
+  const named = workNamedByUpdates(replies);
+  if (current && !named.has(current.id)) named.set(current.id, current.createdAt);
+  return [...named]
+    .map(([assignmentId, createdAt]) => ({ assignmentId, createdAt }))
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.assignmentId.localeCompare(right.assignmentId))
+    .slice(-Math.max(0, maximum));
+}
+
+/**
+ * Places remote work among the replies of a thread on a device that executes nothing. Each work gets one live entry
+ * with a stable key, so its reader stays mounted while it moves. Once the whole turn of a work's run is shown, the
+ * replies projected from that run stand down and the entry takes the place of the last of them, as an exact turn does
+ * on the executing desktop. A failure reply stays for its Retry, and a reply that asks for an approval or an answer
+ * stays while the work waits on it. Work
+ * without a shown run sits after the last reply created before it. Replies awaiting delivery stay out, as in
+ * {@link replyThreadRenderEntries}.
+ *
+ * @param threadReplies Replies of the thread.
+ * @param work Remote work of the thread, see {@link remoteReplyWork}.
+ * @param shown What is shown of each work's newest run, by assignment id.
+ */
+export function remoteReplyThreadRenderEntries(
+  threadReplies: readonly ChatMessageRead[],
+  work: readonly RemoteReplyWork[],
+  shown: ReadonlyMap<string, RemoteRunShown>,
+): ReplyThreadRenderEntry[] {
+  const ordered = threadReplies
+    .filter((reply) => !reply.awaitingDelivery)
+    .sort((left, right) => compareOrderKeyThenId(left.orderKey, left.itemId, right.orderKey, right.itemId));
+  const shownRuns = new Map([...shown.values()].map((run) => [run.runId, run]));
+  const replacedAt = new Map<string, number>();
+  const positioned: Array<{ position: number; entry: ReplyThreadRenderEntry }> = [];
+  ordered.forEach((message, position) => {
+    const runId = projectedAgentRunId(message);
+    const run = runId === null ? undefined : shownRuns.get(runId);
+    if (runId !== null && run && !keptBesideShownRun(message, run)) {
+      replacedAt.set(runId, position);
+      return;
+    }
+    positioned.push({ position, entry: { kind: "message", key: message.itemId, message } });
+  });
+  for (const item of work) {
+    const runId = shown.get(item.assignmentId)?.runId;
+    const replaced = runId === undefined ? undefined : replacedAt.get(runId);
+    positioned.push({
+      position: replaced ?? fallbackRunPosition(ordered, item.createdAt),
+      entry: { kind: "live", key: `live:${item.assignmentId}`, assignmentId: item.assignmentId, createdAt: item.createdAt },
+    });
+  }
+  return positioned
+    .sort((left, right) => left.position - right.position || left.entry.key.localeCompare(right.entry.key))
+    .map(({ entry }) => entry);
+}
+
+function keptBesideShownRun(message: RichReply, run: RemoteRunShown): boolean {
+  const kind = agentUpdateKind(message);
+  return KEPT_UPDATE_KINDS.has(kind) || run.waiting && WAITING_UPDATE_KINDS.has(kind);
+}
+
+function agentUpdateKind(message: RichReply): unknown {
+  const value = message.richContent.value;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  return value.updateKind;
+}
+
 /**
  * Returns whether a visible failure reply already explains how `run` failed: its own failure message, or a launch
  * failure of the same work posted after the run started. The run's status line then leaves the failure to that reply.
@@ -310,7 +428,8 @@ export function retryableFailureEntryKey(
       const presentation = chatAgentUpdatePresentation(entry.message.richContent);
       if (presentation?.kind === "failure" && presentation.assignmentId === assignment.id) return entry.key;
     } else if (
-      entry.run.assignmentId === assignment.id
+      entry.kind === "execution"
+      && entry.run.assignmentId === assignment.id
       && entry.run.state === "failed"
       && !failureShownByReply(entries, entry.run)
     ) {

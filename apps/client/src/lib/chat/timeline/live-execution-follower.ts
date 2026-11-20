@@ -1,6 +1,8 @@
 import type { ChatLiveFollowRead, ChatWorkAssignmentId } from "$lib/chat/contracts";
 import {
   applyLiveExecutionPage,
+  LIVE_EXECUTION_NOT_SERVED_STEADY_ANSWERS,
+  LIVE_EXECUTION_SETTLED_ATTEMPTS,
   liveExecutionNotServedDelay,
   liveExecutionRetryDelay,
   liveExecutionWaitDelay,
@@ -27,6 +29,8 @@ export type LiveExecutionStatus = "connecting" | "live" | "retrying" | "settled"
 export interface LiveExecutionView {
   state: LiveExecutionState | null;
   status: LiveExecutionStatus;
+  /** Whether a linked desktop is still expected to claim the work: no answer yet, or none past the usual claim time. */
+  claimExpected: boolean;
 }
 
 export interface LiveExecutionFollowerOptions {
@@ -45,9 +49,11 @@ function timerScheduler(callback: () => void, delayMs: number): () => void {
 /**
  * Follows the live execution of one work assignment a linked desktop runs. Reads run one at a time: the first reads
  * the whole run, later ones wait on the desktop for the next change, a page with more changes is followed at once, and
- * a failed read is tried again after a growing delay. Work no device serves yet, as while the desktop has not claimed
- * it or its claim has not synced here, is asked about again after a growing delay. Following ends when the run
- * settles, and `pause` stops reading while keeping the rows held, so `follow` resumes from the same cursor.
+ * a failed read is tried again after a growing delay. Active work no device serves yet, as while the desktop has not
+ * claimed it or its claim has not synced here, is asked about again after a growing delay. Finished work is read
+ * once: an answer that no device serves it ends following, and a failed read is tried a few times at most. Following
+ * ends when the run settles, and `pause` stops reading while keeping the rows held, so `follow` resumes from the same
+ * cursor.
  */
 export class LiveExecutionFollower {
   readonly #read: LiveExecutionReader;
@@ -55,6 +61,7 @@ export class LiveExecutionFollower {
   readonly #schedule: LiveExecutionScheduler;
   readonly #now: () => number;
   #assignmentId: ChatWorkAssignmentId | null = null;
+  #active = true;
   #state: LiveExecutionState | null = null;
   #status: LiveExecutionStatus = "connecting";
   #failures = 0;
@@ -70,14 +77,20 @@ export class LiveExecutionFollower {
     this.#now = options.now ?? (() => Date.now());
   }
 
-  /** Starts or resumes following `assignmentId`; following another assignment drops the rows held. */
-  follow(assignmentId: ChatWorkAssignmentId): void {
+  /**
+   * Starts or resumes following `assignmentId`; following another assignment drops the rows held.
+   *
+   * @param active Whether the work can still change, so a missing claim or an unreachable desktop is asked about
+   * again; finished work is read with a few tries at most.
+   */
+  follow(assignmentId: ChatWorkAssignmentId, active = true): void {
     this.pause();
+    this.#active = active;
+    this.#failures = 0;
     if (this.#assignmentId !== assignmentId) {
       this.#assignmentId = assignmentId;
       this.#state = null;
       this.#status = "connecting";
-      this.#failures = 0;
       this.#notServedAnswers = 0;
       this.#publish();
     }
@@ -113,12 +126,13 @@ export class LiveExecutionFollower {
   #receive(generation: number, answer: ChatLiveFollowRead, startedAt: number): void {
     if (answer.kind === "notServed") {
       this.#notServedAnswers += 1;
-      if (this.#state !== null || this.#status !== "notServed") {
+      const claimWasExpected = this.#claimExpected(this.#notServedAnswers - 1);
+      if (this.#state !== null || this.#status !== "notServed" || claimWasExpected !== this.#claimExpected()) {
         this.#state = null;
         this.#status = "notServed";
         this.#publish();
       }
-      this.#later(generation, liveExecutionNotServedDelay(this.#notServedAnswers), false);
+      if (this.#active) this.#later(generation, liveExecutionNotServedDelay(this.#notServedAnswers), false);
       return;
     }
     if (answer.kind === "unreachable") {
@@ -145,6 +159,7 @@ export class LiveExecutionFollower {
       this.#status = "retrying";
       this.#publish();
     }
+    if (!this.#active && this.#failures >= LIVE_EXECUTION_SETTLED_ATTEMPTS) return;
     this.#later(generation, liveExecutionRetryDelay(this.#failures), false);
   }
 
@@ -159,7 +174,13 @@ export class LiveExecutionFollower {
     }, delayMs);
   }
 
+  #claimExpected(answers = this.#notServedAnswers): boolean {
+    return answers <= LIVE_EXECUTION_NOT_SERVED_STEADY_ANSWERS;
+  }
+
   #publish(): void {
-    this.#onUpdate({ state: this.#state, status: this.#status });
+    const claimExpected = this.#status === "connecting"
+      || this.#status === "notServed" && this.#claimExpected();
+    this.#onUpdate({ state: this.#state, status: this.#status, claimExpected });
   }
 }

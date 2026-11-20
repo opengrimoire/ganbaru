@@ -2,7 +2,7 @@
   import MessagesSquare from "@lucide/svelte/icons/messages-square";
   import HardDrive from "@lucide/svelte/icons/hard-drive";
   import X from "@lucide/svelte/icons/x";
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
   import * as chatApi from "$lib/api/chat";
   import type { ChatAgentRunRead, ChatThreadShellRead } from "$lib/chat/contracts";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
@@ -17,6 +17,8 @@
     failureShownByReply,
     latestRenderableAgentRun,
     planExactExecutionReads,
+    remoteReplyThreadRenderEntries,
+    remoteReplyWork,
     replyThreadRenderEntries,
     retryableFailureEntryKey,
     shouldGroupReplyMessages,
@@ -69,6 +71,8 @@
     BUILD_PLATFORM_PROFILE,
     "chat.local-execution",
   );
+  /** Most work of one thread whose runs a phone reads; older work keeps its replies. */
+  const REMOTE_REPLY_WORK_LIMIT = 8;
   let scroller = $state<HTMLDivElement | null>(null);
   /** The thread entries, observed so content that grows after a restore, such as a loaded execution, keeps the end pinned. */
   let canvas = $state<HTMLDivElement | null>(null);
@@ -129,11 +133,23 @@
     || exactExecutionError !== null
     || actionError !== null,
   );
-  const renderEntries = $derived(replyThreadRenderEntries(
-    page?.replies ?? [],
-    page?.agentRuns ?? [],
-    loadedExecutionRunIds,
-  ));
+  /** Work of the thread this device reads from the linked desktop that executes it, on a device that executes nothing. */
+  const remoteWork = $derived(localExecutionAvailable
+    ? []
+    : remoteReplyWork(page?.replies ?? [], assignment, REMOTE_REPLY_WORK_LIMIT));
+  /** The run each remote work shows whole, by assignment id, as its live view reports it. Assignment ids are unique
+   * across threads, so a view of another thread cannot stand for this one. */
+  let remoteRunsShown = $state<Record<string, string>>({});
+  const remoteShown = $derived(new Map(remoteWork.flatMap((work) => {
+    const runId = remoteRunsShown[work.assignmentId];
+    if (runId === undefined) return [];
+    const waiting = assignment?.id === work.assignmentId
+      && (assignment.state === "waiting_for_approval" || assignment.state === "waiting_for_answer");
+    return [[work.assignmentId, { runId, waiting }] as const];
+  })));
+  const renderEntries = $derived(localExecutionAvailable
+    ? replyThreadRenderEntries(page?.replies ?? [], page?.agentRuns ?? [], loadedExecutionRunIds)
+    : remoteReplyThreadRenderEntries(page?.replies ?? [], remoteWork, remoteShown));
   /** The one failure in the thread that offers Retry, while the thread's work is still failed. */
   const retryableFailureKey = $derived(retryableFailureEntryKey(renderEntries, assignment));
   const destination = $derived(chat.openReplyThreadId
@@ -170,8 +186,20 @@
     return new Date(left).toDateString() === new Date(right).toDateString();
   }
 
+  /** Records the run a remote work shows whole, or that it shows none. */
+  function noteRemoteRunShown(assignmentId: string, runId: string | null): void {
+    // Called from a live view's effect, which must not come to depend on every other view's run.
+    const current = untrack(() => remoteRunsShown);
+    if ((current[assignmentId] ?? null) === runId) return;
+    const next = { ...current };
+    if (runId === null) delete next[assignmentId];
+    else next[assignmentId] = runId;
+    remoteRunsShown = next;
+  }
+
   function entryCreatedAt(entry: (typeof renderEntries)[number]): string {
-    return entry.kind === "message" ? entry.message.createdAt : entry.run.createdAt;
+    if (entry.kind === "message") return entry.message.createdAt;
+    return entry.kind === "live" ? entry.createdAt : entry.run.createdAt;
   }
 
   /** Names how a run restarted its provider session, or `null` for an ordinary start. */
@@ -508,6 +536,16 @@
               onChooseAnswer={answerableQuestion?.messageItemId === entry.message.itemId ? chooseAnswer : undefined}
               onRetryFailure={retryableFailureKey === entry.key ? retryFailedWork : undefined}
             />
+          {:else if entry.kind === "live"}
+            <!-- A phone reads each run from the linked desktop that executes it and keeps it once settled. -->
+            <ChatLiveExecution
+              assignmentId={entry.assignmentId}
+              work={workWithoutRun?.id === entry.assignmentId ? workWithoutRun : null}
+              agent={executionAgent}
+              agentName={executionAgentName ?? t("chat.runs.outcome.agentFallback")}
+              onActionError={reportMessageActionError}
+              onShown={(runId) => noteRemoteRunShown(entry.assignmentId, runId)}
+            />
           {:else}
             {@const exactExecution = exactExecutions[entry.run.id]}
             {@const restartLabel = runRestartLabel(entry.run)}
@@ -534,23 +572,14 @@
             />
           {/if}
         {/each}
-        {#if workWithoutRun}
-          <!-- A phone follows the run live from the linked desktop that executes it; a desktop shows the work row. -->
-          {#if localExecutionAvailable}
-            <ChatRemoteWorkRow
-              work={workWithoutRun}
-              agent={executionAgent}
-              agentName={executionAgentName ?? t("chat.runs.outcome.agentFallback")}
-              onActionError={reportMessageActionError}
-            />
-          {:else}
-            <ChatLiveExecution
-              work={workWithoutRun}
-              agent={executionAgent}
-              agentName={executionAgentName ?? t("chat.runs.outcome.agentFallback")}
-              onActionError={reportMessageActionError}
-            />
-          {/if}
+        {#if workWithoutRun && localExecutionAvailable}
+          <!-- Work another linked device runs shows its row here; a phone shows it with its live run above. -->
+          <ChatRemoteWorkRow
+            work={workWithoutRun}
+            agent={executionAgent}
+            agentName={executionAgentName ?? t("chat.runs.outcome.agentFallback")}
+            onActionError={reportMessageActionError}
+          />
         {/if}
         {#if page.delegatedChildren.length > 0}<ChatDelegatedWorkList delegatedChildren={page.delegatedChildren} onOpenThread={openThread} />{/if}
       </div>

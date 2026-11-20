@@ -26,6 +26,8 @@ import {
   failureShownByReply,
   latestRenderableAgentRun,
   planExactExecutionReads,
+  remoteReplyThreadRenderEntries,
+  remoteReplyWork,
   replyThreadRenderEntries,
   repliesWithoutRenderedRunProjection,
   retryableFailureEntryKey,
@@ -675,5 +677,68 @@ describe("agentMayUseChannelFolders", () => {
     expect(agentMayUseChannelFolders(settings(null), "agent-1")).toBe(false);
     expect(agentMayUseChannelFolders(settings("ask", "agent-2"), "agent-1")).toBe(false);
     expect(agentMayUseChannelFolders(null, "agent-1")).toBe(false);
+  });
+});
+
+describe("remote work placement", () => {
+  function update(itemId: string, assignmentId: string, agentRunId: string, updateKind: string, position: number) {
+    return message(itemId, "agent-1", `2026-08-02T08:0${position}:00Z`, {
+      type: "agent_update",
+      updateKind,
+      assignmentId,
+      agentRunId,
+    }, position);
+  }
+
+  const replies = [
+    message("ask-1", "local-user", "2026-08-02T08:00:00Z", { type: "doc" }, 0),
+    update("approval-1", "assignment-1", "run-1", "approval", 1),
+    update("result-1", "assignment-1", "run-1", "result", 2),
+    message("ask-2", "local-user", "2026-08-02T08:03:00Z", { type: "doc" }, 3),
+    update("failure-2", "assignment-2", "run-2", "failure", 4),
+  ];
+
+  it("lists the work the updates name and the current work, oldest first, keeping the newest", () => {
+    const current = { id: "assignment-3", createdAt: "2026-08-02T08:05:00Z" };
+    expect(remoteReplyWork(replies, current, 8).map((work) => work.assignmentId))
+      .toEqual(["assignment-1", "assignment-2", "assignment-3"]);
+    expect(remoteReplyWork(replies, current, 2).map((work) => work.assignmentId))
+      .toEqual(["assignment-2", "assignment-3"]);
+    expect(remoteReplyWork(replies, { id: "assignment-1", createdAt: "2026-08-02T07:59:00Z" }, 8)[0])
+      .toEqual({ assignmentId: "assignment-1", createdAt: "2026-08-02T08:01:00Z" });
+  });
+
+  it("keeps the replies and places work after them while no run is shown", () => {
+    const work = remoteReplyWork(replies, null, 8);
+    expect(remoteReplyThreadRenderEntries(replies, work, new Map()).map((entry) => entry.key)).toEqual([
+      "ask-1", "approval-1", "live:assignment-1", "result-1", "ask-2", "failure-2", "live:assignment-2",
+    ]);
+  });
+
+  it("replaces the projected replies of a shown run with its work at the last of them", () => {
+    const work = remoteReplyWork(replies, null, 8);
+    const shown = new Map([
+      ["assignment-1", { runId: "run-1", waiting: false }],
+      ["assignment-2", { runId: "run-2", waiting: false }],
+    ]);
+    expect(remoteReplyThreadRenderEntries(replies, work, shown).map((entry) => entry.key)).toEqual([
+      "ask-1", "live:assignment-1", "ask-2", "failure-2", "live:assignment-2",
+    ]);
+  });
+
+  it("keeps the approval reply while the work waits on it", () => {
+    const work = remoteReplyWork(replies.slice(0, 2), null, 8);
+    const shown = new Map([["assignment-1", { runId: "run-1", waiting: true }]]);
+    expect(remoteReplyThreadRenderEntries(replies.slice(0, 2), work, shown).map((entry) => entry.key))
+      .toEqual(["ask-1", "approval-1", "live:assignment-1"]);
+    const answered = new Map([["assignment-1", { runId: "run-1", waiting: false }]]);
+    expect(remoteReplyThreadRenderEntries(replies.slice(0, 2), work, answered).map((entry) => entry.key))
+      .toEqual(["ask-1", "live:assignment-1"]);
+  });
+
+  it("leaves replies awaiting delivery to the composer queue", () => {
+    const waiting = { ...message("queued", "local-user", "2026-08-02T08:09:00Z", { type: "doc" }, 9), awaitingDelivery: true };
+    expect(remoteReplyThreadRenderEntries([...replies, waiting], [], new Map()).map((entry) => entry.key))
+      .not.toContain("queued");
   });
 });

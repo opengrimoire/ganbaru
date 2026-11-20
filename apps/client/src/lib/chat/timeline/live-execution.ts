@@ -56,6 +56,8 @@ export const LIVE_EXECUTION_NOT_SERVED_BASE_MS = 1_500;
 export const LIVE_EXECUTION_NOT_SERVED_STEADY_ANSWERS = 12;
 /** The longest delay between asks while no device serves the work. */
 export const LIVE_EXECUTION_NOT_SERVED_MAX_MS = 10_000;
+/** Reads of finished work tried at most before following stops, since finished work no longer changes. */
+export const LIVE_EXECUTION_SETTLED_ATTEMPTS = 3;
 
 /**
  * Applies one page read after `state` holds. A page that asks for a reset, or that names another run than the state
@@ -130,4 +132,16 @@ function compareLiveRows(left: ChatTimelineItemRead, right: ChatTimelineItemRead
   if (left.sequenceAnchor !== right.sequenceAnchor) return left.sequenceAnchor - right.sequenceAnchor;
   if (left.activityId === right.activityId) return 0;
   return left.activityId < right.activityId ? -1 : 1;
+}
+
+/**
+ * Whether the held execution shows every reply message whole, so it can stand for the replies projected from its run.
+ * A message longer than a live read carries arrives as its tail only, and its projected reply keeps the whole text.
+ */
+export function liveExecutionShowsWholeMessages(state: LiveExecutionState): boolean {
+  return state.items.every((item) => {
+    if (item.kind !== "message") return true;
+    const value = item.data.value;
+    return typeof value !== "object" || value === null || Array.isArray(value) || value.markdownTruncated !== true;
+  });
 }

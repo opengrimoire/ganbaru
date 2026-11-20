@@ -1095,3 +1095,102 @@ fn recovered_chat_rows_present_their_names() {
         Presentation::default()
     );
 }
+
+#[test]
+fn chat_provider_status_accepts_only_canonical_payloads() {
+    let adapter = ChatAdapter;
+    let check = |group, fields| adapter.validate(PROVIDER_STATUS_TABLE, group, &value(fields));
+    let catalog = r#"{"models":[{"availability":"available","displayName":"GPT-5","id":"gpt-5","options":[]}]}"#;
+    let limits = r#"{"limited":false,"providerData":null,"resetsAt":null}"#;
+
+    assert!(
+        check(
+            provider_status_group::STATUS,
+            vec![Field::Integer(1), t(AT)]
+        )
+        .is_ok()
+    );
+    assert!(
+        check(
+            provider_status_group::STATUS,
+            vec![Field::Integer(2), t(AT)]
+        )
+        .is_err()
+    );
+    assert!(check(provider_status_group::CATALOG, vec![t(catalog), t(AT)]).is_ok());
+    assert!(
+        check(
+            provider_status_group::CATALOG,
+            vec![t(r#"{"models":[]}"#), t(AT)]
+        )
+        .is_ok()
+    );
+    assert!(
+        check(
+            provider_status_group::CATALOG,
+            vec![t(r#"{"models":[],"executable":"/usr/bin/codex"}"#), t(AT)],
+        )
+        .is_err(),
+        "a catalog carries only whitelisted fields"
+    );
+    assert!(
+        check(
+            provider_status_group::CATALOG,
+            vec![
+                t(r#"{"models":[{"availability":"available","description":"user@example.com","displayName":"GPT-5","id":"gpt-5","options":[]}]}"#),
+                t(AT),
+            ],
+        )
+        .is_err(),
+        "a catalog drops descriptions"
+    );
+    assert!(
+        check(
+            provider_status_group::LIMITS,
+            vec![Field::Null, Field::Null]
+        )
+        .is_ok()
+    );
+    assert!(check(provider_status_group::LIMITS, vec![t(limits), t(AT)]).is_ok());
+    assert!(check(provider_status_group::LIMITS, vec![t(limits), Field::Null]).is_err());
+    assert!(check(provider_status_group::LIMITS, vec![Field::Null, t(AT)]).is_err());
+    assert!(
+        check(
+            provider_status_group::LIMITS,
+            vec![
+                t(r#"{"detail":"signed in as user@example.com","limited":false,"providerData":null,"resetsAt":null}"#),
+                t(AT),
+            ],
+        )
+        .is_err(),
+        "limits drop the detail text"
+    );
+}
+
+#[test]
+fn chat_provider_status_rows_are_keyed_by_their_identity() {
+    let adapter = ChatAdapter;
+    let identity = |device: &str, family: &str| {
+        vec![GroupValue::new(
+            PROVIDER_STATUS_TABLE,
+            provider_status_group::IDENTITY,
+            value(vec![t(device), t(family)]),
+        )]
+    };
+    let key = provider_status_key("device-a", "codex").unwrap();
+    assert!(
+        adapter
+            .validate_row(PROVIDER_STATUS_TABLE, &key, &identity("device-a", "codex"))
+            .is_ok()
+    );
+    assert!(
+        adapter
+            .validate_row(PROVIDER_STATUS_TABLE, &key, &identity("device-a", "claude"))
+            .is_err()
+    );
+    assert!(
+        adapter
+            .validate_row(PROVIDER_STATUS_TABLE, &key, &identity("device-b", "codex"))
+            .is_err()
+    );
+}

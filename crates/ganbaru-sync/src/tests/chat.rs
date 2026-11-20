@@ -2455,4 +2455,5 @@ fn chat_a_crash_while_sealing_or_applying_attachment_references_leaves_nothing_p
 mod agent_usage;
 mod assignments;
 mod channel_notes;
+mod provider_status;
 mod push_approvals;

@@ -199,6 +199,7 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_agent_run_delivered_sources",
             "chat_agent_run_usage",
             "chat_agent_usage_daily",
+            "chat_provider_device_status",
             "chat_secret_requests",
             "chat_agent_run_attempt_immutable",
             "chat_assignment_dispatch_jobs",
@@ -2170,5 +2171,56 @@ fn only_a_named_agent_participant_is_deleted_outside_the_sync_applier() {
         .await
         .unwrap();
         set_sync_applying(&pool, false).await;
+    });
+}
+
+#[test]
+fn provider_device_status_bounds_payloads_to_json_objects() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        let insert = |id: &'static str, catalog: String, limits: Option<&'static str>| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query(
+                    "INSERT INTO chat_provider_device_status
+                        (id, device_id, provider_family_id, available, status_changed_at,
+                         catalog_data, catalog_changed_at, limits_data, limits_observed_at)
+                     VALUES (?, 'device-a', 'codex', 1, ?, ?, ?, ?, ?)",
+                )
+                .bind(id)
+                .bind(NOW)
+                .bind(catalog)
+                .bind(NOW)
+                .bind(limits)
+                .bind(limits.map(|_| NOW))
+                .execute(&pool)
+                .await
+            }
+        };
+        insert(
+            "status-1",
+            r#"{"models":[]}"#.to_string(),
+            Some(r#"{"limited":false}"#),
+        )
+        .await
+        .unwrap();
+        insert("status-2", r#"{"models":[]}"#.to_string(), None)
+            .await
+            .unwrap();
+        for (id, catalog, limits) in [
+            ("status-3", "[]".to_string(), None),
+            ("status-4", "not json".to_string(), None),
+            (
+                "status-5",
+                format!(r#"{{"x":"{}"}}"#, "a".repeat(32_768)),
+                None,
+            ),
+            ("status-6", r#"{"models":[]}"#.to_string(), Some("[1]")),
+        ] {
+            assert!(
+                insert(id, catalog, limits).await.is_err(),
+                "{id} should be refused"
+            );
+        }
     });
 }

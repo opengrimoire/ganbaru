@@ -4,7 +4,8 @@ use super::{
     ChatMessageReferenceId, ChatMessageRevisionId, ChatParticipantId, ChatReplyThreadId,
     ChatScratchCleanupJobId, ChatScratchGenerationId, ChatScratchPromotionId, ChatScratchScopeId,
     ChatThreadId, ChatTurnId, ChatWorkAssignmentId, InteractionMode, ModelId, ModelOptionSelection,
-    ProjectWorkingFolderId, ProviderFamilyId, ProviderInstanceId, UtcTimestamp, VersionedJson,
+    ProjectWorkingFolderId, ProviderFamilyId, ProviderInstanceId, ProviderModel, UtcTimestamp,
+    VersionedJson,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1052,6 +1053,31 @@ pub struct ChatAiAgentRead {
     /// When a person removed the agent after it had been used, which archived it and hides it
     /// from the Settings agent list until it is restored. A hidden agent is always off.
     pub hidden_at: Option<UtcTimestamp>,
+    /// What the linked desktop that would run the agent shares about its provider, read only
+    /// on a device without the provider installed; absent otherwise or when no linked device
+    /// shared a status.
+    #[serde(default)]
+    pub linked_provider_status: Option<ChatLinkedProviderStatusRead>,
+}
+
+/// The provider status a linked device shares for one provider family: whether it can run the
+/// family now, the model names and option labels of its catalog, and the plan limits it last
+/// saw. Descriptions, account details, paths, and executables are never shared.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatLinkedProviderStatusRead {
+    pub device_id: String,
+    pub available: bool,
+    pub models: Vec<ProviderModel>,
+    pub usage_limits: Option<ChatLinkedUsageLimitsRead>,
+}
+
+/// Plan limits a linked device observed, with the time it observed them.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatLinkedUsageLimitsRead {
+    pub observed_at: UtcTimestamp,
+    pub status: crate::events::RateLimitStatusEvent,
 }
 
 /// What removing an agent a person named did: an agent that was never used is deleted on every

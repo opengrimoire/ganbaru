@@ -22,6 +22,9 @@
 
 use ganbaru_sync_contracts::bounds::{MAX_DEVICE_ID_BYTES, MAX_ORDER_KEY_BYTES};
 use ganbaru_sync_contracts::chat_agents::is_named_agent_key;
+use ganbaru_sync_contracts::chat_provider_status::{
+    is_canonical_catalog, is_canonical_limits, provider_status_key,
+};
 use ganbaru_sync_contracts::chat_push_approvals::{
     MAX_PUSH_APPROVAL_BRANCH_BYTES, MAX_PUSH_APPROVAL_URL_BYTES,
 };
@@ -41,14 +44,14 @@ use crate::manifest::vault::chat::{
     CHANNEL_TARGETS_TABLE, CHANNELS_TABLE, CONVERSATION_CURSORS_TABLE, CONVERSATIONS_TABLE,
     ENVIRONMENT_TARGETS_TABLE, FOLDER_TARGETS_TABLE, INPUTS_TABLE, ITEMS_TABLE, MEMBERSHIPS_TABLE,
     MESSAGES_TABLE, PARTICIPANT_TARGETS_TABLE, PARTICIPANTS_TABLE, PATH_TARGETS_TABLE,
-    POLICY_REVISIONS_TABLE, PROJECT_SETTINGS_TABLE, PUSH_APPROVALS_TABLE, RECURRENCES_TABLE,
-    REFERENCES_TABLE, REPLY_CURSORS_TABLE, REPLY_THREADS_TABLE, REVISIONS_TABLE,
+    POLICY_REVISIONS_TABLE, PROJECT_SETTINGS_TABLE, PROVIDER_STATUS_TABLE, PUSH_APPROVALS_TABLE,
+    RECURRENCES_TABLE, REFERENCES_TABLE, REPLY_CURSORS_TABLE, REPLY_THREADS_TABLE, REVISIONS_TABLE,
     SCHEDULED_ATTACHMENT_REFERENCES, SCHEDULED_REFERENCES, SCHEDULED_TABLE, SEMANTIC_UPDATES_TABLE,
     agent_group, agent_usage_group, app_settings_group, assignment_group, channel_group,
     channel_membership_group, channel_note_group, conversation_group, input_group, item_group,
     membership_group, message_group, participant_group, policy_revision_group,
-    project_settings_group, push_approval_group, read_cursor_group, recurrence_group,
-    reply_thread_group, scheduled_group, semantic_update_group, timeline_group,
+    project_settings_group, provider_status_group, push_approval_group, read_cursor_group,
+    recurrence_group, reply_thread_group, scheduled_group, semantic_update_group, timeline_group,
 };
 
 /// Characters of a display name after trimming.
@@ -599,6 +602,53 @@ fn validate_agent_usage_row(row: &RowKey, groups: &[GroupValue]) -> Result<(), A
     }
 }
 
+/// A provider status row holds its canonical catalog and limits payloads, with limits and their
+/// observation time set together.
+fn validate_provider_status(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (provider_status_group::IDENTITY, [_device, _family]) => Ok(()),
+        (provider_status_group::STATUS, [available, changed_at]) => {
+            flag(available)?;
+            timestamp(changed_at)
+        }
+        (provider_status_group::CATALOG, [data, changed_at]) => {
+            timestamp(changed_at)?;
+            if is_canonical_catalog(text(data)?) {
+                Ok(())
+            } else {
+                Err(AdapterError("chat provider status catalog"))
+            }
+        }
+        (provider_status_group::LIMITS, [Field::Null, Field::Null]) => Ok(()),
+        (provider_status_group::LIMITS, [data @ Field::Text(_), observed_at]) => {
+            timestamp(observed_at)?;
+            if is_canonical_limits(text(data)?) {
+                Ok(())
+            } else {
+                Err(AdapterError("chat provider status limits"))
+            }
+        }
+        _ => Err(AdapterError("chat provider status value")),
+    }
+}
+
+/// A provider status row that carries its identity is keyed by it, so one device writes one
+/// row per provider family.
+fn validate_provider_status_row(row: &RowKey, groups: &[GroupValue]) -> Result<(), AdapterError> {
+    let Some(identity) = groups
+        .iter()
+        .find(|value| value.group == provider_status_group::IDENTITY)
+    else {
+        return Ok(());
+    };
+    let [Field::Text(device), Field::Text(family)] = identity.value.fields() else {
+        return Err(AdapterError("chat provider status identity"));
+    };
+    match provider_status_key(device, family) {
+        Ok(expected) if expected == *row => Ok(()),
+        _ => Err(AdapterError("chat provider status key")),
+    }
+}
 /// Text of at most `max` UTF-8 bytes.
 fn within_bytes(field: &Field, max: usize, what: &'static str) -> Result<(), AdapterError> {
     if text(field)?.len() <= max {
@@ -1565,6 +1615,8 @@ impl DomainAdapter for ChatAdapter {
             validate_participant_row(row, groups)
         } else if table == AGENT_USAGE_DAILY_TABLE {
             validate_agent_usage_row(row, groups)
+        } else if table == PROVIDER_STATUS_TABLE {
+            validate_provider_status_row(row, groups)
         } else {
             Ok(())
         }
@@ -1626,6 +1678,8 @@ impl DomainAdapter for ChatAdapter {
             validate_semantic_update(group, fields)
         } else if table == AGENT_USAGE_DAILY_TABLE {
             validate_agent_usage(group, fields)
+        } else if table == PROVIDER_STATUS_TABLE {
+            validate_provider_status(group, fields)
         } else {
             Ok(())
         }

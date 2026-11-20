@@ -21,6 +21,7 @@ pub mod ids;
 #[cfg(feature = "native-runtime")]
 pub mod ingestion;
 pub mod project_defaults;
+pub mod provider_status;
 pub mod repository;
 #[cfg(feature = "native-runtime")]
 pub mod review_engine;

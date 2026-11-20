@@ -45,12 +45,21 @@
 //! Daily agent usage summaries replicate (table 399): one row per device, agent, and local
 //! day that only the device it names writes and whose counts only grow.
 //!
+//! Provider device status replicates (table 402): one row per device and provider family that
+//! only the device it names writes, holding whether that device can run the family, a bounded
+//! catalog of model names and option labels, and the plan limits it last saw, so a device that
+//! runs no agents can show what a linked desktop would run.
+//!
 //! Execution, drafts, review history, provider state, receipts, dispatch claims, cleanup jobs,
 //! and the audience counters stay on the device as `Local` tables, and message search is
 //! `Derived`. Replicas write Chat like the owner; device-local state never leaves the device.
-//! Ids 359, 366 to 369, 382 to 389, 391 to 394, 398, and 402 to 447 are reserved.
+//! Ids 359, 366 to 369, 382 to 389, 391 to 394, 398, and 403 to 447 are reserved.
 
 use ganbaru_sync_contracts::bounds::MAX_DEVICE_ID_BYTES;
+use ganbaru_sync_contracts::chat_provider_status::{
+    MAX_CATALOG_DATA_CHARS, MAX_LIMITS_DATA_CHARS, MAX_PROVIDER_FAMILY_CHARS,
+    PROVIDER_STATUS_OWNER_PREFIX,
+};
 use ganbaru_sync_contracts::chat_push_approvals::{
     MAX_PUSH_APPROVAL_BRANCH_BYTES, MAX_PUSH_APPROVAL_URL_BYTES, PUSH_APPROVAL_KEY_PREFIX,
 };
@@ -147,6 +156,8 @@ pub const INPUTS_TABLE: TableId = TableId(396);
 pub const SEMANTIC_UPDATES_TABLE: TableId = TableId(397);
 /// `chat_agent_usage_daily`.
 pub const AGENT_USAGE_DAILY_TABLE: TableId = TableId(399);
+/// `chat_provider_device_status`.
+pub const PROVIDER_STATUS_TABLE: TableId = TableId(402);
 
 /// Prefix of conversation membership keys, over the conversation and participant.
 pub const MEMBERSHIP_KEY_PREFIX: &str = "conversation-membership";
@@ -488,6 +499,20 @@ pub mod agent_usage_group {
     pub const WORKING: GroupId = group_id(2);
     /// `run_count`.
     pub const RUNS: GroupId = group_id(3);
+}
+
+/// Provider device status field groups.
+pub mod provider_status_group {
+    use super::{GroupId, group_id};
+
+    /// `device_id` and `provider_family_id`, the key inputs.
+    pub const IDENTITY: GroupId = group_id(0);
+    /// `available` and `status_changed_at`.
+    pub const STATUS: GroupId = group_id(1);
+    /// `catalog_data` and `catalog_changed_at`.
+    pub const CATALOG: GroupId = group_id(2);
+    /// `limits_data` and `limits_observed_at`.
+    pub const LIMITS: GroupId = group_id(3);
 }
 
 /// A hidden, non-recoverable group without references.
@@ -1992,6 +2017,55 @@ pub const AGENT_USAGE_DAILY: TableSpec = TableSpec {
     ..BASE
 };
 
+/// `chat_provider_device_status`, whether one device can run one provider family, keyed by the
+/// owner tag of the device followed by a digest of both values, under
+/// [`PROVIDER_STATUS_OWNER_PREFIX`]. Only the device the row names may write it, which every
+/// replica enforces from the key, so each register has one writer. The catalog and limits hold
+/// the canonical payloads of `ganbaru_sync_contracts::chat_provider_status`, which the adapter
+/// checks. A removed provider leaves its row unavailable with an empty catalog instead of
+/// deleting it, since a deleted derived key could not return when the provider does.
+pub const PROVIDER_STATUS: TableSpec = TableSpec {
+    id: PROVIDER_STATUS_TABLE,
+    name: "chat_provider_device_status",
+    owner: Some(RowOwner::KeyTag {
+        prefix: PROVIDER_STATUS_OWNER_PREFIX,
+        device_column: "device_id",
+    }),
+    groups: &[
+        identity(
+            provider_status_group::IDENTITY,
+            &[
+                trimmed("device_id", MAX_DEVICE_ID_BYTES),
+                trimmed("provider_family_id", MAX_PROVIDER_FAMILY_CHARS),
+            ],
+            &[],
+        ),
+        register(
+            provider_status_group::STATUS,
+            "status",
+            &[flag("available"), timestamp("status_changed_at")],
+        ),
+        register(
+            provider_status_group::CATALOG,
+            "catalog",
+            &[
+                text("catalog_data", MAX_CATALOG_DATA_CHARS),
+                timestamp("catalog_changed_at"),
+            ],
+        ),
+        register(
+            provider_status_group::LIMITS,
+            "limits",
+            &[
+                optional_text("limits_data", MAX_LIMITS_DATA_CHARS),
+                optional_timestamp("limits_observed_at"),
+            ],
+        ),
+    ],
+    deletion: Deletion::Never,
+    ..BASE
+};
+
 /// A device table with its triggers.
 const fn device(name: &'static str, triggers: &'static [DomainTrigger]) -> DeviceTable {
     DeviceTable {
@@ -2039,6 +2113,7 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         INPUTS,
         SEMANTIC_UPDATES,
         AGENT_USAGE_DAILY,
+        PROVIDER_STATUS,
     ],
     derived: &["chat_communication_search_fts"],
     local: &[

@@ -793,3 +793,9 @@ table 399 chat_agent_usage_daily replicated key id rule any
   group 1 max counted_tokens:integer(0..=1000000000000)
   group 2 max working_seconds:integer(0..=8640000)
   group 3 max run_count:integer(0..=100000)
+table 402 chat_provider_device_status replicated key id rule any never_deleted
+  owner key tag chat-provider-status: device_id
+  group 0 immutable device_id:trimmed_text(1..=160) provider_family_id:trimmed_text(1..=1024)
+  group 1 register available:flag status_changed_at:timestamp
+  group 2 register catalog_data:text(..=32768) catalog_changed_at:timestamp
+  group 3 register limits_data:optional_text(..=16384) limits_observed_at:optional_timestamp

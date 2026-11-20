@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use tauri::Runtime;
 
+#[cfg(desktop)]
+mod usage_limits;
+
 pub const CHAT_DEVICE_STATE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -36,11 +39,13 @@ pub struct ChatProviderDeviceState {
 impl ChatProviderDeviceState {
     /// Stores the usage limits a provider reported unless a newer report is already stored, and
     /// reports whether it was stored. A probe and a turn can report in either order, so the
-    /// newest observation wins.
+    /// newest observation wins. A report without usage numbers keeps the numbers the stored
+    /// report read for the same windows, as [`usage_limits::carry_usage_numbers`] describes, and
+    /// keeps when they were read.
     #[cfg(desktop)]
     pub fn observe_usage_limits(
         &mut self,
-        status: RateLimitStatusEvent,
+        mut status: RateLimitStatusEvent,
         observed_at: UtcTimestamp,
     ) -> bool {
         if self
@@ -50,15 +55,33 @@ impl ChatProviderDeviceState {
         {
             return false;
         }
+        let Some(observed_at_seconds) = epoch_seconds(&observed_at) else {
+            return false;
+        };
+        let previous = self.usage_limits.take();
+        let numbers = usage_limits::carry_usage_numbers(
+            previous.as_ref().map(|current| &current.status),
+            &mut status,
+            observed_at_seconds,
+        );
+        let usage_read_at = if numbers.read {
+            Some(observed_at.clone())
+        } else if numbers.carried {
+            previous.and_then(|current| current.usage_read_at)
+        } else {
+            None
+        };
         self.usage_limits = Some(ProviderUsageLimitsObservation {
             observed_at,
+            usage_read_at,
             status,
         });
         true
     }
 
-    /// Whether this device read the instance's usage limits less than `max_age` before `now`,
-    /// from a probe or a turn. A successful probe alone does not count: its limits read is
+    /// Whether this device read the instance's usage numbers less than `max_age` before `now`,
+    /// from a probe or a turn. A report without numbers, such as a Claude turn's window
+    /// statuses, does not count, and neither does a successful probe alone: its limits read is
     /// best effort, so a probe that came back without limits leaves the limits to read again.
     #[cfg(desktop)]
     pub fn has_usage_limits_within(
@@ -68,10 +91,9 @@ impl ChatProviderDeviceState {
     ) -> bool {
         self.usage_limits
             .as_ref()
-            .and_then(|limits| {
-                chrono::DateTime::parse_from_rfc3339(limits.observed_at.as_str()).ok()
-            })
-            .is_some_and(|observed_at| now.signed_duration_since(observed_at) < max_age)
+            .and_then(|limits| limits.usage_read_at.as_ref())
+            .and_then(|read_at| chrono::DateTime::parse_from_rfc3339(read_at.as_str()).ok())
+            .is_some_and(|read_at| now.signed_duration_since(read_at) < max_age)
     }
 }
 
@@ -80,6 +102,10 @@ impl ChatProviderDeviceState {
 #[serde(rename_all = "camelCase")]
 pub struct ProviderUsageLimitsObservation {
     pub observed_at: UtcTimestamp,
+    /// When a report last read the usage numbers `status` holds, which a later report without
+    /// numbers keeps; `None` when no report read them.
+    #[serde(default)]
+    pub usage_read_at: Option<UtcTimestamp>,
     pub status: RateLimitStatusEvent,
 }
 
@@ -240,6 +266,14 @@ fn is_after(candidate: &UtcTimestamp, reference: &UtcTimestamp) -> bool {
         (Some(_), None) => true,
         (None, _) => false,
     }
+}
+
+/// The instant `value` names in whole epoch seconds.
+#[cfg(desktop)]
+fn epoch_seconds(value: &UtcTimestamp) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(value.as_str())
+        .ok()
+        .map(|instant| instant.timestamp())
 }
 
 /// Stores a usage limit report for an instance this device keeps; see
@@ -460,8 +494,19 @@ mod tests {
             at(50)
         ));
     }
+    /// A Codex-shaped report, which reads its usage numbers itself.
+    fn limits_with_numbers() -> RateLimitStatusEvent {
+        RateLimitStatusEvent {
+            provider_data: Some(ganbaru_chat_contracts::models::VersionedJson {
+                schema_version: 1,
+                value: serde_json::json!({ "rateLimitsByLimitId": {} }),
+            }),
+            ..limits(false)
+        }
+    }
+
     #[test]
-    fn only_a_recent_limit_report_makes_the_limits_fresh() {
+    fn only_a_recent_read_of_usage_numbers_makes_the_limits_fresh() {
         let now = chrono::DateTime::parse_from_rfc3339("2026-08-04T12:00:00Z")
             .unwrap()
             .to_utc();
@@ -478,15 +523,44 @@ mod tests {
             "a recent probe that returned no limits leaves them to read again"
         );
 
-        device.observe_usage_limits(limits(false), at(11 * 3600));
+        device.observe_usage_limits(limits_with_numbers(), at(11 * 3600));
         assert!(
             !device.has_usage_limits_within(now, hour),
             "exactly the maximum age is stale"
         );
         device.observe_usage_limits(
-            limits(false),
+            limits_with_numbers(),
             UtcTimestamp::new("2026-08-04T11:00:01Z").unwrap(),
         );
         assert!(device.has_usage_limits_within(now, hour));
+    }
+
+    #[test]
+    fn a_report_without_numbers_keeps_when_the_numbers_were_read() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-04T12:00:00Z")
+            .unwrap()
+            .to_utc();
+        let hour = chrono::TimeDelta::hours(1);
+        let mut device = ChatProviderDeviceState::default();
+        device.observe_usage_limits(limits(false), at(11 * 3600 + 59 * 60));
+        assert!(
+            !device.has_usage_limits_within(now, hour),
+            "a recent report without numbers leaves the numbers to read"
+        );
+
+        let mut device = ChatProviderDeviceState::default();
+        device.observe_usage_limits(limits_with_numbers(), at(10 * 3600));
+        device.observe_usage_limits(limits(true), at(11 * 3600 + 59 * 60));
+        let stored = device.usage_limits.as_ref().unwrap();
+        assert_eq!(stored.usage_read_at, Some(at(10 * 3600)));
+        assert!(stored.status.limited, "the newer report's status stands");
+        assert!(
+            stored.status.provider_data.is_some(),
+            "the numbers of the earlier report stay"
+        );
+        assert!(
+            !device.has_usage_limits_within(now, hour),
+            "numbers carried from two hours ago are stale"
+        );
     }
 }

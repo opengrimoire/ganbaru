@@ -83,10 +83,13 @@ export function providerPlanLimits(
       accountWide: window.accountWide,
     };
   });
+  // Numbers a later report kept without reading them again date from when they were read.
+  const readAtMs = observation.usageReadAt === null ? Number.NaN : Date.parse(observation.usageReadAt);
+  const numbersObservedAtMs = Number.isNaN(readAtMs) ? observedAtMs : readAtMs;
   return {
     windows,
-    observedAtMs,
-    stale: nowMs - observedAtMs > STALE_PLAN_LIMITS_MS,
+    observedAtMs: numbersObservedAtMs,
+    stale: nowMs - numbersObservedAtMs > STALE_PLAN_LIMITS_MS,
     limited: limitedAt(observation.status.limited, observation.status.resetsAt, observedAtMs, nowMs),
   };
 }

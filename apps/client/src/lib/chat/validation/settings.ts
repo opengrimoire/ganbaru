@@ -67,6 +67,9 @@ export function parseProviderUsageLimitsObservation(value: unknown, label: strin
   const record = readRecord(value, label);
   return {
     observedAt: readUtcTimestamp(record.observedAt, `${label}.observedAt`),
+    usageReadAt: record.usageReadAt === undefined
+      ? null
+      : readNullable(record.usageReadAt, `${label}.usageReadAt`, readUtcTimestamp),
     status: parseRateLimitStatus(record.status, `${label}.status`),
   };
 }

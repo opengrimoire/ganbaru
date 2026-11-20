@@ -35,6 +35,8 @@ export interface ProviderInstanceRead {
 /** Usage limits a provider reported, with when this device observed them. */
 export interface ProviderUsageLimitsObservation {
   observedAt: UtcTimestamp;
+  /** When a report last read the usage numbers the status holds, or `null` when none did or a linked desktop shared them. */
+  usageReadAt: UtcTimestamp | null;
   status: RateLimitStatusEvent;
 }
 

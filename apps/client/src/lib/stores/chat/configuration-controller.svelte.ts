@@ -171,8 +171,10 @@ export class ChatConfigurationController {
    */
   refreshStaleProviderLimits(provider: ProviderInstanceRead, nowMs: number = Date.now()): void {
     if (!localExecutionAvailable || !provider.configuration.enabled) return;
-    const observedAtMs = provider.usageLimits ? Date.parse(provider.usageLimits.observedAt) : Number.NaN;
-    if (nowMs - observedAtMs < STALE_PLAN_LIMITS_MS) return;
+    // A Claude turn reports window statuses without usage numbers, so only a read of the numbers counts as fresh.
+    const usageReadAt = provider.usageLimits?.usageReadAt ?? null;
+    const readAtMs = usageReadAt === null ? Number.NaN : Date.parse(usageReadAt);
+    if (nowMs - readAtMs < STALE_PLAN_LIMITS_MS) return;
     const instanceId = provider.configuration.instanceId;
     const requestedAtMs = this.limitsRequestedAt.get(instanceId);
     if (requestedAtMs !== undefined && nowMs - requestedAtMs < STALE_PLAN_LIMITS_MS) return;

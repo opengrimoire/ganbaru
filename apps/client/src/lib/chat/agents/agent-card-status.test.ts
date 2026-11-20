@@ -26,6 +26,7 @@ function model(id: string, displayName: string): ProviderModel {
 function limits(usedPercent: number): ProviderUsageLimitsObservation {
   return {
     observedAt: OBSERVED_AT,
+    usageReadAt: OBSERVED_AT,
     status: {
       limited: false,
       resetsAt: null,

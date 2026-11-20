@@ -79,6 +79,7 @@ function codexLimits(
 ): ProviderUsageLimitsObservation {
   return {
     observedAt,
+    usageReadAt: observedAt,
     status: {
       limited,
       resetsAt,

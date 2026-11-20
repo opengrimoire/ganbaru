@@ -635,11 +635,13 @@ describe("Chat provider contracts", () => {
       ...provider,
       usageLimits: {
         observedAt: timestamp,
+        usageReadAt: timestamp,
         status: { limited: false, resetsAt: null, detail: null, providerData: null },
       },
       lastUsedAt: timestamp,
     });
     expect(observed.usageLimits?.observedAt).toBe(timestamp);
+    expect(observed.usageLimits?.usageReadAt).toBe(timestamp);
     expect(observed.lastUsedAt).toBe(timestamp);
     expect(() => parseProviderInstanceRead({
       ...provider,

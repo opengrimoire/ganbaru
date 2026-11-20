@@ -26,7 +26,7 @@ const approval: AnswerableRemoteApproval = {
   messageItemId: "item:approval",
   assignmentId: "assignment:1",
   requestId: "request:1",
-  subject: { kind: "command", text: "pnpm test", location: "/work", truncated: false },
+  subject: { kind: "command", text: "pnpm test", location: null, truncated: false },
   choices: [
     { id: "allow_once", label: "Allow once", decision: "allow_once" },
     { id: "deny", label: "Deny", decision: "deny" },
@@ -89,7 +89,10 @@ describe("ChatRemoteApprovalPanel", () => {
   });
 
   it("keeps the decisions with an explanation when the desktop cannot take the answer", async () => {
-    api.resolve.mockResolvedValueOnce({ kind: "unreachable" }).mockResolvedValueOnce({ kind: "notServed" });
+    api.resolve
+      .mockResolvedValueOnce({ kind: "unreachable" })
+      .mockResolvedValueOnce({ kind: "refused" })
+      .mockResolvedValueOnce({ kind: "notServed" });
     const { root, onAnswered } = setup(approval);
 
     button(root, "Deny").click();
@@ -99,14 +102,25 @@ describe("ChatRemoteApprovalPanel", () => {
 
     button(root, "Deny").click();
     await settle();
+    expect(root.textContent).toContain(en.chat.remoteApproval.refused);
+
+    button(root, "Deny").click();
+    await settle();
     expect(root.textContent).toContain(en.chat.remoteApproval.notServed);
+    expect(new Set(api.resolve.mock.calls.map(([request]) => request.commandId)).size).toBe(3);
     expect(onAnswered).not.toHaveBeenCalled();
-    expect(new Set(api.resolve.mock.calls.map(([request]) => request.commandId)).size).toBe(2);
   });
 
   it("explains a missing subject instead of showing an empty target", () => {
     const { root } = setup({ ...approval, subject: null, choices: [{ id: "deny", label: "Deny", decision: "deny" }] });
     expect(root.querySelector("[data-testid='approval-subject']")).toBeNull();
     expect(root.textContent).toContain(en.chat.remoteApproval.noSubject);
+  });
+
+  it("explains why a shortened target can only be denied here", () => {
+    const subject = { kind: "command", text: "pnpm test", location: null, truncated: true } as const;
+    const { root } = setup({ ...approval, subject, choices: [{ id: "deny", label: "Deny", decision: "deny" }] });
+    expect(root.querySelector("[data-testid='approval-subject'] pre")?.textContent).toBe("pnpm test");
+    expect(root.textContent).toContain(en.chat.remoteApproval.truncatedSubject);
   });
 });

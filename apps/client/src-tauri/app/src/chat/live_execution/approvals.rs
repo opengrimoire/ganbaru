@@ -73,11 +73,25 @@ async fn resolve(app: &AppHandle, query: ChatApprovalQuery) -> Result<ChatApprov
     let db_url = format!("sqlite:{}", crate::vault::APP_SQLITE_FILE);
     match crate::chat::send::resolve_approval(app.clone(), db_url, command).await {
         Ok(_) => Ok(ChatApprovalAnswer::Resolved),
-        Err(error) if error.code == ChatErrorCode::Conflict => Ok(ChatApprovalAnswer::Stale),
-        Err(error) => Err(format!(
-            "resolve the approval: {:?}: {}",
-            error.code, error.message
-        )),
+        Err(error) => refusal_answer(error.code)
+            .ok_or_else(|| format!("resolve the approval: {:?}: {}", error.code, error.message)),
+    }
+}
+
+/// What a remote answer means when the desktop approval path refuses it, or `None` when the
+/// refusal is a failure the phone may retry, such as a busy runtime or a persistence error.
+fn refusal_answer(code: ChatErrorCode) -> Option<ChatApprovalAnswer> {
+    match code {
+        ChatErrorCode::Conflict | ChatErrorCode::StaleRevision | ChatErrorCode::NotFound => {
+            Some(ChatApprovalAnswer::Stale)
+        }
+        ChatErrorCode::Validation
+        | ChatErrorCode::Permission
+        | ChatErrorCode::InvalidStateTransition
+        | ChatErrorCode::CapabilityUnsupported
+        | ChatErrorCode::TrustDecisionRequired
+        | ChatErrorCode::RuntimeApprovalRequired => Some(ChatApprovalAnswer::Refused),
+        _ => None,
     }
 }
 
@@ -198,5 +212,27 @@ mod tests {
             let command = resolve_command(&query(remote), approval()).expect("command");
             assert_eq!(command.decision.kind, local);
         }
+    }
+
+    #[test]
+    fn a_refused_answer_is_stale_refused_or_retryable_by_its_cause() {
+        assert_eq!(
+            refusal_answer(ChatErrorCode::Conflict),
+            Some(ChatApprovalAnswer::Stale)
+        );
+        assert_eq!(
+            refusal_answer(ChatErrorCode::NotFound),
+            Some(ChatApprovalAnswer::Stale)
+        );
+        assert_eq!(
+            refusal_answer(ChatErrorCode::Validation),
+            Some(ChatApprovalAnswer::Refused)
+        );
+        assert_eq!(
+            refusal_answer(ChatErrorCode::Permission),
+            Some(ChatApprovalAnswer::Refused)
+        );
+        assert_eq!(refusal_answer(ChatErrorCode::Busy), None);
+        assert_eq!(refusal_answer(ChatErrorCode::Persistence), None);
     }
 }

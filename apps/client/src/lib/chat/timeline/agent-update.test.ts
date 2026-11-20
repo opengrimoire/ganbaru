@@ -326,7 +326,7 @@ const claudeDecisions = [
   { id: "cancel", label: "Cancel turn", decisionKind: "cancel", description: null },
 ];
 
-const commandSubject = { kind: "command", text: "pnpm test", location: "/work", truncated: false };
+const commandSubject = { kind: "command", text: "pnpm test", location: null, truncated: false };
 
 describe("approval updates", () => {
   it("offers one-time decisions with the subject they act on", () => {
@@ -349,14 +349,14 @@ describe("approval updates", () => {
     });
   });
 
-  it("never offers Allow without a readable subject", () => {
-    for (const subject of [undefined, null, { kind: "command", text: 3 }]) {
+  it("never offers Allow without a readable, whole subject", () => {
+    for (const subject of [undefined, null, { kind: "command", text: 3 }, { ...commandSubject, truncated: true }]) {
       const presentation = chatAgentUpdatePresentation(approvalUpdate({
         requestId: "request:1",
         allowedDecisions: claudeDecisions,
         ...(subject === undefined ? {} : { subject }),
       }));
-      expect(presentation).toMatchObject({ kind: "approval", subject: null });
+      expect(presentation).toMatchObject({ kind: "approval" });
       expect(presentation?.kind === "approval" && presentation.choices.map((choice) => choice.decision))
         .toEqual(["deny", "cancel"]);
     }

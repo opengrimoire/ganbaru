@@ -1214,12 +1214,12 @@ fn chat_approval_resolve_round_trips_and_counts_as_vault_material() {
 }
 
 #[test]
-fn chat_approval_resolve_refuses_session_grants_bad_ids_and_options() {
+fn chat_approval_resolve_refuses_session_grants_and_bad_options_but_takes_provider_request_ids() {
     let mut message = serde_json::to_value(chat_approval_resolve("request-1", "allow_once"))
         .expect("serialize the approval");
     message["decision"] = serde_json::json!("allow_session");
     assert!(serde_json::from_value::<ControlMessage>(message).is_err());
-    for request_id in ["", "request 1", "request/1", &"a".repeat(161)] {
+    for request_id in ["", "request\n1", &"a".repeat(1025)] {
         assert!(
             chat_approval_resolve(request_id, "allow_once")
                 .validate()
@@ -1236,7 +1236,7 @@ fn chat_approval_resolve_refuses_session_grants_bad_ids_and_options() {
         );
     }
     assert_eq!(
-        chat_approval_resolve("request-1", "Allow once (proceed)").validate(),
+        chat_approval_resolve("call_9f2 |fc_01/tool:edit", "Allow once (proceed)").validate(),
         Ok(())
     );
 }

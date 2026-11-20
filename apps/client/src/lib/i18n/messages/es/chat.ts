@@ -515,6 +515,8 @@ export const chat = {
   remoteApproval: {
     title: (name: string) => `${name} pide aprobación`,
     noSubject: "El escritorio no compartió qué se aprueba, así que aquí solo puedes rechazarlo o responder en el escritorio.",
+    truncatedSubject: "Este destino es demasiado largo para mostrarlo completo, así que aquí solo puedes rechazarlo o permitirlo en el escritorio.",
+    refused: "El escritorio que ejecuta este trabajo no aceptó esta respuesta, así que respóndela en el escritorio.",
     notServed: "Este trabajo ya no se ejecuta en otro dispositivo.",
     unreachable: "No se pudo contactar el escritorio que ejecuta este trabajo, así que comprueba que ambos dispositivos compartan red y versión de la app, o responde en el escritorio.",
   },

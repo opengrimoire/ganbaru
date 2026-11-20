@@ -27,7 +27,8 @@ pub const CHAT_LIVE_WAIT: Duration = Duration::from_secs(12);
 const _: () = assert!(CHAT_LIVE_WAIT.as_secs() + 3 <= CONTROL_TIMEOUT.as_secs());
 
 pub use ganbaru_handoff::protocol::{
-    CHAT_APPROVAL_STALE_CODE, CHAT_LIVE_NOT_HERE_CODE, CHAT_LIVE_UNAVAILABLE_CODE,
+    CHAT_APPROVAL_REFUSED_CODE, CHAT_APPROVAL_STALE_CODE, CHAT_LIVE_NOT_HERE_CODE,
+    CHAT_LIVE_UNAVAILABLE_CODE,
 };
 
 /// The execution read one admitted request asks for.
@@ -90,8 +91,10 @@ pub enum ChatApprovalAnswer {
     Resolved,
     /// This device does not execute the assignment.
     NotHere,
-    /// The request is no longer open, or the decision is not one it offered.
+    /// The request is no longer open.
     Stale,
+    /// The local checks refused the answer, such as a decision the request did not offer.
+    Refused,
 }
 
 /// Resolves the approval a query names through the local Chat runtime.
@@ -360,6 +363,15 @@ where
                 stream,
                 CHAT_APPROVAL_STALE_CODE,
                 "that approval is no longer open",
+                false,
+            )
+            .await
+        }
+        Ok(ChatApprovalAnswer::Refused) => {
+            send_error(
+                stream,
+                CHAT_APPROVAL_REFUSED_CODE,
+                "this device refused that answer",
                 false,
             )
             .await

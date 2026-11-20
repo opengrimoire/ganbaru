@@ -59,8 +59,14 @@ pub const CHAT_LIVE_UNAVAILABLE_CODE: &str = "chat_live_unavailable";
 /// Error code a desktop answers a [`ControlMessage::ChatApprovalResolve`] with when the approval
 /// is no longer open, because it was answered, withdrawn, or the run moved on.
 pub const CHAT_APPROVAL_STALE_CODE: &str = "chat_approval_stale";
+/// Error code a desktop answers a [`ControlMessage::ChatApprovalResolve`] with when its own checks refuse the
+/// answer, such as a decision the request did not offer, so only the desktop can answer it.
+pub const CHAT_APPROVAL_REFUSED_CODE: &str = "chat_approval_refused";
 /// Upper bound on the provider option a [`ControlMessage::ChatApprovalResolve`] names.
 const MAX_CHAT_APPROVAL_OPTION_BYTES: usize = 256;
+/// Upper bound on the request a [`ControlMessage::ChatApprovalResolve`] names, the bound Chat keeps on provider
+/// request ids, which are provider-chosen text rather than Ganbaru identifiers.
+const MAX_CHAT_APPROVAL_REQUEST_BYTES: usize = 1024;
 
 /// The decisions a linked device may send for an approval the executing desktop holds open.
 /// Each answers one request only: grants that outlive it are given on the executing desktop.
@@ -934,14 +940,17 @@ impl ControlMessage {
                 validate_identifier("vault id", vault_id)?;
                 validate_identifier("device id", device_id)?;
                 validate_chat_identifier("assignment id", assignment_id)?;
-                validate_chat_identifier("request id", request_id)?;
+                validate_chat_text(
+                    "chat approval request",
+                    request_id,
+                    MAX_CHAT_APPROVAL_REQUEST_BYTES,
+                )?;
                 validate_chat_identifier("command id", command_id)?;
-                if provider_option_id.is_empty()
-                    || provider_option_id.len() > MAX_CHAT_APPROVAL_OPTION_BYTES
-                    || provider_option_id.chars().any(char::is_control)
-                {
-                    return Err("chat approval option is invalid".to_string());
-                }
+                validate_chat_text(
+                    "chat approval option",
+                    provider_option_id,
+                    MAX_CHAT_APPROVAL_OPTION_BYTES,
+                )?;
             }
             Self::ChatApprovalResolved => {}
             Self::PersonKeyRelease {
@@ -1683,6 +1692,15 @@ fn validate_chat_identifier(label: &str, value: &str) -> Result<(), String> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
     {
+        return Err(format!("{label} is invalid"));
+    }
+    Ok(())
+}
+
+/// Validates provider-chosen text a Chat control message carries: nonempty, within `max_bytes`, and without
+/// control characters.
+fn validate_chat_text(label: &str, value: &str, max_bytes: usize) -> Result<(), String> {
+    if value.is_empty() || value.len() > max_bytes || value.chars().any(char::is_control) {
         return Err(format!("{label} is invalid"));
     }
     Ok(())

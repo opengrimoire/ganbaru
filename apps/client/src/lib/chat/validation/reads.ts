@@ -221,7 +221,7 @@ export function parseChatLiveFollow(value: unknown, label = "Chat live follow"):
   return { kind };
 }
 
-const CHAT_REMOTE_APPROVAL_OUTCOME_KINDS = ["resolved", "stale", "notServed", "unreachable"] as const;
+const CHAT_REMOTE_APPROVAL_OUTCOME_KINDS = ["resolved", "stale", "refused", "notServed", "unreachable"] as const;
 
 /** Validates what became of an approval answer a phone sent to the linked desktop that runs the work. */
 export function parseChatRemoteApprovalOutcome(

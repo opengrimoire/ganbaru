@@ -2,7 +2,7 @@
 
 use super::super::agent_runs::{SETTLED_RUN_STATES, unsettled_run_state_sql};
 use super::super::events::{
-    CanonicalEvent, CanonicalRuntimeEvent, ChangedFileSummary, TurnCompletedEvent,
+    ApprovalSubject, CanonicalEvent, CanonicalRuntimeEvent, ChangedFileSummary, TurnCompletedEvent,
 };
 use super::super::models::{
     ChatError, ChatErrorCode, ChatParticipantId, ChatReplyThreadId, ChatResult, ChatTurnId,
@@ -184,7 +184,7 @@ async fn project_event_arms(
                     "kind": event.kind,
                     "allowedDecisions": event.allowed_decisions,
                     "safePayload": event.safe_payload,
-                    "subject": event.subject,
+                    "subject": event.subject.as_ref().map(replicated_approval_subject),
                 }),
             )
             .await?
@@ -473,6 +473,15 @@ fn provider_limit_payload(resets_at: Option<String>) -> Value {
     json!({ "code": PROVIDER_USAGE_LIMIT_REASON, "resetsAt": resets_at })
 }
 
+/// The subject an approval reply replicates: the target a linked device shows beside Allow, without the folder it
+/// runs in, because absolute folder paths stay on the device that holds them.
+fn replicated_approval_subject(subject: &ApprovalSubject) -> ApprovalSubject {
+    ApprovalSubject {
+        location: None,
+        ..subject.clone()
+    }
+}
+
 /// Whether `event` settles the assignment its run belongs to when it applies.
 fn settles_assignment(event: &CanonicalEvent) -> bool {
     match event {
@@ -666,4 +675,27 @@ fn serialization_error<T>(_error: T) -> ChatError {
         "Chat organizational projection data is invalid",
         false,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::ApprovalSubjectKind;
+
+    #[test]
+    fn a_replicated_approval_subject_keeps_its_target_but_not_its_folder() {
+        let subject = ApprovalSubject {
+            kind: ApprovalSubjectKind::Command,
+            text: "pnpm test".to_string(),
+            location: Some("/home/person/project".to_string()),
+            truncated: true,
+        };
+        assert_eq!(
+            replicated_approval_subject(&subject),
+            ApprovalSubject {
+                location: None,
+                ..subject
+            }
+        );
+    }
 }

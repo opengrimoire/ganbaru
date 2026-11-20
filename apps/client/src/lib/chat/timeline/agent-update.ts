@@ -37,7 +37,7 @@ export type ChatAgentUpdatePresentation =
     requestId: string;
     /** The exact command, path, or other target the approval acts on, or `null` when it was not shared. */
     subject: ApprovalSubject | null;
-    /** The decisions a linked device may send; Allow is left out when there is no subject to show. */
+    /** The decisions a linked device may send; Allow is left out unless the whole subject can be shown. */
     choices: ChatRemoteApprovalChoice[];
   }
   | {
@@ -136,7 +136,7 @@ function failure(
 
 /**
  * Reads an approval the executing device posted. Only one-time decisions are offered to linked devices, and Allow
- * only with the subject it acts on, so nobody approves what they cannot see.
+ * only with the whole subject it acts on, so nobody approves what they cannot see.
  */
 function approval(assignmentId: string, payload: Record<string, unknown>): ChatAgentUpdatePresentation | null {
   const requestId = nonEmptyString(payload.requestId);
@@ -149,7 +149,7 @@ function approval(assignmentId: string, payload: Record<string, unknown>): ChatA
     const label = nonEmptyString(option?.label);
     const decision = CHAT_REMOTE_APPROVAL_DECISIONS.find((candidate) => candidate === option?.decisionKind);
     if (id === null || label === null || !decision) continue;
-    if (decision === "allow_once" && subject === null) continue;
+    if (decision === "allow_once" && (subject === null || subject.truncated)) continue;
     if (choices.some((choice) => choice.id === id)) continue;
     choices.push({ id, label, decision });
   }

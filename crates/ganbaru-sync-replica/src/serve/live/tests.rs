@@ -444,6 +444,11 @@ async fn an_approval_answer_names_why_it_was_not_resolved() {
             CHAT_LIVE_NOT_HERE_CODE,
             false,
         ),
+        (
+            Ok(ChatApprovalAnswer::Refused),
+            CHAT_APPROVAL_REFUSED_CODE,
+            false,
+        ),
         (Err("locked".to_string()), CHAT_LIVE_UNAVAILABLE_CODE, true),
     ];
     for (answer, code, expected_retryable) in cases {

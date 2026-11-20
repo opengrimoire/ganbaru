@@ -221,6 +221,8 @@ export type ChatRemoteApprovalOutcome =
   | { kind: "resolved" }
   /** The approval is no longer open there: it was answered elsewhere, withdrawn, or the run moved on. */
   | { kind: "stale" }
+  /** The desktop refused the answer, such as a decision the request no longer offers, so it is answered there. */
+  | { kind: "refused" }
   /** No other device runs this work now. */
   | { kind: "notServed" }
   /** The desktop could not be reached or could not take the answer now. */

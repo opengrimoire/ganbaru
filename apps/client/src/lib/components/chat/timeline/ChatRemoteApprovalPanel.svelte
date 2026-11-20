@@ -45,6 +45,9 @@
         case "stale":
           onAnswered(requestId);
           break;
+        case "refused":
+          error = t("chat.remoteApproval.refused");
+          break;
         case "notServed":
           error = t("chat.remoteApproval.notServed");
           break;
@@ -62,7 +65,12 @@
 
 <section class="remote-approval" data-remote-approval>
   <header><ShieldAlert size={16} /><strong>{t("chat.remoteApproval.title", agentName)}</strong></header>
-  {#if approval.subject}<ChatApprovalSubject subject={approval.subject} />{:else}<p class="no-subject">{t("chat.remoteApproval.noSubject")}</p>{/if}
+  {#if approval.subject}
+    <ChatApprovalSubject subject={approval.subject} />
+    {#if approval.subject.truncated}<p class="no-subject">{t("chat.remoteApproval.truncatedSubject")}</p>{/if}
+  {:else}
+    <p class="no-subject">{t("chat.remoteApproval.noSubject")}</p>
+  {/if}
   <div class="request-actions">
     {#each approval.choices as choice (choice.id)}
       <button type="button" disabled={resolving} onclick={() => void answer(choice)}>{choice.label}</button>

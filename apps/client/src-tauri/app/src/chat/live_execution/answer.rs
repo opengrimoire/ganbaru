@@ -4,7 +4,8 @@
 use super::follow::remote_executing_device;
 use crate::sync::chat_live::{ChatApprovalRequest, resolve_chat_approval};
 use crate::vault::handoff::protocol::{
-    CHAT_APPROVAL_STALE_CODE, CHAT_LIVE_NOT_HERE_CODE, ChatRemoteApprovalDecision, ControlMessage,
+    CHAT_APPROVAL_REFUSED_CODE, CHAT_APPROVAL_STALE_CODE, CHAT_LIVE_NOT_HERE_CODE,
+    ChatRemoteApprovalDecision, ControlMessage,
 };
 use ganbaru_chat_contracts::models::ChatResult;
 use serde::Serialize;
@@ -17,6 +18,9 @@ pub enum ChatRemoteApprovalOutcome {
     Resolved,
     /// The approval is no longer open there: it was answered, withdrawn, or the run moved on.
     Stale,
+    /// The executing device refused the answer, such as a decision the request no longer offers,
+    /// so only that device can answer it.
+    Refused,
     /// No other device runs this work now, so there is nothing to answer here.
     NotServed,
     /// The executing device could not be reached or could not take the answer now.
@@ -65,6 +69,9 @@ fn interpret(response: Result<Option<ControlMessage>, String>) -> ChatRemoteAppr
         Ok(Some(ControlMessage::Error { code, .. })) if code == CHAT_LIVE_NOT_HERE_CODE => {
             ChatRemoteApprovalOutcome::NotServed
         }
+        Ok(Some(ControlMessage::Error { code, .. })) if code == CHAT_APPROVAL_REFUSED_CODE => {
+            ChatRemoteApprovalOutcome::Refused
+        }
         Ok(Some(ControlMessage::Error { code, .. })) => {
             eprintln!("chat: the executing device refused an approval answer with {code}");
             ChatRemoteApprovalOutcome::Unreachable
@@ -108,6 +115,10 @@ mod tests {
             (
                 Ok(Some(error(CHAT_LIVE_NOT_HERE_CODE))),
                 ChatRemoteApprovalOutcome::NotServed,
+            ),
+            (
+                Ok(Some(error(CHAT_APPROVAL_REFUSED_CODE))),
+                ChatRemoteApprovalOutcome::Refused,
             ),
             (
                 Ok(Some(error(CHAT_LIVE_UNAVAILABLE_CODE))),

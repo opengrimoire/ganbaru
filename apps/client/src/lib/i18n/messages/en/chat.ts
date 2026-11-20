@@ -512,6 +512,8 @@ export const chat = {
   remoteApproval: {
     title: (name: string) => `${name} asks for approval`,
     noSubject: "The desktop did not share what this approves, so you can only deny it here or answer on the desktop.",
+    truncatedSubject: "This target is too long to show in full, so you can only deny it here or allow it on the desktop.",
+    refused: "The desktop running this work didn't accept this answer, so answer it on the desktop.",
     notServed: "This work no longer runs on another device.",
     unreachable: "Couldn't reach the desktop running this work, so check that both devices share a network and app version, or answer on the desktop.",
   },

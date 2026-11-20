@@ -24,6 +24,7 @@ use ganbaru_chat_contracts::events::{CanonicalEvent, ChangedFileSummary, DiffUpd
 use ganbaru_chat_contracts::models::*;
 
 mod answer_attachments;
+mod remembered_approvals;
 mod run_lifecycle;
 mod session_open;
 mod target_enforcement;

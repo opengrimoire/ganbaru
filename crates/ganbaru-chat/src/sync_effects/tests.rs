@@ -1172,6 +1172,115 @@ async fn push_approvals_lapse_below_ask_and_the_caller_revokes_them_after_the_ap
     assert!(after.lapsed_push_approvals.is_empty());
 }
 
+/// Inserts an approval for the seeded agent to fetch from `origin` in `conversation`, granted
+/// under `access`.
+async fn add_remembered_approval(
+    pool: &SqlitePool,
+    conversation: &str,
+    origin: &str,
+    access: &str,
+) {
+    sqlx::query(
+        "INSERT INTO chat_remembered_approvals
+            (conversation_id, agent_id, subject_kind, subject_key, sync_key,
+             approved_by_participant_id, approved_at, granted_access)
+         VALUES (?, ?, 'url_origin', ?, ?, ?, ?, ?)",
+    )
+    .bind(conversation)
+    .bind(AGENT_ID)
+    .bind(origin)
+    .bind(format!("remembered:{conversation}:{origin}"))
+    .bind(OWNER_ID)
+    .bind(NOW)
+    .bind(access)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn remembered_approvals(pool: &SqlitePool) -> Vec<(String, String, Option<String>)> {
+    sqlx::query_as(
+        "SELECT conversation_id, subject_key, revoked_at FROM chat_remembered_approvals
+         ORDER BY conversation_id, subject_key",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+/// An approval lapses once its channel's access ranks below the access it was granted under,
+/// while one granted under a lower access stays.
+#[tokio::test]
+async fn remembered_approvals_lapse_below_their_granted_access_and_the_caller_revokes_them() {
+    let pool = migrated_pool().await;
+    seed_organization(&pool).await;
+    add_channel(&pool, PROJECT_ID, "conversation:kept").await;
+    add_member(&pool, "conversation:kept").await;
+    set_channel_access(&pool, "conversation:kept", Some("own")).await;
+    let conversation = conversation_id();
+    add_remembered_approval(&pool, &conversation, "https://ask.example.com", "ask").await;
+    add_remembered_approval(&pool, &conversation, "https://read.example.com", "read").await;
+    add_remembered_approval(&pool, "conversation:kept", "https://own.example.com", "own").await;
+    set_applying(&pool, true).await;
+
+    let ask = run_hook(&pool, CHANNELS_TABLE, &[&channel_id()]).await;
+    assert!(ask.lapsed_remembered_approvals.is_empty());
+
+    set_channel_access(&pool, &conversation, Some("read")).await;
+    let read = run_hook(&pool, CHANNELS_TABLE, &[&channel_id()]).await;
+    assert_eq!(
+        read.lapsed_remembered_approvals,
+        BTreeSet::from([conversation.clone()])
+    );
+    set_applying(&pool, false).await;
+
+    let mut connection = pool.acquire().await.unwrap();
+    let lapsed = revoke_lapsed_remembered_approvals(&mut connection, LATER)
+        .await
+        .unwrap();
+    assert_eq!(lapsed, BTreeSet::from([conversation.clone()]));
+    assert!(
+        revoke_lapsed_remembered_approvals(&mut connection, LATER)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    drop(connection);
+
+    let mut expected = vec![
+        (
+            conversation.clone(),
+            "https://ask.example.com".to_string(),
+            Some(LATER.to_string()),
+        ),
+        (
+            conversation.clone(),
+            "https://read.example.com".to_string(),
+            None,
+        ),
+        (
+            "conversation:kept".to_string(),
+            "https://own.example.com".to_string(),
+            None,
+        ),
+    ];
+    expected.sort();
+    assert_eq!(remembered_approvals(&pool).await, expected);
+
+    // An archive that arrives by sync skips the local trigger, so the sweep revokes the rest.
+    set_applying(&pool, true).await;
+    set_participant_archived(&pool, AGENT_ID, Some(LATER)).await;
+    set_applying(&pool, false).await;
+    let mut connection = pool.acquire().await.unwrap();
+    let archived = revoke_lapsed_remembered_approvals(&mut connection, LATER)
+        .await
+        .unwrap();
+    assert_eq!(
+        archived,
+        BTreeSet::from([conversation, "conversation:kept".to_string()])
+    );
+}
+
 #[tokio::test]
 async fn an_applied_conversation_deletion_reports_it_and_sweeps_remaining_authorizations() {
     let pool = migrated_pool().await;

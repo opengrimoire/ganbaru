@@ -368,6 +368,61 @@ pub struct ChatChannelPushApprovalRead {
     pub approved_at: UtcTimestamp,
 }
 
+/// What a remembered approval lets an agent repeat without asking.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatRememberedApprovalKind {
+    /// Every page of one web origin, keyed `scheme://host[:port]`.
+    UrlOrigin,
+    /// One exact command.
+    Command,
+    /// Every call of one tool, keyed by its name.
+    Tool,
+}
+
+impl ChatRememberedApprovalKind {
+    /// The stored and wire name of the kind.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::UrlOrigin => "url_origin",
+            Self::Command => "command",
+            Self::Tool => "tool",
+        }
+    }
+
+    /// Reads a stored kind name.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "url_origin" => Some(Self::UrlOrigin),
+            "command" => Some(Self::Command),
+            "tool" => Some(Self::Tool),
+            _ => None,
+        }
+    }
+}
+
+/// The rule an "Allow and don't ask again" choice would remember for an open request.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatRememberableApprovalRead {
+    pub kind: ChatRememberedApprovalKind,
+    pub key: String,
+}
+
+/// One remembered approval of an agent in a channel.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatChannelRememberedApprovalRead {
+    pub approval_id: String,
+    pub channel_id: ChatChannelId,
+    pub agent_id: ChatParticipantId,
+    pub kind: ChatRememberedApprovalKind,
+    pub key: String,
+    pub approved_at: UtcTimestamp,
+}
+
 /// The channel scope of agent settings with what it resolves to: the channel details panel's
 /// Agents section.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

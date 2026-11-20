@@ -62,6 +62,11 @@ pub struct ChatSyncEffects {
     /// or is archived. Push approvals replicate, so the hook leaves them for the caller to revoke
     /// with [`revoke_lapsed_push_approvals`] once the apply ends.
     pub lapsed_push_approvals: BTreeSet<String>,
+    /// Conversations that still hold unrevoked remembered approvals that lapsed, because the
+    /// conversation's effective access fell below the access an approval was granted under or
+    /// the approved agent is no longer present or is archived. The caller revokes them with
+    /// [`revoke_lapsed_remembered_approvals`] once the apply ends.
+    pub lapsed_remembered_approvals: BTreeSet<String>,
     /// Messages whose search row was rebuilt or removed.
     pub search_rebuilt: BTreeSet<String>,
     /// Conversations the apply deleted. The delete cascades away the authorizations that
@@ -96,6 +101,7 @@ impl ChatSyncEffects {
         self.audience_revised.is_empty()
             && self.revoked_agents.is_empty()
             && self.lapsed_push_approvals.is_empty()
+            && self.lapsed_remembered_approvals.is_empty()
             && self.search_rebuilt.is_empty()
             && self.removed_conversations.is_empty()
             && self.reclaimed_attachments.is_empty()
@@ -427,7 +433,7 @@ async fn revise_audiences(
 }
 
 /// Revokes the authorizations [`revoke_exceeding_authorizations`] finds, records their agents,
-/// and reports the conversations whose push approvals lapsed without revoking them.
+/// and reports the conversations whose push or remembered approvals lapsed without revoking them.
 async fn sweep_exceeding_authorizations(
     connection: &mut SqliteConnection,
     effects: &mut ChatSyncEffects,
@@ -437,6 +443,9 @@ async fn sweep_exceeding_authorizations(
     effects
         .lapsed_push_approvals
         .extend(lapsed_push_approval_channels(connection).await?);
+    effects
+        .lapsed_remembered_approvals
+        .extend(lapsed_remembered_approval_channels(connection).await?);
     Ok(())
 }
 
@@ -665,6 +674,82 @@ pub async fn revoke_lapsed_push_approvals(
     let lapsed = lapsed_push_approval_sql("chat_push_approvals");
     let conversations: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "UPDATE chat_push_approvals
+         SET revoked_at = ?1, revision = revision + 1
+         WHERE revoked_at IS NULL AND {lapsed}
+         RETURNING conversation_id"
+    )))
+    .bind(now)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(persistence_error)?;
+    Ok(conversations.into_iter().collect())
+}
+
+/// SQL expression for the rank of the access level `level`, an SQL expression, in the order
+/// talk, read, ask, own, or `unknown` when it names no level.
+fn access_rank_sql(level: &str, unknown: i64) -> String {
+    let arms = ChatAgentAccess::ALL
+        .into_iter()
+        .enumerate()
+        .map(|(rank, access)| format!("WHEN '{}' THEN {rank}", access.as_str()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("(CASE {level} {arms} ELSE {unknown} END)")
+}
+
+/// SQL condition that holds when the remembered approval row `approval`, a table name or alias
+/// of the enclosing query, has lapsed: its conversation's effective access ranks below the
+/// access it was granted under (an unknown level on either side counts as below), its agent is
+/// no longer a present member of the conversation, or its agent is archived.
+pub(crate) fn lapsed_remembered_approval_sql(approval: &str) -> String {
+    let conversation = format!("{approval}.conversation_id");
+    let agent = format!("{approval}.agent_id");
+    let effective = access_rank_sql(&effective_access_level_sql(&conversation), -1);
+    let granted = access_rank_sql(&format!("{approval}.granted_access"), i64::MAX);
+    let present = agent_present_sql(&conversation, &agent);
+    format!(
+        "({effective} < {granted}
+          OR NOT {present}
+          OR EXISTS (
+              SELECT 1 FROM chat_participants lapsed_agent
+              WHERE lapsed_agent.id = {agent} AND lapsed_agent.archived_at IS NOT NULL
+          ))"
+    )
+}
+
+/// Conversations that still hold an unrevoked remembered approval that has lapsed (see
+/// [`lapsed_remembered_approval_sql`]).
+async fn lapsed_remembered_approval_channels(
+    connection: &mut SqliteConnection,
+) -> ChatResult<BTreeSet<String>> {
+    let lapsed = lapsed_remembered_approval_sql("approval");
+    let conversations: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT DISTINCT approval.conversation_id FROM chat_remembered_approvals approval
+         WHERE approval.revoked_at IS NULL AND {lapsed}
+         ORDER BY approval.conversation_id"
+    )))
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(persistence_error)?;
+    Ok(conversations.into_iter().collect())
+}
+
+/// Revokes every unrevoked remembered approval that has lapsed, because its conversation's
+/// effective access fell below the access it was granted under, its agent left the
+/// conversation, or its agent was archived, and returns the conversations that held them.
+///
+/// Remembered approvals replicate, so this runs outside a sync apply, at the same points as
+/// [`revoke_lapsed_push_approvals`] and after an apply whose effects report
+/// [`ChatSyncEffects::lapsed_remembered_approvals`]. A repeated call revokes nothing. `now` is
+/// the revocation timestamp.
+pub async fn revoke_lapsed_remembered_approvals(
+    connection: &mut SqliteConnection,
+    now: &str,
+) -> ChatResult<BTreeSet<String>> {
+    // RETURNING cannot name a table alias, so the statement names the table itself.
+    let lapsed = lapsed_remembered_approval_sql("chat_remembered_approvals");
+    let conversations: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "UPDATE chat_remembered_approvals
          SET revoked_at = ?1, revision = revision + 1
          WHERE revoked_at IS NULL AND {lapsed}
          RETURNING conversation_id"

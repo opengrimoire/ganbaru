@@ -20,6 +20,8 @@ pub mod bundles;
 pub mod coordinator;
 pub mod limits;
 pub mod listener;
+#[cfg(desktop)]
+pub mod live;
 pub mod member;
 pub mod server;
 
@@ -146,6 +148,43 @@ impl<R: Routes> Routes for Option<R> {
     }
 }
 
+/// Two route sets on one listener: a request goes to the first that handles it.
+impl<A: Routes, B: Routes> Routes for (A, B) {
+    fn handles(&self, request: &ControlMessage) -> bool {
+        self.0.handles(request) || self.1.handles(request)
+    }
+
+    async fn serve(
+        &self,
+        stream: &mut ServerStream,
+        peer: Peer<'_>,
+        request: ControlMessage,
+    ) -> Result<(), String> {
+        if self.0.handles(&request) {
+            self.0.serve(stream, peer, request).await
+        } else {
+            self.1.serve(stream, peer, request).await
+        }
+    }
+
+    async fn serve_unauthenticated(
+        &self,
+        stream: &mut ServerStream,
+        peer: Peer<'_>,
+        request: ControlMessage,
+        gate: &PreAuthGate,
+    ) -> Result<(), String> {
+        if self.0.handles(&request) {
+            self.0
+                .serve_unauthenticated(stream, peer, request, gate)
+                .await
+        } else {
+            self.1
+                .serve_unauthenticated(stream, peer, request, gate)
+                .await
+        }
+    }
+}
 /// Runs one control frame read or write within [`CONTROL_TIMEOUT`].
 pub async fn timeout_control<T>(
     future: impl Future<Output = Result<T, String>>,

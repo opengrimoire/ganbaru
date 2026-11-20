@@ -14,9 +14,9 @@ use crate::quarantine::PullSkips;
 use crate::quarantine::Quarantine;
 use crate::records::{RecordExchange, RecordLink};
 use crate::writer::SyncFiles;
-use ganbaru_handoff::pairing::PairingManager;
-use ganbaru_handoff::protocol::MAX_MEMBER_ENDPOINTS;
+use ganbaru_handoff::pairing::{CoordinatorPin, PairingManager};
 use ganbaru_handoff::protocol::MemberEndpoint;
+use ganbaru_handoff::protocol::{MAX_COORDINATOR_ENDPOINTS, MAX_MEMBER_ENDPOINTS};
 use ganbaru_sync::local;
 use ganbaru_sync::{AuthorizationView, Engine, SpaceContext};
 use ganbaru_sync_contracts::{DeviceKind, VersionVector, WriterId};
@@ -720,11 +720,95 @@ impl BundleSource {
     }
 }
 
+/// Where a linked device reads the live execution of a Chat work assignment from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChatLiveTarget {
+    /// The executing desktop is the coordinator this device is pinned to.
+    Coordinator,
+    /// The executing desktop's member listener, pinned to the certificate its enrollment
+    /// recorded.
+    Member {
+        endpoints: Vec<String>,
+        fingerprint: String,
+    },
+}
+
+/// Where to read the live execution run by `executing_device_id`, from the selected log `view`,
+/// this installation's quarantine, and the peer book `known`. Only a desktop the log enrolled,
+/// did not remove, and does not hold, and that this installation did not quarantine, is a
+/// target; a server or relay never is. The coordinator is dialed when it is that desktop and
+/// its pin matches the enrolled certificate, and any other desktop only at endpoints the peer
+/// book holds, so `None` also means the desktop is not reachable on the local network.
+pub fn chat_live_target(
+    executing_device_id: &str,
+    coordinator: Option<&CoordinatorPin>,
+    view: &AuthorizationView,
+    quarantined: &BTreeSet<String>,
+    known: &PeerEndpoints,
+) -> Option<ChatLiveTarget> {
+    let device = view.devices.iter().find(|device| {
+        device.device_id == executing_device_id
+            && device.kind == DeviceKind::Desktop
+            && device.removed_revision.is_none()
+            && !device.held
+    })?;
+    if quarantined.contains(executing_device_id) {
+        return None;
+    }
+    let fingerprint = fingerprint_hex(&device.tls_fingerprint);
+    if let Some(coordinator) = coordinator
+        && coordinator.device_id == executing_device_id
+        && coordinator.certificate_fingerprint == fingerprint
+    {
+        return Some(ChatLiveTarget::Coordinator);
+    }
+    let endpoints: Vec<String> = known
+        .endpoints(executing_device_id)
+        .into_iter()
+        .take(MAX_COORDINATOR_ENDPOINTS)
+        .collect();
+    (!endpoints.is_empty()).then_some(ChatLiveTarget::Member {
+        endpoints,
+        fingerprint,
+    })
+}
+
+/// The active vault and where to read the live execution `executing_device_id` runs, see
+/// [`chat_live_target`]. `None` while sync does not run in the active vault, or when this device
+/// is linked to a coordinator of another vault.
+pub async fn chat_live_target_of<H: SyncHost>(
+    host: &H,
+    executing_device_id: &str,
+) -> Result<Option<(String, ChatLiveTarget)>, String> {
+    let Some((vault_id, view)) = selected_authorization(host).await? else {
+        return Ok(None);
+    };
+    let coordinator = host.pairing().coordinator_pin()?;
+    if coordinator
+        .as_ref()
+        .is_some_and(|pin| pin.vault_id != vault_id)
+    {
+        return Ok(None);
+    }
+    let path = host.sync_files(&vault_id)?.quarantine_path();
+    let quarantined = blocking(move || Quarantine::load(&path)).await?;
+    let known = read_peer_book(host, &vault_id);
+    Ok(chat_live_target(
+        executing_device_id,
+        coordinator.as_ref(),
+        &view,
+        quarantined.devices(),
+        &known,
+    )
+    .map(|target| (vault_id, target)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        AnchorDial, AuthorizationView, BTreeMap, BTreeSet, BundleSource, DeviceKind, anchor_dial,
-        anchored_by_server, bootstrap_sources, fingerprint_hex, server_source, serving_members,
+        AnchorDial, AuthorizationView, BTreeMap, BTreeSet, BundleSource, ChatLiveTarget,
+        DeviceKind, anchor_dial, anchored_by_server, bootstrap_sources, chat_live_target,
+        fingerprint_hex, server_source, serving_members,
     };
     use crate::peers::anchor_pin::AnchorPin;
     use crate::peers::book::PeerEndpoints;
@@ -930,6 +1014,78 @@ mod tests {
                 fingerprint: fingerprint_hex(&[3; 32]),
             }],
             "a member without a known endpoint is no source"
+        );
+    }
+
+    #[test]
+    fn a_live_execution_is_read_only_from_a_live_desktop_at_a_pinned_certificate() {
+        let mut view = view();
+        view.devices
+            .push(enrolled("device-server", 8, DeviceKind::Server, false));
+        view.devices
+            .push(enrolled("device-held", 9, DeviceKind::Desktop, false));
+        if let Some(held) = view.devices.last_mut() {
+            held.held = true;
+        }
+        let quarantined = BTreeSet::from(["device-quarantined".to_string()]);
+        let mut known = PeerEndpoints::default();
+        for device in [
+            "device-laptop",
+            "device-removed",
+            "device-quarantined",
+            "device-tablet",
+            "device-server",
+            "device-held",
+        ] {
+            known.observe(
+                device,
+                &["192.168.1.40:43821".to_string()],
+                1_700_000_000_000,
+            );
+        }
+        let coordinator = CoordinatorPin {
+            device_id: "device-coordinator".to_string(),
+            certificate_fingerprint: fingerprint_hex(&[1; 32]),
+            ..pin()
+        };
+        let target = |device: &str, pin: Option<&CoordinatorPin>| {
+            chat_live_target(device, pin, &view, &quarantined, &known)
+        };
+
+        assert_eq!(
+            target("device-coordinator", Some(&coordinator)),
+            Some(ChatLiveTarget::Coordinator)
+        );
+        assert_eq!(
+            target("device-laptop", Some(&coordinator)),
+            Some(ChatLiveTarget::Member {
+                endpoints: vec!["192.168.1.40:43821".to_string()],
+                fingerprint: fingerprint_hex(&[3; 32]),
+            })
+        );
+        assert_eq!(
+            target("device-office", Some(&coordinator)),
+            None,
+            "a desktop without a known endpoint is not reachable"
+        );
+        for refused in [
+            "device-removed",
+            "device-quarantined",
+            "device-tablet",
+            "device-server",
+            "device-held",
+            "device-unknown",
+        ] {
+            assert_eq!(target(refused, Some(&coordinator)), None, "{refused}");
+        }
+        let repinned = CoordinatorPin {
+            certificate_fingerprint: "f".repeat(64),
+            ..coordinator.clone()
+        };
+        assert_eq!(
+            target("device-coordinator", Some(&repinned)),
+            None,
+            "a coordinator pin that does not match the enrolled certificate is never dialed"
         );
     }
 }

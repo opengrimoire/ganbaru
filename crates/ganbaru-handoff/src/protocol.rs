@@ -21,7 +21,7 @@ pub use sync::{
 };
 pub use sync::{MAX_MEMBER_ENDPOINTS, MAX_SYNC_RECORDS, MemberEndpoint, SYNC_RECORD_CLASSES};
 
-pub const PROTOCOL_VERSION: u16 = 18;
+pub const PROTOCOL_VERSION: u16 = 19;
 pub const MAX_CONTROL_BYTES: usize = 1024 * 1024;
 /// Frame bound before the peer presents a linked certificate. Enrollment (with its 8 KiB
 /// certificate) and contact requests fit well inside it.
@@ -45,6 +45,11 @@ const MAX_CARD_TEXT_BYTES: usize =
     ganbaru_contacts::CARD_TEXT_PREFIX.len() + ganbaru_contacts::MAX_CARD_BYTES.div_ceil(3) * 4;
 /// Upper bound on a base64url PKCS#8 person key.
 const MAX_PERSON_KEY_TEXT_BYTES: usize = 256;
+/// Upper bound on the JSON-escaped payload of a [`ControlMessage::ChatLive`] answer, measured
+/// by [`chat_live_payload_bytes`], so the whole frame stays well inside [`MAX_CONTROL_BYTES`].
+pub const MAX_CHAT_LIVE_PAYLOAD_BYTES: usize = 640 * 1024;
+/// Upper bound on a Chat identifier a [`ControlMessage::ChatLiveRead`] names.
+const MAX_CHAT_IDENTIFIER_BYTES: usize = 160;
 /// Tolerated clock skew for signed status requests.
 const STATUS_REPLAY_WINDOW_MS: i64 = 5 * 60 * 1000;
 
@@ -295,6 +300,27 @@ pub enum ControlMessage {
     PersonKeyRelease {
         public_key: String,
         private_key_pkcs8: String,
+    },
+    /// Authenticated: a linked device reads the live execution of a Chat work assignment from
+    /// the desktop that runs it. `after_change` is the change cursor of the previous answer, or
+    /// `None` for the first read; `wait` asks the desktop to hold the answer until something
+    /// changes or a short bound passes.
+    ChatLiveRead {
+        protocol_version: u16,
+        vault_id: String,
+        device_id: String,
+        assignment_id: String,
+        after_change: Option<u64>,
+        wait: bool,
+    },
+    /// The answer to [`ControlMessage::ChatLiveRead`]: one bounded page of the execution as
+    /// JSON, which the reader validates as the Chat live execution contract.
+    ChatLive {
+        payload: String,
+        change_cursor: u64,
+        has_more: bool,
+        reset_required: bool,
+        settled: bool,
     },
     /// Authenticated: a linked device compares its stored operations with the hub's, and
     /// reports the endpoints its own sync listener serves on, empty when it does not listen.
@@ -572,6 +598,7 @@ impl ControlMessage {
             Self::RequestBundle { .. }
                 | Self::DownloadBundle { .. }
                 | Self::PersonKeyRequest { .. }
+                | Self::ChatLiveRead { .. }
         )
     }
 
@@ -824,6 +851,36 @@ impl ControlMessage {
                 validate_protocol(*protocol_version)?;
                 validate_identifier("vault id", vault_id)?;
                 validate_identifier("device id", device_id)?;
+            }
+            Self::ChatLiveRead {
+                protocol_version,
+                vault_id,
+                device_id,
+                assignment_id,
+                after_change,
+                wait: _,
+            } => {
+                validate_protocol(*protocol_version)?;
+                validate_identifier("vault id", vault_id)?;
+                validate_identifier("device id", device_id)?;
+                validate_chat_identifier("assignment id", assignment_id)?;
+                if after_change.is_some_and(|cursor| cursor > i64::MAX as u64) {
+                    return Err("chat live change cursor is invalid".to_string());
+                }
+            }
+            Self::ChatLive {
+                payload,
+                change_cursor,
+                ..
+            } => {
+                if payload.is_empty()
+                    || chat_live_payload_bytes(payload) > MAX_CHAT_LIVE_PAYLOAD_BYTES
+                {
+                    return Err("chat live payload is empty or too large".to_string());
+                }
+                if *change_cursor > i64::MAX as u64 {
+                    return Err("chat live change cursor is invalid".to_string());
+                }
             }
             Self::PersonKeyRelease {
                 public_key,
@@ -1553,6 +1610,33 @@ pub fn validate_identifier(label: &str, value: &str) -> Result<(), String> {
         return Err(format!("{label} is invalid"));
     }
     Ok(())
+}
+
+/// Checks a Chat identifier such as a work assignment id: generated Chat ids join a prefix and
+/// hex digits with `:`, so they fall outside [`validate_identifier`].
+fn validate_chat_identifier(label: &str, value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > MAX_CHAT_IDENTIFIER_BYTES
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+    {
+        return Err(format!("{label} is invalid"));
+    }
+    Ok(())
+}
+
+/// How many bytes `payload` takes once encoded as a JSON string inside a frame, quotes
+/// included: quotes and backslashes escape to two bytes and other control characters to six.
+pub fn chat_live_payload_bytes(payload: &str) -> usize {
+    2 + payload
+        .bytes()
+        .map(|byte| match byte {
+            b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 0x08 | 0x0c => 2,
+            0x00..=0x1f => 6,
+            _ => 1,
+        })
+        .sum::<usize>()
 }
 
 fn validate_protocol(version: u16) -> Result<(), String> {

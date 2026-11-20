@@ -632,7 +632,7 @@ fn member_endpoints_keep_their_wire_shape() {
     };
     let wire = serde_json::to_value(&hello).expect("serialize sync hello");
     assert_eq!(wire["listening"], serde_json::json!(["192.168.1.20:43821"]));
-    assert_eq!(wire["protocol_version"], serde_json::json!(18));
+    assert_eq!(wire["protocol_version"], serde_json::json!(19));
     assert_eq!(frame_round_trip(&hello), Ok(hello));
 }
 
@@ -1135,4 +1135,100 @@ fn anchor_join_requires_valid_keys_and_a_canonical_fingerprint() {
     ] {
         assert!(invalid.validate().is_err(), "{invalid:?}");
     }
+}
+
+fn chat_live_read(assignment_id: &str, after_change: Option<u64>) -> ControlMessage {
+    ControlMessage::ChatLiveRead {
+        protocol_version: PROTOCOL_VERSION,
+        vault_id: "vault-1".to_string(),
+        device_id: "device-phone".to_string(),
+        assignment_id: assignment_id.to_string(),
+        after_change,
+        wait: true,
+    }
+}
+
+fn chat_live(payload: String) -> ControlMessage {
+    ControlMessage::ChatLive {
+        payload,
+        change_cursor: 7,
+        has_more: false,
+        reset_required: false,
+        settled: false,
+    }
+}
+
+#[test]
+fn chat_live_read_accepts_generated_chat_ids_and_round_trips() {
+    let read = chat_live_read("work:0123456789abcdef0123456789abcdef", Some(42));
+    assert_eq!(frame_round_trip(&read), Ok(read.clone()));
+    assert!(read.is_vault_material());
+    assert_eq!(read.sync_peer(), None);
+    assert!(!read.is_record_exchange());
+}
+
+#[test]
+fn chat_live_read_refuses_bad_ids_cursors_and_versions() {
+    for assignment_id in ["", "work id", "work/../x", "work\u{0}", &"a".repeat(161)] {
+        assert!(
+            chat_live_read(assignment_id, None).validate().is_err(),
+            "accepted {assignment_id:?}"
+        );
+    }
+    assert!(
+        chat_live_read("work:1", Some(i64::MAX as u64 + 1))
+            .validate()
+            .is_err()
+    );
+    let mut read = chat_live_read("work:1", None);
+    if let ControlMessage::ChatLiveRead {
+        protocol_version, ..
+    } = &mut read
+    {
+        *protocol_version = PROTOCOL_VERSION - 1;
+    }
+    assert!(read.validate().is_err());
+}
+
+#[test]
+fn chat_live_payload_bound_counts_json_escapes() {
+    assert_eq!(chat_live_payload_bytes("ab"), 4);
+    assert_eq!(chat_live_payload_bytes("\"\\\n"), 8);
+    assert_eq!(chat_live_payload_bytes("\u{1}"), 8);
+    assert_eq!(chat_live_payload_bytes("é"), 4);
+    // Quotes and backslashes double on the wire, so the raw length alone would let a frame
+    // pass the payload bound and fail the frame bound.
+    let escaped = "\"\\".repeat(MAX_CHAT_LIVE_PAYLOAD_BYTES / 4);
+    assert!(escaped.len() < MAX_CHAT_LIVE_PAYLOAD_BYTES);
+    assert!(chat_live(escaped).validate().is_err());
+    let largest = "\"\\".repeat(MAX_CHAT_LIVE_PAYLOAD_BYTES / 4 - 1);
+    let answer = chat_live(largest);
+    assert_eq!(answer.validate(), Ok(()));
+    assert_eq!(frame_round_trip(&answer), Ok(answer));
+    let controls = "\u{1}".repeat(MAX_CHAT_LIVE_PAYLOAD_BYTES / 6 - 1);
+    let answer = chat_live(controls);
+    assert_eq!(frame_round_trip(&answer), Ok(answer));
+}
+
+#[test]
+fn chat_live_refuses_empty_payloads_and_out_of_range_cursors() {
+    assert!(chat_live(String::new()).validate().is_err());
+    let ControlMessage::ChatLive {
+        payload,
+        has_more,
+        reset_required,
+        settled,
+        ..
+    } = chat_live("{}".to_string())
+    else {
+        unreachable!("built a live answer");
+    };
+    let answer = ControlMessage::ChatLive {
+        payload,
+        change_cursor: u64::MAX,
+        has_more,
+        reset_required,
+        settled,
+    };
+    assert!(answer.validate().is_err());
 }

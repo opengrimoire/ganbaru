@@ -143,9 +143,8 @@
   const remoteShown = $derived(new Map(remoteWork.flatMap((work) => {
     const runId = remoteRunsShown[work.assignmentId];
     if (runId === undefined) return [];
-    const waiting = assignment?.id === work.assignmentId
-      && (assignment.state === "waiting_for_approval" || assignment.state === "waiting_for_answer");
-    return [[work.assignmentId, { runId, waiting }] as const];
+    const active = workWithoutRun?.id === work.assignmentId;
+    return [[work.assignmentId, { runId, active }] as const];
   })));
   const renderEntries = $derived(localExecutionAvailable
     ? replyThreadRenderEntries(page?.replies ?? [], page?.agentRuns ?? [], loadedExecutionRunIds)

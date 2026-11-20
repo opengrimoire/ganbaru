@@ -288,11 +288,14 @@ export interface RemoteReplyWork {
 export interface RemoteRunShown {
   /** The run whose whole turn this device shows, so the replies projected from it stand down. */
   runId: string;
-  /** Whether the work waits on an approval or an answer, so the reply that asks for it stays to answer. */
-  waiting: boolean;
+  /**
+   * Whether the work is still active, so a reply that asks for an approval or an answer stays: the run read from the
+   * executing desktop never carries its requests, and the synced state that says the work waits can trail them.
+   */
+  active: boolean;
 }
 
-/** Update kinds whose reply asks a person to act while the work waits on it. */
+/** Update kinds whose reply asks a person to act while the work is active. */
 const WAITING_UPDATE_KINDS: ReadonlySet<unknown> = new Set(["approval", "question"]);
 /** Update kinds whose reply stays beside a shown run, since it offers what the run's turn does not, such as Retry. */
 const KEPT_UPDATE_KINDS: ReadonlySet<unknown> = new Set(["failure"]);
@@ -336,7 +339,7 @@ export function remoteReplyWork(
  * with a stable key, so its reader stays mounted while it moves. Once the whole turn of a work's run is shown, the
  * replies projected from that run stand down and the entry takes the place of the last of them, as an exact turn does
  * on the executing desktop. A failure reply stays for its Retry, and a reply that asks for an approval or an answer
- * stays while the work waits on it. Work
+ * stays while the work is active. Work
  * without a shown run sits after the last reply created before it. Replies awaiting delivery stay out, as in
  * {@link replyThreadRenderEntries}.
  *
@@ -379,7 +382,7 @@ export function remoteReplyThreadRenderEntries(
 
 function keptBesideShownRun(message: RichReply, run: RemoteRunShown): boolean {
   const kind = agentUpdateKind(message);
-  return KEPT_UPDATE_KINDS.has(kind) || run.waiting && WAITING_UPDATE_KINDS.has(kind);
+  return KEPT_UPDATE_KINDS.has(kind) || run.active && WAITING_UPDATE_KINDS.has(kind);
 }
 
 function agentUpdateKind(message: RichReply): unknown {

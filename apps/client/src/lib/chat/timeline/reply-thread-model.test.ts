@@ -718,21 +718,21 @@ describe("remote work placement", () => {
   it("replaces the projected replies of a shown run with its work at the last of them", () => {
     const work = remoteReplyWork(replies, null, 8);
     const shown = new Map([
-      ["assignment-1", { runId: "run-1", waiting: false }],
-      ["assignment-2", { runId: "run-2", waiting: false }],
+      ["assignment-1", { runId: "run-1", active: false }],
+      ["assignment-2", { runId: "run-2", active: false }],
     ]);
     expect(remoteReplyThreadRenderEntries(replies, work, shown).map((entry) => entry.key)).toEqual([
       "ask-1", "live:assignment-1", "ask-2", "failure-2", "live:assignment-2",
     ]);
   });
 
-  it("keeps the approval reply while the work waits on it", () => {
+  it("keeps the approval reply while the work is active", () => {
     const work = remoteReplyWork(replies.slice(0, 2), null, 8);
-    const shown = new Map([["assignment-1", { runId: "run-1", waiting: true }]]);
+    const shown = new Map([["assignment-1", { runId: "run-1", active: true }]]);
     expect(remoteReplyThreadRenderEntries(replies.slice(0, 2), work, shown).map((entry) => entry.key))
       .toEqual(["ask-1", "approval-1", "live:assignment-1"]);
-    const answered = new Map([["assignment-1", { runId: "run-1", waiting: false }]]);
-    expect(remoteReplyThreadRenderEntries(replies.slice(0, 2), work, answered).map((entry) => entry.key))
+    const finished = new Map([["assignment-1", { runId: "run-1", active: false }]]);
+    expect(remoteReplyThreadRenderEntries(replies.slice(0, 2), work, finished).map((entry) => entry.key))
       .toEqual(["ask-1", "live:assignment-1"]);
   });
 

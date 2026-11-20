@@ -141,7 +141,8 @@ pub async fn chat_discover_default_providers(
 /// Probes, one at a time, each enabled provider this device has not heard from within
 /// [`PROVIDER_READING_MAX_AGE`], so plan limits and sign-in state are current without a
 /// visit to Settings. It runs once per vault and app session, beside discovery, and stops
-/// when the active vault changes.
+/// when the active vault changes. Views reread settings after each probe, so a provider's
+/// limits appear as soon as it answers instead of after the slowest provider.
 async fn refresh_stale_provider_readings(app: tauri::AppHandle) {
     let state = app.state::<ChatSettingsState>();
     let _guard = state.discovery_lock.lock().await;
@@ -161,18 +162,18 @@ async fn refresh_stale_provider_readings(app: tauri::AppHandle) {
                 .get(&provider.instance_id)
                 .is_some_and(|device| device.has_reading_within(now, PROVIDER_READING_MAX_AGE))
     });
-    let mut refreshed = false;
     for provider in stale {
         if vault::active_vault_id(&app).ok().as_ref() != Some(&vault_id) {
             break;
         }
         match chat_probe_provider(app.clone(), provider.instance_id).await {
-            Ok(_) => refreshed = true,
+            Ok(_) => {
+                if app.emit(CHAT_PROVIDER_ACTIVITY_EVENT, ()).is_err() {
+                    eprintln!("Chat provider activity notification failed");
+                }
+            }
             Err(error) => eprintln!("Chat provider status refresh failed: {error}"),
         }
-    }
-    if refreshed && app.emit(CHAT_PROVIDER_ACTIVITY_EVENT, ()).is_err() {
-        eprintln!("Chat provider activity notification failed");
     }
 }
 

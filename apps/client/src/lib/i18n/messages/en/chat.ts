@@ -284,6 +284,7 @@ export const chat = {
     defaultReasoning: "Default reasoning",
     provider: "Provider",
     availableParticipant: "Available",
+    unavailableOnLinkedDesktops: "No linked desktop can run it right now",
     archivedParticipant: "Archived",
     modelId: "Model ID",
     contextWindow: "Context window",

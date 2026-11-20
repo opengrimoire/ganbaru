@@ -49,7 +49,7 @@ import { chatErrorCode, chatErrorMessage } from "$lib/chat/error-presentation";
 import { translate } from "$lib/i18n/translator.svelte";
 import { listenForChatChanges, publishChatChanges, type ChatWindowChanges } from "$lib/chat/window-sync";
 import { listenForChatSyncChanges, onChatSyncChanged } from "$lib/chat/sync-events";
-import { CHAT_SYNC_TABLES } from "$lib/chat/sync-presentation";
+import { CHAT_PROVIDER_STATUS_SYNC_TABLE, CHAT_SYNC_TABLES } from "$lib/chat/sync-presentation";
 import { listenSyncApplied } from "$lib/api/sync";
 import { ChatPaneStores, chatWindowChanges, type ChatChangeIds } from "$lib/stores/chat/pane-stores";
 import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
@@ -1603,6 +1603,11 @@ export class ChatStore {
     });
     void listenSyncApplied((tables) => {
       if (tables.some((table) => CHAT_SYNC_TABLES.includes(table))) refresh();
+      else if (this.owner && this.loaded && tables.includes(CHAT_PROVIDER_STATUS_SYNC_TABLE)) {
+        void this.refreshAgents().catch((error: unknown) => {
+          console.error("Chat could not reread agents after a linked desktop shared its providers", error);
+        });
+      }
     }).catch((error: unknown) => {
       console.error("Chat could not listen for sync", error);
     });

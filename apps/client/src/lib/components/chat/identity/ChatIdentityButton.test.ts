@@ -64,6 +64,7 @@ const agent: ChatAiAgentRead = {
   channelCount: 1,
   activeAssignmentCount: 0,
   hiddenAt: null,
+  linkedProviderStatus: null,
 };
 
 function channel(): ChatChannelRead {

@@ -28,8 +28,9 @@ import type {
   UtcTimestamp,
   VersionedJson,
 } from "./common";
-import type { ModelOptionSelection } from "./provider";
+import type { ModelOptionSelection, ProviderModel } from "./provider";
 import type { ChatRecurrenceSpec, ChatScheduledRecurrenceRead } from "./scheduling";
+import type { ProviderUsageLimitsObservation } from "./settings";
 
 export const CHAT_PARTICIPANT_KINDS = ["local_user", "ai_agent", "human"] as const;
 export type ChatParticipantKind = (typeof CHAT_PARTICIPANT_KINDS)[number];
@@ -547,6 +548,16 @@ export interface ChatAiAgentRead {
   activeAssignmentCount: number;
   /** When a person removed the agent after it had been used, which archived it and hides it from the Settings agent list; null while shown. A hidden agent is always off. */
   hiddenAt: UtcTimestamp | null;
+  /** On a device without the agent's provider, what the linked desktop that would run the agent shares about that provider; null when there is no such desktop or it shares nothing. */
+  linkedProviderStatus: ChatLinkedProviderStatusRead | null;
+}
+
+/** What a linked desktop shares about one provider family: whether it can run it, its model names and option labels, and the plan limits it last saw. */
+export interface ChatLinkedProviderStatusRead {
+  deviceId: string;
+  available: boolean;
+  models: ProviderModel[];
+  usageLimits: ProviderUsageLimitsObservation | null;
 }
 
 export interface ChatConversationMembershipRead {

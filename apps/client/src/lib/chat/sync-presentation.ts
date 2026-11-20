@@ -36,6 +36,12 @@ export const CHAT_SYNC_TABLES: readonly string[] = [
 ];
 
 /**
+ * The replicated table where each desktop shares whether it can run each provider family, with its models and plan
+ * limits. Only agent reads show it, so it is not presented in the sync settings.
+ */
+export const CHAT_PROVIDER_STATUS_SYNC_TABLE = "chat_provider_device_status";
+
+/**
  * Chat archives its rows instead of deleting them, so a Chat row is deleted only with its project. Its offer is
  * only discarded: restoring the project restores no Chat rows and starts a new, empty default channel. The
  * project's offer lists the text of posts written unseen by the deletion so it can be copied.

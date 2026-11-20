@@ -57,11 +57,14 @@ const READINESS_ORDER: Readonly<Record<ProviderReadiness, number>> = {
  * Account-wide windows are preferred over per-model ones when the provider reports both, and a
  * window whose reset passed reads as fully available, since the provider restarted its count.
  *
- * @param provider The provider instance read with its stored limits observation.
+ * @param provider The stored limits observation of a provider, on this device or shared by a linked desktop.
  * @param nowMs The current instant in milliseconds.
- * @returns The limits, or `null` when this device has no readable observation.
+ * @returns The limits, or `null` without a readable observation.
  */
-export function providerPlanLimits(provider: ProviderInstanceRead, nowMs: number): ProviderPlanLimitsRead | null {
+export function providerPlanLimits(
+  provider: Pick<ProviderInstanceRead, "usageLimits">,
+  nowMs: number,
+): ProviderPlanLimitsRead | null {
   const observation = provider.usageLimits;
   if (!observation) return null;
   const observedAtMs = Date.parse(observation.observedAt);

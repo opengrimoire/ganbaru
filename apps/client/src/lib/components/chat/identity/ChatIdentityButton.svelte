@@ -7,7 +7,7 @@
   import { composerMeterRead } from "$lib/chat/composer/composer-meter";
   import { formatNumber } from "$lib/i18n/formatters";
   import { chatParticipantDisplayName } from "$lib/chat/agents/participant-display";
-  import { agentNeedsSetupHere } from "$lib/chat/agents/agent-setup";
+  import { agentCardStatus } from "$lib/chat/agents/agent-card-status";
   import type { ChatModelParticipant } from "$lib/chat/agents/participant-identity";
   import { compactModelOptionLabel } from "$lib/chat/composer/model-picker-model";
   import { formatModelDisplayName } from "$lib/chat/composer/model-company";
@@ -78,10 +78,15 @@
       entry.configuration.instanceId === agent.localProviderInstanceId
     )) ?? null
     : null);
+  /** Whether the agent can take work, with the catalog and plan limits of the provider that would run it. */
+  const cardStatus = $derived(agentCardStatus(agent, agentProvider, Boolean(participant?.archivedAt)));
   /** The provider whose plan limits the card shows: the agent's, or the one serving the model. */
   const cardProvider = $derived(agentProvider ?? (model
     ? chat.settings?.providerInstances.find((entry) => entry.configuration.familyId === model.providerFamilyId) ?? null
     : null));
+  /** The plan limits the card shows: this device's provider, or what a linked desktop shares for the agent. */
+  const planLimitsSource = $derived(cardProvider
+    ?? (participant?.kind === "ai_agent" && cardStatus.usageLimits ? { usageLimits: cardStatus.usageLimits } : null));
   const displayName = $derived(participant
     ? chatParticipantDisplayName(
       participant,
@@ -109,7 +114,7 @@
   const fastEnabled = $derived.by(() => {
     const policy = agent?.latestPolicy;
     if (!policy) return false;
-    const modelDefinition = agentProvider?.modelCatalog?.models.find((candidate) => (
+    const modelDefinition = cardStatus.models.find((candidate) => (
       candidate.id === policy.modelId
     )) ?? null;
     return agentExecutionSummary(policy.modelOptions, modelDefinition).speed === "fast";
@@ -278,9 +283,12 @@
   }
 
   function agentStatus(): string {
-    if (participant?.archivedAt) return t("chat.organization.archivedParticipant");
-    if (agentNeedsSetupHere(agent?.configurationState ?? "provider_unavailable")) return t("chat.organization.needsSetup");
-    return t("chat.organization.availableParticipant");
+    switch (cardStatus.availability) {
+      case "archived": return t("chat.organization.archivedParticipant");
+      case "needs_setup": return t("chat.organization.needsSetup");
+      case "no_linked_desktop": return t("chat.organization.unavailableOnLinkedDesktops");
+      case "available": return t("chat.organization.availableParticipant");
+    }
   }
 
   function agentReasoning(): string | null {
@@ -290,7 +298,7 @@
       ? selectedValue
       : selectedValue?.kind === "choice" ? selectedValue.value : null;
     if (!value) return agentModel?.defaultReasoning ?? null;
-    const modelDefinition = agentProvider?.modelCatalog?.models.find((candidate) => (
+    const modelDefinition = cardStatus.models.find((candidate) => (
       candidate.id === policy?.modelId
     ));
     const optionDefinition = modelDefinition?.options.find((option) => (
@@ -371,7 +379,7 @@
           {#if participant?.kind === "ai_agent"}
             <span
               class="identity-status-dot"
-              class:available={agent?.configurationState === "healthy"}
+              class:available={cardStatus.availability === "available"}
               role="img"
               aria-label={agentStatus()}
             ></span>
@@ -406,7 +414,7 @@
           {:else}<span class="identity-context-pending">{t("common.loading")}</span>{/if}
         </div>
       {/if}
-      {#if cardProvider}<ProviderPlanLimits provider={cardProvider} />{/if}
+      {#if planLimitsSource}<ProviderPlanLimits provider={planLimitsSource} />{/if}
     </div>{/if}
 
     {#if participant?.kind === "local_user" || participant?.kind === "ai_agent"}

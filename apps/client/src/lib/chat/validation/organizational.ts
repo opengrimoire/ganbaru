@@ -31,6 +31,7 @@ import {
   type ChatAgentRunRead,
   type ChatAssignmentInputRead,
   type ChatAiAgentRead,
+  type ChatLinkedProviderStatusRead,
   type ChatCustomAgentRemoval,
   type ChatAssignmentDelegationRead,
   type ChatAgentUsageDayRead,
@@ -76,7 +77,8 @@ import {
   type ChatWorkAssignmentRead,
   type PostChatMessageResult,
 } from "../contracts";
-import { parseModelOptionSelection } from "./provider";
+import { parseModelOptionSelection, parseProviderModel } from "./provider";
+import { parseProviderUsageLimitsObservation } from "./settings";
 import { parseChatPushApprovals } from "./push-requests";
 import { normalizeChatMessageReferences } from "$lib/chat/composer/message-references";
 import {
@@ -176,6 +178,23 @@ export function parseChatAiAgent(value: unknown, label = "Chat AI agent"): ChatA
       `${label}.activeAssignmentCount`,
     ),
     hiddenAt: readNullable(record.hiddenAt, `${label}.hiddenAt`, readUtcTimestamp),
+    linkedProviderStatus: record.linkedProviderStatus === undefined
+      ? null
+      : readNullable(record.linkedProviderStatus, `${label}.linkedProviderStatus`, parseChatLinkedProviderStatus),
+  };
+}
+
+/** Reads what a linked desktop shares about one provider family. */
+export function parseChatLinkedProviderStatus(
+  value: unknown,
+  label = "Chat linked provider status",
+): ChatLinkedProviderStatusRead {
+  const record = readRecord(value, label);
+  return {
+    deviceId: readIdentifier(record.deviceId, `${label}.deviceId`),
+    available: readBoolean(record.available, `${label}.available`),
+    models: readArray(record.models, `${label}.models`, parseProviderModel),
+    usageLimits: readNullable(record.usageLimits, `${label}.usageLimits`, parseProviderUsageLimitsObservation),
   };
 }
 

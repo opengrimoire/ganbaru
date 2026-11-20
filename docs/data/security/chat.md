@@ -22,7 +22,7 @@ In-app confirmations for permanently deleting a thread (typed title), closing a 
 
 ## Provider configuration and secrets
 
-Provider configuration (nonsecret values and opaque credential references), executable paths, provider homes, discovery caches, and process state are device-local: provider configuration lives in the `chat` entry of the device preference file and never replicates or travels with backups and handoffs.
+Provider configuration (nonsecret values and opaque credential references), executable paths, provider homes, discovery caches, and process state are device-local: provider configuration lives in the `chat` entry of the device preference file and never replicates or travels with backups and handoffs. A desktop shares only a reduced provider status with its linked devices: whether each family can start there, a bounded catalog of model names and option labels, and the plan limit usage windows. Admission refuses any status row that is not already in that canonical form, so instance ids, executables, paths, account emails, and raw provider payloads cannot ride along, and only the owning device writes its rows. See [the Chat schema](../schema/chat.md).
 
 Folders Ganbaru creates for provider homes, the Codex shadow home, and provider files are private to the current user (mode 0700 on Unix), and an existing Codex shadow home owned by another account is refused.
 

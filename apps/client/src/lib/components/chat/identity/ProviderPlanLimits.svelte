@@ -1,8 +1,8 @@
 <!--
   @component
   A provider's plan limits under a "Plan limits" label, one window per line, such as
-  `5h 93% left (resets 20:00)`, read from the newest limits this device observed. Renders
-  nothing without an observation.
+  `5h 93% left (resets 20:00)`, read from the newest limits this device observed or a linked
+  desktop shared. Renders nothing without an observation.
 -->
 <script lang="ts">
   import type { ProviderInstanceRead } from "$lib/chat/contracts";
@@ -10,7 +10,7 @@
   import { providerPlanLimits } from "$lib/chat/usage/provider-readiness";
   import { getLocalization } from "$lib/i18n/translator.svelte";
 
-  let { provider }: { provider: ProviderInstanceRead } = $props();
+  let { provider }: { provider: Pick<ProviderInstanceRead, "usageLimits"> } = $props();
 
   const localization = getLocalization();
   const { t } = localization;

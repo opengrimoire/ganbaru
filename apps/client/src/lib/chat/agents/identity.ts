@@ -4,28 +4,38 @@ import type {
   ChatSettingsRead,
 } from "$lib/chat/contracts";
 import { agentModelLine, newestModelOfLine } from "./agent-names";
+import { CHAT_LOCAL_EXECUTION } from "./agent-setup";
 import { modelCompanyForIdentity, type ModelCompanyIdentity } from "$lib/chat/composer/model-company";
 import { chatModelParticipant, type ChatModelParticipant } from "./participant-identity";
 
-/** Resolves the current model identity used as an AI agent's shared avatar; a model line agent shows its line's newest model. */
+/**
+ * Resolves the current model identity used as an AI agent's shared avatar; a model line agent shows its line's newest
+ * model. A device without local execution, such as a phone, reads the catalog the linked desktop that would run the
+ * agent shares.
+ */
 export function chatAgentModelParticipant(
   participantId: ChatParticipantId,
   agents: readonly ChatAiAgentRead[],
   settings: ChatSettingsRead | null,
+  localExecution = CHAT_LOCAL_EXECUTION,
 ): ChatModelParticipant | null {
   const agent = agents.find((entry) => entry.participant.id === participantId);
-  if (!agent || !settings) return null;
+  if (!agent) return null;
   const provider = agent.localProviderInstanceId
-    ? settings.providerInstances.find((candidate) => (
+    ? settings?.providerInstances.find((candidate) => (
       candidate.configuration.instanceId === agent.localProviderInstanceId
     ))
     : undefined;
-  if (!provider) return null;
+  const familyId = provider?.configuration.familyId ?? agent.providerFamilyId;
+  const models = provider
+    ? provider.modelCatalog?.models ?? []
+    : localExecution ? null : agent.linkedProviderStatus?.models ?? null;
+  if (!models) return null;
   const line = agentModelLine(agent);
   const modelId = line
-    ? newestModelOfLine(provider.configuration.familyId, line, provider.modelCatalog?.models ?? [])?.id ?? null
+    ? newestModelOfLine(familyId, line, models)?.id ?? null
     : agent.latestPolicy?.modelId ?? null;
-  return chatModelParticipant(provider.configuration.familyId, modelId, provider.modelCatalog);
+  return chatModelParticipant(familyId, modelId, { models: [...models] });
 }
 
 /**

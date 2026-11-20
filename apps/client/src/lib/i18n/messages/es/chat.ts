@@ -287,6 +287,7 @@ export const chat = {
     defaultReasoning: "Razonamiento predeterminado",
     provider: "Proveedor",
     availableParticipant: "Disponible",
+    unavailableOnLinkedDesktops: "Ninguna computadora vinculada puede ejecutarlo ahora",
     archivedParticipant: "Archivado",
     modelId: "ID del modelo",
     contextWindow: "Ventana de contexto",

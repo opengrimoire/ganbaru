@@ -29,7 +29,7 @@ export function modelDefaultReasoning(model: ProviderModel | null): string | nul
 export function chatModelParticipant(
   providerFamilyId: ProviderFamilyId,
   modelId: ModelId | null,
-  catalog: ProviderModelCatalog | null,
+  catalog: Pick<ProviderModelCatalog, "models"> | null,
 ): ChatModelParticipant {
   const model = modelId
     ? catalog?.models.find((candidate) => candidate.id === modelId) ?? null

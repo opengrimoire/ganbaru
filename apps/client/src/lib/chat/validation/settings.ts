@@ -62,7 +62,8 @@ export function parseProviderInstanceRead(value: unknown, label = "provider inst
   };
 }
 
-function parseProviderUsageLimitsObservation(value: unknown, label: string): ProviderUsageLimitsObservation {
+/** Reads plan limits a provider reported, with when they were observed. */
+export function parseProviderUsageLimitsObservation(value: unknown, label: string): ProviderUsageLimitsObservation {
   const record = readRecord(value, label);
   return {
     observedAt: readUtcTimestamp(record.observedAt, `${label}.observedAt`),

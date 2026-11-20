@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   parseChatCustomAgentRemoval,
+  parseChatLinkedProviderStatus,
   parseChatReplyThreadPage,
   parseChatReviewQueue,
   parseChatSecretRequests,
@@ -270,5 +271,36 @@ describe("parseChatCustomAgentRemoval", () => {
     expect(() => parseChatCustomAgentRemoval({ kind: "purged" })).toThrow();
     expect(() => parseChatCustomAgentRemoval({ kind: "archived" })).toThrow();
     expect(() => parseChatCustomAgentRemoval(null)).toThrow();
+  });
+});
+
+describe("parseChatLinkedProviderStatus", () => {
+  const statusWire = {
+    deviceId: "device:desk",
+    available: true,
+    models: [{
+      id: "gpt-5",
+      displayName: "GPT-5",
+      description: null,
+      contextLimit: null,
+      availability: "available",
+      capabilities: [],
+      options: [],
+    }],
+    usageLimits: null,
+  };
+
+  it("reads the status a linked desktop shares", () => {
+    const status = parseChatLinkedProviderStatus(statusWire);
+    expect(status.deviceId).toBe("device:desk");
+    expect(status.available).toBe(true);
+    expect(status.models.map((model) => model.displayName)).toEqual(["GPT-5"]);
+    expect(status.usageLimits).toBeNull();
+  });
+
+  it("refuses a status without its availability or with a malformed model", () => {
+    expect(() => parseChatLinkedProviderStatus({ ...statusWire, available: "yes" })).toThrow();
+    expect(() => parseChatLinkedProviderStatus({ ...statusWire, models: [{ id: "gpt-5" }] })).toThrow();
+    expect(() => parseChatLinkedProviderStatus({ ...statusWire, deviceId: "" })).toThrow();
   });
 });

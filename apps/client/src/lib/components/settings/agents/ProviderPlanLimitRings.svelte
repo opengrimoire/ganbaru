@@ -45,7 +45,7 @@
     >
       <PomodoroProgressRing
         active
-        remainingSeconds={window.remainingPercent}
+        remainingSeconds={window.remainingPercent ?? PERCENT_TOTAL}
         totalSeconds={PERCENT_TOTAL}
         size={RING_SIZE}
         strokeWidth={RING_STROKE}

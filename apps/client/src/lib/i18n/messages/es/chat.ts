@@ -660,6 +660,7 @@ export const chat = {
     statusNoSession: "Sin sesión activa",
     contextRemaining: (remaining: string, used: string, maximum: string) => `${remaining}% restante (${used} usados / ${maximum})`,
     rateLimitRemaining: (remaining: string) => `${remaining}% restante`,
+    rateLimitAvailable: "disponible",
     rateLimitResets: (value: string) => `se reinicia ${value}`,
     rateLimitWeek: "Semana",
     planLimits: "Límites del plan",

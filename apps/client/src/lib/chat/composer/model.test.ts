@@ -341,7 +341,7 @@ describe("Chat composer model", () => {
     })).toEqual([]);
   });
 
-  it("reads Claude limit types as windows and treats a rejected type without utilization as fully used", () => {
+  it("reads Claude limit types as windows, a rejected type without utilization as fully used and an allowed one as unmetered", () => {
     expect(composerRateLimitWindows({
       limited: true,
       resetsAt: "2030-01-01T00:00:00Z",
@@ -364,6 +364,14 @@ describe("Chat composer model", () => {
         usedPercent: 85,
         windowDurationMinutes: 300,
         resetsAtSeconds: 1_893_456_000,
+        accountWide: true,
+      },
+      {
+        id: "claude:seven_day",
+        label: "7d",
+        usedPercent: null,
+        windowDurationMinutes: 10_080,
+        resetsAtSeconds: 1_893_900_000,
         accountWide: true,
       },
       {

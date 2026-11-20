@@ -13,8 +13,8 @@ export interface ProviderPlanLimitWindow {
   /** Provider label of the window, used when its length has no localized name. */
   label: string;
   durationMinutes: number | null;
-  /** Share of the window still available, 0 to 100. */
-  remainingPercent: number;
+  /** Share of the window still available, 0 to 100, or `null` when the provider reported no share. */
+  remainingPercent: number | null;
   /** When the window resets, or `null` when the provider gave no time or it already reset. */
   resetsAtMs: number | null;
   /** Whether the window meters the whole account rather than one model. */
@@ -78,7 +78,7 @@ export function providerPlanLimits(
       id: window.id,
       label: window.label,
       durationMinutes: window.windowDurationMinutes,
-      remainingPercent: reset ? 100 : 100 - window.usedPercent,
+      remainingPercent: reset ? 100 : window.usedPercent === null ? null : 100 - window.usedPercent,
       resetsAtMs: reset ? null : resetsAtMs,
       accountWide: window.accountWide,
     };

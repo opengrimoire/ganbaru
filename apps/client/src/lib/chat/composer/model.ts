@@ -221,7 +221,11 @@ export interface ContextMeterRead {
 export interface ComposerRateLimitWindow {
   id: string;
   label: string;
-  usedPercent: number;
+  /**
+   * Share of the window used, 0 to 100, or `null` when the provider reported the window within its limit without a
+   * share, as a Claude turn does until a usage read supplies one.
+   */
+  usedPercent: number | null;
   windowDurationMinutes: number | null;
   resetsAtSeconds: number | null;
   /** Whether the window meters the whole account rather than one model. */
@@ -290,10 +294,9 @@ function claudeRateLimitWindows(typeRecords: Record<string, unknown> | null): Co
     const entry = readJsonRecord(entryValue);
     if (!entry) continue;
     const utilization = readJsonNumber(entry.utilization);
-    const usedPercent = utilization !== null
-      ? utilization * 100
-      : readJsonString(entry.status) === "rejected" ? 100 : null;
-    if (usedPercent === null) continue;
+    const status = readJsonString(entry.status);
+    if (utilization === null && status === null) continue;
+    const usedPercent = utilization !== null ? utilization * 100 : status === "rejected" ? 100 : null;
     const accountMinutes = CLAUDE_ACCOUNT_LIMIT_MINUTES[limitType];
     const duration = accountMinutes ?? CLAUDE_MODEL_LIMIT_MINUTES[limitType] ?? null;
     const modelName = limitType.replace(/^seven_day_/, "");
@@ -302,7 +305,7 @@ function claudeRateLimitWindows(typeRecords: Record<string, unknown> | null): Co
       label: duration === null
         ? limitType.replaceAll("_", " ")
         : accountMinutes === undefined ? `${formatWindowDuration(duration)} ${modelName}` : formatWindowDuration(duration),
-      usedPercent: clampPercent(usedPercent),
+      usedPercent: usedPercent === null ? null : clampPercent(usedPercent),
       windowDurationMinutes: duration,
       resetsAtSeconds: readJsonNumber(entry.resetsAt),
       accountWide: accountMinutes !== undefined,

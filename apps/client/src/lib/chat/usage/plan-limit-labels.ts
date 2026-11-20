@@ -21,17 +21,22 @@ export function planLimitInstantLabel(context: PlanLimitLabelContext, ms: number
     : { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
-/** Writes one window as a single line, such as `5h 93% left (resets 20:00)`. */
+/**
+ * Writes one window as a single line, such as `5h 93% left (resets 20:00)`, or `5h available (resets 20:00)` when the
+ * provider reported the window within its limit without a share.
+ */
 export function planLimitWindowLine(
   context: PlanLimitLabelContext,
   window: ProviderPlanLimitWindow,
   nowMs: number,
 ): string {
   const { t } = context;
-  const remaining = t(
-    "chat.composer.rateLimitRemaining",
-    formatNumber(context.locale, window.remainingPercent, { maximumFractionDigits: 0 }),
-  );
+  const remaining = window.remainingPercent === null
+    ? t("chat.composer.rateLimitAvailable")
+    : t(
+        "chat.composer.rateLimitRemaining",
+        formatNumber(context.locale, window.remainingPercent, { maximumFractionDigits: 0 }),
+      );
   const line = `${planLimitWindowName(window, t("chat.composer.rateLimitWeek"))} ${remaining}`;
   return window.resetsAtMs === null
     ? line

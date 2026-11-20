@@ -29,6 +29,11 @@ describe("plan limit labels", () => {
     expect(planLimitWindowLine(context, window({ resetsAtMs: NOW_MS + 3_600_000 }), NOW_MS))
       .toMatch(/^5h 93% left \(resets .+\)$/);
   });
+
+  it("writes a window the provider reported without a share as available", () => {
+    expect(planLimitWindowLine(context, window({ remainingPercent: null, resetsAtMs: NOW_MS + 3_600_000 }), NOW_MS))
+      .toMatch(/^5h available \(resets .+\)$/);
+  });
 });
 
 describe("plan limit instants", () => {

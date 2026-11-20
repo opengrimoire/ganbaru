@@ -120,8 +120,8 @@
           <div class="status-meter-row">
             <dt>{window.label}</dt>
             <dd>
-              <span>{t("chat.composer.rateLimitRemaining", formatNumber(localization.locale, 100 - window.usedPercent, { maximumFractionDigits: 0 }))}{#if resetTimeLabel(window.resetsAtSeconds)} <small>{t("chat.composer.rateLimitResets", resetTimeLabel(window.resetsAtSeconds) ?? "")}</small>{/if}</span>
-              <span class="panel-meter" style={`--panel-progress:${Math.max(0, 1 - window.usedPercent / 100)}`}><span></span></span>
+              <span>{window.usedPercent === null ? t("chat.composer.rateLimitAvailable") : t("chat.composer.rateLimitRemaining", formatNumber(localization.locale, 100 - window.usedPercent, { maximumFractionDigits: 0 }))}{#if resetTimeLabel(window.resetsAtSeconds)} <small>{t("chat.composer.rateLimitResets", resetTimeLabel(window.resetsAtSeconds) ?? "")}</small>{/if}</span>
+              {#if window.usedPercent !== null}<span class="panel-meter" style={`--panel-progress:${Math.max(0, 1 - window.usedPercent / 100)}`}><span></span></span>{/if}
             </dd>
           </div>
         {/each}

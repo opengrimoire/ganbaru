@@ -657,6 +657,7 @@ export const chat = {
     statusNoSession: "No active session",
     contextRemaining: (remaining: string, used: string, maximum: string) => `${remaining}% left (${used} used / ${maximum})`,
     rateLimitRemaining: (remaining: string) => `${remaining}% left`,
+    rateLimitAvailable: "available",
     rateLimitResets: (value: string) => `resets ${value}`,
     rateLimitWeek: "Week",
     planLimits: "Plan limits",

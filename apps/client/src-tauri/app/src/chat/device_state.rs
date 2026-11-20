@@ -305,12 +305,16 @@ pub fn update_active_device_scope<R: Runtime, T>(
 ) -> Result<T, String> {
     let vault_id = active_vault_id(app)?;
     let device_id = ensure_device_id(app)?;
-    update_app_state(app, |state| {
+    let updated = update_app_state(app, |state| {
         if state.chat.schema_version != CHAT_DEVICE_STATE_SCHEMA_VERSION {
             return Err("Chat device state schema is unsupported".to_string());
         }
         update(state.chat.scope_mut(&vault_id, &device_id))
-    })
+    })?;
+    // Probes, catalogs, and plan limits land in the device state, so linked devices hear of them.
+    #[cfg(desktop)]
+    crate::chat::provider_status::wake(app);
+    Ok(updated)
 }
 
 #[cfg(all(test, desktop))]

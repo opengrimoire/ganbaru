@@ -82,6 +82,8 @@ pub(crate) use delegation::{
 #[cfg(desktop)]
 use dispatch::{deliver_assignment_input, dispatch_assignment_job};
 #[cfg(desktop)]
+pub(crate) use provider_agents::DeviceProviders;
+#[cfg(desktop)]
 pub(crate) use push_requests::push_standing_requests_after_turn;
 pub(crate) use reads::read_memberships_for_conversation;
 #[cfg(test)]
@@ -164,7 +166,7 @@ pub async fn chat_read_agent(
 }
 
 /// The provider instance of each family on this device. Android runs no provider, so it has
-/// none.
+/// none and reads what the linked desktop that would run each agent shares instead.
 fn local_provider_instances(app: &tauri::AppHandle) -> reads::LocalProviderInstances {
     #[cfg(desktop)]
     {
@@ -172,8 +174,16 @@ fn local_provider_instances(app: &tauri::AppHandle) -> reads::LocalProviderInsta
     }
     #[cfg(mobile)]
     {
-        let _ = app;
-        reads::LocalProviderInstances::new()
+        match common::this_device_id(app) {
+            Ok(device_id) => reads::LocalProviderInstances::linked_reader(device_id),
+            Err(error) => {
+                eprintln!(
+                    "Chat could not read linked provider status: {}",
+                    error.message
+                );
+                reads::LocalProviderInstances::new()
+            }
+        }
     }
 }
 

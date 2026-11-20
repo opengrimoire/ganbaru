@@ -385,7 +385,7 @@ fn takeover_ends_the_local_dispatch_jobs_of_the_work_it_settles() {
 
 /// Stores a sync writer of device `device_id` in `state`, numbered `index` for its unique keys,
 /// with a removal cutoff when `removed`.
-async fn insert_sync_writer(
+pub(super) async fn insert_sync_writer(
     pool: &SqlitePool,
     index: u8,
     device_id: &str,

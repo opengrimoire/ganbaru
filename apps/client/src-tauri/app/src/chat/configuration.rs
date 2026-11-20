@@ -129,7 +129,7 @@ pub(crate) fn update_chat_device_config<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     mutate: impl FnOnce(&mut ChatDeviceConfig) -> ChatResult<()>,
 ) -> ChatResult<ChatDeviceConfig> {
-    update_native_device_entry(
+    let config = update_native_device_entry(
         app,
         CHAT_DEVICE_ENTRY,
         |current| {
@@ -138,7 +138,10 @@ pub(crate) fn update_chat_device_config<R: tauri::Runtime>(
             Ok((config.to_stored()?, config))
         },
         config_io_error,
-    )
+    )?;
+    #[cfg(desktop)]
+    crate::chat::provider_status::wake(app);
+    Ok(config)
 }
 
 /// The device Chat settings of the active vault, or defaults when none are stored yet.

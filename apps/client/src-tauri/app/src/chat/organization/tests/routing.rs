@@ -659,3 +659,85 @@ fn a_phone_mention_starts_on_the_desktop_it_names() {
         assert_ne!(state, "failed");
     });
 }
+
+/// Publishes from `device_id` that it can run the test provider family, with one model.
+async fn publish_desktop_status(pool: &SqlitePool, device_id: &str, available: bool) {
+    let catalog = ProviderModelCatalog {
+        instance_id: ProviderInstanceId::new(TEST_INSTANCE.to_string()).unwrap(),
+        models: vec![ProviderModel {
+            id: ModelId::new("gpt-5".to_string()).unwrap(),
+            display_name: "GPT-5".to_string(),
+            description: None,
+            context_limit: None,
+            availability: ModelAvailability::Available,
+            capabilities: Vec::new(),
+            options: Vec::new(),
+        }],
+        recommended_model_id: None,
+        source: ModelCatalogSource::Provider,
+        discovered_at: UtcTimestamp::new(ROUTING_TIME).unwrap(),
+        stale: false,
+    };
+    let statuses = std::collections::BTreeMap::from([(
+        TEST_FAMILY.to_string(),
+        ganbaru_chat::provider_status::ProviderStatusContent::new(available, Some(&catalog), None),
+    )]);
+    ganbaru_chat::provider_status::publish_provider_statuses(
+        pool,
+        device_id,
+        &statuses,
+        &UtcTimestamp::new(ROUTING_TIME).unwrap(),
+    )
+    .await
+    .unwrap();
+}
+
+#[test]
+fn a_phone_agent_read_shows_the_status_of_the_desktop_that_would_run_it() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        insert_linked_device(&pool, 1, "device:desk", "desktop").await;
+        super::takeover::insert_sync_writer(&pool, 1, "device:desk", "active", false).await;
+        publish_desktop_status(&pool, "device:desk", true).await;
+        let agent_id = ChatParticipantId::new("participant:review-agent".to_string()).unwrap();
+        let phone =
+            super::super::reads::LocalProviderInstances::linked_reader("device:phone".to_string());
+
+        let read = super::super::reads::read_agent(&pool, &agent_id, &phone)
+            .await
+            .unwrap();
+        let linked = read
+            .linked_provider_status
+            .expect("the desktop shares its status");
+        assert_eq!(linked.device_id, "device:desk");
+        assert!(linked.available);
+        assert_eq!(linked.models[0].display_name, "GPT-5");
+
+        let desktop = super::super::reads::LocalProviderInstances::new();
+        let read = super::super::reads::read_agent(&pool, &agent_id, &desktop)
+            .await
+            .unwrap();
+        assert!(
+            read.linked_provider_status.is_none(),
+            "a device that runs agents reads no linked status"
+        );
+    });
+}
+
+#[test]
+fn a_phone_agent_read_ignores_a_desktop_that_no_longer_writes_chat() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        insert_linked_device(&pool, 1, "device:desk", "desktop").await;
+        super::takeover::insert_sync_writer(&pool, 1, "device:desk", "active", true).await;
+        publish_desktop_status(&pool, "device:desk", true).await;
+        let agent_id = ChatParticipantId::new("participant:review-agent".to_string()).unwrap();
+        let phone =
+            super::super::reads::LocalProviderInstances::linked_reader("device:phone".to_string());
+
+        let read = super::super::reads::read_agent(&pool, &agent_id, &phone)
+            .await
+            .unwrap();
+        assert!(read.linked_provider_status.is_none());
+    });
+}

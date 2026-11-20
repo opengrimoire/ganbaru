@@ -42,6 +42,8 @@ pub mod provenance;
 #[cfg(desktop)]
 pub mod provider_files;
 #[cfg(desktop)]
+pub(crate) mod provider_status;
+#[cfg(desktop)]
 pub mod provider_updates;
 pub mod quiet_periods;
 #[cfg(desktop)]

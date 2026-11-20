@@ -13,8 +13,10 @@ use super::reads::LocalProviderInstances;
 use super::workflow::insert_policy_revision;
 use super::{identifier_error, now_timestamp, persistence_error};
 use crate::chat::device_state::read_active_device_scope;
+use crate::chat::settings_commands::ProviderInstanceRead;
 use ganbaru_chat::conversion::{catalog_agent_id, line_agent_id};
 use ganbaru_chat::coordination::contracts::ChatAgentPolicyInput;
+use ganbaru_chat::provider_status::ProviderStatusContent;
 use ganbaru_chat_contracts::model_recommendation::{
     is_gated_line, is_model_line, newest_model_of_line,
 };
@@ -44,31 +46,10 @@ pub(crate) struct DeviceProviders {
 impl DeviceProviders {
     /// Reads the providers of this device from its Chat settings.
     pub(crate) fn read(app: &tauri::AppHandle) -> ChatResult<Self> {
-        let config = crate::chat::configuration::read_chat_config(app)?;
-        let scope =
-            read_active_device_scope(app).map_err(crate::chat::settings::device_state_error)?;
-        let mut candidates: BTreeMap<String, Vec<ProviderInstanceId>> = BTreeMap::new();
-        for provider in config.providers.iter().filter(|provider| provider.enabled) {
-            candidates
-                .entry(provider.family_id.as_str().to_string())
-                .or_default()
-                .push(provider.instance_id.clone());
-        }
         let mut by_family = BTreeMap::new();
         let mut catalogs = BTreeMap::new();
-        for (family, instances) in candidates {
-            let Some(instance_id) = select_local_instance(&family, &instances) else {
-                continue;
-            };
-            let Some(portable) = config
-                .providers
-                .iter()
-                .find(|provider| provider.instance_id == instance_id)
-            else {
-                continue;
-            };
-            let read =
-                crate::chat::settings::provider_instance_read(portable, &scope.provider_instances);
+        for (family, read) in selected_instance_reads(app)? {
+            let instance_id = read.configuration.instance_id.clone();
             let models = read
                 .model_catalog
                 .as_ref()
@@ -76,9 +57,7 @@ impl DeviceProviders {
                 .unwrap_or_default();
             catalogs.insert(family.clone(), family_catalog_of(&family, models));
             let driver = ProviderDriverRegistry.create_driver(read.configuration.clone());
-            let ready = driver.is_ok()
-                && !read.configuration.executable.trim().is_empty()
-                && read.runtime_review.is_empty();
+            let ready = ready_to_start(&read, driver.is_ok());
             let support = match driver {
                 Ok(driver) if ready => driver.authority_support(),
                 _ => ProviderAuthoritySupport::default(),
@@ -96,6 +75,30 @@ impl DeviceProviders {
             by_family,
             catalogs,
         })
+    }
+
+    /// What this device shares with its linked devices about each provider family it has
+    /// configured: whether it can start the family's work here, with the catalog and the plan
+    /// limits it last saw, reduced to their shared canonical form.
+    pub(crate) fn read_shared_statuses(
+        app: &tauri::AppHandle,
+    ) -> ChatResult<BTreeMap<String, ProviderStatusContent>> {
+        Ok(selected_instance_reads(app)?
+            .into_iter()
+            .map(|(family, read)| {
+                let driver_created = ProviderDriverRegistry
+                    .create_driver(read.configuration.clone())
+                    .is_ok();
+                let content = ProviderStatusContent::new(
+                    ready_to_start(&read, driver_created),
+                    read.model_catalog.as_ref(),
+                    read.usage_limits
+                        .as_ref()
+                        .map(|limits| (&limits.status, &limits.observed_at)),
+                );
+                (family, content)
+            })
+            .collect())
     }
 
     /// Providers of this device built from `entries`, for tests that need no Chat settings.
@@ -139,6 +142,46 @@ pub(crate) fn read_device_providers(app: &tauri::AppHandle) -> DeviceProviders {
         eprintln!("Chat could not read this device's providers: {error}");
         DeviceProviders::default()
     })
+}
+
+/// The settings read of the instance that runs each enabled provider family on this device.
+fn selected_instance_reads(
+    app: &tauri::AppHandle,
+) -> ChatResult<BTreeMap<String, ProviderInstanceRead>> {
+    let config = crate::chat::configuration::read_chat_config(app)?;
+    let scope = read_active_device_scope(app).map_err(crate::chat::settings::device_state_error)?;
+    let mut candidates: BTreeMap<String, Vec<ProviderInstanceId>> = BTreeMap::new();
+    for provider in config.providers.iter().filter(|provider| provider.enabled) {
+        candidates
+            .entry(provider.family_id.as_str().to_string())
+            .or_default()
+            .push(provider.instance_id.clone());
+    }
+    let mut reads = BTreeMap::new();
+    for (family, instances) in candidates {
+        let Some(instance_id) = select_local_instance(&family, &instances) else {
+            continue;
+        };
+        let Some(portable) = config
+            .providers
+            .iter()
+            .find(|provider| provider.instance_id == instance_id)
+        else {
+            continue;
+        };
+        let read =
+            crate::chat::settings::provider_instance_read(portable, &scope.provider_instances);
+        reads.insert(family, read);
+    }
+    Ok(reads)
+}
+
+/// Whether the provider of `read` can start here: its driver builds, it is located, and its
+/// runtime needs no approval on this device.
+fn ready_to_start(read: &ProviderInstanceRead, driver_created: bool) -> bool {
+    driver_created
+        && !read.configuration.executable.trim().is_empty()
+        && read.runtime_review.is_empty()
 }
 
 /// Picks the instance that runs `family` on this device: the instance whose id is the family

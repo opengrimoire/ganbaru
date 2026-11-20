@@ -1089,6 +1089,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::revocation::start_job_drain(app.handle());
             chat::cleanup_service::start(app.handle());
             chat::usage_summaries::start(app.handle());
+            chat::provider_status::start(app.handle());
             #[cfg(target_os = "linux")]
             tauri::async_runtime::spawn(ganbaru_chat_providers::process::probe_resource_scope());
             music::setup_youtube_host(app.handle())?;

@@ -274,21 +274,50 @@ pub(super) async fn post_executing_device(
     if let Some(here) = new_assignment_executing_device(transaction, agent_id, device).await? {
         return Ok(Some(here));
     }
-    if let Some(last) = last_linked_executor(transaction, agent_id, reply_thread_id, device).await?
+    linked_executing_device(
+        transaction,
+        agent_id,
+        Some(reply_thread_id),
+        device.id,
+        device.chat_writers,
+    )
+    .await
+}
+
+/// The linked desktop that would run new work of `agent_id` posted from `device_id`: the one
+/// that last ran the agent's work, preferring work in the conversation of `reply_thread_id`,
+/// else the only linked desktop that writes Chat.
+pub(super) async fn linked_executing_device(
+    connection: &mut SqliteConnection,
+    agent_id: &ChatParticipantId,
+    reply_thread_id: Option<&ChatReplyThreadId>,
+    device_id: &str,
+    chat_writers: &ChatWriters,
+) -> ChatResult<Option<String>> {
+    let writers = chat_writers.json()?;
+    if let Some(last) = last_linked_executor(
+        &mut *connection,
+        agent_id,
+        reply_thread_id,
+        device_id,
+        &writers,
+    )
+    .await?
     {
         return Ok(Some(last));
     }
-    sole_linked_desktop(transaction, device).await
+    sole_linked_desktop(connection, device_id, &writers).await
 }
 
-/// The linked Chat writer other than `device` that most recently ran work of `agent_id`,
-/// preferring work in the conversation of `reply_thread_id`. Only desktops run work, so a past
-/// executor is a desktop that had the agent's provider.
+/// The linked Chat writer other than `device_id` that most recently ran work of `agent_id`,
+/// preferring work in the conversation of `reply_thread_id` when one is given. Only desktops run
+/// work, so a past executor is a desktop that had the agent's provider.
 async fn last_linked_executor(
-    transaction: &mut Transaction<'_, Sqlite>,
+    connection: &mut SqliteConnection,
     agent_id: &ChatParticipantId,
-    reply_thread_id: &ChatReplyThreadId,
-    device: PostingDevice<'_>,
+    reply_thread_id: Option<&ChatReplyThreadId>,
+    device_id: &str,
+    chat_writers: &str,
 ) -> ChatResult<Option<String>> {
     sqlx::query_scalar(
         "SELECT assignment.executing_device_id
@@ -308,19 +337,20 @@ async fn last_linked_executor(
          LIMIT 1",
     )
     .bind(agent_id.as_str())
-    .bind(device.chat_writers.json()?)
-    .bind(device.id)
-    .bind(reply_thread_id.as_str())
-    .fetch_optional(&mut **transaction)
+    .bind(chat_writers)
+    .bind(device_id)
+    .bind(reply_thread_id.map(ChatReplyThreadId::as_str))
+    .fetch_optional(connection)
     .await
     .map_err(persistence_error)
 }
 
-/// The only linked desktop that writes Chat besides `device`, when exactly one does. With
+/// The only linked desktop that writes Chat besides `device_id`, when exactly one does. With
 /// several and no history of the agent, none is chosen, so the post records the mention only.
 async fn sole_linked_desktop(
-    transaction: &mut Transaction<'_, Sqlite>,
-    device: PostingDevice<'_>,
+    connection: &mut SqliteConnection,
+    device_id: &str,
+    chat_writers: &str,
 ) -> ChatResult<Option<String>> {
     let desktops: Vec<String> = sqlx::query_scalar(
         "SELECT DISTINCT linked.device_id FROM sync_devices linked
@@ -329,9 +359,9 @@ async fn sole_linked_desktop(
            AND linked.device_id <> ?2
          LIMIT 2",
     )
-    .bind(device.chat_writers.json()?)
-    .bind(device.id)
-    .fetch_all(&mut **transaction)
+    .bind(chat_writers)
+    .bind(device_id)
+    .fetch_all(connection)
     .await
     .map_err(persistence_error)?;
     Ok(match desktops.as_slice() {

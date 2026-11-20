@@ -16,7 +16,76 @@ use ganbaru_chat_contracts::models::*;
 use sqlx::{AssertSqlSafe, Row, SqlitePool};
 
 /// The provider instance that runs each provider family's agent on this device, by family id.
-pub(crate) type LocalProviderInstances = std::collections::BTreeMap<String, ProviderInstanceId>;
+/// On a device that runs no provider it also carries this device's id, so agent reads show the
+/// provider status that the linked desktop that would run each agent shares.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LocalProviderInstances {
+    by_family: std::collections::BTreeMap<String, ProviderInstanceId>,
+    linked_reader: Option<String>,
+}
+
+impl LocalProviderInstances {
+    /// No provider instance and no linked provider status.
+    #[cfg(any(mobile, test))]
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// No provider instance, reading linked provider status as the device `device_id`.
+    #[cfg(any(mobile, test))]
+    pub(crate) fn linked_reader(device_id: String) -> Self {
+        Self {
+            by_family: std::collections::BTreeMap::new(),
+            linked_reader: Some(device_id),
+        }
+    }
+
+    /// How many provider families have an instance on this device.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.by_family.len()
+    }
+
+    fn get(&self, family_id: &str) -> Option<&ProviderInstanceId> {
+        self.by_family.get(family_id)
+    }
+}
+
+impl FromIterator<(String, ProviderInstanceId)> for LocalProviderInstances {
+    fn from_iter<I: IntoIterator<Item = (String, ProviderInstanceId)>>(iter: I) -> Self {
+        Self {
+            by_family: iter.into_iter().collect(),
+            linked_reader: None,
+        }
+    }
+}
+
+/// What the linked desktop that would run new work of `agent_id` shares about the provider
+/// family `family_id`, as read by `device_id`. Only linked devices that still write Chat count.
+async fn read_linked_provider_status(
+    pool: &SqlitePool,
+    agent_id: &ChatParticipantId,
+    family_id: &str,
+    device_id: &str,
+) -> ChatResult<Option<ChatLinkedProviderStatusRead>> {
+    let linked = super::common::active_writer_devices(pool).await?;
+    let writers =
+        super::workflow::ChatWriters::new(std::iter::once(device_id.to_owned()).chain(linked));
+    let mut connection = pool.acquire().await.map_err(persistence_error)?;
+    let Some(executor) = super::workflow::linked_executing_device(
+        &mut connection,
+        agent_id,
+        None,
+        device_id,
+        &writers,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    drop(connection);
+    ganbaru_chat::provider_status::read_provider_status(pool, &executor, family_id).await
+}
 
 pub(crate) async fn read_memberships_for_conversation(
     pool: &SqlitePool,
@@ -168,6 +237,14 @@ pub(super) async fn read_agent(
     )
     .map_err(identifier_error)?;
     let local_provider_instance_id = local_instances.get(provider_family_id.as_str()).cloned();
+    let linked_provider_status = match (&local_provider_instance_id, &local_instances.linked_reader)
+    {
+        (None, Some(device_id)) => {
+            read_linked_provider_status(pool, agent_id, provider_family_id.as_str(), device_id)
+                .await?
+        }
+        _ => None,
+    };
     let agent_kind = super::agent_kinds::agent_kind(
         provider_family_id.as_str(),
         agent_id.as_str(),
@@ -190,6 +267,7 @@ pub(super) async fn read_agent(
         channel_count: u64_value(row.try_get("channel_count").map_err(persistence_error)?)?,
         active_assignment_count: lifecycle.active_assignment_count,
         hidden_at: optional_timestamp(row.try_get("hidden_at").map_err(persistence_error)?)?,
+        linked_provider_status,
     })
 }
 

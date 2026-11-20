@@ -290,7 +290,7 @@ fn canonical_buckets(map: Option<&Value>, canonical: fn(&Value) -> Option<Value>
         .into_iter()
         .filter(|(key, _)| {
             let chars = key.chars().count();
-            chars >= 1 && chars <= MAX_LIMIT_KEY_CHARS && !key.contains('\0')
+            (1..=MAX_LIMIT_KEY_CHARS).contains(&chars) && !key.contains('\0')
         })
         .filter_map(|(key, bucket)| Some((key.clone(), canonical(bucket)?)))
         .take(MAX_LIMIT_BUCKETS)

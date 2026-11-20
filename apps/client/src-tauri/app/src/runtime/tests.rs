@@ -513,3 +513,11 @@ fn desktop_runtime_starts_the_chat_usage_summary_flush() {
         "agent usage reaches other devices only while the flush loop runs"
     );
 }
+
+#[test]
+fn desktop_runtime_starts_the_chat_provider_status_publisher() {
+    assert!(
+        DESKTOP_RUNTIME.contains("chat::provider_status::start(app.handle());"),
+        "linked phones see this desktop's providers only while the publish loop runs"
+    );
+}

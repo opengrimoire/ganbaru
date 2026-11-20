@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TimelineActivityRow } from "./model";
+import type { JsonValue } from "../contracts/common";
 import {
   activityFilePath,
   commandActivityPresentation,
@@ -8,6 +9,7 @@ import {
   fileChangePresentation,
   summarizeActivityKinds,
   transientActivitySummary,
+  webActivityPresentation,
 } from "./activity-presentation";
 
 function activity(overrides: Partial<TimelineActivityRow> = {}): TimelineActivityRow {
@@ -215,5 +217,57 @@ describe("activity summaries", () => {
       activityKind: "reasoning_summary",
       detailPreview: "x".repeat(200),
     }))).toHaveLength(160);
+  });
+});
+
+describe("web activity presentation", () => {
+  function web(value: { [key: string]: JsonValue }, title = "rust release"): TimelineActivityRow {
+    return activity({ activityKind: "web_search", title, detailPreview: null, detailBytes: 0, metadata: { schemaVersion: 1, value } });
+  }
+
+  it("lists the web links a search returned and drops links a browser cannot open", () => {
+    const search = web({
+      toolName: "WebSearch",
+      toolInput: { query: "rust release" },
+      webResult: {
+        links: [
+          { url: "https://www.rust-lang.org/learn", title: "Learn Rust" },
+          { url: "javascript:alert(1)", title: "Script" },
+          { url: "not a url" },
+          { url: "http://example.org/a" },
+        ],
+      },
+    });
+    expect(webActivityPresentation(search)).toEqual({
+      kind: "search",
+      query: "rust release",
+      links: [
+        { url: "https://www.rust-lang.org/learn", title: "Learn Rust", host: "rust-lang.org" },
+        { url: "http://example.org/a", title: null, host: "example.org" },
+      ],
+    });
+    expect(summarizeActivityKinds([search])).toEqual([{ kind: "web_searches", count: 1 }]);
+  });
+
+  it("names a fetched page by its host before and after the result arrives", () => {
+    const pending = web({ toolName: "WebFetch", toolInput: { url: "https://docs.python.org/3/" } }, "https://docs.python.org/3/");
+    expect(webActivityPresentation(pending)).toEqual({
+      kind: "fetch",
+      link: { url: "https://docs.python.org/3/", title: null, host: "docs.python.org" },
+      statusCode: null,
+    });
+    const failed = web({
+      toolName: "WebFetch",
+      toolInput: { url: "https://example.org/missing" },
+      webResult: { url: "https://example.org/missing", code: 404, bytes: 12 },
+    });
+    expect(webActivityPresentation(failed)).toMatchObject({ kind: "fetch", statusCode: 404 });
+    expect(summarizeActivityKinds([pending, failed])).toEqual([{ kind: "web_fetches", count: 2 }]);
+  });
+
+  it("leaves web activities without a known web tool to the generic presentation", () => {
+    expect(webActivityPresentation(web({ query: "rust release" }))).toBeNull();
+    expect(webActivityPresentation(activity())).toBeNull();
+    expect(summarizeActivityKinds([web({})])).toEqual([{ kind: "web_searches", count: 1 }]);
   });
 });

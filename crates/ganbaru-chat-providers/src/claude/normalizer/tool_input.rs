@@ -59,6 +59,69 @@ pub(super) fn tool_metadata(
     }
 }
 
+/// Most links kept from one web search.
+const MAX_WEB_LINKS: usize = 24;
+/// Byte limit of one kept link title.
+const MAX_LINK_TITLE_BYTES: usize = 256;
+
+/// The bounded result of a web search or fetch from the CLI's structured `tool_use_result`:
+/// the http or https links a search returned, with their titles, or the URL, status, and size
+/// of a fetch. Summaries the CLI wrote about the pages are left out, since the agent's own
+/// reply carries what it learned.
+pub(super) fn web_result(name: &str, result: Option<&Value>) -> Option<Value> {
+    let result = result?.as_object()?;
+    match name {
+        "WebSearch" => {
+            let links = result
+                .get("results")?
+                .as_array()?
+                .iter()
+                .filter_map(|entry| entry.get("content").and_then(Value::as_array))
+                .flatten()
+                .filter_map(web_link)
+                .take(MAX_WEB_LINKS)
+                .collect::<Vec<_>>();
+            Some(json!({ "links": links }))
+        }
+        "WebFetch" => {
+            let url = string_field(result, "url").filter(|url| web_url(url))?;
+            let mut fetched = Map::from_iter([(
+                "url".to_string(),
+                Value::String(bounded_text(url, MAX_FIELD_BYTES)),
+            )]);
+            for key in ["code", "bytes"] {
+                if let Some(number) = result.get(key).and_then(Value::as_u64) {
+                    fetched.insert(key.to_string(), Value::from(number));
+                }
+            }
+            Some(Value::Object(fetched))
+        }
+        _ => None,
+    }
+}
+
+fn web_link(link: &Value) -> Option<Value> {
+    let link = link.as_object()?;
+    let url = string_field(link, "url").filter(|url| web_url(url))?;
+    let mut kept = Map::from_iter([(
+        "url".to_string(),
+        Value::String(bounded_text(url, MAX_FIELD_BYTES)),
+    )]);
+    if let Some(title) = string_field(link, "title") {
+        kept.insert(
+            "title".to_string(),
+            Value::String(bounded_text(title, MAX_LINK_TITLE_BYTES)),
+        );
+    }
+    Some(Value::Object(kept))
+}
+
+/// Whether `url` is an http or https URL short enough to keep whole.
+fn web_url(url: &str) -> bool {
+    let lower = url.get(..8).unwrap_or(url).to_ascii_lowercase();
+    url.len() <= MAX_FIELD_BYTES && (lower.starts_with("https://") || lower.starts_with("http://"))
+}
+
 fn kept_input(input: &Map<String, Value>) -> Value {
     let mut kept = Map::new();
     for key in KEPT_STRING_KEYS {
@@ -138,6 +201,59 @@ mod tests {
             metadata.value["toolInput"],
             json!({ "url": "https://example.org" })
         );
+    }
+
+    #[test]
+    fn web_results_keep_web_links_and_drop_summaries() {
+        let search = json!({
+            "query": "rust release",
+            "results": [
+                {
+                    "tool_use_id": "srvtoolu_1",
+                    "content": [
+                        { "title": "Rust 1.94.0", "url": "https://blog.rust-lang.org/2026/03/05/Rust-1.94.0" },
+                        { "title": "Local", "url": "file:///etc/passwd" },
+                        { "url": "http://example.org" },
+                    ],
+                },
+                "The latest release is 1.94.0.",
+            ],
+            "durationSeconds": 6.1,
+            "searchCount": 1,
+        });
+        assert_eq!(
+            web_result("WebSearch", Some(&search)),
+            Some(json!({
+                "links": [
+                    { "url": "https://blog.rust-lang.org/2026/03/05/Rust-1.94.0", "title": "Rust 1.94.0" },
+                    { "url": "http://example.org" },
+                ],
+            }))
+        );
+        let many = json!({
+            "results": [{ "content": (0..40)
+                .map(|index| json!({ "title": "t".repeat(1024), "url": format!("https://d{index}.org") }))
+                .collect::<Vec<_>>() }],
+        });
+        let links = web_result("WebSearch", Some(&many)).expect("links");
+        let links = links["links"].as_array().expect("links");
+        assert_eq!(links.len(), MAX_WEB_LINKS);
+        assert!(links[0]["title"].as_str().expect("title").len() <= MAX_LINK_TITLE_BYTES);
+
+        let fetch = json!({
+            "bytes": 19632, "code": 200, "codeText": "OK",
+            "result": "Python 3.15.2", "durationMs": 1453, "url": "https://docs.python.org/3/",
+        });
+        assert_eq!(
+            web_result("WebFetch", Some(&fetch)),
+            Some(json!({ "url": "https://docs.python.org/3/", "code": 200, "bytes": 19632 }))
+        );
+        assert_eq!(
+            web_result("WebFetch", Some(&json!({ "url": "javascript:x" }))),
+            None
+        );
+        assert_eq!(web_result("Bash", Some(&fetch)), None);
+        assert_eq!(web_result("WebSearch", None), None);
     }
 
     #[test]

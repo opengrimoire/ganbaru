@@ -35,6 +35,7 @@ export type ActivitySummaryKind =
   | "file_reads"
   | "file_searches"
   | "web_searches"
+  | "web_fetches"
   | "image_views"
   | "tools"
   | "collaboration"
@@ -110,6 +111,64 @@ export function fileSearchActivityPresentation(
     query: searchMetadata.query ?? titleMatch?.[1]?.trim() ?? null,
     scope: searchMetadata.scope ?? titleMatch?.[2]?.trim() ?? null,
   };
+}
+
+/** One page a web search returned. */
+export interface WebLinkPresentation {
+  url: string;
+  title: string | null;
+  host: string;
+}
+
+/** A web search or page fetch an agent made through its own web tool. */
+export type WebActivityPresentation =
+  | { kind: "search"; query: string | null; links: WebLinkPresentation[] }
+  | { kind: "fetch"; link: WebLinkPresentation | null; statusCode: number | null };
+
+/**
+ * Extracts the query and result links of an agent's web search, or the page and status of a
+ * web fetch, from the tool name and bounded result in the activity metadata. Links other than
+ * http or https are dropped so the timeline only offers pages a browser can open.
+ */
+export function webActivityPresentation(activity: TimelineActivityRow): WebActivityPresentation | null {
+  if (activity.activityKind !== "web_search") return null;
+  const metadata = record(activity.metadata?.value);
+  const tool = stringValue(metadata?.toolName);
+  const input = record(metadata?.toolInput);
+  const result = record(metadata?.webResult);
+  if (tool === "WebSearch") {
+    const links = Array.isArray(result?.links) ? result.links : [];
+    return {
+      kind: "search",
+      query: stringValue(input?.query),
+      links: links.flatMap((link) => {
+        const entry = record(link);
+        const presented = webLink(entry?.url, entry?.title);
+        return presented ? [presented] : [];
+      }),
+    };
+  }
+  if (tool === "WebFetch") {
+    return {
+      kind: "fetch",
+      link: webLink(result?.url ?? input?.url, null),
+      statusCode: integerValue(result?.code),
+    };
+  }
+  return null;
+}
+
+function webLink(url: unknown, title: unknown): WebLinkPresentation | null {
+  const href = stringValue(url);
+  if (!href) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(href);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+  return { url: href, title: stringValue(title), host: parsed.hostname.replace(/^www\./u, "") };
 }
 
 /** Returns whether an activity is a provider-neutral image inspection action. */
@@ -229,7 +288,9 @@ function activitySummaryKind(activity: TimelineActivityRow): ActivitySummaryKind
   if (isFileChangeActivity(activity)) return "file_changes";
   if (isImageViewActivity(activity)) return "image_views";
   if (isFileSearchActivity(activity)) return "file_searches";
-  if (activity.activityKind === "web_search") return "web_searches";
+  if (activity.activityKind === "web_search") {
+    return webActivityPresentation(activity)?.kind === "fetch" ? "web_fetches" : "web_searches";
+  }
   if (isFileReadActivity(activity)) return "file_reads";
   if (isCommandActivity(activity)) return "commands";
   if (activity.activityKind === "collaboration_task") return "collaboration";

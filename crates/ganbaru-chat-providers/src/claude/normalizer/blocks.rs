@@ -294,6 +294,12 @@ impl ClaudeEventNormalizer {
             .entry(item_id.to_string())
             .or_insert_with(|| classify_tool(name));
         let input = tool_input(block);
+        let metadata = tool_metadata(block_type, name, input);
+        if kind == CanonicalItemKind::WebSearch {
+            state
+                .web_tools
+                .insert(item_id.to_string(), metadata.value.clone());
+        }
         Ok(Some(self.item_event(
             state,
             ClaudeItemEvent {
@@ -302,7 +308,7 @@ impl ClaudeEventNormalizer {
                 kind,
                 status: ActivityStatus::Active,
                 title: Some(tool_title(name, input)),
-                safe_metadata: Some(tool_metadata(block_type, name, input)),
+                safe_metadata: Some(metadata),
             },
         )?))
     }

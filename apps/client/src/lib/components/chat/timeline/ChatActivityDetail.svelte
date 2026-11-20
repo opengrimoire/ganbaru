@@ -18,7 +18,11 @@
     fileChangePresentation,
     isCommandActivity,
     isFileChangeActivity,
+    webActivityPresentation,
+    type WebLinkPresentation,
   } from "$lib/chat/timeline/activity-presentation";
+  import ExternalLink from "@lucide/svelte/icons/external-link";
+  import { openChatExternalUrl } from "$lib/api/chat";
   import { untrack } from "svelte";
   import type { ChatThreadId } from "$lib/chat/contracts";
   import { ACTIVITY_DETAIL_PREVIEW_BYTES, activityDetailPreviewKeepsTail } from "$lib/chat/timeline/activity-detail";
@@ -33,6 +37,7 @@
     detail,
     threadId = null,
     expanded = false,
+    onError,
   }: {
     activity: TimelineActivityRow;
     detail: string | null;
@@ -40,6 +45,8 @@
     threadId?: ChatThreadId | null;
     /** Whether the disclosure is open; a shortened detail loads in full only once it is. */
     expanded?: boolean;
+    /** Reports a link that could not be opened. */
+    onError?: (error: unknown) => void;
   } = $props();
   const versionKey = $derived(`${activity.id}\u0000${activity.updatedAt ?? ""}`);
   let wholeDetail = $state<{ activityId: string; key: string; detail: string | null } | null>(null);
@@ -59,6 +66,12 @@
   });
   const command = $derived(commandActivityPresentation(shown));
   const changes = $derived(fileChangePresentation(shown));
+  const web = $derived(webActivityPresentation(activity));
+  const webRunning = $derived(activity.status === "pending" || activity.status === "active" || activity.status === "waiting");
+
+  function openLink(link: WebLinkPresentation): void {
+    void openChatExternalUrl(link.url).catch((error: unknown) => onError?.(error));
+  }
 
   $effect(() => {
     if (!expanded || !activity.detailTruncated || !threadId) return;
@@ -93,7 +106,26 @@
   }
 </script>
 
-{#if isCommandActivity(activity)}
+{#snippet webLink(link: WebLinkPresentation)}
+  <button type="button" class="web-link" title={link.url} onclick={() => openLink(link)}>
+    <span class="web-link-title">{link.title ?? link.url}</span>
+    <small>{link.host}</small>
+    <ExternalLink size={12} />
+  </button>
+{/snippet}
+
+{#if web?.kind === "search"}
+  {#if web.links.length > 0}
+    <div class="web-links">{#each web.links as link, index (`${index}:${link.url}`)}{@render webLink(link)}{/each}</div>
+  {:else if !webRunning}
+    <p class="web-empty">{t("chat.timeline.webNoResults")}</p>
+  {/if}
+{:else if web?.kind === "fetch"}
+  {#if web.link}<div class="web-links">{@render webLink(web.link)}</div>{/if}
+  {#if web.statusCode !== null && (web.statusCode < 200 || web.statusCode >= 300)}
+    <p class="web-empty failed">{t("chat.timeline.webFetchStatus", String(web.statusCode))}</p>
+  {/if}
+{:else if isCommandActivity(activity)}
   <section class="command-card">
     <header>
       <strong>{t("chat.timeline.shell")}</strong>
@@ -178,5 +210,14 @@
   .deletions { color: var(--destructive); }
   .file-diff { max-height: 20rem; border-top: 1px solid var(--border); padding: 0.7rem; color: var(--muted-foreground); }
   .generic-detail { max-height: 18rem; border-left: 1px solid var(--border); padding: 0.2rem 0.75rem; color: var(--muted-foreground); }
+  .web-links { display: grid; gap: 0.1rem; border-left: 1px solid var(--border); padding-left: 0.5rem; }
+  .web-link { display: flex; width: 100%; min-width: 0; cursor: pointer; align-items: center; gap: 0.45rem; border-radius: 0.4rem; padding: 0.25rem 0.4rem; text-align: left; color: var(--foreground); }
+  .web-link:hover { background: color-mix(in srgb, var(--muted) 45%, transparent); }
+  .web-link:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+  .web-link-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .web-link small { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-foreground); }
+  .web-link :global(svg) { flex: 0 0 auto; color: var(--muted-foreground); }
+  .web-empty { margin: 0; border-left: 1px solid var(--border); padding: 0.2rem 0.75rem; color: var(--muted-foreground); }
+  .web-empty.failed { color: var(--destructive); }
   @media (prefers-reduced-motion: reduce) { .file-change-trigger :global(svg), .file-change-region, .file-change-region > div { transition: none; } }
 </style>

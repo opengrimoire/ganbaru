@@ -22,7 +22,7 @@
   import { noticeCode, resolveNoticeTitle } from "$lib/chat/timeline/notice-title";
   import { chatScrollBehavior } from "$lib/chat/responsive-layout";
   import type { ChatParticipantRead, ChatThreadShellRead, ChatTimelinePageRead, ChatTurnId, ProviderFamilyId, ProviderInstanceId, ProviderProbeResult } from "$lib/chat/contracts";
-  import { activityFilePath, fileChangePresentation, fileReadActivityPresentation, fileSearchActivityPresentation, isFileReadActivity, isFileSearchActivity, isImageViewActivity, summarizeActivityKinds, transientActivitySummary, type ActivitySummaryCount } from "$lib/chat/timeline/activity-presentation";
+  import { activityFilePath, fileChangePresentation, fileReadActivityPresentation, fileSearchActivityPresentation, isFileReadActivity, isFileSearchActivity, isImageViewActivity, summarizeActivityKinds, transientActivitySummary, webActivityPresentation, type ActivitySummaryCount } from "$lib/chat/timeline/activity-presentation";
   import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/agents/participant-display";
   import { chatModelParticipant, type ChatModelParticipant } from "$lib/chat/agents/participant-identity";
   import { buildTimelineDisplayRows, includeOptimisticTimelineMessage, projectTimelineReadModel, stabilizeTimelineRows, timelineActivityShowsLiveStatus, timelineActivitySupportsDisclosure, timelineFinishedRenderKey, timelineModelGroupStartIds, timelineRowsForTurn, type TimelineActivityGroupRow, type TimelineActivityRow, type TimelineDisplayRow, type TimelineMessageRow, type TimelinePlanRow, type TimelineRow, type TimelineTurnFoldRow } from "$lib/chat/timeline/model";
@@ -577,6 +577,15 @@
       }
       return active ? t("chat.timeline.searchingFiles") : t("chat.timeline.searchedFiles");
     }
+    const web = webActivityPresentation(activity);
+    if (web?.kind === "fetch") {
+      if (web.link) return active ? t("chat.timeline.fetchingPage", web.link.host) : t("chat.timeline.fetchedPage", web.link.host);
+      return active ? t("chat.timeline.fetchingWebPage") : t("chat.timeline.fetchedWebPage");
+    }
+    if (web?.kind === "search") {
+      if (web.query) return active ? t("chat.timeline.searchingWebFor", web.query) : t("chat.timeline.searchedWebFor", web.query);
+      return active ? t("chat.timeline.searchingWeb") : t("chat.timeline.searchedWeb");
+    }
     if (activity.activityKind === "web_search") {
       const query = activity.title.trim();
       const generic = ["web search", "web search result", "web_search"].includes(query.toLowerCase());
@@ -652,6 +661,10 @@
           : multiple ? t("chat.timeline.readFiles") : t("chat.timeline.readFile");
       case "file_searches": return active ? t("chat.timeline.searchingFiles") : t("chat.timeline.searchedFiles");
       case "web_searches": return active ? t("chat.timeline.searchingWeb") : t("chat.timeline.searchedWeb");
+      case "web_fetches":
+        return active
+          ? multiple ? t("chat.timeline.fetchingWebPages") : t("chat.timeline.fetchingWebPage")
+          : multiple ? t("chat.timeline.fetchedWebPages") : t("chat.timeline.fetchedWebPage");
       case "image_views":
         return active
           ? multiple ? t("chat.timeline.viewingImages") : t("chat.timeline.viewingImage")
@@ -830,7 +843,7 @@
       <div class="chat-disclosure-region" class:expanded={activityExpanded} aria-hidden={!activityExpanded} inert={!activityExpanded}>
         <div class="chat-disclosure-inner">
           <div class="chat-step-detail">
-            <ChatActivityDetail {activity} detail={activityDetail(activity)} threadId={readOnly ? null : activity.sourceThreadId ?? selectedThread?.id ?? chat.selectedThreadId} expanded={activityExpanded} />
+            <ChatActivityDetail {activity} detail={activityDetail(activity)} threadId={readOnly ? null : activity.sourceThreadId ?? selectedThread?.id ?? chat.selectedThreadId} expanded={activityExpanded} onError={reportError} />
           </div>
         </div>
       </div>

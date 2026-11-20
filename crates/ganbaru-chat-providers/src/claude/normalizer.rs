@@ -59,6 +59,8 @@ pub struct ClaudeRouteState {
     rate_limits: ClaudeRateLimitMemory,
     pub(super) usage: ClaudeUsageTracker,
     pub(super) tool_kinds: HashMap<String, CanonicalItemKind>,
+    /// Safe metadata of open web search and fetch calls, completed with their results.
+    pub(super) web_tools: HashMap<String, Value>,
     /// Background commands and agents that outlive the turn that started them.
     background_tasks: ClaudeBackgroundTasks,
 }
@@ -82,6 +84,7 @@ impl ClaudeRouteState {
             rate_limits: ClaudeRateLimitMemory::default(),
             usage: ClaudeUsageTracker::default(),
             tool_kinds: HashMap::new(),
+            web_tools: HashMap::new(),
             background_tasks: ClaudeBackgroundTasks::default(),
         }
     }
@@ -426,7 +429,14 @@ impl ClaudeEventNormalizer {
                 .tool_kinds
                 .remove(&item_id)
                 .unwrap_or(CanonicalItemKind::DynamicToolCall);
-            if let Some(output) = tool_result_text(block.get("content")) {
+            let web_metadata = state
+                .web_tools
+                .remove(&item_id)
+                .map(|metadata| web_completion(metadata, object.get("tool_use_result")));
+            // A web call shows its structured result, not the CLI's text rendering of it.
+            if web_metadata.is_none()
+                && let Some(output) = tool_result_text(block.get("content"))
+            {
                 events.push(self.event(
                     state,
                     "user/tool_result/output",
@@ -453,7 +463,7 @@ impl ClaudeEventNormalizer {
                         ActivityStatus::Completed
                     },
                     title: None,
-                    safe_metadata: None,
+                    safe_metadata: web_metadata,
                 },
             )?);
         }
@@ -631,6 +641,25 @@ fn todo_plan(input: Option<&Value>) -> Option<PlanUpdatedEvent> {
             .join("\n"),
         steps,
     })
+}
+
+/// The completed metadata of a web call: its kept input plus the bounded structured result.
+fn web_completion(mut metadata: Value, result: Option<&Value>) -> VersionedJson {
+    let name = metadata
+        .get("toolName")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if let (Some(object), Some(result)) = (
+        metadata.as_object_mut(),
+        tool_input::web_result(&name, result),
+    ) {
+        object.insert("webResult".to_string(), result);
+    }
+    VersionedJson {
+        schema_version: 1,
+        value: metadata,
+    }
 }
 
 fn tool_result_text(value: Option<&Value>) -> Option<String> {

@@ -796,6 +796,85 @@ fn tool_input_completion_waits_for_the_correlated_tool_result() {
 }
 
 #[test]
+fn web_search_completes_with_its_links_instead_of_command_output() {
+    let normalizer = ClaudeEventNormalizer::new(
+        ProviderInstanceId::new("claude-instance-1".to_string()).unwrap(),
+        ChatThreadId::new("thread-1".to_string()).unwrap(),
+        ProviderSessionId::new("session-1".to_string()).unwrap(),
+    );
+    let mut state = route_state();
+    state.active_chat_turn_id = Some(ChatTurnId::new("turn-1".to_string()).unwrap());
+    let mut normalize = |message: Value| normalizer.normalize_message(&mut state, message).unwrap();
+    let started = normalize(json!({
+        "type": "assistant",
+        "message": {
+            "id": "msg-1",
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "tool-search",
+                "name": "WebSearch",
+                "input": { "query": "rust release", "mode": "standard" }
+            }]
+        }
+    }));
+    let completed = normalize(json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "tool-search",
+                "content": "Web search results for query: \"rust release\"\n\nLinks: [...]"
+            }]
+        },
+        "tool_use_result": {
+            "query": "rust release",
+            "results": [
+                { "tool_use_id": "srvtoolu_1", "content": [{ "title": "Rust 1.94.0", "url": "https://blog.rust-lang.org/2026/03/05/Rust-1.94.0" }] },
+                "The latest release is 1.94.0."
+            ],
+            "searchCount": 1
+        }
+    }));
+
+    let item = |events: &[CanonicalRuntimeEvent]| {
+        events
+            .iter()
+            .find_map(|event| match &event.event {
+                CanonicalEvent::ItemStarted(item) | CanonicalEvent::ItemCompleted(item)
+                    if item.item_id == "tool-search" =>
+                {
+                    Some(item.clone())
+                }
+                _ => None,
+            })
+            .expect("search item")
+    };
+    let started = item(&started);
+    assert_eq!(started.kind, CanonicalItemKind::WebSearch);
+    assert_eq!(started.title.as_deref(), Some("rust release"));
+    assert!(
+        !completed
+            .iter()
+            .any(|event| matches!(event.event, CanonicalEvent::ContentDelta(_)))
+    );
+    let completed = item(&completed);
+    assert_eq!(completed.status, ActivityStatus::Completed);
+    assert_eq!(
+        completed.safe_metadata.map(|metadata| metadata.value),
+        Some(json!({
+            "blockType": "tool_use",
+            "toolName": "WebSearch",
+            "toolInput": { "query": "rust release" },
+            "webResult": {
+                "links": [{ "url": "https://blog.rust-lang.org/2026/03/05/Rust-1.94.0", "title": "Rust 1.94.0" }]
+            },
+        }))
+    );
+}
+
+#[test]
 fn streamed_tool_input_is_not_output_and_the_assistant_frame_names_the_command() {
     let normalizer = ClaudeEventNormalizer::new(
         ProviderInstanceId::new("claude-instance-1".to_string()).unwrap(),

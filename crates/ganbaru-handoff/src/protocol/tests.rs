@@ -632,7 +632,7 @@ fn member_endpoints_keep_their_wire_shape() {
     };
     let wire = serde_json::to_value(&hello).expect("serialize sync hello");
     assert_eq!(wire["listening"], serde_json::json!(["192.168.1.20:43821"]));
-    assert_eq!(wire["protocol_version"], serde_json::json!(19));
+    assert_eq!(wire["protocol_version"], serde_json::json!(20));
     assert_eq!(frame_round_trip(&hello), Ok(hello));
 }
 

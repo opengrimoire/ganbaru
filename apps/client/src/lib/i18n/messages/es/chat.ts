@@ -298,7 +298,6 @@ export const chat = {
     openScratchInspector: "Inspeccionar espacio privado",
     workingIn: (folder: string) => `Trabajando en ${folder}`,
     conversationOnlyNoDefaultFolder: "Solo conversación: sin carpeta predeterminada",
-    providerDefaultModel: "Modelo configurado en el proveedor",
     oneAgentOnly: "Una asignación solo puede mencionar a un agente de IA.",
     referencesPasted: (count: number) => `${count} ${count === 1 ? "referencia pegada" : "referencias pegadas"}`,
     referenceResults: (count: number) => `${count} ${count === 1 ? "resultado de referencia" : "resultados de referencia"}`,

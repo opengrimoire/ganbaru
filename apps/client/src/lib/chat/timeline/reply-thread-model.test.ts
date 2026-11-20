@@ -19,7 +19,6 @@ import {
   agentRunShowedOutput,
   agentRunLocation,
   agentMayUseChannelFolders,
-  replyThreadMetadataLine,
   exactExecutionReadKey,
   exactExecutionRuns,
   exactRunPresentationsReady,
@@ -676,26 +675,5 @@ describe("agentMayUseChannelFolders", () => {
     expect(agentMayUseChannelFolders(settings(null), "agent-1")).toBe(false);
     expect(agentMayUseChannelFolders(settings("ask", "agent-2"), "agent-1")).toBe(false);
     expect(agentMayUseChannelFolders(null, "agent-1")).toBe(false);
-  });
-});
-
-describe("replyThreadMetadataLine", () => {
-  it("joins the run location and the model that ran", () => {
-    expect(replyThreadMetadataLine("Working in Website", "GPT-5")).toBe("Working in Website · GPT-5");
-  });
-
-  it("shows the model alone when the location adds nothing", () => {
-    expect(replyThreadMetadataLine(null, "Provider default, gpt-x is not available"))
-      .toBe("Provider default, gpt-x is not available");
-  });
-
-  it("shows the location alone until the executing device names the model", () => {
-    expect(replyThreadMetadataLine("Working in Website", null)).toBe("Working in Website");
-  });
-
-  it("omits blank parts and returns null when nothing is known", () => {
-    expect(replyThreadMetadataLine(null, null)).toBeNull();
-    expect(replyThreadMetadataLine("  ", "")).toBeNull();
-    expect(replyThreadMetadataLine(" Working in Website ", "  ")).toBe("Working in Website");
   });
 });

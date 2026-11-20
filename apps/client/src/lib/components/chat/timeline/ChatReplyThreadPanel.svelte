@@ -10,7 +10,6 @@
     agentRunRestart,
     agentRunLocation,
     agentMayUseChannelFolders,
-    replyThreadMetadataLine,
     exactExecutionReadKey,
     exactExecutionRuns,
     activeWorkWithoutRun,
@@ -114,9 +113,6 @@
     : runLocation?.kind === "conversation" && conversationOnlyMayUseFolders
       ? t("chat.organization.conversationOnlyNoDefaultFolder")
       : null);
-  /** The model that ran, or the localized provider default once a run started without a named model. */
-  const modelLabel = $derived(assignment?.modelLabel ?? (assignment && executionRun ? t("chat.organization.providerDefaultModel") : null));
-  const metadataLine = $derived(replyThreadMetadataLine(runLocationLabel, modelLabel));
   const loadedExecutionTurnIds = $derived(new Set([
     ...chat.timelineItems.flatMap((item) => item.turnId ? [item.turnId] : []),
     ...chat.timelinePages.flatMap((timelinePage) => timelinePage.turns.map((turn) => turn.turnId)),
@@ -493,7 +489,7 @@
         <div class="date-divider"><span>{formatDateTime(localization.locale, Date.parse(page.rootMessage.createdAt), { dateStyle: "full" })}</span></div>
         <ChatOrganizationalMessage message={page.rootMessage} showReplyStrip={false} currentResponseSettings onActionError={reportMessageActionError} />
         {#if assignment?.delegation}<ChatDelegationOrigin delegation={assignment.delegation} onOpenThread={openThread} />{/if}
-        {#if metadataLine}<p class="run-location" data-run-location>{metadataLine}</p>{/if}
+        {#if runLocationLabel}<p class="run-location" data-run-location>{runLocationLabel}</p>{/if}
         {#each renderEntries as entry, index (entry.key)}
           {@const previousEntry = renderEntries[index - 1]}
           {@const previousCreatedAt = previousEntry ? entryCreatedAt(previousEntry) : page.rootMessage.createdAt}

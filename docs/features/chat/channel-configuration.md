@@ -75,7 +75,7 @@ A channel uses every folder of its project. A run uses a target chosen explicitl
 
 ## Model and effort
 
-Each agent runs its own model: a line agent the newest model of its line, any other agent the model and effort it was made with, and the channel's Agents section shows which. There is no default model and no channel model override. A thread switches its own model with `/model` in a message that starts or continues the work, and later work in that thread keeps the model it last chose. The channel composer has no other model control, so a post never carries hidden model choices. Every agent reply names the model that produced it, so a switch or a device falling back to the recommended model is visible where it happened.
+Each agent runs its own model: a line agent the newest model of its line, any other agent the model and effort it was made with, and the channel's Agents section shows which. There is no default model and no channel model override. A thread switches its own model with `/model` in a message that starts or continues the work, and later work in that thread keeps the model it last chose. The channel composer has no other model control, so a post never carries hidden model choices. The agent card shows the model an agent runs; replies do not repeat it.
 
 ## Common journeys
 

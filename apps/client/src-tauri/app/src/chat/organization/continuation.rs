@@ -162,8 +162,8 @@ const NAME_PLACEHOLDER: &str = "{display_name}";
 /// Tells the session who it is and where its reply goes. The context package format follows
 /// it, then the instructions the assignment froze.
 const AGENT_FRAMING_TEMPLATE: &str = "You are {display_name}, an AI agent in a Ganbaru \
-channel. Your reply is posted in the reply thread that assigned the work, so report your \
-results there.";
+channel. Your final message is posted as your reply in the reply thread that assigned the \
+work, so write your results in it and never post them again through the report tool.";
 
 /// Largest framing template, in UTF-8 bytes, with its placeholders unfilled.
 pub(super) const MAX_AGENT_FRAMING_BYTES: usize = 1536;

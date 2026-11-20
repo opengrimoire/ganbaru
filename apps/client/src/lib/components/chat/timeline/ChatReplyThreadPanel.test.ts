@@ -630,6 +630,9 @@ describe("ChatReplyThreadPanel", () => {
     });
     expect(target.querySelector('[data-work-state="working"] [role="status"]')?.textContent)
       .toBe(en.chat.delegation.states.working);
+    const remoteWorkRow = target.querySelector('[data-work-state="working"]');
+    expect(remoteWorkRow?.querySelector("header strong")?.textContent).toContain("Atlas");
+    expect(remoteWorkRow?.querySelector("time")?.getAttribute("datetime")).toBe(remoteWork.createdAt);
     const stop = target.querySelector<HTMLButtonElement>('[data-work-state="working"] [data-action="stop-run"]');
     expect(stop?.title).toContain("Atlas");
     stop?.click();

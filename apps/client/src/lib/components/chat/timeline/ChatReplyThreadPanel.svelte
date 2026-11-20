@@ -33,7 +33,7 @@
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { useChat } from "$lib/stores/chat.svelte";
   import ChatAgentRunStatus from "./ChatAgentRunStatus.svelte";
-  import ChatStopWorkButton from "./ChatStopWorkButton.svelte";
+  import ChatRemoteWorkRow from "./ChatRemoteWorkRow.svelte";
   import ChatExecutionTimeline from "./ChatExecutionTimeline.svelte";
   import ChatMessageComposer from "$lib/components/chat/composer/ChatMessageComposer.svelte";
   import { chatComposerDock, type ChatComposerDockMetrics } from "$lib/components/chat/composer/composer-dock";
@@ -534,14 +534,12 @@
           {/if}
         {/each}
         {#if workWithoutRun}
-          <div class="work-without-run" data-work-state={workWithoutRun.state}>
-            <span role="status">{t(`chat.delegation.states.${workWithoutRun.state}`)}</span>
-            <ChatStopWorkButton
-              assignmentId={workWithoutRun.id}
-              agentName={executionAgentName ?? t("chat.runs.outcome.agentFallback")}
-              onActionError={reportMessageActionError}
-            />
-          </div>
+          <ChatRemoteWorkRow
+            work={workWithoutRun}
+            agent={executionAgent}
+            agentName={executionAgentName ?? t("chat.runs.outcome.agentFallback")}
+            onActionError={reportMessageActionError}
+          />
         {/if}
         {#if page.delegatedChildren.length > 0}<ChatDelegatedWorkList delegatedChildren={page.delegatedChildren} onOpenThread={openThread} />{/if}
       </div>
@@ -590,8 +588,6 @@
   .date-divider { display:flex; align-items:center; gap:0.5rem; margin:0.75rem 0; color:var(--muted-foreground); font-size: calc(0.65rem * var(--type-scale)); }
   .date-divider::before,.date-divider::after { height:1px; flex:1; background:var(--border); content:""; }
   .run-restart,.run-location { margin:0.25rem 0; color:var(--muted-foreground); font-size: calc(0.65rem * var(--type-scale)); }
-  /* Lines up with the message text column like the Stop working control of a run. */
-  .work-without-run { display:flex; flex-wrap:wrap; align-items:center; gap:0.5rem; margin:0.25rem 0.75rem 0.25rem calc(var(--chat-message-row-padding-inline,1rem) + 34px + 0.65rem); color:var(--muted-foreground); font-size:var(--panel-detail-font-size); }
   /* The dock floats over the thread end: entries show around the surfaces above the composer and inside its rounded top corners, and the backdrop hides them below the corner curve. Only the surfaces take pointer input. */
   .thread-dock { position:absolute; inset:auto 0 0; z-index:1; display:flex; flex-direction:column; background:linear-gradient(to bottom,transparent var(--chat-composer-dock-backdrop-top,0px),var(--cal-bg) var(--chat-composer-dock-backdrop-top,0px)); pointer-events:none; }
   .thread-request { flex:0 0 auto; border-top:1px solid var(--border); background:var(--cal-bg); padding-block:0.5rem; pointer-events:auto; }

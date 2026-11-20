@@ -536,9 +536,8 @@ pub fn route_control_request(
 
 /// Routes one control request of a turn running with `modes`. Under an organizational policy,
 /// a request outside the scope is denied without reaching the person, a confined command the
-/// turn's modes run unattended and an edit of an ordinary file inside the root are allowed
-/// without reaching the person, and no approval offers
-/// a session-wide grant, because shell rules, extra directories, and accepting edits would all
+/// turn's modes run unattended, an edit of an ordinary file inside the root, and a web search
+/// are allowed without reaching the person, and no approval offers a session-wide grant, because shell rules, extra directories, and accepting edits would all
 /// widen the boundary.
 pub fn route_scoped_control_request(
     control_request_id: &str,
@@ -597,6 +596,11 @@ pub fn route_scoped_control_request(
             Some((
                 "claude/organizational/folder_edit",
                 "Ganbaru allowed an agent edit inside the folder without asking",
+            ))
+        } else if tool_name == "WebSearch" {
+            Some((
+                "claude/organizational/web_search",
+                "Ganbaru allowed an agent web search without asking",
             ))
         } else {
             None

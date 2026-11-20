@@ -4,6 +4,7 @@ use crate::models::{
     ApprovalDecisionKind, ChatError, ChatErrorCode, ChatResult, InteractionMode,
     ProviderFolderCapability, ProviderOrganizationalScope, SafetyMode, TurnModeSnapshot,
 };
+use ganbaru_chat_contracts::web_fetch::fetchable_url;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
@@ -40,13 +41,11 @@ pub enum OpenCodePermissionAction {
 const ORGANIZATIONAL_READ_PERMISSIONS: &[&str] =
     &["read", "glob", "grep", "list", "todowrite", "question"];
 
-/// Native permissions no organizational run uses: paths outside the working directory, network
-/// tools, subagents, skills, language servers, and agent switches. Listed last so a later rule
+/// Native permissions no organizational run uses: paths outside the working directory, code
+/// search, subagents, skills, language servers, and agent switches. Listed last so a later rule
 /// never reopens them.
 const ORGANIZATIONAL_DENIED_PERMISSIONS: &[&str] = &[
     "external_directory",
-    "webfetch",
-    "websearch",
     "codesearch",
     "task",
     "skill",
@@ -62,8 +61,9 @@ const ORGANIZATIONAL_DENIED_PERMISSIONS: &[&str] = &[
 /// Every permission starts denied. Reads stay inside the working directory. In Build in a
 /// scope that edits, edits inside it run without asking, edits of hidden files and folders
 /// (provider configuration and the like) ask, repository metadata edits are denied, and the
-/// shell acts as [`organizational_shell_action`] decides in a scope that runs commands.
-/// Internal host tools ask unless the launch pre-approves them; OpenCode names an MCP tool
+/// shell acts as [`organizational_shell_action`] decides in a scope that runs commands. Web
+/// searches run without asking, and every web fetch asks, because OpenCode fetches from this
+/// device and can reach its local network. Internal host tools ask unless the launch pre-approves them; OpenCode names an MCP tool
 /// `<server>_<tool>`.
 pub fn organizational_rules(
     scope: ProviderOrganizationalScope,
@@ -108,6 +108,8 @@ pub fn organizational_rules(
     if let Some(action) = shell_action {
         rules.push(rule("bash", action));
     }
+    rules.push(rule("websearch", OpenCodePermissionAction::Allow));
+    rules.push(rule("webfetch", OpenCodePermissionAction::Ask));
     let server = opencode_tool_key_part(internal_server);
     rules.push(rule(&format!("{server}_*"), OpenCodePermissionAction::Ask));
     let claude_prefix = format!("mcp__{internal_server}__");
@@ -215,8 +217,8 @@ impl OpenCodeOrganizationalPolicy {
     }
 
     /// Whether a permission request may reach the person: an internal host tool, a shell
-    /// command in a scope that runs commands, or an edit of relative workspace paths outside
-    /// repository metadata in a scope and turn that edit.
+    /// command in a scope that runs commands, a web fetch of http or https URLs, or an edit of
+    /// relative workspace paths outside repository metadata in a scope and turn that edit.
     pub fn admits(&self, permission: &str, patterns: &[String], modes: TurnModeSnapshot) -> bool {
         if permission.len() > self.internal_prefix.len()
             && permission.starts_with(&self.internal_prefix)
@@ -225,6 +227,7 @@ impl OpenCodeOrganizationalPolicy {
         }
         match permission {
             "bash" => organizational_runs_commands(self.scope),
+            "webfetch" => !patterns.is_empty() && patterns.iter().all(|url| fetchable_url(url)),
             "edit" => {
                 organizational_edits(self.scope, modes)
                     && !patterns.is_empty()

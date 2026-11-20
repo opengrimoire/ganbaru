@@ -115,7 +115,7 @@ fn organizational_rules_start_denied_and_serialize_the_deny_action() {
 }
 
 #[test]
-fn read_scopes_deny_the_shell_edits_network_and_outside_paths_over_permissive_configuration() {
+fn read_scopes_deny_the_shell_edits_and_outside_paths_over_permissive_configuration() {
     for scope in [ProviderOrganizationalScope::Conversation, READ] {
         for safety_mode in [
             SafetyMode::AskForApproval,
@@ -136,8 +136,6 @@ fn read_scopes_deny_the_shell_edits_network_and_outside_paths_over_permissive_co
                 ("edit", "src/main.rs"),
                 ("bash", "touch marker"),
                 ("external_directory", "/home/someone/*"),
-                ("webfetch", "https://example.com"),
-                ("websearch", "*"),
                 ("codesearch", "*"),
                 ("task", "general"),
                 ("skill", "*"),
@@ -191,7 +189,7 @@ fn edit_scope_allows_workspace_edits_asks_for_hidden_paths_and_denies_metadata_a
             "{pattern}"
         );
     }
-    for permission in ["bash", "external_directory", "webfetch", "task"] {
+    for permission in ["bash", "external_directory", "task"] {
         assert_eq!(
             decide(&edit_rules, permission, "*"),
             OpenCodePermissionAction::Deny,
@@ -239,7 +237,7 @@ fn command_scopes_ask_for_every_command_and_require_ask_for_approval() {
                 OpenCodePermissionAction::Deny
             );
             assert_eq!(
-                decide(&rules, "webfetch", "*"),
+                decide(&rules, "codesearch", "*"),
                 OpenCodePermissionAction::Deny
             );
         }
@@ -294,6 +292,49 @@ fn internal_tools_ask_unless_pre_approved_and_other_mcp_tools_stay_denied() {
 }
 
 #[test]
+fn every_scope_allows_web_searches_and_asks_for_web_fetches_over_permissive_configuration() {
+    let patterns = |values: &[&str]| {
+        values
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+    };
+    for scope in ALL_SCOPES {
+        for interaction_mode in [InteractionMode::Build, InteractionMode::Plan] {
+            let rules = with_configuration(rules(
+                scope,
+                modes(SafetyMode::AskForApproval, interaction_mode),
+            ));
+            assert_eq!(
+                decide(&rules, "websearch", "*"),
+                OpenCodePermissionAction::Allow,
+                "{scope:?} {interaction_mode:?}"
+            );
+            for url in ["https://example.com", "http://192.168.1.1/", "*"] {
+                assert_eq!(
+                    decide(&rules, "webfetch", url),
+                    OpenCodePermissionAction::Ask,
+                    "{scope:?} {interaction_mode:?} {url}"
+                );
+            }
+        }
+        let policy = OpenCodeOrganizationalPolicy::new(scope, SERVER);
+        assert!(policy.admits("webfetch", &patterns(&["https://example.com/a"]), build()));
+        for refused in [
+            vec![],
+            vec!["file:///etc/passwd"],
+            vec!["https://example.com", "ftp://example.com"],
+            vec!["https://example.com/\nnext"],
+        ] {
+            assert!(
+                !policy.admits("webfetch", &patterns(&refused), build()),
+                "{scope:?} {refused:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn organizational_policy_admits_only_requests_the_scope_needs() {
     let patterns = |values: &[&str]| {
         values
@@ -336,7 +377,6 @@ fn organizational_policy_admits_only_requests_the_scope_needs() {
     );
     for permission in [
         "external_directory",
-        "webfetch",
         "task",
         "read",
         "other_tool",
@@ -550,7 +590,7 @@ fn confined_commands_run_unattended_in_self_approving_modes() {
             OpenCodePermissionAction::Ask,
             "hidden edits keep asking"
         );
-        for permission in ["external_directory", "webfetch", "task"] {
+        for permission in ["external_directory", "task"] {
             assert_eq!(
                 decide(&full, permission, "*"),
                 OpenCodePermissionAction::Deny

@@ -13,6 +13,7 @@ use super::protocol::{
 use super::transport::{ClaudeConnectionKill, ClaudeJsonlClient, ClaudeTransportFailure};
 use crate::DriverOperationContext;
 use crate::models::{ChatResult, ProviderOrganizationalScope, TurnModeSnapshot};
+use ganbaru_chat_contracts::web_fetch::fetchable_url;
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -359,17 +360,6 @@ const OUTSIDE_SCOPE_DENIAL: &str =
 /// Message a denied web fetch returns to the CLI.
 const WEB_FETCH_DENIAL: &str =
     "This agent run can fetch only http or https URLs of at most 2048 bytes.";
-
-/// Largest URL a web fetch may name, so the approval shows it whole.
-const MAX_WEB_FETCH_URL_BYTES: usize = 2048;
-
-/// Whether `url` is a short http or https URL a person can read whole before allowing it.
-fn fetchable_url(url: &str) -> bool {
-    let lower = url.trim_start().to_ascii_lowercase();
-    url.len() <= MAX_WEB_FETCH_URL_BYTES
-        && (lower.starts_with("https://") || lower.starts_with("http://"))
-        && !url.chars().any(char::is_control)
-}
 
 /// Permission routing of an organizational session, as defense in depth behind the launch
 /// surface: tools the scope does not allow and file paths outside the working directory are

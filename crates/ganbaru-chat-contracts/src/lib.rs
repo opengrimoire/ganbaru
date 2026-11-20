@@ -6,6 +6,7 @@ pub mod model_recommendation;
 pub mod models;
 pub mod protected_paths;
 pub mod secret_names;
+pub mod web_fetch;
 
 #[cfg(test)]
 mod tests {

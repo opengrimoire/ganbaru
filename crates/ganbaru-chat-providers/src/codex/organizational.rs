@@ -215,6 +215,11 @@ pub(super) fn sandbox_unavailable_error() -> ChatError {
     )
 }
 
+/// Web search mode of every organizational run. OpenAI runs the search from its own index, so
+/// a search never reaches the device's network and never opens a live page, and it needs no
+/// approval at any access level.
+pub(super) const ORGANIZATIONAL_WEB_SEARCH: &str = "cached";
+
 pub(super) fn append_organizational_base_arguments(
     arguments: &mut Vec<String>,
     access: CodexOrganizationalAccess,
@@ -226,7 +231,10 @@ pub(super) fn append_organizational_base_arguments(
     );
     push_config(arguments, format!("default_permissions=\"{profile}\""));
     push_config(arguments, "allow_login_shell=false".to_string());
-    push_config(arguments, "web_search=\"disabled\"".to_string());
+    push_config(
+        arguments,
+        format!("web_search=\"{ORGANIZATIONAL_WEB_SEARCH}\""),
+    );
     // `notify` runs a configured program outside the sandbox with each turn's content.
     push_config(arguments, "notify=[]".to_string());
     for exporter in DISABLED_TELEMETRY_EXPORTERS {
@@ -311,7 +319,7 @@ pub(super) fn verify_organizational_effective_config(
     if config.get("default_permissions").and_then(Value::as_str)
         != Some(access.permission_profile())
         || config.get("allow_login_shell").and_then(Value::as_bool) != Some(false)
-        || config.get("web_search").and_then(Value::as_str) != Some("disabled")
+        || config.get("web_search").and_then(Value::as_str) != Some(ORGANIZATIONAL_WEB_SEARCH)
     {
         return Err(organizational_configuration_error("hosted tool boundary"));
     }

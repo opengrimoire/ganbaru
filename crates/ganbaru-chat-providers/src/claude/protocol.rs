@@ -746,7 +746,8 @@ pub fn organizational_permission_error() -> ChatError {
 /// Every launch setting joins this object, because the CLI reads a single `--settings` value.
 /// A configured `--settings` argument stays refused for every run. An organizational launch
 /// confines the file tools to the working directory and sends every web search and fetch to
-/// Ganbaru as a permission request, which auto mode would otherwise answer itself; a scope that
+/// Ganbaru as a permission request, which auto mode would otherwise answer itself even for
+/// loopback and private network addresses that deny rules cannot match by range; a scope that
 /// loads the shell sends every command the same way: the ask rule outranks the read-only
 /// commands manual mode runs unasked, and plan mode keeps its classifier from approving them.
 /// Because an organizational launch loads no settings files, it also carries the allowlisted

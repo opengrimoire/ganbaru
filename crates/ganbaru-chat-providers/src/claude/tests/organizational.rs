@@ -1169,47 +1169,51 @@ fn confined_commands_run_unattended_in_self_approving_build_turns() {
 }
 
 #[test]
-fn web_search_and_fetch_always_reach_the_person_with_the_query_or_url() {
+fn web_searches_run_unattended_and_fetches_reach_the_person_with_the_url() {
     let root = TestDirectory::new("scope-route-web");
     let scopes = NON_COMMAND_SCOPES.into_iter().chain(COMMAND_SCOPES);
     for scope in scopes {
         let policy = policy(scope, root.path()).with_confined_commands(true);
-        for (tool, input, subject) in [
-            (
-                "WebSearch",
-                serde_json::json!({ "query": "rust release", "mode": "standard" }),
-                "rust release",
-            ),
-            (
-                "WebFetch",
-                serde_json::json!({ "url": "https://docs.python.org/3/", "prompt": "version" }),
-                "https://docs.python.org/3/",
-            ),
+        for turn in [
+            ask(InteractionMode::Build),
+            ask(InteractionMode::Plan),
+            modes(SafetyMode::ApproveForMe, InteractionMode::Build),
+            modes(SafetyMode::FullAccess, InteractionMode::Build),
+            modes(SafetyMode::ApproveForMe, InteractionMode::Plan),
         ] {
-            for turn in [
-                ask(InteractionMode::Build),
-                modes(SafetyMode::ApproveForMe, InteractionMode::Build),
-                modes(SafetyMode::FullAccess, InteractionMode::Build),
-                modes(SafetyMode::ApproveForMe, InteractionMode::Plan),
-            ] {
-                let request = can_use_tool(tool, input.clone());
-                let routed = crate::claude::session::route_scoped_control_request(
+            let route = |tool: &str, input: serde_json::Value| {
+                crate::claude::session::route_scoped_control_request(
                     "ctrl-web",
-                    request.as_object().unwrap(),
+                    can_use_tool(tool, input).as_object().unwrap(),
                     Some(&policy),
                     turn,
                 )
-                .unwrap();
-                assert!(
-                    routed.immediate_response.is_none(),
-                    "{scope:?} {tool} {turn:?}"
+                .unwrap()
+            };
+            let search = route(
+                "WebSearch",
+                serde_json::json!({ "query": "rust release", "mode": "standard" }),
+            );
+            let crate::events::CanonicalEvent::Unknown(event) = search.event else {
+                panic!("a web search does not reach the person in {scope:?} {turn:?}");
+            };
+            assert_eq!(event.source_type, "claude/organizational/web_search");
+            assert_eq!(
+                search.immediate_response.unwrap()["response"]["response"]["behavior"],
+                "allow"
+            );
+            for url in ["https://docs.python.org/3/", "http://192.168.1.1/"] {
+                let fetch = route(
+                    "WebFetch",
+                    serde_json::json!({ "url": url, "prompt": "version" }),
                 );
-                let crate::events::CanonicalEvent::RequestOpened(opened) = routed.event else {
-                    panic!("{tool} reaches the person in {scope:?} {turn:?}");
+                assert!(fetch.immediate_response.is_none(), "{scope:?} {turn:?}");
+                let crate::events::CanonicalEvent::RequestOpened(opened) = fetch.event else {
+                    panic!("a web fetch reaches the person in {scope:?} {turn:?}");
                 };
                 assert_eq!(
                     opened.subject.map(|subject| subject.text).as_deref(),
-                    Some(subject)
+                    Some(url)
                 );
                 assert!(opened.session_grants.is_empty());
             }

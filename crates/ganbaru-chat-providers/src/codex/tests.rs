@@ -247,7 +247,7 @@ fn organizational_config(access: CodexOrganizationalAccess) -> Value {
     let mut config = json!({
         "default_permissions": profile,
         "allow_login_shell": false,
-        "web_search": "disabled",
+        "web_search": "cached",
         "notify": [],
         "otel": {
             "exporter": "none",

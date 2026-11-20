@@ -285,7 +285,7 @@ fn organizational_launch_arguments_follow_the_scope_access() {
         assert!(has(arguments, "features.view_image=false"));
         assert!(has(arguments, "features.code_mode.enabled=false"));
         assert!(has(arguments, "features.multi_agent=false"));
-        assert!(has(arguments, "web_search=\"disabled\""));
+        assert!(has(arguments, "web_search=\"cached\""));
         assert!(has(arguments, "notify=[]"));
         assert!(has(arguments, "otel.exporter=\"none\""));
         assert!(has(arguments, "otel.trace_exporter=\"none\""));
@@ -422,6 +422,20 @@ fn organizational_config_requires_notify_and_telemetry_to_read_back_off() {
         let mut no_otel = organizational_config(access);
         no_otel.as_object_mut().unwrap().remove("otel");
         assert!(verify_config(no_otel, access).is_err());
+    }
+}
+
+#[test]
+fn organizational_config_requires_cached_web_search() {
+    for access in ALL_ACCESSES {
+        for mode in ["live", "indexed", "disabled"] {
+            let mut config = organizational_config(access);
+            config["web_search"] = json!(mode);
+            assert!(verify_config(config, access).is_err(), "{mode}");
+        }
+        let mut absent = organizational_config(access);
+        absent.as_object_mut().unwrap().remove("web_search");
+        assert!(verify_config(absent, access).is_err());
     }
 }
 

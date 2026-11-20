@@ -43,6 +43,14 @@ describe("Anchored floating panel geometry", () => {
     expect(style).toContain("max-height:90px");
   });
 
+  it("opens above when preferred, even with room below, and flips below only when above is tighter", () => {
+    const middle = { ...ANCHOR, contentHeight: 120, preferredSide: "above" as const,
+      triggerRect: { top: 300, right: 480, bottom: 332, left: 448 } };
+    expect(anchoredPanelStyle(middle)).toContain("top:176px");
+    const nearTop = { ...middle, triggerRect: { top: 60, right: 480, bottom: 92, left: 448 } };
+    expect(anchoredPanelStyle(nearTop)).toContain("top:96px");
+  });
+
   it("positions short content above a low anchor while retaining room for natural sizing", () => {
     const style = anchoredPanelStyle({ ...ANCHOR, viewportHeight: 230, contentHeight: 82.75,
       triggerRect: { top: 170, right: 480, bottom: 198, left: 448 } });

@@ -698,11 +698,15 @@
       return;
     }
     const request = ++pickerRequest;
+    // While the query is being refined, the current results stay until the new ones replace them, so typing never blanks the list.
+    const refining = pickerOpen && pickerTrigger?.kind === trigger.kind;
     pickerTrigger = trigger;
     pickerOpen = true;
-    pickerIndex = 0;
-    pickerLoading = true;
-    pickerEntries = [];
+    if (!refining) {
+      pickerIndex = 0;
+      pickerLoading = true;
+      pickerEntries = [];
+    }
     try {
       const entries = trigger.kind === "channel"
         ? await channelCandidates(trigger.query)

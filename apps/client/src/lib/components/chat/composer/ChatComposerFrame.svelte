@@ -299,6 +299,8 @@
   .composer-editor :global(code) { border-radius: 0.25rem; background: color-mix(in srgb, var(--muted) 70%, transparent); padding-inline: 0.15rem; font-family: "SF Mono", "SFMono-Regular", Consolas, monospace; font-size: 0.92em; }
   .composer-editor :global([data-chat-composer-line]) { display: block; min-height: var(--chat-conversation-line-height, calc(1.3125rem * var(--type-scale))); line-height: inherit; }
   .composer-toolbar { display: grid; min-height: 2.6rem; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0.5rem; padding: 0 0.75rem 0.5rem; }
+  /* Touch controls are taller than the toolbar row, so the expanded toolbar keeps a gap under the last line of text. */
+  @media (pointer: coarse) { .chat-composer:not(.collapsed) .composer-toolbar { padding-top: 0.5rem; } }
   .toolbar-left, .toolbar-right { display: flex; min-width: 0; align-items: center; gap: 0.3rem; }
   .toolbar-left { overflow: hidden; }
   /* Open menus anchored in the toolbar must not be clipped by its overflow. */

@@ -4,7 +4,7 @@
   import Zap from "@lucide/svelte/icons/zap";
   import * as chatApi from "$lib/api/chat";
   import type { ChatInteractionStateRead, ChatParticipantRead, ChatThreadId } from "$lib/chat/contracts";
-  import { composerMeterRead } from "$lib/chat/composer/composer-meter";
+  import { composerMeterRead, type ComposerUsage } from "$lib/chat/composer/composer-meter";
   import { formatNumber } from "$lib/i18n/formatters";
   import { chatParticipantDisplayName } from "$lib/chat/agents/participant-display";
   import { agentCardStatus } from "$lib/chat/agents/agent-card-status";
@@ -34,8 +34,14 @@
     size = 34,
     shape = "default",
     usageThreadId = null,
+    usage = null,
   }: {
     participant?: ChatParticipantRead | null;
+    /**
+     * Context usage the card shows when it reads none from a provider thread, such as a run a phone reads from the
+     * desktop that executes it.
+     */
+    usage?: ComposerUsage | null;
     model?: ChatModelParticipant | null;
     presentation: IdentityPresentation;
     triggerLabel?: string | null;
@@ -125,7 +131,11 @@
   /** Whether a hover preview is counting down, so context usage can load before the card opens. */
   let previewPending = $state(false);
   const usageWanted = $derived(open || previewPending);
-  const usageMeter = $derived(usageState ? composerMeterRead(usageState.usage, usageState.rateLimitStatus).meter : null);
+  /** Usage given with the card, shown only when no provider thread is read. */
+  const givenUsage = $derived(usageThreadId ? null : usage);
+  const usageMeter = $derived(usageState
+    ? composerMeterRead(usageState.usage, usageState.rateLimitStatus).meter
+    : givenUsage ? composerMeterRead(givenUsage, null).meter : null);
 
   $effect(() => {
     const threadId = usageWanted ? usageThreadId : null;
@@ -404,12 +414,12 @@
       {:else}
         <p class="identity-description">{t("chat.organization.collaboratorIdentity")}</p>
       {/if}
-      {#if usageThreadId}
-        <div class="identity-context" data-identity-context aria-busy={!usageState && !usageReadFailed}>
+      {#if usageThreadId || givenUsage}
+        <div class="identity-context" data-identity-context aria-busy={(Boolean(usageThreadId) && !usageState && !usageReadFailed) || undefined}>
           <span class="identity-settings-label">{t("chat.composer.contextWindow")}</span>
-          {#if usageState}
+          {#if usageState || givenUsage}
             {#if usageMeter}<span>{contextUsageLabel()}</span>{:else}<small>{contextUsageLabel()}</small>{/if}
-            {#if usageState.automaticCompactionReported || usageMeter?.warning}<small>{t("chat.composer.contextCompaction")}</small>{/if}
+            {#if usageState?.automaticCompactionReported || usageMeter?.warning}<small>{t("chat.composer.contextCompaction")}</small>{/if}
           {:else if usageReadFailed}<small>{t("chat.composer.contextUnavailable")}</small>
           {:else}<span class="identity-context-pending">{t("common.loading")}</span>{/if}
         </div>

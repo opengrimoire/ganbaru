@@ -123,6 +123,8 @@
   const timelineItems = $derived(timelinePage ? timelinePage.items : chat.timelineItems);
   const timelineLoading = $derived(timelinePage ? false : chat.timelineLoading);
   const pageTurns = $derived(timelinePages.flatMap((page) => page.turns));
+  /** Context usage of each turn, which a read-only timeline gives its identity cards in place of a provider thread read. */
+  const turnUsage = $derived(new Map(pageTurns.map((turn) => [turn.turnId as string, turn.usage])));
   const projection = $derived(projectTimelineReadModel(timelineItems, pageTurns));
   const selectedThread = $derived(executionThread ?? chat.selectedThread);
   const timelineIdentity = $derived(chat.selectedChannelId ?? selectedThread?.id ?? null);
@@ -1040,8 +1042,8 @@
               {@const identity = modelIdentityForRow(row)}
               {@const actionMessage = row.turnId ? assistantActionMessages.get(row.turnId) : undefined}
               <div class="chat-participant-row">
-                <ChatIdentityButton participant={agent} model={identity.model} presentation="avatar" size={embedded ? 34 : 36} currentResponseSettings={embedded} usageThreadId={embedded && !readOnly ? selectedThread?.id ?? null : null} />
-                <div class="chat-participant-content"><div class="chat-participant-header"><strong><ChatIdentityButton participant={agent} model={identity.model} presentation="name" triggerLabel={agent?.displayName ?? identity.model.displayName} currentResponseSettings={embedded} usageThreadId={embedded && !readOnly ? selectedThread?.id ?? null : null} /></strong><span>{timestampLabel(row.createdAt)}</span></div>{#if actionMessage && !readOnly}<ChatMessageActionToolbar target={executionMessageActionTarget(actionMessage)} visible={hoveredActionTurnId === row.turnId || heldMessageActionsKey() === touchActionsKey(row)} onError={reportError} />{/if}{@render modelRowContent(row)}</div>
+                <ChatIdentityButton participant={agent} model={identity.model} presentation="avatar" size={embedded ? 34 : 36} currentResponseSettings={embedded} usageThreadId={embedded && !readOnly ? selectedThread?.id ?? null : null} usage={readOnly && row.turnId ? turnUsage.get(row.turnId) ?? null : null} />
+                <div class="chat-participant-content"><div class="chat-participant-header"><strong><ChatIdentityButton participant={agent} model={identity.model} presentation="name" triggerLabel={agent?.displayName ?? identity.model.displayName} currentResponseSettings={embedded} usageThreadId={embedded && !readOnly ? selectedThread?.id ?? null : null} usage={readOnly && row.turnId ? turnUsage.get(row.turnId) ?? null : null} /></strong><span>{timestampLabel(row.createdAt)}</span></div>{#if actionMessage && !readOnly}<ChatMessageActionToolbar target={executionMessageActionTarget(actionMessage)} visible={hoveredActionTurnId === row.turnId || heldMessageActionsKey() === touchActionsKey(row)} onError={reportError} />{/if}{@render modelRowContent(row)}</div>
               </div>
             {:else}
               <div class="chat-participant-followup">{@render modelRowContent(row)}</div>
@@ -1051,8 +1053,8 @@
               {@const identity = modelIdentityForRow(row)}
               {@const actionMessage = row.turnId ? assistantActionMessages.get(row.turnId) : undefined}
               <div class="chat-participant-row">
-                <ChatIdentityButton participant={agent} model={identity.model} presentation="avatar" size={embedded ? 34 : 36} currentResponseSettings={embedded} usageThreadId={embedded && !readOnly ? selectedThread?.id ?? null : null} />
-                <div class="chat-participant-content"><div class="chat-participant-header"><strong><ChatIdentityButton participant={agent} model={identity.model} presentation="name" triggerLabel={agent?.displayName ?? identity.model.displayName} currentResponseSettings={embedded} usageThreadId={embedded && !readOnly ? selectedThread?.id ?? null : null} /></strong><span>{timestampLabel(row.createdAt)}</span></div>{#if actionMessage && !readOnly}<ChatMessageActionToolbar target={executionMessageActionTarget(actionMessage)} visible={hoveredActionTurnId === row.turnId || heldMessageActionsKey() === touchActionsKey(row)} onError={reportError} />{/if}{@render modelRowContent(row)}</div>
+                <ChatIdentityButton participant={agent} model={identity.model} presentation="avatar" size={embedded ? 34 : 36} currentResponseSettings={embedded} usageThreadId={embedded && !readOnly ? selectedThread?.id ?? null : null} usage={readOnly && row.turnId ? turnUsage.get(row.turnId) ?? null : null} />
+                <div class="chat-participant-content"><div class="chat-participant-header"><strong><ChatIdentityButton participant={agent} model={identity.model} presentation="name" triggerLabel={agent?.displayName ?? identity.model.displayName} currentResponseSettings={embedded} usageThreadId={embedded && !readOnly ? selectedThread?.id ?? null : null} usage={readOnly && row.turnId ? turnUsage.get(row.turnId) ?? null : null} /></strong><span>{timestampLabel(row.createdAt)}</span></div>{#if actionMessage && !readOnly}<ChatMessageActionToolbar target={executionMessageActionTarget(actionMessage)} visible={hoveredActionTurnId === row.turnId || heldMessageActionsKey() === touchActionsKey(row)} onError={reportError} />{/if}{@render modelRowContent(row)}</div>
               </div>
             {:else}
               <div class="chat-participant-followup">{@render modelRowContent(row)}</div>

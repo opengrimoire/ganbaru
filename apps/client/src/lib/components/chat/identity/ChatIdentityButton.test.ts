@@ -210,6 +210,28 @@ describe("ChatIdentityButton", () => {
     expect(context?.textContent).not.toContain("left");
   });
 
+  it("shows the context usage it is given without reading a provider thread", async () => {
+    const read = vi.spyOn(chatApi, "readChatInteractionState");
+    chat.agents = [agent];
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatIdentityButton, {
+      target,
+      props: {
+        participant: agentParticipant,
+        presentation: "avatar",
+        usage: { contextTokens: 100_000, contextLimit: 258_000 },
+      },
+    });
+
+    target.querySelector<HTMLButtonElement>(".identity-trigger")?.click();
+    await tick();
+    const context = document.body.querySelector<HTMLElement>("[data-identity-context]");
+    expect(context?.textContent).toContain("39% used (100,000 of 258K tokens)");
+    expect(context?.getAttribute("aria-busy")).toBeNull();
+    expect(read).not.toHaveBeenCalled();
+  });
+
   it("says context usage is unavailable when the usage read fails", async () => {
     const read = vi.spyOn(chatApi, "readChatInteractionState").mockRejectedValue(new Error("offline"));
     chat.agents = [agent];

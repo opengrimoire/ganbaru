@@ -82,7 +82,7 @@ describe("ChatRequestPanel", () => {
     const buttons = [...body.querySelectorAll<HTMLButtonElement>(".request-actions button")];
     expect(buttons.map((button) => button.textContent)).toEqual(["Allow once", en.chat.composer.allowAlways, "Deny"]);
     const remember = body.querySelector<HTMLButtonElement>('[data-testid="approval-remember"]');
-    expect(remember?.title).toBe("Always allow pages from docs.example.org in this channel");
+    expect(document.getElementById(remember?.getAttribute("aria-describedby") ?? "")?.textContent).toBe("Always allow pages from docs.example.org in this channel");
     remember?.click();
     await tick();
     expect(resolve).toHaveBeenCalledWith({ kind: "allow_once", providerOptionId: "allow", updatedToolInput: null }, true);
@@ -93,6 +93,7 @@ describe("ChatRequestPanel", () => {
     const body = setup(approval(undefined, denyOnly, { kind: "tool", key: "WebFetch" }));
     await tick();
     expect(body.querySelector('[data-testid="approval-remember"]')).toBeNull();
+    expect(body.querySelector('[data-testid="approval-remember-hint"]')).toBeNull();
   });
 
   it("shows the message from a structured approval error", async () => {

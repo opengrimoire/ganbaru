@@ -308,7 +308,8 @@
       <div class="session-grants" data-testid="session-grants"><small>{t("chat.composer.sessionGrantsTitle")}</small><ul>{#each sessionGrants as grant}<li>{grantLabel(grant)}</li>{/each}</ul></div>
     {/if}
     {#if approvalDisplay.payload}<details><summary>{t("chat.composer.details")}<ChevronDown size={13} /></summary><pre>{approvalDisplay.payload}</pre></details>{/if}
-    <div class="request-actions">{#each approvalChoices as choice, index}<button type="button" disabled={resolving} class:danger={choice.decisionKind === "allow_session"} title={choice.description ?? undefined} onclick={() => void resolveApproval(index)}>{choice.label}</button>{#if choice.decisionKind === "allow_once" && rememberDescription}<button type="button" disabled={resolving} title={rememberDescription} data-testid="approval-remember" onclick={() => void resolveApproval(index, true)}>{t("chat.composer.allowAlways")}</button>{/if}{/each}</div>
+    {#if rememberDescription}<p id={`remember-hint-${pending.id}`} class="remember-hint" data-testid="approval-remember-hint">{rememberDescription}</p>{/if}
+    <div class="request-actions">{#each approvalChoices as choice, index}<button type="button" disabled={resolving} class:danger={choice.decisionKind === "allow_session"} title={choice.description ?? undefined} onclick={() => void resolveApproval(index)}>{choice.label}</button>{#if choice.decisionKind === "allow_once" && rememberDescription}<button type="button" disabled={resolving} aria-describedby={`remember-hint-${pending.id}`} data-testid="approval-remember" onclick={() => void resolveApproval(index, true)}>{t("chat.composer.allowAlways")}</button>{/if}{/each}</div>
   {:else if question}
     <header><div><strong>{t("chat.composer.question")}</strong><p>{t("chat.composer.questionProgress", formatNumber(localization.locale, step + 1), formatNumber(localization.locale, questions.length))}</p></div></header>
     {#if question.header}<small>{question.header}</small>{/if}<p class="question-text">{question.question}</p>
@@ -341,6 +342,7 @@
   .session-grants { display: grid; gap: 0.2rem; }
   .session-grants small { color: var(--muted-foreground); font-size: calc(0.666667rem * var(--type-scale)); }
   .session-grants ul { list-style: disc; padding-left: 1.1rem; font-size: calc(0.7rem * var(--type-scale)); overflow-wrap: anywhere; }
+  .remember-hint { color: var(--muted-foreground); font-size: calc(0.7rem * var(--type-scale)); overflow-wrap: anywhere; }
   .request-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.4rem; }
   .request-actions button { min-height: 2rem; border: 1px solid var(--border); border-radius: 0.35rem; padding: 0.3rem 0.6rem; font-size: calc(0.733333rem * var(--type-scale)); }
   .request-actions button:hover { background: var(--accent); }

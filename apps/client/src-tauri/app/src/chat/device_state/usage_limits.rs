@@ -46,7 +46,9 @@ pub(super) fn carry_usage_numbers(
             carried: false,
         };
     };
-    let read = next_types.values().any(|entry| utilization(entry).is_some());
+    let read = next_types
+        .values()
+        .any(|entry| utilization(entry).is_some());
     let Some(previous_types) = previous.and_then(limit_types) else {
         return UsageNumbers {
             read,

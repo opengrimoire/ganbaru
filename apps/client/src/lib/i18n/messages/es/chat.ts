@@ -237,7 +237,7 @@ export const chat = {
     revokePushApproval: (folder: string, branch: string) => `Volver a preguntar antes de hacer push de ${folder} a ${branch}`,
     revokePushApprovalFailed: "No se pudo revocar la aprobación de push",
     rememberedApprovals: "Aprobaciones recordadas",
-    rememberedApprovalsHint: "Las solicitudes de agentes que coinciden con una se ejecutan sin preguntar hasta que la revoques o bajes el acceso del canal.",
+    rememberedApprovalsHint: "Las solicitudes de agentes que coinciden se ejecutan sin preguntar hasta que las revoques o bajes el acceso del canal.",
     revokeRememberedApproval: (agent: string, subject: string) => `Volver a preguntar antes de que ${agent} use ${subject}`,
     revokeRememberedApprovalFailed: "No se pudo revocar la aprobación recordada",
     loadFailed: "No se pudo cargar la configuración de agentes",
@@ -728,7 +728,7 @@ export const chat = {
     sessionGrantAcceptEdits: "Aceptar ediciones de archivos sin preguntar",
     allowAlways: "Permitir y no volver a preguntar",
     rememberOrigin: (host: string) => `Permitir siempre las páginas de ${host} en este canal`,
-    rememberCommand: (command: string) => `Permitir siempre \`${command}\` en este canal`,
+    rememberCommand: (command: string) => `Permitir siempre «${command}» en este canal`,
     rememberTool: "Permitir siempre esta herramienta en este canal",
     agentCommands: {
       schedule: "Programar",

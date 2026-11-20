@@ -21,7 +21,7 @@ describe("remembered approval presentation", () => {
   it("describes each rule in one sentence", () => {
     expect(rememberedApprovalDescription(t, { kind: "url_origin", key: "https://docs.example.org" }))
       .toBe("Always allow pages from docs.example.org in this channel");
-    expect(rememberedApprovalDescription(t, { kind: "command", key: "pnpm test" })).toBe("Always allow `pnpm test` in this channel");
+    expect(rememberedApprovalDescription(t, { kind: "command", key: "pnpm test" })).toBe("Always allow “pnpm test” in this channel");
     expect(rememberedApprovalDescription(t, { kind: "tool", key: "WebFetch" })).toBe("Always allow this tool in this channel");
     expect(rememberedApprovalDescription(tEs, { kind: "url_origin", key: "https://docs.example.org" }))
       .toBe("Permitir siempre las páginas de docs.example.org en este canal");

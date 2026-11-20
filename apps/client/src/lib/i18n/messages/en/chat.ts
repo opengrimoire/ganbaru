@@ -234,7 +234,7 @@ export const chat = {
     revokePushApproval: (folder: string, branch: string) => `Ask again before pushing ${folder} to ${branch}`,
     revokePushApprovalFailed: "The push approval could not be revoked",
     rememberedApprovals: "Remembered approvals",
-    rememberedApprovalsHint: "Agent requests that match one run without asking until you revoke it or lower the channel's access.",
+    rememberedApprovalsHint: "Matching agent requests run without asking until you revoke them or lower the channel's access.",
     revokeRememberedApproval: (agent: string, subject: string) => `Ask again before ${agent} uses ${subject}`,
     revokeRememberedApprovalFailed: "The remembered approval could not be revoked",
     loadFailed: "Agent settings could not be loaded",
@@ -725,7 +725,7 @@ export const chat = {
     sessionGrantAcceptEdits: "Accepting file edits without asking",
     allowAlways: "Allow and don't ask again",
     rememberOrigin: (host: string) => `Always allow pages from ${host} in this channel`,
-    rememberCommand: (command: string) => `Always allow \`${command}\` in this channel`,
+    rememberCommand: (command: string) => `Always allow “${command}” in this channel`,
     rememberTool: "Always allow this tool in this channel",
     agentCommands: {
       schedule: "Schedule",

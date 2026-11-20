@@ -2061,7 +2061,7 @@
   .scheduled-summary button { min-height:1.75rem; border-radius:0.4rem; padding:0.2rem 0.45rem; font-size:calc(0.68rem * var(--type-scale)); font-weight:500; }
   .scheduled-summary { background:color-mix(in srgb,var(--accent) 58%,var(--cal-bg)); color:var(--muted-foreground); }
   .scheduled-summary-anchor,.menu-anchor { position:relative; }
-  .organizational-composer { --composer-button-size:1.9rem; --composer-control-size:var(--composer-button-size); position:relative; width:100%; }
+  .organizational-composer { --composer-button-size:1.9rem; --composer-send-visual-size:2.2rem; --composer-control-size:var(--composer-button-size); position:relative; width:100%; }
   .reference-picker { z-index:100; display:flex; flex-direction:column; overflow:hidden; }
   .reference-picker-scroll { min-height:0; flex:1 1 auto; overflow-y:auto; }
   .reference-picker-scroll > p { padding:0.5rem; color:var(--muted-foreground); font-size:var(--panel-detail-font-size); }
@@ -2077,6 +2077,6 @@
   .composer-blocker { display:flex; gap:0.45rem; margin:0 0.65rem 0.5rem; border-radius:0.5rem; background:color-mix(in srgb,var(--destructive) 8%,transparent); padding:0.45rem 0.55rem; color:var(--destructive); outline:none; }.composer-blocker:focus-visible { outline:2px solid var(--ring); }.composer-blocker > div { display:grid; gap:0.2rem; }.composer-blocker p { font-size:calc(0.68rem * var(--type-scale)); }.composer-blocker span { display:flex; flex-wrap:wrap; gap:0.25rem; }.composer-blocker button { min-height:1.75rem; border-radius:0.35rem; padding:0.2rem 0.4rem; font-size:calc(0.62rem * var(--type-scale)); font-weight:600; }.composer-blocker button:hover { background:color-mix(in srgb,var(--destructive) 10%,transparent); }
   .composer-stack :global(.composer-error) { padding:0 0.5rem 0.5rem; font-size:calc(0.7rem * var(--type-scale)); }
   .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; }
-  @media (pointer:coarse) { .tool-button,.send-button { min-width:2.75rem; min-height:2.75rem; } .organizational-composer { --composer-control-size:2.75rem; } }
+  @media (pointer:coarse) { .tool-button,.send-button { min-width:2.75rem; min-height:2.75rem; } .organizational-composer { --composer-control-size:2.75rem; } .send-button { padding:calc((2.75rem - var(--composer-send-visual-size)) / 2); background-clip:content-box; box-shadow:none; filter:drop-shadow(0 2px 4px color-mix(in srgb,var(--primary) 22%,transparent)); } }
   @media (prefers-reduced-motion:reduce) { .send-button { transition:none; } }
 </style>

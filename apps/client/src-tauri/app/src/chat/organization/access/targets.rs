@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 /// environments of each project folder, with the primary folder's current folder as the
 /// default, and the agent's private scratch in the reply thread when the access allows scratch.
 /// It lists nothing when the agent's provider cannot work on this device, since work posted
-/// here then waits for a person to start it on a device that can run it.
+/// here then runs on a linked desktop that resolves its own target.
 #[tauri::command]
 pub async fn chat_list_assignment_targets(
     app: tauri::AppHandle,

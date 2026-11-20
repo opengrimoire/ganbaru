@@ -82,7 +82,7 @@ Each agent runs its own model: a line agent the newest model of its line, any ot
 - **First use:** the person installs Claude Code. Settings > Agents shows Claude as ready with `@Fable`, `@Opus`, and each Claude model, adding `@Opus` to `#general` from the channel's member settings puts it in that channel's mention menu and lets it edit the project folder and ask before commands.
 - **A brainstorming channel:** the person sets the channel's access to Talk only. Every agent in it replies without touching files.
 - **A trusted project on Linux:** the person sets the project's access to Work on their own. Every channel of the project inherits it unless it overrides.
-- **A second device:** the laptop shows the same agents and channel settings. Work mentioned there runs on the laptop when the provider is installed there; otherwise it runs on the linked desktop that last ran that agent.
+- **A second device:** the laptop shows the same agents and channel settings. Work mentioned there runs on the laptop, which offers setup when the provider is not installed there. Work mentioned from a phone runs on the linked desktop that last ran that agent, or on the only linked desktop.
 
 ## Data consequences
 

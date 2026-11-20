@@ -295,6 +295,10 @@ async fn last_linked_executor(
          FROM chat_work_assignments assignment
          JOIN chat_reply_threads thread ON thread.id = assignment.reply_thread_id
          WHERE assignment.agent_id = ?1
+           AND assignment.state IN (
+             'working', 'waiting_for_answer', 'waiting_for_approval', 'ready_for_review',
+             'completed'
+           )
            AND assignment.executing_device_id IN (SELECT value FROM json_each(?2))
            AND assignment.executing_device_id <> ?3
          ORDER BY thread.conversation_id = (

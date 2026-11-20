@@ -275,7 +275,7 @@
 
   function agentStatus(): string {
     if (participant?.archivedAt) return t("chat.organization.archivedParticipant");
-    if (agent && agentNeedsSetupHere(agent.configurationState)) return t("chat.organization.needsSetup");
+    if (agentNeedsSetupHere(agent?.configurationState ?? "provider_unavailable")) return t("chat.organization.needsSetup");
     return t("chat.organization.availableParticipant");
   }
 

@@ -61,6 +61,7 @@ import {
   type ChatMessageReaction,
 } from "$lib/chat/timeline/organizational-message-model";
 import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/agents/participant-display";
+import { providerBecameReady, readyProviderInstances } from "$lib/chat/agents/agent-setup";
 import { getProjectsStore, type ProjectsStore } from "$lib/stores/projects.svelte";
 import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
 import { preferredProjectWorkingFolder } from "$lib/chat/workspace/working-folder-selection";
@@ -123,8 +124,30 @@ class ChatSharedState {
     onSettingsChanged: () => {
       for (const store of paneStores.all()) store.scheduleComposerDefaults();
       this.refreshAgentsForNewProviders();
+      this.startWorkForReadyProviders();
     },
   });
+  /** The providers ready on this device in the last settings seen, `null` before the first settings of a vault. */
+  private readyProviders: Set<ProviderInstanceId> | null = null;
+
+  /**
+   * Starts the work a linked device sent here that waited for its provider, once a provider turns ready on this
+   * device. The first settings of a vault only record the ready providers, since loading Chat already recovers work.
+   */
+  private startWorkForReadyProviders(): void {
+    const settings = this.configuration.settings;
+    if (!localExecutionAvailable || !settings) {
+      this.readyProviders = null;
+      return;
+    }
+    const ready = readyProviderInstances(settings.providerInstances);
+    const previous = this.readyProviders;
+    this.readyProviders = ready;
+    if (!previous || !providerBecameReady(previous, ready)) return;
+    void chatApi.recoverChatAssignmentDispatchJobs().catch((error: unknown) => {
+      console.error("Chat work recovery after a provider turned ready failed", error);
+    });
+  }
 
   /**
    * Rereads the agents when the settings name a provider family that no agent covers yet. Reading the agents creates

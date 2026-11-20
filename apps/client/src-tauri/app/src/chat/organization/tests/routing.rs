@@ -592,3 +592,70 @@ fn a_phone_mention_without_history_runs_only_when_one_desktop_is_linked() {
         );
     });
 }
+
+#[test]
+fn a_phone_mention_ignores_work_that_never_started_on_a_desktop() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "cancelled").await;
+        insert_linked_device(&pool, 1, "device:old", "desktop").await;
+        insert_linked_device(&pool, 2, "device:other", "desktop").await;
+
+        assert_eq!(
+            mention_from_phone(&pool, &["device:phone", "device:old", "device:other"]).await,
+            None,
+            "work that never ran does not show the agent runs on that desktop"
+        );
+    });
+}
+
+#[test]
+fn a_phone_mention_starts_on_the_desktop_it_names() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        insert_linked_device(&pool, 1, "device:desk", "desktop").await;
+        let writers = chat_writers_of(&["device:phone", "device:desk"]);
+        let phone = PostingDevice {
+            id: "device:phone",
+            can_execute: false,
+            chat_writers: &writers,
+        };
+        let posted = persist_post(&pool, &review_reply_mention("command:phone"), None, phone)
+            .await
+            .unwrap();
+        let assignment_id = posted.assignment_write.assignment_id.unwrap();
+
+        assert!(
+            assignments::adopt_synced_assignment(
+                &pool,
+                &assignment_id,
+                &test_providers(),
+                "device:desk"
+            )
+            .await
+            .unwrap(),
+            "the named desktop queues the work without anything frozen by the phone"
+        );
+        let now = super::now_timestamp().unwrap();
+        assert!(
+            super::dispatch::claim_dispatch_job(
+                &pool,
+                &assignment_id,
+                "device:desk",
+                &test_providers(),
+                &now
+            )
+            .await
+            .unwrap()
+            .is_some(),
+            "the desktop starts the work"
+        );
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM chat_work_assignments WHERE id = ?")
+                .bind(assignment_id.as_str())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_ne!(state, "failed");
+    });
+}

@@ -471,7 +471,8 @@
     const agentId = mentionedAgentId;
     const channelId = chat.selectedChannel?.id ?? null;
     const replyThreadId = destinationReplyThreadId(destination);
-    if (!agentId || !channelId) {
+    // Targets are device-local folders, so only a device that runs the work lists them.
+    if (!agentId || !channelId || !localExecutionAvailable) {
       assignmentPreviewRequest += 1;
       assignmentTargets = [];
       assignmentPreviewLoading = false;

@@ -13,7 +13,10 @@ use ganbaru_chat::coordination::agent_settings::{
     agent_is_present, read_app_agent_settings, read_channel_agent_members,
     read_channel_agent_settings, read_channel_push_approvals, read_project_agent_settings,
 };
-use ganbaru_chat::sync_effects::{revoke_exceeding_authorizations, revoke_lapsed_push_approvals};
+use ganbaru_chat::sync_effects::{
+    revoke_exceeding_authorizations, revoke_lapsed_push_approvals,
+    revoke_lapsed_remembered_approvals,
+};
 use ganbaru_sync::domains::chat::MAX_INSTRUCTIONS_CHARS;
 use sqlx::{SqliteConnection, SqlitePool};
 
@@ -376,14 +379,15 @@ pub(in crate::chat::organization) async fn add_agent_to_conversation(
     Ok(())
 }
 
-/// Revokes the work and the push approvals that current settings and memberships no longer
-/// cover.
+/// Revokes the work and the push and remembered approvals that current settings and
+/// memberships no longer cover.
 pub(in crate::chat::organization) async fn revoke_uncovered(
     connection: &mut SqliteConnection,
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
     revoke_exceeding_authorizations(connection, now.as_str()).await?;
     revoke_lapsed_push_approvals(connection, now.as_str()).await?;
+    revoke_lapsed_remembered_approvals(connection, now.as_str()).await?;
     Ok(())
 }
 

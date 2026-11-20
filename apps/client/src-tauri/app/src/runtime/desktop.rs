@@ -439,6 +439,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::organization::chat_read_push_request_states,
             chat::organization::chat_list_push_approvals,
             chat::organization::chat_revoke_push_approval,
+            chat::organization::chat_list_remembered_approvals,
+            chat::organization::chat_revoke_remembered_approval,
             chat::organization::chat_list_channel_notes,
             chat::organization::chat_create_channel_note,
             chat::organization::chat_update_channel_note,

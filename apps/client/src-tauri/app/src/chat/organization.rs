@@ -53,6 +53,7 @@ mod push_approvals;
 #[cfg(desktop)]
 mod push_requests;
 mod reads;
+mod remembered_approvals;
 pub(crate) mod review_queue;
 mod scheduling;
 mod workflow;
@@ -975,6 +976,29 @@ pub async fn chat_revoke_push_approval(
 ) -> ChatResult<()> {
     let pool = chat_pool(app, db_url).await?;
     push_approvals::revoke_push_approval(&pool, &request).await
+}
+
+/// Lists the active remembered agent approvals of a channel.
+#[tauri::command]
+pub async fn chat_list_remembered_approvals(
+    app: tauri::AppHandle,
+    db_url: String,
+    channel_id: ChatChannelId,
+) -> ChatResult<Vec<ChatChannelRememberedApprovalRead>> {
+    let pool = chat_pool(app, db_url).await?;
+    let channel = super::channels::read_channel(&pool, &channel_id).await?;
+    remembered_approvals::list_remembered_approvals(&pool, &channel.conversation_id).await
+}
+
+/// Revokes a remembered agent approval, so later matching requests ask again.
+#[tauri::command]
+pub async fn chat_revoke_remembered_approval(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: RevokeChatRememberedApprovalCommand,
+) -> ChatResult<()> {
+    let pool = chat_pool(app, db_url).await?;
+    remembered_approvals::revoke(&pool, &request).await
 }
 
 /// Lists the live notes of a channel the local person belongs to, newest updated first.

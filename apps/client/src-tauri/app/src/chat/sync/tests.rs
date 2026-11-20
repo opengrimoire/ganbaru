@@ -117,6 +117,7 @@ fn only_revocations_removals_and_assignment_work_are_reported() {
                 "participant:a".to_string(),
             ]),
             lapsed_push_approvals: BTreeSet::from(["conversation:lapsed".to_string()]),
+            lapsed_remembered_approvals: BTreeSet::from(["conversation:remembered".to_string()]),
             search_rebuilt: BTreeSet::from(["item:rebuilt".to_string()]),
             removed_conversations: BTreeSet::from(["conversation:removed".to_string()]),
             reclaimed_attachments: BTreeSet::from(["attachment:reclaimed".to_string()]),
@@ -140,6 +141,10 @@ fn only_revocations_removals_and_assignment_work_are_reported() {
             (CHAT_ACCESS_REVOKED_TOPIC, "participant:a"),
             (CHAT_ACCESS_REVOKED_TOPIC, "participant:b"),
             (CHAT_PUSH_APPROVALS_LAPSED_TOPIC, "conversation:lapsed"),
+            (
+                CHAT_REMEMBERED_APPROVALS_LAPSED_TOPIC,
+                "conversation:remembered"
+            ),
             (CHAT_CONVERSATION_REMOVED_TOPIC, "conversation:removed"),
             (CHAT_ASSIGNMENT_REMOVED_TOPIC, "assignment:removed"),
             (CHAT_ASSIGNMENT_QUEUED_TOPIC, "assignment:queued"),
@@ -193,6 +198,10 @@ fn assignment_notices_hand_queued_and_started_work_and_pending_inputs_to_dispatc
         notice(CHAT_ASSIGNMENT_STARTED_TOPIC, "assignment:started"),
         notice(CHAT_ASSIGNMENT_QUEUED_TOPIC, "assignment:queued"),
         notice(CHAT_PUSH_APPROVALS_LAPSED_TOPIC, "conversation:lapsed"),
+        notice(
+            CHAT_REMEMBERED_APPROVALS_LAPSED_TOPIC,
+            "conversation:remembered",
+        ),
         notice(CHAT_ACCESS_REVOKED_TOPIC, AGENT_ID),
     ]);
     assert_eq!(
@@ -203,6 +212,7 @@ fn assignment_notices_hand_queued_and_started_work_and_pending_inputs_to_dispatc
             routed: BTreeSet::from(["assignment:routed".to_string()]),
             delegated: BTreeSet::from(["assignment:delegated".to_string()]),
             push_approvals_lapsed: true,
+            remembered_approvals_lapsed: true,
         }
     );
     assert_eq!(

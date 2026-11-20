@@ -1297,6 +1297,15 @@ async fn run_synced_assignment_work(
         ganbaru_chat::sync_effects::revoke_lapsed_push_approvals(&mut connection, now.as_str())
             .await?;
     }
+    if work.remembered_approvals_lapsed {
+        let now = now_timestamp()?;
+        let mut connection = pool.acquire().await.map_err(persistence_error)?;
+        ganbaru_chat::sync_effects::revoke_lapsed_remembered_approvals(
+            &mut connection,
+            now.as_str(),
+        )
+        .await?;
+    }
     let mut released = false;
     for assignment_id in work.queued.iter().chain(&work.started) {
         let assignment_id =

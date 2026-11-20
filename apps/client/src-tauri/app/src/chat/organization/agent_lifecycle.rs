@@ -98,6 +98,8 @@ pub(super) async fn set_agent_archived(
     }
     ganbaru_chat::sync_effects::revoke_lapsed_push_approvals(&mut transaction, now.as_str())
         .await?;
+    ganbaru_chat::sync_effects::revoke_lapsed_remembered_approvals(&mut transaction, now.as_str())
+        .await?;
     transaction.commit().await.map_err(persistence_error)?;
     read_agent(pool, agent_id, local_instances).await
 }
@@ -232,6 +234,8 @@ pub(super) async fn remove_custom_agent(
     .await
     .map_err(persistence_error)?;
     ganbaru_chat::sync_effects::revoke_lapsed_push_approvals(&mut transaction, now.as_str())
+        .await?;
+    ganbaru_chat::sync_effects::revoke_lapsed_remembered_approvals(&mut transaction, now.as_str())
         .await?;
     transaction.commit().await.map_err(persistence_error)?;
     let agent = read_agent(pool, agent_id, local_instances).await?;

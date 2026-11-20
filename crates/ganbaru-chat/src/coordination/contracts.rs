@@ -361,6 +361,13 @@ pub struct RevokeChatPushApprovalCommand {
     pub approval_id: String,
 }
 
+/// Revokes a remembered approval, so later matching agent requests ask again.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RevokeChatRememberedApprovalCommand {
+    pub approval_id: String,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PostChatMessageResult {

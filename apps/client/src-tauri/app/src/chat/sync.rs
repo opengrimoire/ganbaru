@@ -41,6 +41,10 @@ pub(crate) const CHAT_ACCESS_REVOKED_TOPIC: &str = "chat-access-revoked";
 /// the key is the conversation id.
 pub(crate) const CHAT_PUSH_APPROVALS_LAPSED_TOPIC: &str = "chat-push-approvals-lapsed";
 
+/// Change notice topic of a conversation that still holds remembered approvals an apply left
+/// lapsed; the key is the conversation id.
+pub(crate) const CHAT_REMEMBERED_APPROVALS_LAPSED_TOPIC: &str = "chat-remembered-approvals-lapsed";
+
 /// Change notice topic of a conversation an apply deleted; the key is the conversation id.
 pub(crate) const CHAT_CONVERSATION_REMOVED_TOPIC: &str = "chat-conversation-removed";
 
@@ -93,6 +97,9 @@ fn report_effects(effects: ChatSyncEffects, changes: &mut dyn ChangeSink) {
     }
     for conversation_id in effects.lapsed_push_approvals {
         changes.report(CHAT_PUSH_APPROVALS_LAPSED_TOPIC, conversation_id);
+    }
+    for conversation_id in effects.lapsed_remembered_approvals {
+        changes.report(CHAT_REMEMBERED_APPROVALS_LAPSED_TOPIC, conversation_id);
     }
     for conversation_id in effects.removed_conversations {
         changes.report(CHAT_CONVERSATION_REMOVED_TOPIC, conversation_id);
@@ -157,7 +164,7 @@ mod waker {
         CHAT_ACCESS_REVOKED_TOPIC, CHAT_ASSIGNMENT_INPUT_TOPIC, CHAT_ASSIGNMENT_QUEUED_TOPIC,
         CHAT_ASSIGNMENT_REMOVED_TOPIC, CHAT_ASSIGNMENT_STARTED_TOPIC,
         CHAT_CONVERSATION_REMOVED_TOPIC, CHAT_DELEGATION_SETTLED_TOPIC,
-        CHAT_PUSH_APPROVALS_LAPSED_TOPIC,
+        CHAT_PUSH_APPROVALS_LAPSED_TOPIC, CHAT_REMEMBERED_APPROVALS_LAPSED_TOPIC,
     };
     use ganbaru_sync::ChangeNotice;
     use std::collections::BTreeSet;
@@ -180,6 +187,9 @@ mod waker {
         /// Whether an apply left unrevoked push approvals that lapsed, which this device
         /// revokes.
         pub(crate) push_approvals_lapsed: bool,
+        /// Whether an apply left unrevoked remembered approvals that lapsed, which this device
+        /// revokes.
+        pub(crate) remembered_approvals_lapsed: bool,
     }
 
     /// The assignment work `notices` report.
@@ -196,6 +206,8 @@ mod waker {
                 work.delegated.insert(notice.key.clone());
             } else if notice.topic == CHAT_PUSH_APPROVALS_LAPSED_TOPIC {
                 work.push_approvals_lapsed = true;
+            } else if notice.topic == CHAT_REMEMBERED_APPROVALS_LAPSED_TOPIC {
+                work.remembered_approvals_lapsed = true;
             }
         }
         work

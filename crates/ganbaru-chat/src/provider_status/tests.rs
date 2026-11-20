@@ -246,3 +246,51 @@ async fn publishing_leaves_other_devices_rows_alone() {
             .available
     );
 }
+
+#[tokio::test]
+async fn unchanged_limits_take_a_newer_observation_only_after_the_refresh_interval() {
+    let pool = migrated_pool().await;
+    let publish_limits = |observed: &'static str| {
+        let observed_at = at(observed);
+        let content = ProviderStatusContent::new(
+            true,
+            Some(&catalog("GPT-5", NOW)),
+            Some((&limits(10.0), &observed_at)),
+        );
+        statuses(content)
+    };
+    publish_provider_statuses(&pool, DEVICE, &publish_limits(NOW), &at(NOW))
+        .await
+        .unwrap();
+    clear_capture(&pool).await;
+
+    assert_eq!(
+        publish_provider_statuses(&pool, DEVICE, &publish_limits(LATER), &at(LATER))
+            .await
+            .unwrap(),
+        0,
+        "the same figures seen again soon write nothing"
+    );
+    assert_eq!(captured(&pool).await, 0);
+
+    const HALF_HOUR_LATER: &str = "2026-11-19T10:30:00.000Z";
+    assert_eq!(
+        publish_provider_statuses(
+            &pool,
+            DEVICE,
+            &publish_limits(HALF_HOUR_LATER),
+            &at(HALF_HOUR_LATER)
+        )
+        .await
+        .unwrap(),
+        1
+    );
+    let read = read_provider_status(&pool, DEVICE, FAMILY)
+        .await
+        .unwrap()
+        .expect("the row stays");
+    assert_eq!(
+        read.usage_limits.expect("limits stay").observed_at.as_str(),
+        HALF_HOUR_LATER
+    );
+}

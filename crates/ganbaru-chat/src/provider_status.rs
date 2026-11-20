@@ -22,6 +22,11 @@ use sqlx::{Row, SqlitePool};
 
 use crate::models::{ChatError, ChatErrorCode, ChatResult};
 
+/// How much newer an observation of unchanged plan limits must be before the row takes its
+/// time, so readers that call limits stale after an hour keep current limits fresh while a
+/// desktop that keeps seeing the same figures writes at most twice an hour.
+pub const LIMITS_OBSERVATION_REFRESH_SECONDS: i64 = 30 * 60;
+
 /// What one device shares about one provider family.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProviderStatusContent {
@@ -112,10 +117,14 @@ pub async fn publish_provider_statuses(
                     THEN excluded.catalog_changed_at ELSE catalog_changed_at END,
                 limits_data = excluded.limits_data,
                 limits_observed_at = CASE WHEN limits_data IS NOT excluded.limits_data
+                    OR (julianday(excluded.limits_observed_at) - julianday(limits_observed_at))
+                        * 86400 >= ?10
                     THEN excluded.limits_observed_at ELSE limits_observed_at END
              WHERE available IS NOT excluded.available
                 OR catalog_data IS NOT excluded.catalog_data
-                OR limits_data IS NOT excluded.limits_data",
+                OR limits_data IS NOT excluded.limits_data
+                OR (julianday(excluded.limits_observed_at) - julianday(limits_observed_at))
+                    * 86400 >= ?10",
         )
         .bind(key.as_str())
         .bind(device_id)
@@ -126,6 +135,7 @@ pub async fn publish_provider_statuses(
         .bind(now.as_str())
         .bind(limits_data)
         .bind(limits_observed_at)
+        .bind(LIMITS_OBSERVATION_REFRESH_SECONDS)
         .execute(&mut *transaction)
         .await
         .map_err(persistence_error)?;

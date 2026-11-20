@@ -8,6 +8,7 @@ import type {
 } from "./common";
 import type { ProviderCapabilities } from "./provider";
 import type { AccountStatusEvent, RateLimitStatusEvent, ThreadUsageUpdatedEvent } from "./events";
+import type { ChatRememberableApprovalRead } from "./organizational";
 
 export interface ChatAttachmentRead {
   id: ChatAttachmentId;
@@ -52,6 +53,8 @@ export interface ChatPendingRequestRead {
   safeDisplay: VersionedJson;
   allowedDecisions: VersionedJson;
   openedAt: UtcTimestamp;
+  /** The rule an "Allow and don't ask again" choice would record, or null when the request cannot be remembered. */
+  rememberable: ChatRememberableApprovalRead | null;
 }
 
 export interface ChatQueuedFollowupRead {
@@ -147,6 +150,8 @@ export interface ResolveChatApprovalCommand {
   requestId: string;
   providerRequestId: string;
   decision: import("./commands").ApprovalDecision;
+  /** Records the request's offered rule so matching requests in the channel are allowed without asking; only with allow once. */
+  remember?: boolean;
 }
 
 export interface ResolveChatUserInputCommand {

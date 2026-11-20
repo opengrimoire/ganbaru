@@ -8,6 +8,7 @@
   import ShieldAlert from "@lucide/svelte/icons/shield-alert";
   import * as chatApi from "$lib/api/chat";
   import ChatApprovalSubject from "./ChatApprovalSubject.svelte";
+  import { rememberedApprovalDescription } from "$lib/chat/agents/remembered-approvals";
   import type { ChatAttachmentRead, ChatPendingRequestRead, SessionPermissionGrant, UserInputAnswer } from "$lib/chat/contracts";
   import { CHAT_IMAGE_LIMIT, clipboardImageFiles, parseApprovalChoices, parseApprovalDisplay, parseUserInputQuestions, validateImageFiles, validateUserInputAnswers } from "$lib/chat/composer/model";
   import { MAX_TEXT_SNIPPET_BYTES, classifyPastedText, pastedTextLineCount } from "$lib/chat/composer/paste";
@@ -40,6 +41,8 @@
   // Allow for session is withheld when its grants cannot be shown, so nothing is forwarded unseen.
   const approvalChoices = $derived(parseApprovalChoices(pending.allowedDecisions)
     .filter((choice) => choice.decisionKind !== "allow_session" || approvalDisplay.sessionGrants !== null));
+  /** "Allow and don't ask again" sits beside allow once, only when Rust offers a rule to remember. */
+  const rememberDescription = $derived(pending.rememberable && approvalChoices.some((choice) => choice.decisionKind === "allow_once") ? rememberedApprovalDescription(t, pending.rememberable) : null);
   const sessionGrants = $derived(approvalChoices.some((choice) => choice.decisionKind === "allow_session") ? approvalDisplay.sessionGrants ?? [] : []);
   const questions = $derived(pending.requestKind === "user_input" ? parseUserInputQuestions(pending.safeDisplay) : []);
   const question = $derived(questions[step] ?? null);
@@ -72,13 +75,13 @@
     if (answerDraftReady && pending.requestKind === "user_input") void saveAnswerDraft();
   });
 
-  async function resolveApproval(index: number): Promise<void> {
+  async function resolveApproval(index: number, remember = false): Promise<void> {
     const choice = approvalChoices[index];
     if (!choice || resolving) return;
     resolving = true;
     error = null;
     try {
-      await chat.resolveApproval({ kind: choice.decisionKind, providerOptionId: choice.id, updatedToolInput: null });
+      await chat.resolveApproval({ kind: choice.decisionKind, providerOptionId: choice.id, updatedToolInput: null }, remember);
     } catch (cause: unknown) {
       error = chatErrorMessage(cause, t("chatErrors.actions.requestAction"));
       resolving = false;
@@ -305,7 +308,7 @@
       <div class="session-grants" data-testid="session-grants"><small>{t("chat.composer.sessionGrantsTitle")}</small><ul>{#each sessionGrants as grant}<li>{grantLabel(grant)}</li>{/each}</ul></div>
     {/if}
     {#if approvalDisplay.payload}<details><summary>{t("chat.composer.details")}<ChevronDown size={13} /></summary><pre>{approvalDisplay.payload}</pre></details>{/if}
-    <div class="request-actions">{#each approvalChoices as choice, index}<button type="button" disabled={resolving} class:danger={choice.decisionKind === "allow_session"} title={choice.description ?? undefined} onclick={() => void resolveApproval(index)}>{choice.label}</button>{/each}</div>
+    <div class="request-actions">{#each approvalChoices as choice, index}<button type="button" disabled={resolving} class:danger={choice.decisionKind === "allow_session"} title={choice.description ?? undefined} onclick={() => void resolveApproval(index)}>{choice.label}</button>{#if choice.decisionKind === "allow_once" && rememberDescription}<button type="button" disabled={resolving} title={rememberDescription} data-testid="approval-remember" onclick={() => void resolveApproval(index, true)}>{t("chat.composer.allowAlways")}</button>{/if}{/each}</div>
   {:else if question}
     <header><div><strong>{t("chat.composer.question")}</strong><p>{t("chat.composer.questionProgress", formatNumber(localization.locale, step + 1), formatNumber(localization.locale, questions.length))}</p></div></header>
     {#if question.header}<small>{question.header}</small>{/if}<p class="question-text">{question.question}</p>

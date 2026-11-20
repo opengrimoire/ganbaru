@@ -151,6 +151,7 @@ function interaction(requestKind: "approval" | "user_input" | null): ChatInterac
       safeDisplay: { schemaVersion: 1, value: {} },
       allowedDecisions: { schemaVersion: 1, value: [] },
       openedAt: "2026-08-04T12:00:00.000Z",
+      rememberable: null,
     } : null,
     queuedFollowup: null,
     usage: null,

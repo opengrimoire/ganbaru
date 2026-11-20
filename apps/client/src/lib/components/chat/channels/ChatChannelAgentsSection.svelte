@@ -7,6 +7,7 @@
     ChatChannelAgentSettingsRead,
     ChatChannelMembershipRemovalPreview,
     ChatChannelRead,
+    ChatChannelRememberedApprovalRead,
     ChatParticipantId,
     ProviderModelCatalog,
   } from "$lib/chat/contracts";
@@ -22,10 +23,11 @@
   import { useChat } from "$lib/stores/chat.svelte";
   import { portal } from "$lib/utils/portal";
   import ChatPushApprovalsList from "./ChatPushApprovalsList.svelte";
+  import ChatRememberedApprovalsList from "./ChatRememberedApprovalsList.svelte";
 
   /**
    * The Agents section of a channel's details: the access and instructions every agent in the channel works
-   * under, each agent with what it does on this device and the model it runs, and the channel's push approvals. It is
+   * under, each agent with what it does on this device and the model it runs, and the channel's push and remembered approvals. It is
    * the one place that edits per-channel agent behavior.
    */
   let { channel }: { channel: ChatChannelRead } = $props();
@@ -43,6 +45,7 @@
   const { t } = getLocalization();
 
   let settings = $state<ChatChannelAgentSettingsRead | null>(null);
+  let remembered = $state<ChatChannelRememberedApprovalRead[]>([]);
   let loadError = $state<string | null>(null);
   let rowError = $state<string | null>(null);
   let busyAgentId = $state<ChatParticipantId | null>(null);
@@ -75,9 +78,13 @@
   async function load(channelId: string): Promise<void> {
     const current = ++request;
     try {
-      const read = await chatApi.readChatChannelAgentSettings(channelId);
+      const [read, rememberedRead] = await Promise.all([
+        chatApi.readChatChannelAgentSettings(channelId),
+        chatApi.listChatRememberedApprovals(channelId),
+      ]);
       if (current !== request) return;
       settings = read;
+      remembered = rememberedRead;
       loadError = null;
     } catch (cause: unknown) {
       if (current === request) loadError = chatErrorMessage(cause, t("chat.agentAccess.loadFailed"));
@@ -196,6 +203,14 @@
         <span class="section-label">{t("chat.agentAccess.pushApprovals")}</span>
         <p class="section-detail">{t("chat.agentAccess.pushApprovalsHint")}</p>
         <ChatPushApprovalsList approvals={settings.pushApprovals} {agentName} onChanged={() => load(channel.id)} />
+      </div>
+    {/if}
+
+    {#if remembered.length > 0}
+      <div class="grid gap-1">
+        <span class="section-label">{t("chat.agentAccess.rememberedApprovals")}</span>
+        <p class="section-detail">{t("chat.agentAccess.rememberedApprovalsHint")}</p>
+        <ChatRememberedApprovalsList approvals={remembered} {agentName} onChanged={() => load(channel.id)} />
       </div>
     {/if}
   {/if}

@@ -163,6 +163,24 @@ export interface ChatProjectAgentSettingsRead {
   revision: number;
 }
 
+/** What a remembered approval matches: one web origin, one exact command, or one tool. */
+export const CHAT_REMEMBERED_APPROVAL_KINDS = ["url_origin", "command", "tool"] as const;
+export type ChatRememberedApprovalKind = (typeof CHAT_REMEMBERED_APPROVAL_KINDS)[number];
+
+/** The rule an "Allow and don't ask again" choice records, derived by Rust from the request. */
+export interface ChatRememberableApprovalRead {
+  kind: ChatRememberedApprovalKind;
+  key: string;
+}
+
+/** One remembered approval that lets an agent repeat matching requests in a channel without asking. */
+export interface ChatChannelRememberedApprovalRead extends ChatRememberableApprovalRead {
+  approvalId: string;
+  channelId: ChatChannelId;
+  agentId: ChatParticipantId;
+  approvedAt: UtcTimestamp;
+}
+
 /** One standing push approval of an agent in a channel. */
 export interface ChatChannelPushApprovalRead {
   approvalId: string;

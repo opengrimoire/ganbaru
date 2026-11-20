@@ -454,7 +454,7 @@ export class ChatComposerRuntimeController {
     await this.refreshInteraction(threadId);
   }
 
-  async resolveApproval(decision: ApprovalDecision): Promise<void> {
+  async resolveApproval(decision: ApprovalDecision, remember = false): Promise<void> {
     const pending = this.interaction?.pendingRequest;
     const thread = this.options.selectedThread();
     if (!pending || !thread) return;
@@ -464,6 +464,7 @@ export class ChatComposerRuntimeController {
       requestId: pending.id,
       providerRequestId: pending.providerRequestId,
       decision,
+      ...(remember ? { remember } : {}),
     });
     await this.refreshInteraction(thread.id);
   }

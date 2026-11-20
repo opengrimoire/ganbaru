@@ -1503,7 +1503,8 @@ export class ChatStore {
   cancelQueuedFollowup(): Promise<void> { return this.composerRuntimeController.cancelQueuedFollowup(); }
   editQueuedFollowup(): Promise<void> { return this.composerRuntimeController.editQueuedFollowup(); }
   stop(force = false): Promise<void> { return this.composerRuntimeController.stop(force); }
-  resolveApproval(decision: import("$lib/chat/contracts").ApprovalDecision): Promise<void> { return this.composerRuntimeController.resolveApproval(decision); }
+  /** Resolves the open approval; `remember` also records its offered rule, so matching requests in the channel are allowed without asking. */
+  resolveApproval(decision: import("$lib/chat/contracts").ApprovalDecision, remember = false): Promise<void> { return this.composerRuntimeController.resolveApproval(decision, remember); }
   resolveUserInput(answers: UserInputAnswer[]): Promise<void> { return this.composerRuntimeController.resolveUserInput(answers); }
   importComposerImages(files: File[]): Promise<void> { return this.composerRuntimeController.importImages(files); }
   pickComposerImages(title: string): Promise<void> { return this.composerRuntimeController.pickImages(title); }

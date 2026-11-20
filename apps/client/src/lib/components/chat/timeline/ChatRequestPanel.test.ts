@@ -72,7 +72,27 @@ describe("ChatRequestPanel", () => {
       kind: "deny",
       providerOptionId: "deny",
       updatedToolInput: null,
-    });
+    }, false);
+  });
+
+  it("offers to allow and not ask again only when Rust offers a rule, and remembers with allow once", async () => {
+    const resolve = vi.spyOn(getChat(), "resolveApproval").mockResolvedValue();
+    const body = setup(approval(undefined, DECISIONS, { kind: "url_origin", key: "https://docs.example.org" }));
+    await tick();
+    const buttons = [...body.querySelectorAll<HTMLButtonElement>(".request-actions button")];
+    expect(buttons.map((button) => button.textContent)).toEqual(["Allow once", en.chat.composer.allowAlways, "Deny"]);
+    const remember = body.querySelector<HTMLButtonElement>('[data-testid="approval-remember"]');
+    expect(remember?.title).toBe("Always allow pages from docs.example.org in this channel");
+    remember?.click();
+    await tick();
+    expect(resolve).toHaveBeenCalledWith({ kind: "allow_once", providerOptionId: "allow", updatedToolInput: null }, true);
+  });
+
+  it("withholds allow and don't ask again without an allow once choice", async () => {
+    const denyOnly: JsonValue[] = [DECISIONS[1] as JsonValue];
+    const body = setup(approval(undefined, denyOnly, { kind: "tool", key: "WebFetch" }));
+    await tick();
+    expect(body.querySelector('[data-testid="approval-remember"]')).toBeNull();
   });
 
   it("shows the message from a structured approval error", async () => {
@@ -262,6 +282,7 @@ const SESSION_DECISIONS: JsonValue[] = [
 function approval(
   display: JsonValue = { title: "Run tests", detail: "pnpm test", payload: null },
   decisions: JsonValue[] = DECISIONS,
+  rememberable: ChatPendingRequestRead["rememberable"] = null,
 ): ChatPendingRequestRead {
   return {
     id: "request-approval",
@@ -271,6 +292,7 @@ function approval(
     safeDisplay: { schemaVersion: 1, value: display },
     allowedDecisions: { schemaVersion: 1, value: decisions },
     openedAt: "2026-07-21T12:00:00.000Z",
+    rememberable,
   };
 }
 
@@ -305,6 +327,7 @@ function question(): ChatPendingRequestRead {
     },
     allowedDecisions: { schemaVersion: 1, value: [] },
     openedAt: "2026-07-21T12:00:00.000Z",
+    rememberable: null,
   };
 }
 

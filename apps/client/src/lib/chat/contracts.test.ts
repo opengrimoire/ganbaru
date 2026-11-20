@@ -9,6 +9,8 @@ import {
   parseChatChannelNotes,
   parseChatNoteProposalStates,
   parseChatPushApprovals,
+  parseChatRememberedApprovals,
+  parseChatRememberableApproval,
   parseChatPushRequest,
   parseChatPushRequestStates,
   parsePostChatMessageResult,
@@ -1408,6 +1410,26 @@ describe("chat push request contracts", () => {
     expect(() => parseChatPushApprovals([{ ...approval, approvalId: "" }])).toThrow("approvalId");
     expect(() => parseChatPushApprovals([{ ...approval, destinationBranch: "main\u0007" }])).toThrow("destinationBranch");
     expect(() => parseChatPushApprovals([{ ...approval, approvedAt: "yesterday" }])).toThrow("approvedAt");
+  });
+
+  it("parses remembered approvals and refuses unknown kinds and unsafe subjects", () => {
+    const approval = {
+      approvalId: "remembered-1",
+      channelId: "channel:1",
+      agentId: "participant:atlas",
+      kind: "command",
+      key: "pnpm test",
+      approvedAt: "2026-11-20T12:00:00.000Z",
+    };
+    expect(parseChatRememberedApprovals([approval])).toEqual([approval]);
+    expect(() => parseChatRememberedApprovals([{ ...approval, kind: "path" }])).toThrow("kind");
+    expect(() => parseChatRememberedApprovals([{ ...approval, key: "pnpm test\nrm -rf /" }])).toThrow("key");
+    expect(() => parseChatRememberedApprovals([{ ...approval, key: " " }])).toThrow("key");
+    expect(() => parseChatRememberedApprovals([{ ...approval, key: "a".repeat(2_049) }])).toThrow("key");
+    expect(() => parseChatRememberedApprovals([{ ...approval, approvalId: "" }])).toThrow("approvalId");
+    expect(parseChatRememberableApproval({ kind: "url_origin", key: "https://docs.example.org" }))
+      .toEqual({ kind: "url_origin", key: "https://docs.example.org" });
+    expect(() => parseChatRememberableApproval({ kind: "tool" })).toThrow("key");
   });
 });
 

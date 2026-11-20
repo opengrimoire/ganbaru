@@ -2061,7 +2061,7 @@
   .scheduled-summary button { min-height:1.75rem; border-radius:0.4rem; padding:0.2rem 0.45rem; font-size:calc(0.68rem * var(--type-scale)); font-weight:500; }
   .scheduled-summary { background:color-mix(in srgb,var(--accent) 58%,var(--cal-bg)); color:var(--muted-foreground); }
   .scheduled-summary-anchor,.menu-anchor { position:relative; }
-  .organizational-composer { --composer-button-size:1.9rem; --composer-send-visual-size:2.2rem; --composer-control-size:var(--composer-button-size); position:relative; width:100%; }
+  .organizational-composer { --composer-button-size:1.9rem; --composer-send-visual-size:2.35rem; --composer-control-size:var(--composer-button-size); position:relative; width:100%; }
   .reference-picker { z-index:100; display:flex; flex-direction:column; overflow:hidden; }
   .reference-picker-scroll { min-height:0; flex:1 1 auto; overflow-y:auto; }
   .reference-picker-scroll > p { padding:0.5rem; color:var(--muted-foreground); font-size:var(--panel-detail-font-size); }

@@ -216,6 +216,12 @@ async fn a_read_carries_only_the_run_turn_and_withholds_user_rows() {
     assert_eq!(ids(&read), ["message:reply", "activity:command"]);
     assert_eq!(read.turn_id.as_ref().map(ChatTurnId::as_str), Some(TURN));
     assert_eq!(
+        read.run_id
+            .as_ref()
+            .map(ganbaru_chat_contracts::models::ChatAgentRunId::as_str),
+        Some("run:live")
+    );
+    assert_eq!(
         read.thread_id.as_ref().map(ChatThreadId::as_str),
         Some(THREAD)
     );
@@ -428,6 +434,7 @@ async fn a_queued_assignment_without_a_run_reads_empty() {
         .unwrap();
     let read = read(&pool, None, 600_000).await;
     assert!(read.turn_id.is_none());
+    assert!(read.run_id.is_none());
     assert!(read.items.is_empty());
     assert!(!read.settled);
 }

@@ -10,8 +10,8 @@ use super::reads::{
     read_timeline_clock, read_timeline_turns_in,
 };
 use crate::models::{
-    ChatActivityId, ChatError, ChatErrorCode, ChatLiveExecutionRead, ChatResult, ChatThreadId,
-    ChatTimelineItemRead, ChatTurnId, ModelId, ProviderFamilyId, VersionedJson,
+    ChatActivityId, ChatAgentRunId, ChatError, ChatErrorCode, ChatLiveExecutionRead, ChatResult,
+    ChatThreadId, ChatTimelineItemRead, ChatTurnId, ModelId, ProviderFamilyId, VersionedJson,
 };
 use serde_json::{Map, Value, json};
 use sqlx::{Row, SqlitePool};
@@ -82,6 +82,7 @@ pub enum LiveExecutionOutcome {
 
 /// The newest run of an assignment and its turn.
 struct NewestRun {
+    id: String,
     state: String,
     turn_id: String,
     thread_id: String,
@@ -126,6 +127,7 @@ pub async fn read_live_execution(
     let assignment_settled = !RUNNING_ASSIGNMENT_STATES.contains(&assignment_state.as_str());
     let mut read = ChatLiveExecutionRead {
         assignment_id: query.assignment_id.to_string(),
+        run_id: None,
         thread_id: None,
         turn_id: None,
         provider_family_id: None,
@@ -139,7 +141,7 @@ pub async fn read_live_execution(
         settled: assignment_settled,
     };
     let run = sqlx::query(
-        "SELECT r.state, r.provider_turn_id, t.thread_id, t.invalidated_at IS NOT NULL AS invalidated,
+        "SELECT r.id, r.state, r.provider_turn_id, t.thread_id, t.invalidated_at IS NOT NULL AS invalidated,
                 th.provider_family_id,
                 CASE json_type(t.model_selection_data, '$.modelId')
                   WHEN 'text' THEN json_extract(t.model_selection_data, '$.modelId')
@@ -157,6 +159,7 @@ pub async fn read_live_execution(
     .map_err(persistence_error)?
     .map(|row| -> ChatResult<NewestRun> {
         Ok(NewestRun {
+            id: row.try_get("id").map_err(persistence_error)?,
             state: row.try_get("state").map_err(persistence_error)?,
             turn_id: row.try_get("provider_turn_id").map_err(persistence_error)?,
             thread_id: row.try_get("thread_id").map_err(persistence_error)?,
@@ -180,6 +183,7 @@ pub async fn read_live_execution(
         .map(ModelId::new)
         .transpose()
         .map_err(|_| corrupt_data_error())?;
+    read.run_id = Some(ChatAgentRunId::new(run.id).map_err(|_| corrupt_data_error())?);
     read.thread_id = Some(thread_id.clone());
     read.turn_id = Some(turn_id.clone());
     let (last_change, pruned_through) = read_timeline_clock(&mut transaction, &thread_id).await?;

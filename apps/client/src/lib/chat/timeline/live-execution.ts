@@ -1,4 +1,5 @@
 import type {
+  ChatAgentRunId,
   ChatLiveExecutionRead,
   ChatThreadId,
   ChatTimelineItemRead,
@@ -11,6 +12,8 @@ import type {
 
 /** The live execution a phone holds of work a linked desktop runs, built from the pages it read. */
 export interface LiveExecutionState {
+  /** The newest run of the work, once a run started. */
+  runId: ChatAgentRunId | null;
   threadId: ChatThreadId | null;
   turnId: ChatTurnId | null;
   providerFamilyId: ProviderFamilyId | null;
@@ -44,6 +47,15 @@ export const LIVE_EXECUTION_RETRY_MAX_MS = 30_000;
  * phone read in a tight loop.
  */
 export const LIVE_EXECUTION_MIN_WAIT_INTERVAL_MS = 1_000;
+/**
+ * The first delay before asking again when no device serves the work yet, as while a linked desktop has not yet claimed
+ * work posted here or its claim has not yet synced.
+ */
+export const LIVE_EXECUTION_NOT_SERVED_BASE_MS = 1_500;
+/** Asks at the first delay before the delay grows, covering the time a linked desktop usually takes to claim work. */
+export const LIVE_EXECUTION_NOT_SERVED_STEADY_ANSWERS = 12;
+/** The longest delay between asks while no device serves the work. */
+export const LIVE_EXECUTION_NOT_SERVED_MAX_MS = 10_000;
 
 /**
  * Applies one page read after `state` holds. A page that asks for a reset, or that names another run than the state
@@ -64,6 +76,7 @@ export function applyLiveExecutionPage(
   const kept = (state?.items ?? []).filter((item) => !leaving.has(item.activityId));
   const written = read.items.filter((item) => item.turnId === read.turnId);
   const next: LiveExecutionState = {
+    runId: read.runId,
     threadId: read.threadId,
     turnId: read.turnId,
     providerFamilyId: read.providerFamilyId,
@@ -73,7 +86,7 @@ export function applyLiveExecutionPage(
     changeCursor: read.changeCursor,
     settled: read.settled,
   };
-  return { state: next, next: read.settled ? "stop" : read.hasMore ? "continue" : "wait" };
+  return { state: next, next: read.hasMore ? "continue" : read.settled ? "stop" : "wait" };
 }
 
 /**
@@ -97,6 +110,15 @@ export function liveExecutionTimelinePage(state: LiveExecutionState | null): Cha
 export function liveExecutionRetryDelay(failures: number): number {
   const exponent = Math.max(0, Math.min(failures - 1, 8));
   return Math.min(LIVE_EXECUTION_RETRY_MAX_MS, LIVE_EXECUTION_RETRY_BASE_MS * 2 ** exponent);
+}
+
+/**
+ * How long to wait before asking again after `answers` reads in a row found no device serving the work: the first
+ * delay while a claim is usually on its way, then doubling up to the bound.
+ */
+export function liveExecutionNotServedDelay(answers: number): number {
+  const exponent = Math.max(0, Math.min(answers - LIVE_EXECUTION_NOT_SERVED_STEADY_ANSWERS, 8));
+  return Math.min(LIVE_EXECUTION_NOT_SERVED_MAX_MS, LIVE_EXECUTION_NOT_SERVED_BASE_MS * 2 ** exponent);
 }
 
 /** How long to hold the next waiting read when the previous one started `elapsedMs` ago. */

@@ -16,6 +16,7 @@
     agentName,
     onActionError,
     identity = true,
+    stateLabel = null,
   }: {
     work: Pick<ChatWorkAssignmentRead, "id" | "state" | "createdAt">;
     /** The agent doing the work, or `null` when the thread does not name one. */
@@ -25,6 +26,8 @@
     onActionError: (error: unknown) => void;
     /** Whether the row shows the agent and start time; the live execution above it shows them instead. */
     identity?: boolean;
+    /** Text that stands for the state instead of the replicated one, as when a live execution shows newer progress. */
+    stateLabel?: string | null;
   } = $props();
 
   const localization = getLocalization();
@@ -41,7 +44,7 @@
       <strong>{#if agent}<ChatIdentityButton participant={agent} presentation="name" triggerLabel={agentName} currentResponseSettings />{:else}{agentName}{/if}</strong>
       {#if Number.isFinite(startedAt)}<time datetime={work.createdAt}>{formatDateTime(localization.locale, startedAt, { timeStyle: "short" })}</time>{/if}
     </header>{/if}
-    <p class="remote-work-state" class:active={work.state === "working"} role="status"><span>{t(`chat.delegation.states.${work.state}`)}</span></p>
+    <p class="remote-work-state" class:active={work.state === "working" || stateLabel !== null} role="status"><span>{stateLabel ?? t(`chat.delegation.states.${work.state}`)}</span></p>
     <ChatStopWorkButton assignmentId={work.id} {agentName} {onActionError} />
   </div>
 </div>

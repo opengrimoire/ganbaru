@@ -1,9 +1,10 @@
 use super::{
-    ChatActivityId, ChatErrorCode, ChatExecutionEnvironmentId, ChatScratchGenerationId,
-    ChatThreadId, ChatThreadState, ChatTurnId, ChatTurnState, ContinuationGroupId, ModelId,
-    ModelOptionSelection, ProjectConfigurationAccess, ProjectWorkingFolderId, ProviderCapabilities,
-    ProviderFamilyId, ProviderInstanceId, ProviderSessionId, ProviderSessionState,
-    ProviderThreadId, TurnModeSnapshot, UtcTimestamp, VersionedJson,
+    ChatActivityId, ChatAgentRunId, ChatErrorCode, ChatExecutionEnvironmentId,
+    ChatScratchGenerationId, ChatThreadId, ChatThreadState, ChatTurnId, ChatTurnState,
+    ContinuationGroupId, ModelId, ModelOptionSelection, ProjectConfigurationAccess,
+    ProjectWorkingFolderId, ProviderCapabilities, ProviderFamilyId, ProviderInstanceId,
+    ProviderSessionId, ProviderSessionState, ProviderThreadId, TurnModeSnapshot, UtcTimestamp,
+    VersionedJson,
 };
 use crate::events::{ChangedFileSummary, ThreadUsageUpdatedEvent};
 use serde::{Deserialize, Serialize};
@@ -227,6 +228,8 @@ pub struct ChatTimelineDeltaRead {
 #[serde(rename_all = "camelCase")]
 pub struct ChatLiveExecutionRead {
     pub assignment_id: String,
+    /// The newest run, once a run started; the agent posts the run projects into the thread name it.
+    pub run_id: Option<ChatAgentRunId>,
     /// The thread the newest run writes, once a run started.
     pub thread_id: Option<ChatThreadId>,
     /// The turn of the newest run, once a run started.

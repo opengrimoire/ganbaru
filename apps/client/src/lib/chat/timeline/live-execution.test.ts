@@ -2,9 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { ChatLiveExecutionRead, ChatTimelineItemRead, ChatTimelineTurnRead } from "$lib/chat/contracts";
 import {
   LIVE_EXECUTION_MIN_WAIT_INTERVAL_MS,
+  LIVE_EXECUTION_NOT_SERVED_BASE_MS,
+  LIVE_EXECUTION_NOT_SERVED_MAX_MS,
+  LIVE_EXECUTION_NOT_SERVED_STEADY_ANSWERS,
   LIVE_EXECUTION_RETRY_BASE_MS,
   LIVE_EXECUTION_RETRY_MAX_MS,
   applyLiveExecutionPage,
+  liveExecutionNotServedDelay,
   liveExecutionRetryDelay,
   liveExecutionTimelinePage,
   liveExecutionWaitDelay,
@@ -41,6 +45,7 @@ function turn(turnId = "turn-1", state: ChatTimelineTurnRead["state"] = "active"
 function read(overrides: Partial<ChatLiveExecutionRead> = {}): ChatLiveExecutionRead {
   return {
     assignmentId: "assignment-1",
+    runId: "run-1",
     threadId: "thread-1",
     turnId: "turn-1",
     providerFamilyId: "codex",
@@ -98,10 +103,13 @@ describe("applyLiveExecutionPage", () => {
     expect(applyLiveExecutionPage(null, read({ hasMore: true })).next).toBe("continue");
   });
 
-  it("stops once the run settles, even with more changes listed", () => {
+  it("reads the rest of a settled run, then stops", () => {
     const step = applyLiveExecutionPage(null, read({ items: [item("a", 1)], settled: true, hasMore: true }));
-    expect(step.next).toBe("stop");
+    expect(step.next).toBe("continue");
     expect(held(step).settled).toBe(true);
+    const last = applyLiveExecutionPage(held(step), read({ items: [item("b", 2)], settled: true }));
+    expect(last.next).toBe("stop");
+    expect(held(last).items.map((row) => row.activityId)).toEqual(["a", "b"]);
   });
 
   it("starts over when the cursor no longer applies", () => {
@@ -152,6 +160,13 @@ describe("retry and wait delays", () => {
     expect(liveExecutionRetryDelay(3)).toBe(LIVE_EXECUTION_RETRY_BASE_MS * 4);
     expect(liveExecutionRetryDelay(50)).toBe(LIVE_EXECUTION_RETRY_MAX_MS);
     expect(liveExecutionRetryDelay(0)).toBe(LIVE_EXECUTION_RETRY_BASE_MS);
+  });
+
+  it("asks again quickly while a claim is usually on its way, then backs off", () => {
+    expect(liveExecutionNotServedDelay(1)).toBe(LIVE_EXECUTION_NOT_SERVED_BASE_MS);
+    expect(liveExecutionNotServedDelay(LIVE_EXECUTION_NOT_SERVED_STEADY_ANSWERS)).toBe(LIVE_EXECUTION_NOT_SERVED_BASE_MS);
+    expect(liveExecutionNotServedDelay(LIVE_EXECUTION_NOT_SERVED_STEADY_ANSWERS + 1)).toBe(LIVE_EXECUTION_NOT_SERVED_BASE_MS * 2);
+    expect(liveExecutionNotServedDelay(LIVE_EXECUTION_NOT_SERVED_STEADY_ANSWERS + 50)).toBe(LIVE_EXECUTION_NOT_SERVED_MAX_MS);
   });
 
   it("spaces waiting reads that return at once and not ones that waited", () => {

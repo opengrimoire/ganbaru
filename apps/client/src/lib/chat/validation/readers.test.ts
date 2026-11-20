@@ -83,6 +83,7 @@ describe("parseChatTimelineDelta", () => {
 describe("parseChatLiveFollow", () => {
   const read = {
     assignmentId: "assignment-1",
+    runId: null,
     threadId: null,
     turnId: null,
     providerFamilyId: null,

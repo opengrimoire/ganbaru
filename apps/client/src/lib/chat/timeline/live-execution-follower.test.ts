@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ChatLiveExecutionRead, ChatLiveFollowRead } from "$lib/chat/contracts";
 import { LiveExecutionFollower, type LiveExecutionView } from "./live-execution-follower";
-import { LIVE_EXECUTION_MIN_WAIT_INTERVAL_MS, LIVE_EXECUTION_RETRY_BASE_MS } from "./live-execution";
+import {
+  LIVE_EXECUTION_MIN_WAIT_INTERVAL_MS,
+  LIVE_EXECUTION_NOT_SERVED_BASE_MS,
+  LIVE_EXECUTION_NOT_SERVED_MAX_MS,
+  LIVE_EXECUTION_NOT_SERVED_STEADY_ANSWERS,
+  LIVE_EXECUTION_RETRY_BASE_MS,
+} from "./live-execution";
 
 interface ReadCall {
   assignmentId: string;
@@ -51,6 +57,7 @@ function page(overrides: Partial<ChatLiveExecutionRead> = {}): ChatLiveFollowRea
     kind: "page",
     read: {
       assignmentId: "assignment-1",
+      runId: "run-1",
       threadId: "thread-1",
       turnId: "turn-1",
       providerFamilyId: "codex",
@@ -172,14 +179,62 @@ describe("LiveExecutionFollower", () => {
     vi.restoreAllMocks();
   });
 
-  it("gives up and drops the rows when no other device serves the work", async () => {
+  it("keeps asking while no device serves the work yet and follows the run once a desktop claims it", async () => {
     const test = harness();
     test.follower.follow("assignment-1");
     test.calls[0]?.answer({ kind: "notServed" });
     await settle();
-    test.advance(60_000);
-    expect(test.calls).toHaveLength(1);
     expect(test.last()).toEqual({ state: null, status: "notServed" });
+    test.advance(LIVE_EXECUTION_NOT_SERVED_BASE_MS);
+    expect(test.calls).toHaveLength(2);
+    const viewsBefore = test.views.length;
+    for (let answer = 2; answer <= LIVE_EXECUTION_NOT_SERVED_STEADY_ANSWERS; answer += 1) {
+      test.calls.at(-1)?.answer({ kind: "notServed" });
+      await settle();
+      test.advance(LIVE_EXECUTION_NOT_SERVED_BASE_MS);
+    }
+    expect(test.views, "repeated answers publish nothing new").toHaveLength(viewsBefore);
+    const steadyCalls = test.calls.length;
+    expect(steadyCalls).toBe(LIVE_EXECUTION_NOT_SERVED_STEADY_ANSWERS + 1);
+    test.calls.at(-1)?.answer({ kind: "notServed" });
+    await settle();
+    test.advance(LIVE_EXECUTION_NOT_SERVED_BASE_MS);
+    expect(test.calls, "the delay grows once the claim is late").toHaveLength(steadyCalls);
+
+    test.advance(LIVE_EXECUTION_NOT_SERVED_MAX_MS);
+    expect(test.calls).toHaveLength(steadyCalls + 1);
+    const claimed = test.calls.at(-1);
+    expect(claimed).toMatchObject({ afterChange: null, wait: false });
+    claimed?.answer(page());
+    await settle();
+    expect(test.last()?.status).toBe("live");
+    test.advance(LIVE_EXECUTION_MIN_WAIT_INTERVAL_MS);
+    expect(test.calls.at(-1)).toMatchObject({ afterChange: 5, wait: true });
+  });
+
+  it("drops the rows and reads the whole run again when the serving desktop stops serving it", async () => {
+    const test = harness();
+    test.follower.follow("assignment-1");
+    test.calls[0]?.answer(page());
+    await settle();
+    test.advance(LIVE_EXECUTION_MIN_WAIT_INTERVAL_MS);
+    test.calls[1]?.answer({ kind: "notServed" });
+    await settle();
+    expect(test.last()).toEqual({ state: null, status: "notServed" });
+    test.advance(LIVE_EXECUTION_NOT_SERVED_BASE_MS);
+    expect(test.calls[2]).toMatchObject({ afterChange: null, wait: false });
+  });
+
+  it("stops asking while paused and asks again when resumed", async () => {
+    const test = harness();
+    test.follower.follow("assignment-1");
+    test.calls[0]?.answer({ kind: "notServed" });
+    await settle();
+    test.follower.pause();
+    test.advance(LIVE_EXECUTION_NOT_SERVED_MAX_MS);
+    expect(test.calls).toHaveLength(1);
+    test.follower.follow("assignment-1");
+    expect(test.calls).toHaveLength(2);
   });
 
   it("drops a read that returns after a pause and resumes from the held cursor", async () => {

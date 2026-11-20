@@ -500,6 +500,7 @@ export const chat = {
     expectedResult: "Resultado esperado",
     openParentThread: "Abrir el hilo de origen",
     openChildThread: (name: string) => `Abrir el hilo de ${name}`,
+    starting: "Iniciando",
     states: {
       queued: "En cola",
       working: "Trabajando",

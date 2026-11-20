@@ -10,6 +10,7 @@ const ASSIGNMENT: &str = "assignment-1";
 fn read(cursor: u64, settled: bool) -> ChatLiveExecutionRead {
     ChatLiveExecutionRead {
         assignment_id: ASSIGNMENT.to_string(),
+        run_id: None,
         thread_id: None,
         turn_id: None,
         provider_family_id: None,

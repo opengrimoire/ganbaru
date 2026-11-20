@@ -197,6 +197,7 @@ export function parseChatLiveExecution(value: unknown, label = "Chat live execut
   const record = readRecord(value, label);
   return {
     assignmentId: readIdentifier(record.assignmentId, `${label}.assignmentId`),
+    runId: readNullable(record.runId, `${label}.runId`, readIdentifier),
     threadId: readNullable(record.threadId, `${label}.threadId`, readIdentifier),
     turnId: readNullable(record.turnId, `${label}.turnId`, readIdentifier),
     providerFamilyId: readNullable(record.providerFamilyId, `${label}.providerFamilyId`, readIdentifier),

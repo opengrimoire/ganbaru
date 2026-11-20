@@ -5,6 +5,9 @@
   import { LiveExecutionFollower, type LiveExecutionView } from "$lib/chat/timeline/live-execution-follower";
   import ChatExecutionTimeline from "./ChatExecutionTimeline.svelte";
   import ChatRemoteWorkRow from "./ChatRemoteWorkRow.svelte";
+  import { getLocalization } from "$lib/i18n/translator.svelte";
+
+  const { t } = getLocalization();
 
   /**
    * Shows work a linked desktop runs as it happens, read from that desktop over the LAN while this thread is open and
@@ -31,6 +34,10 @@
   });
   const timelinePage = $derived(liveExecutionTimelinePage(view.state));
   const assignmentId = $derived(work.id);
+  // Work reads as queued here until the desktop's claim syncs, which trails the run it already streams.
+  const stateLabel = $derived(work.state !== "queued"
+    ? null
+    : t(timelinePage ? "chat.delegation.states.working" : "chat.delegation.starting"));
 
   $effect(() => {
     const updateForeground = (): void => { foreground = document.visibilityState === "visible"; };
@@ -56,4 +63,4 @@
     providerFamilyId={view.state?.providerFamilyId ?? null}
   />
 {/if}
-<ChatRemoteWorkRow {work} {agent} {agentName} {onActionError} identity={timelinePage === null} />
+<ChatRemoteWorkRow {work} {agent} {agentName} {onActionError} identity={timelinePage === null} {stateLabel} />

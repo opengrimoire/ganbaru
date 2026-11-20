@@ -69,9 +69,9 @@
     timelinePage?: ChatTimelinePageRead | null;
     executionThread?: ChatThreadShellRead | null;
     /**
-     * Shows an embedded `timelinePage` another device executes: rows stay visible, while activity detail, changed
-     * files, reactions, message actions, plan actions, revert, and usage, which read or change data this device does
-     * not hold, are left out.
+     * Shows an embedded `timelinePage` another device executes: rows and their detail previews stay visible, while
+     * whole activity details, changed files, reactions, message actions, plan actions, revert, and usage, which read or
+     * change data this device does not hold, are left out.
      */
     readOnly?: boolean;
     /** The provider family that names the model in a read-only page, which has no thread shell on this device. */
@@ -814,7 +814,7 @@
 
 {#snippet activityHistoryRow(activity: TimelineActivityRow, simplified: boolean)}
   {@const changeCounts = simplified ? null : fileChangeLineCounts(activity)}
-  {#if !readOnly && timelineActivitySupportsDisclosure(activity)}
+  {#if timelineActivitySupportsDisclosure(activity)}
     {@const activityExpanded = expandedActivities.includes(activity.id)}
     <div class="chat-process-step disclosure" class:active={activityIsInProgress(activity)} class:failed={activity.status === "failed"}>
       <button type="button" class="chat-process-step-trigger" data-timeline-disclosure-expanded={activityExpanded} aria-expanded={activityExpanded} onclick={() => { expandedActivities = toggle(expandedActivities, activity.id); }}>
@@ -828,7 +828,7 @@
       <div class="chat-disclosure-region" class:expanded={activityExpanded} aria-hidden={!activityExpanded} inert={!activityExpanded}>
         <div class="chat-disclosure-inner">
           <div class="chat-step-detail">
-            <ChatActivityDetail {activity} detail={activityDetail(activity)} threadId={activity.sourceThreadId ?? selectedThread?.id ?? chat.selectedThreadId} expanded={activityExpanded} />
+            <ChatActivityDetail {activity} detail={activityDetail(activity)} threadId={readOnly ? null : activity.sourceThreadId ?? selectedThread?.id ?? chat.selectedThreadId} expanded={activityExpanded} />
           </div>
         </div>
       </div>

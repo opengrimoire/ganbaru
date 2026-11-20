@@ -1,5 +1,6 @@
 import type {
   ChatActivityId,
+  ChatAgentRunId,
   ChatErrorCode,
   ChatExecutionEnvironmentId,
   ChatScratchGenerationId,
@@ -178,6 +179,8 @@ export interface ChatTimelineDeltaRead {
  */
 export interface ChatLiveExecutionRead {
   assignmentId: ChatWorkAssignmentId;
+  /** The newest run, once a run started; the agent posts the run projects into the thread name it. */
+  runId: ChatAgentRunId | null;
   /** The thread the newest run writes, once a run started. */
   threadId: ChatThreadId | null;
   /** The turn of the newest run, once a run started. */

@@ -1,6 +1,7 @@
 import type { ChatLiveFollowRead, ChatWorkAssignmentId } from "$lib/chat/contracts";
 import {
   applyLiveExecutionPage,
+  liveExecutionNotServedDelay,
   liveExecutionRetryDelay,
   liveExecutionWaitDelay,
   type LiveExecutionState,
@@ -18,7 +19,7 @@ export type LiveExecutionScheduler = (callback: () => void, delayMs: number) => 
 
 /**
  * Where following stands: reading the first page, following the run, trying again after a failed read, done because
- * the run settled, or not served because no other device runs the work.
+ * the run settled, or not served because no other device runs the work yet.
  */
 export type LiveExecutionStatus = "connecting" | "live" | "retrying" | "settled" | "notServed";
 
@@ -44,8 +45,9 @@ function timerScheduler(callback: () => void, delayMs: number): () => void {
 /**
  * Follows the live execution of one work assignment a linked desktop runs. Reads run one at a time: the first reads
  * the whole run, later ones wait on the desktop for the next change, a page with more changes is followed at once, and
- * a failed read is tried again after a growing delay. Following ends when the run settles or the work is not served,
- * and `pause` stops reading while keeping the rows held, so `follow` resumes from the same cursor.
+ * a failed read is tried again after a growing delay. Work no device serves yet, as while the desktop has not claimed
+ * it or its claim has not synced here, is asked about again after a growing delay. Following ends when the run
+ * settles, and `pause` stops reading while keeping the rows held, so `follow` resumes from the same cursor.
  */
 export class LiveExecutionFollower {
   readonly #read: LiveExecutionReader;
@@ -56,6 +58,7 @@ export class LiveExecutionFollower {
   #state: LiveExecutionState | null = null;
   #status: LiveExecutionStatus = "connecting";
   #failures = 0;
+  #notServedAnswers = 0;
   /** Changes whenever following stops or restarts, so a read that returns afterwards is dropped. */
   #generation = 0;
   #cancelScheduled: (() => void) | null = null;
@@ -75,9 +78,10 @@ export class LiveExecutionFollower {
       this.#state = null;
       this.#status = "connecting";
       this.#failures = 0;
+      this.#notServedAnswers = 0;
       this.#publish();
     }
-    if (this.#status === "settled" || this.#status === "notServed") return;
+    if (this.#status === "settled") return;
     this.#run(this.#generation, false);
   }
 
@@ -108,9 +112,13 @@ export class LiveExecutionFollower {
 
   #receive(generation: number, answer: ChatLiveFollowRead, startedAt: number): void {
     if (answer.kind === "notServed") {
-      this.#state = null;
-      this.#status = "notServed";
-      this.#publish();
+      this.#notServedAnswers += 1;
+      if (this.#state !== null || this.#status !== "notServed") {
+        this.#state = null;
+        this.#status = "notServed";
+        this.#publish();
+      }
+      this.#later(generation, liveExecutionNotServedDelay(this.#notServedAnswers), false);
       return;
     }
     if (answer.kind === "unreachable") {
@@ -118,6 +126,7 @@ export class LiveExecutionFollower {
       return;
     }
     this.#failures = 0;
+    this.#notServedAnswers = 0;
     const step = applyLiveExecutionPage(this.#state, answer.read);
     this.#state = step.state;
     this.#status = step.next === "stop" ? "settled" : step.state === null ? "connecting" : "live";

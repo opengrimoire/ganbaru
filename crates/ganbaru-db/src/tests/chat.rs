@@ -161,6 +161,7 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_agent_app_settings",
             "chat_project_agent_settings",
             "chat_push_approvals",
+            "chat_remembered_approvals",
             "chat_agent_channel_memberships",
             "chat_conversation_audience_state",
             "chat_message_references",
@@ -242,6 +243,8 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_participants_local_user_identity",
             "idx_chat_conversation_memberships_participant",
             "idx_chat_push_approvals_folder",
+            "idx_chat_remembered_approvals_approved_by",
+            "idx_chat_remembered_approvals_agent",
             "idx_chat_agent_channel_memberships_agent",
             "idx_chat_assignment_authorization_revisions_active",
             "idx_chat_host_tool_invocations_authorization",
@@ -416,6 +419,7 @@ fn fresh_vaults_seed_primary_folders_but_no_chat_conversations_or_pending_keys()
             "chat_conversation_memberships",
             "chat_agent_channel_memberships",
             "chat_push_approvals",
+            "chat_remembered_approvals",
             "chat_conversation_read_cursors",
             "chat_reply_thread_read_cursors",
         ] {
@@ -486,6 +490,7 @@ fn standalone_agent_identity_is_inert_until_a_channel_adds_it() {
             "chat_conversation_memberships",
             "chat_agent_channel_memberships",
             "chat_push_approvals",
+            "chat_remembered_approvals",
         ] {
             let column = if table == "chat_conversation_memberships" {
                 "participant_id"
@@ -1886,6 +1891,181 @@ fn push_approvals_survive_unrelated_and_applied_changes() {
             .await
             .unwrap();
         assert_eq!(approvals, 0, "approvals are deleted with their folder");
+    });
+}
+
+/// Inserts a remembered approval of the fixture agent in the fixture channel for the command
+/// `command`, made by `approver` under ask access.
+async fn insert_remembered_approval(
+    pool: &sqlx::SqlitePool,
+    command: &str,
+    approver: Option<&str>,
+) -> Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO chat_remembered_approvals
+             (conversation_id, agent_id, subject_kind, subject_key, sync_key,
+              approved_by_participant_id, approved_at, granted_access)
+         VALUES ('conversation-general', 'participant-agent', 'command', ?,
+                 'remembered-approval-' || ?, ?, ?, 'ask')",
+    )
+    .bind(command)
+    .bind(command)
+    .bind(approver)
+    .bind(NOW)
+    .execute(pool)
+    .await
+}
+
+#[test]
+fn remembered_approvals_are_made_only_by_people_outside_the_sync_applier() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        let refused = "Remembered approvals are made by people";
+
+        for approver in [Some("participant-agent"), None, Some("participant-missing")] {
+            let error = insert_remembered_approval(&pool, "cargo test", approver)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(refused), "{approver:?}: {error}");
+        }
+        insert_remembered_approval(&pool, "cargo test", Some("participant:local-owner"))
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE chat_remembered_approvals SET approved_by_participant_id = NULL
+             WHERE subject_key = 'cargo test'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for update in [
+            "UPDATE chat_remembered_approvals SET approved_by_participant_id = 'participant-agent'
+             WHERE subject_key = 'cargo test'",
+            "UPDATE chat_remembered_approvals SET approved_at = '2026-07-20T12:05:00.000Z'
+             WHERE subject_key = 'cargo test'",
+        ] {
+            let error = sqlx::query(update)
+                .execute(&pool)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(refused), "{error}");
+        }
+
+        set_sync_applying(&pool, true).await;
+        insert_remembered_approval(&pool, "cargo build", Some("participant-agent"))
+            .await
+            .unwrap();
+        set_sync_applying(&pool, false).await;
+
+        for (kind, key, access) in [
+            ("path", "src", "ask"),
+            ("command", "", "ask"),
+            ("command", "cargo check", "admin"),
+        ] {
+            let error = sqlx::query(
+                "INSERT INTO chat_remembered_approvals
+                     (conversation_id, agent_id, subject_kind, subject_key, sync_key,
+                      approved_by_participant_id, approved_at, granted_access)
+                 VALUES ('conversation-general', 'participant-agent', ?, ?, 'refused',
+                         'participant:local-owner', ?, ?)",
+            )
+            .bind(kind)
+            .bind(key)
+            .bind(NOW)
+            .bind(access)
+            .execute(&pool)
+            .await
+            .unwrap_err()
+            .to_string();
+            assert!(
+                error.contains("CHECK constraint failed"),
+                "{kind} {key:?} {access}: {error}"
+            );
+        }
+    });
+}
+
+#[test]
+fn remembered_approvals_are_revoked_when_the_agent_leaves_the_channel() {
+    let removals: [(&str, &str); 3] = [
+        (
+            "membership removed",
+            "UPDATE chat_agent_channel_memberships SET removed_at = '2026-07-20T12:05:00.000Z'
+             WHERE sync_key = 'channel-membership-agent'",
+        ),
+        (
+            "membership deleted",
+            "DELETE FROM chat_agent_channel_memberships
+             WHERE sync_key = 'channel-membership-agent'",
+        ),
+        (
+            "agent archived",
+            "UPDATE chat_participants SET archived_at = '2026-07-20T12:05:00.000Z'
+             WHERE id = 'participant-agent'",
+        ),
+    ];
+    super::block_on(async {
+        for (case, statement) in removals {
+            let pool = migrated_memory_pool().await;
+            load_project_chat_graph(&pool).await;
+            insert_remembered_approval(&pool, "cargo test", Some("participant:local-owner"))
+                .await
+                .unwrap();
+            sqlx::query(AssertSqlSafe(statement))
+                .execute(&pool)
+                .await
+                .unwrap_or_else(|error| panic!("{case}: {error}"));
+            let (revoked_at, revision): (Option<String>, i64) =
+                sqlx::query_as("SELECT revoked_at, revision FROM chat_remembered_approvals")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert!(revoked_at.is_some(), "{case} revokes the approval");
+            assert_eq!(revision, 2, "{case} bumps the revision once");
+        }
+    });
+}
+
+#[test]
+fn remembered_approvals_survive_applied_removals_and_go_with_their_channel() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_project_chat_graph(&pool).await;
+        insert_remembered_approval(&pool, "cargo test", Some("participant:local-owner"))
+            .await
+            .unwrap();
+        set_sync_applying(&pool, true).await;
+        sqlx::query(
+            "UPDATE chat_agent_channel_memberships SET removed_at = '2026-07-20T12:05:00.000Z'
+             WHERE sync_key = 'channel-membership-agent'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        set_sync_applying(&pool, false).await;
+        let state: (Option<String>, i64) =
+            sqlx::query_as("SELECT revoked_at, revision FROM chat_remembered_approvals")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            state,
+            (None, 1),
+            "an applied removal leaves the revocation to the device that removed the agent"
+        );
+
+        sqlx::query("DELETE FROM projects WHERE id = 'project-chat'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let approvals: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_remembered_approvals")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(approvals, 0, "approvals are deleted with their channel");
     });
 }
 

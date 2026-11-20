@@ -685,6 +685,11 @@ table 365 chat_push_approvals replicated key sync_key rule any
   group 0 immutable conversation_id:row_key->360:cascade agent_id:row_key->353:cascade working_folder_id:row_key->98:cascade push_url:text(..=2048) destination_branch:text(..=1024)
   group 1 coupled approved_by_participant_id:optional_row_key->352:set_null approved_at:timestamp revoked_at:optional_timestamp
   group 2 register
+table 366 chat_remembered_approvals replicated key sync_key rule any
+  derived key exists 2 inputs conversation_id,agent_id,subject_kind,subject_key prefix remembered-approval
+  group 0 immutable conversation_id:row_key->360:cascade agent_id:row_key->353:cascade subject_kind:text(..=32) subject_key:text(..=2048)
+  group 1 coupled approved_by_participant_id:optional_row_key->352:set_null approved_at:timestamp revoked_at:optional_timestamp granted_access:text(..=32)
+  group 2 register
 table 364 chat_channels replicated key id rule any
   group 0 immutable project_id:row_key->97:cascade conversation_id:row_key->360:cascade is_default:flag created_at:timestamp
   group 1 register surfaced recoverable name:text(..=80) topic:text(..=250)

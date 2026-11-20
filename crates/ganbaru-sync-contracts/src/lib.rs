@@ -16,6 +16,7 @@ pub mod chat_channel_notes;
 pub mod chat_provider_status;
 pub mod chat_push_approvals;
 pub mod chat_recurrence;
+pub mod chat_remembered_approvals;
 pub mod chat_usage;
 pub mod codec;
 pub mod crypto;

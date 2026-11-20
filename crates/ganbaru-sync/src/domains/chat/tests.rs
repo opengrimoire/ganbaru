@@ -231,6 +231,54 @@ fn chat_push_approval_revocation_outranks_approval() {
 }
 
 #[test]
+fn chat_remembered_approval_revocation_outranks_approval() {
+    let adapter = ChatAdapter;
+    let priority = |revoked: Option<&str>| {
+        adapter.priority(
+            REMEMBERED_APPROVALS_TABLE,
+            remembered_approval_group::APPROVAL,
+            &value(vec![
+                t("participant:local-owner"),
+                t(AT),
+                optional(revoked),
+                t("own"),
+            ]),
+        )
+    };
+    assert!(priority(Some(AT)) > priority(None));
+}
+
+#[test]
+fn chat_remembered_approvals_name_a_known_kind_a_printable_subject_and_an_access() {
+    let check = |group, fields: Vec<Field>| {
+        ChatAdapter.validate(REMEMBERED_APPROVALS_TABLE, group, &value(fields))
+    };
+    let identity = |kind: &str, subject: &str| {
+        check(
+            remembered_approval_group::IDENTITY,
+            vec![t("conversation-1"), t("agent-1"), t(kind), t(subject)],
+        )
+    };
+    assert!(identity("url_origin", "https://docs.example.com").is_ok());
+    assert!(identity("command", "pnpm test").is_ok());
+    assert!(identity("tool", "mcp__docs__search").is_ok());
+    assert!(identity("path", "/etc").is_err());
+    assert!(identity("command", "").is_err());
+    assert!(identity("command", "pnpm test\nrm -rf .").is_err());
+
+    let approval = |revoked: Field, access: &str| {
+        check(
+            remembered_approval_group::APPROVAL,
+            vec![t("participant:local-owner"), t(AT), revoked, t(access)],
+        )
+    };
+    assert!(approval(Field::Null, "ask").is_ok());
+    assert!(approval(t(AT), "talk").is_ok());
+    assert!(approval(Field::Null, "everything").is_err());
+    assert!(approval(t("yesterday"), "ask").is_err());
+}
+
+#[test]
 fn chat_channel_and_conversation_archive_outranks_unarchive() {
     let adapter = ChatAdapter;
     for (table, group) in [

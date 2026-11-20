@@ -47,7 +47,7 @@ const NON_CASCADING_FOREIGN_KEYS: [(&str, &str); 3] = [
 ];
 
 /// Triggers that stand down while the sync engine applies remote rows.
-const GATED_TRIGGERS: [&str; 14] = [
+const GATED_TRIGGERS: [&str; 17] = [
     "chat_reply_threads_root_item_insert",
     "chat_communication_message_current_revision_update",
     "chat_agent_channel_membership_push_approvals_update",
@@ -62,12 +62,15 @@ const GATED_TRIGGERS: [&str; 14] = [
     "chat_agent_channel_membership_audience_update",
     "chat_agent_channel_membership_audience_delete",
     "chat_communication_search_insert",
+    "chat_agent_channel_membership_remembered_approvals_delete",
+    "chat_agent_channel_membership_remembered_approvals_update",
+    "chat_participant_remembered_approvals_archive",
 ];
 
 const APPLY_GATE: &str = "(SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0";
 
 /// Chat tables that replicate; every other Chat table is device-local.
-const REPLICATED_CHAT_TABLES: [&str; 29] = [
+const REPLICATED_CHAT_TABLES: [&str; 30] = [
     "chat_participants",
     "chat_agent_app_settings",
     "chat_project_agent_settings",
@@ -77,6 +80,7 @@ const REPLICATED_CHAT_TABLES: [&str; 29] = [
     "chat_conversation_memberships",
     "chat_agent_channel_memberships",
     "chat_push_approvals",
+    "chat_remembered_approvals",
     "chat_channels",
     "chat_reply_threads",
     "chat_conversation_items",

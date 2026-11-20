@@ -53,7 +53,7 @@
 //! Execution, drafts, review history, provider state, receipts, dispatch claims, cleanup jobs,
 //! and the audience counters stay on the device as `Local` tables, and message search is
 //! `Derived`. Replicas write Chat like the owner; device-local state never leaves the device.
-//! Ids 359, 366 to 369, 382 to 389, 391 to 394, 398, and 403 to 447 are reserved.
+//! Ids 359, 367 to 369, 382 to 389, 391 to 394, 398, and 403 to 447 are reserved.
 
 use ganbaru_sync_contracts::bounds::MAX_DEVICE_ID_BYTES;
 use ganbaru_sync_contracts::chat_provider_status::{
@@ -64,6 +64,9 @@ use ganbaru_sync_contracts::chat_push_approvals::{
     MAX_PUSH_APPROVAL_BRANCH_BYTES, MAX_PUSH_APPROVAL_URL_BYTES, PUSH_APPROVAL_KEY_PREFIX,
 };
 use ganbaru_sync_contracts::chat_recurrence;
+use ganbaru_sync_contracts::chat_remembered_approvals::{
+    MAX_REMEMBERED_APPROVAL_SUBJECT_BYTES, REMEMBERED_APPROVAL_KEY_PREFIX,
+};
 use ganbaru_sync_contracts::chat_usage::{
     AGENT_USAGE_OWNER_PREFIX, LOCAL_DATE_CHARS, MAX_DAILY_COUNTED_TOKENS, MAX_DAILY_RUNS,
     MAX_DAILY_WORKING_SECONDS,
@@ -118,6 +121,8 @@ pub const CHANNEL_MEMBERSHIPS_TABLE: TableId = TableId(362);
 pub const CHANNELS_TABLE: TableId = TableId(364);
 /// `chat_push_approvals`.
 pub const PUSH_APPROVALS_TABLE: TableId = TableId(365);
+/// `chat_remembered_approvals`.
+pub const REMEMBERED_APPROVALS_TABLE: TableId = TableId(366);
 /// `chat_channel_notes`.
 pub const CHANNEL_NOTES_TABLE: TableId = TableId(400);
 /// `chat_reply_threads`.
@@ -293,6 +298,18 @@ pub mod push_approval_group {
     /// `destination_branch`.
     pub const IDENTITY: GroupId = group_id(0);
     /// `approved_by_participant_id`, `approved_at`, and `revoked_at`.
+    pub const APPROVAL: GroupId = group_id(1);
+    /// Whether the row exists.
+    pub const EXISTS: GroupId = group_id(2);
+}
+
+/// Remembered approval field groups.
+pub mod remembered_approval_group {
+    use super::{GroupId, group_id};
+
+    /// `conversation_id`, `agent_id`, `subject_kind`, and `subject_key`.
+    pub const IDENTITY: GroupId = group_id(0);
+    /// `approved_by_participant_id`, `approved_at`, `revoked_at`, and `granted_access`.
     pub const APPROVAL: GroupId = group_id(1);
     /// Whether the row exists.
     pub const EXISTS: GroupId = group_id(2);
@@ -825,6 +842,7 @@ pub const PARTICIPANTS: TableSpec = TableSpec {
     )],
     triggers: &[
         gated("chat_participant_push_approvals_archive"),
+        gated("chat_participant_remembered_approvals_archive"),
         applier_visible("chat_participants_local_user_identity"),
         gated("chat_participants_named_agent_delete"),
     ],
@@ -1066,6 +1084,8 @@ pub const CHANNEL_MEMBERSHIPS: TableSpec = TableSpec {
         gated("chat_agent_channel_membership_audience_delete"),
         gated("chat_agent_channel_membership_push_approvals_delete"),
         gated("chat_agent_channel_membership_push_approvals_update"),
+        gated("chat_agent_channel_membership_remembered_approvals_delete"),
+        gated("chat_agent_channel_membership_remembered_approvals_update"),
         gated("chat_agent_channel_membership_audience_insert"),
         gated("chat_agent_channel_membership_audience_update"),
         applier_visible("chat_agent_channel_membership_identity_insert"),
@@ -1133,6 +1153,58 @@ pub const PUSH_APPROVALS: TableSpec = TableSpec {
             "push_url",
             "destination_branch",
         ],
+    }),
+    ..BASE
+};
+
+/// `chat_remembered_approvals`, revoked by `revoked_at`. Each lets one agent repeat one kind of
+/// request in one channel without asking. Only a person approves, which local triggers check.
+/// Removing the agent from the channel or archiving it revokes its approvals through local
+/// triggers, and the Chat services revoke them when the channel's effective access falls below
+/// `granted_access`. A revocation wins over a concurrent approval.
+pub const REMEMBERED_APPROVALS: TableSpec = TableSpec {
+    id: REMEMBERED_APPROVALS_TABLE,
+    name: "chat_remembered_approvals",
+    key_column: SYNC_KEY_COLUMN,
+    groups: &[
+        identity(
+            remembered_approval_group::IDENTITY,
+            &[
+                row_key("conversation_id"),
+                row_key("agent_id"),
+                text("subject_kind", MAX_ENUM_CHARS),
+                text("subject_key", MAX_REMEMBERED_APPROVAL_SUBJECT_BYTES),
+            ],
+            &[
+                cascade("conversation_id", CONVERSATIONS_TABLE),
+                cascade("agent_id", AGENTS_TABLE),
+            ],
+        ),
+        bumps(referencing(
+            coupled(
+                remembered_approval_group::APPROVAL,
+                "approval",
+                &[
+                    optional_row_key("approved_by_participant_id"),
+                    timestamp("approved_at"),
+                    optional_timestamp("revoked_at"),
+                    text("granted_access", MAX_ENUM_CHARS),
+                ],
+            ),
+            &[set_null("approved_by_participant_id", PARTICIPANTS_TABLE)],
+        )),
+        exists(remembered_approval_group::EXISTS),
+    ],
+    local_columns: &[REVISION],
+    revision_column: Some("revision"),
+    triggers: &[
+        gated("chat_remembered_approvals_approver_is_person_insert"),
+        gated("chat_remembered_approvals_approver_is_person_update"),
+    ],
+    derived_key: Some(DerivedKey {
+        exists_group: remembered_approval_group::EXISTS,
+        prefix: Some(REMEMBERED_APPROVAL_KEY_PREFIX),
+        key_inputs: &["conversation_id", "agent_id", "subject_kind", "subject_key"],
     }),
     ..BASE
 };
@@ -2093,6 +2165,7 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         MEMBERSHIPS,
         CHANNEL_MEMBERSHIPS,
         PUSH_APPROVALS,
+        REMEMBERED_APPROVALS,
         CHANNELS,
         REPLY_THREADS,
         ITEMS,

@@ -29,6 +29,9 @@ use ganbaru_sync_contracts::chat_push_approvals::{
     MAX_PUSH_APPROVAL_BRANCH_BYTES, MAX_PUSH_APPROVAL_URL_BYTES,
 };
 use ganbaru_sync_contracts::chat_recurrence;
+use ganbaru_sync_contracts::chat_remembered_approvals::{
+    SUBJECT_KINDS, subject_key_is_well_formed,
+};
 use ganbaru_sync_contracts::chat_usage::agent_usage_key;
 use ganbaru_sync_contracts::{Cause, Field, GroupId, GroupValue, OrderKey, RowKey, TableId, Value};
 use ganbaru_working_folders::UtcTimestamp;
@@ -45,13 +48,14 @@ use crate::manifest::vault::chat::{
     ENVIRONMENT_TARGETS_TABLE, FOLDER_TARGETS_TABLE, INPUTS_TABLE, ITEMS_TABLE, MEMBERSHIPS_TABLE,
     MESSAGES_TABLE, PARTICIPANT_TARGETS_TABLE, PARTICIPANTS_TABLE, PATH_TARGETS_TABLE,
     POLICY_REVISIONS_TABLE, PROJECT_SETTINGS_TABLE, PROVIDER_STATUS_TABLE, PUSH_APPROVALS_TABLE,
-    RECURRENCES_TABLE, REFERENCES_TABLE, REPLY_CURSORS_TABLE, REPLY_THREADS_TABLE, REVISIONS_TABLE,
-    SCHEDULED_ATTACHMENT_REFERENCES, SCHEDULED_REFERENCES, SCHEDULED_TABLE, SEMANTIC_UPDATES_TABLE,
-    agent_group, agent_usage_group, app_settings_group, assignment_group, channel_group,
-    channel_membership_group, channel_note_group, conversation_group, input_group, item_group,
-    membership_group, message_group, participant_group, policy_revision_group,
-    project_settings_group, provider_status_group, push_approval_group, read_cursor_group,
-    recurrence_group, reply_thread_group, scheduled_group, semantic_update_group, timeline_group,
+    RECURRENCES_TABLE, REFERENCES_TABLE, REMEMBERED_APPROVALS_TABLE, REPLY_CURSORS_TABLE,
+    REPLY_THREADS_TABLE, REVISIONS_TABLE, SCHEDULED_ATTACHMENT_REFERENCES, SCHEDULED_REFERENCES,
+    SCHEDULED_TABLE, SEMANTIC_UPDATES_TABLE, agent_group, agent_usage_group, app_settings_group,
+    assignment_group, channel_group, channel_membership_group, channel_note_group,
+    conversation_group, input_group, item_group, membership_group, message_group,
+    participant_group, policy_revision_group, project_settings_group, provider_status_group,
+    push_approval_group, read_cursor_group, recurrence_group, remembered_approval_group,
+    reply_thread_group, scheduled_group, semantic_update_group, timeline_group,
 };
 
 /// Characters of a display name after trimming.
@@ -514,6 +518,35 @@ fn validate_push_approval(group: GroupId, fields: &[Field]) -> Result<(), Adapte
         }
         (push_approval_group::EXISTS, []) => Ok(()),
         _ => Err(AdapterError("chat push approval value")),
+    }
+}
+
+/// Checks a remembered approval's shape only. Devices derive subject keys with stricter rules,
+/// so a well formed key no device would derive never matches a request.
+fn validate_remembered_approval(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (remembered_approval_group::IDENTITY, [_conversation, _agent, kind, key]) => {
+            one_of(kind, &SUBJECT_KINDS, "chat remembered approval kind")?;
+            if subject_key_is_well_formed(text(key)?) {
+                Ok(())
+            } else {
+                Err(AdapterError("chat remembered approval subject"))
+            }
+        }
+        (
+            remembered_approval_group::APPROVAL,
+            [_approver, approved_at, revoked_at, granted_access],
+        ) => {
+            timestamp(approved_at)?;
+            optional_timestamp(revoked_at)?;
+            one_of(
+                granted_access,
+                &AGENT_ACCESS_LEVELS,
+                "chat remembered approval access",
+            )
+        }
+        (remembered_approval_group::EXISTS, []) => Ok(()),
+        _ => Err(AdapterError("chat remembered approval value")),
     }
 }
 
@@ -1478,7 +1511,7 @@ fn agent_access_priority(fields: &[Field]) -> u8 {
     restrictiveness(fields.first(), &AGENT_ACCESS_LEVELS)
 }
 
-/// A revocation wins over a concurrent approval.
+/// A revocation wins over a concurrent approval, for push and remembered approvals alike.
 fn push_approval_priority(fields: &[Field]) -> u8 {
     if ended(fields, 2) { ENDED } else { 1 }
 }
@@ -1579,7 +1612,9 @@ impl DomainAdapter for ChatAdapter {
         } else if table == CHANNEL_MEMBERSHIPS_TABLE && group == channel_membership_group::PRESENCE
         {
             channel_membership_priority(value.fields())
-        } else if table == PUSH_APPROVALS_TABLE && group == push_approval_group::APPROVAL {
+        } else if (table == PUSH_APPROVALS_TABLE && group == push_approval_group::APPROVAL)
+            || (table == REMEMBERED_APPROVALS_TABLE && group == remembered_approval_group::APPROVAL)
+        {
             push_approval_priority(value.fields())
         } else if (table == CHANNELS_TABLE && group == channel_group::LIFECYCLE)
             || (table == CONVERSATIONS_TABLE && group == conversation_group::LIFECYCLE)
@@ -1642,6 +1677,8 @@ impl DomainAdapter for ChatAdapter {
             validate_channel_membership(group, fields)
         } else if table == PUSH_APPROVALS_TABLE {
             validate_push_approval(group, fields)
+        } else if table == REMEMBERED_APPROVALS_TABLE {
+            validate_remembered_approval(group, fields)
         } else if table == CHANNELS_TABLE {
             validate_channel(group, fields)
         } else if table == CHANNEL_NOTES_TABLE {

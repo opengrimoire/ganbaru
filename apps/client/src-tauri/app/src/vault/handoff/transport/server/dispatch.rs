@@ -22,6 +22,7 @@ use ganbaru_handoff::dial::LoopbackPolicy;
 use ganbaru_sync_replica::serve::bundles::serve_download;
 pub(crate) use ganbaru_sync_replica::serve::coordinator::QuarantinedDevices;
 use ganbaru_sync_replica::serve::coordinator::log_stream_check;
+use ganbaru_sync_replica::serve::live::ChatLiveRoutes;
 use ganbaru_sync_replica::serve::{Peer, Routes, ServerStream, timeout_control};
 use std::future::Future;
 use std::net::IpAddr;
@@ -56,6 +57,9 @@ pub(crate) struct CoordinatorServices {
     /// The selected log's admission: a linked device the log removed reaches no service, and
     /// sync requests need a device the log enrolled.
     pub log_admission: Option<MemberAdmissionSource>,
+    /// The Chat live execution reads of the work this desktop executes, admitted on their own
+    /// against the selected log and the quarantine.
+    pub chat_live: Option<ChatLiveRoutes>,
 }
 
 pub(crate) async fn serve_with_coordinator(
@@ -93,18 +97,22 @@ pub(in super::super) async fn serve_with_limits(
         admission,
         quarantined,
         log_admission,
+        chat_live,
     } = services;
     let services = ganbaru_sync_replica::serve::coordinator::CoordinatorServices {
         hub,
         admission,
         quarantined,
         log_admission,
-        routes: CoordinatorRoutes {
-            coordinator,
-            contacts,
-            enrollment_sealer,
-            approvals,
-        },
+        routes: (
+            CoordinatorRoutes {
+                coordinator,
+                contacts,
+                enrollment_sealer,
+                approvals,
+            },
+            chat_live,
+        ),
     };
     ganbaru_sync_replica::serve::coordinator::serve_coordinator(
         listener, limits, loopback, manager, services, shutdown,

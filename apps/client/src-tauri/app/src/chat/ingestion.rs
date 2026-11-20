@@ -25,6 +25,7 @@ impl<R: Runtime> ChatChangeEmitter for TauriChatChangeEmitter<R> {
         {
             super::usage_summaries::wake(&self.app);
         }
+        super::live_execution::wake(&self.app);
         self.app.emit(CHAT_CHANGE_EVENT, notification).map_err(|_| {
             ChatError::new(
                 ChatErrorCode::Internal,
@@ -61,6 +62,7 @@ pub(crate) const CHAT_ORGANIZATION_CHANGE_EVENT: &str = "chat://organization-cha
 /// effort: the write already committed, and the next change or reload shows it.
 pub(crate) fn notify_organization_changed<R: Runtime>(app: &tauri::AppHandle<R>) {
     super::usage_summaries::wake(app);
+    super::live_execution::wake(app);
     if app.emit(CHAT_ORGANIZATION_CHANGE_EVENT, ()).is_err() {
         eprintln!("Chat organization change notification failed");
     }

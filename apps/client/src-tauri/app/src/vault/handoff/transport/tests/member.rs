@@ -7,6 +7,9 @@ use crate::vault::handoff::protocol::decode_certificate_fingerprint;
 use ganbaru_sync::{AuthorizationView, EnrolledDevice};
 use ganbaru_sync_contracts::{AdminPublicKey, DeviceKind as SyncDeviceKind, DevicePublicKey};
 use ganbaru_sync_replica::peers::admission::MemberAdmission;
+use ganbaru_sync_replica::serve::live::{
+    CHAT_LIVE_NOT_HERE_CODE, ChatLiveAnswer, ChatLivePage, ChatLiveReader, ChatLiveRoutes,
+};
 
 const VAULT: &str = "vault-1";
 const MEMBER: &str = "device-laptop";
@@ -29,12 +32,16 @@ struct MemberListener {
 
 impl MemberListener {
     async fn start() -> Self {
-        Self::start_serving(None, false).await
+        Self::start_serving(None, false, None).await
     }
 
     /// A member listener dialed by `phone`, or by a new unlinked phone, that serves vault
-    /// copies when `serve_copies`.
-    async fn start_serving(phone: Option<PairingManager>, serve_copies: bool) -> Self {
+    /// copies when `serve_copies` and answers Chat live reads from `chat_live`.
+    async fn start_serving(
+        phone: Option<PairingManager>,
+        serve_copies: bool,
+        chat_live: Option<ChatLiveReader>,
+    ) -> Self {
         let member_root = TestDirectory::new("member");
         let phone_root = TestDirectory::new("member-phone");
         let member = PairingManager::default();
@@ -57,15 +64,23 @@ impl MemberListener {
             admission_with(&phone_fingerprint, false),
         )));
         let source = admission.clone();
+        let admission_source: MemberAdmissionSource = std::sync::Arc::new(move || {
+            let current = source.lock().expect("admission").clone();
+            Box::pin(async move { Ok(current) })
+        });
         let open: OpenHubVault = std::sync::Arc::new(|| Box::pin(async { Ok(None) }));
         let services = server::MemberServices {
             hub: SyncHub::new(open, tokio::sync::watch::Sender::new(0)),
-            admission: std::sync::Arc::new(move || {
-                let current = source.lock().expect("admission").clone();
-                Box::pin(async move { Ok(current) })
-            }),
+            admission: admission_source.clone(),
             lan: LanAdmission::default(),
             bundles: serve_copies.then(|| snapshot_copies(member_root.path().to_path_buf())),
+            chat_live: chat_live.map(|reader| {
+                ChatLiveRoutes::new(
+                    admission_source,
+                    reader,
+                    tokio::sync::watch::Sender::new(0).subscribe(),
+                )
+            }),
         };
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -568,7 +583,7 @@ async fn the_coordinator_serves_nothing_while_its_log_admission_cannot_be_read()
 async fn linked_phone_and_member() -> (LocalPair, MemberListener) {
     let pair = LocalPair::start().await;
     pair.enroll().await;
-    let member = MemberListener::start_serving(Some(pair.phone.clone()), true).await;
+    let member = MemberListener::start_serving(Some(pair.phone.clone()), true, None).await;
     member.admit(admission_with(&member.phone_fingerprint, false));
     (pair, member)
 }
@@ -617,7 +632,7 @@ async fn a_member_listener_serves_a_vault_copy_to_an_enrolled_device() {
 
 #[tokio::test]
 async fn a_member_listener_gives_no_copy_to_a_removed_quarantined_or_unknown_device() {
-    let listener = MemberListener::start_serving(None, true).await;
+    let listener = MemberListener::start_serving(None, true, None).await;
     listener.admit(admission_with(&listener.phone_fingerprint, true));
     let removed = listener
         .request(bundle_request())
@@ -697,5 +712,87 @@ async fn a_failed_copy_reports_the_coordinator_error_first() {
     assert!(
         !error.contains("removed"),
         "the device it enrolled with explains the failure: {error}"
+    );
+}
+
+/// A live reader that answers one page for `"assignment-here"` and nothing else.
+fn live_reader() -> ChatLiveReader {
+    std::sync::Arc::new(|query| {
+        Box::pin(async move {
+            if query.assignment_id != "assignment-here" {
+                return Ok(ChatLiveAnswer::NotHere);
+            }
+            Ok(ChatLiveAnswer::Page(ChatLivePage {
+                payload: "{\"turnId\":\"turn-1\"}".to_string(),
+                change_cursor: query.after_change.unwrap_or(0) + 1,
+                has_more: false,
+                reset_required: false,
+                settled: false,
+            }))
+        })
+    })
+}
+
+fn live_read(device_id: &str, assignment_id: &str) -> ControlMessage {
+    ControlMessage::ChatLiveRead {
+        protocol_version: PROTOCOL_VERSION,
+        vault_id: VAULT.to_string(),
+        device_id: device_id.to_string(),
+        assignment_id: assignment_id.to_string(),
+        after_change: Some(4),
+        wait: false,
+    }
+}
+
+#[tokio::test]
+async fn a_member_listener_serves_the_live_execution_it_runs_to_an_enrolled_phone() {
+    let listener = MemberListener::start_serving(None, false, Some(live_reader())).await;
+    let response = listener
+        .request(live_read(PHONE, "assignment-here"))
+        .await
+        .expect("live read");
+    assert_eq!(
+        response,
+        ControlMessage::ChatLive {
+            payload: "{\"turnId\":\"turn-1\"}".to_string(),
+            change_cursor: 5,
+            has_more: false,
+            reset_required: false,
+            settled: false,
+        }
+    );
+    let elsewhere = listener
+        .request(live_read(PHONE, "assignment-elsewhere"))
+        .await
+        .expect("live read");
+    assert!(
+        refused_with(&elsewhere, CHAT_LIVE_NOT_HERE_CODE),
+        "{elsewhere:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_member_listener_refuses_live_reads_from_a_quarantined_or_mismatched_phone() {
+    let listener = MemberListener::start_serving(None, false, Some(live_reader())).await;
+    let mismatched = listener.request(live_read(MEMBER, "assignment-here")).await;
+    assert!(
+        !matches!(mismatched, Ok(ControlMessage::ChatLive { .. })),
+        "a device naming another device must not read: {mismatched:?}"
+    );
+    listener.admit(admission_quarantining(&listener.phone_fingerprint));
+    let quarantined = listener.request(live_read(PHONE, "assignment-here")).await;
+    assert!(
+        !matches!(quarantined, Ok(ControlMessage::ChatLive { .. })),
+        "a quarantined device must not read: {quarantined:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_member_listener_without_live_reads_does_not_answer_them() {
+    let listener = MemberListener::start().await;
+    let response = listener.request(live_read(PHONE, "assignment-here")).await;
+    assert!(
+        !matches!(response, Ok(ControlMessage::ChatLive { .. })),
+        "{response:?}"
     );
 }

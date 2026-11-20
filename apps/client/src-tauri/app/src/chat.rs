@@ -35,6 +35,7 @@ pub mod interaction_commands;
 pub mod internal_mcp;
 #[cfg(desktop)]
 mod internal_mcp_tools;
+pub(crate) mod live_execution;
 pub mod organization;
 #[cfg(desktop)]
 pub mod preview;

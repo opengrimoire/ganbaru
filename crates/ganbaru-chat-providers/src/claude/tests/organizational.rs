@@ -89,7 +89,7 @@ fn organizational_launch_uses_strict_mcp_and_denies_tools() {
             "--effort",
             "high",
             "--settings",
-            r#"{"fastMode":false,"permissions":{"blockReadsOutsideWorkingDirectories":true,"blockWritesOutsideWorkingDirectories":true}}"#,
+            r#"{"fastMode":false,"permissions":{"blockReadsOutsideWorkingDirectories":true,"blockWritesOutsideWorkingDirectories":true,"ask":["WebSearch","WebFetch"]}}"#,
             "--restricted",
             "--setting-sources",
             "",
@@ -97,9 +97,9 @@ fn organizational_launch_uses_strict_mcp_and_denies_tools() {
             "--mcp-config",
             mcp_config.as_str(),
             "--tools",
-            "Read,Edit,Write,Glob,Grep,NotebookEdit,ExitPlanMode,AskUserQuestion,TodoWrite",
+            "Read,Edit,Write,Glob,Grep,NotebookEdit,ExitPlanMode,AskUserQuestion,TodoWrite,WebSearch,WebFetch",
             "--disallowed-tools",
-            "Task,Agent,WebFetch,WebSearch,Bash",
+            "Task,Agent,Bash",
         ]
     );
     assert!(
@@ -205,35 +205,35 @@ fn organizational_launch_loads_the_tools_of_each_scope() {
     for (scope, tools, disallowed) in [
         (
             ProviderOrganizationalScope::Conversation,
-            "Read,Glob,Grep,ExitPlanMode,AskUserQuestion,TodoWrite",
-            "Task,Agent,WebFetch,WebSearch,Bash,Edit,Write,NotebookEdit",
+            "Read,Glob,Grep,ExitPlanMode,AskUserQuestion,TodoWrite,WebSearch,WebFetch",
+            "Task,Agent,Bash,Edit,Write,NotebookEdit",
         ),
         (
             ProviderOrganizationalScope::Folder {
                 capability: ProviderFolderCapability::Read,
             },
-            "Read,Glob,Grep,ExitPlanMode,AskUserQuestion,TodoWrite",
-            "Task,Agent,WebFetch,WebSearch,Bash,Edit,Write,NotebookEdit",
+            "Read,Glob,Grep,ExitPlanMode,AskUserQuestion,TodoWrite,WebSearch,WebFetch",
+            "Task,Agent,Bash,Edit,Write,NotebookEdit",
         ),
         (
             EDIT_SCOPE,
-            "Read,Edit,Write,Glob,Grep,NotebookEdit,ExitPlanMode,AskUserQuestion,TodoWrite",
-            "Task,Agent,WebFetch,WebSearch,Bash",
+            "Read,Edit,Write,Glob,Grep,NotebookEdit,ExitPlanMode,AskUserQuestion,TodoWrite,WebSearch,WebFetch",
+            "Task,Agent,Bash",
         ),
         (
             COMMAND_SCOPES[0],
-            "Read,Edit,Write,Glob,Grep,NotebookEdit,ExitPlanMode,AskUserQuestion,TodoWrite,Bash",
-            "Task,Agent,WebFetch,WebSearch",
+            "Read,Edit,Write,Glob,Grep,NotebookEdit,ExitPlanMode,AskUserQuestion,TodoWrite,WebSearch,WebFetch,Bash",
+            "Task,Agent",
         ),
         (
             COMMAND_SCOPES[1],
-            "Read,Edit,Write,Glob,Grep,NotebookEdit,ExitPlanMode,AskUserQuestion,TodoWrite,Bash",
-            "Task,Agent,WebFetch,WebSearch",
+            "Read,Edit,Write,Glob,Grep,NotebookEdit,ExitPlanMode,AskUserQuestion,TodoWrite,WebSearch,WebFetch,Bash",
+            "Task,Agent",
         ),
         (
             COMMAND_SCOPES[2],
-            "Read,Edit,Write,Glob,Grep,NotebookEdit,ExitPlanMode,AskUserQuestion,TodoWrite,Bash",
-            "Task,Agent,WebFetch,WebSearch",
+            "Read,Edit,Write,Glob,Grep,NotebookEdit,ExitPlanMode,AskUserQuestion,TodoWrite,WebSearch,WebFetch,Bash",
+            "Task,Agent",
         ),
     ] {
         let arguments = launch(&[], scoped_options(ask(InteractionMode::Build), scope)).unwrap();
@@ -247,7 +247,7 @@ fn organizational_launch_loads_the_tools_of_each_scope() {
         assert!(settings.contains(BLOCKS), "{scope:?} {settings}");
         let runs_commands = COMMAND_SCOPES.contains(&scope);
         assert_eq!(
-            settings.contains(r#""ask":["Bash"]"#),
+            settings.contains(r#""ask":["WebSearch","WebFetch","Bash"]"#),
             runs_commands,
             "{scope:?} {settings}"
         );
@@ -896,15 +896,7 @@ fn organizational_routing_denies_tools_outside_the_scope() {
         },
         root.path(),
     );
-    for tool in [
-        "Edit",
-        "Write",
-        "NotebookEdit",
-        "Bash",
-        "WebFetch",
-        "Task",
-        "Skill",
-    ] {
+    for tool in ["Edit", "Write", "NotebookEdit", "Bash", "Task", "Skill"] {
         assert!(
             read.denial(tool, &serde_json::json!({ "file_path": "a.md" }))
                 .is_some(),
@@ -1059,7 +1051,7 @@ fn confined_launch_admits_unattended_safety_modes_without_bypassing_permissions(
                 );
                 let settings = flag_value(&arguments, "--settings").unwrap();
                 assert!(
-                    settings.contains("\"ask\":[\"Bash\"]"),
+                    settings.contains("\"ask\":[\"WebSearch\",\"WebFetch\",\"Bash\"]"),
                     "every command still reaches Ganbaru: {settings}"
                 );
             }
@@ -1173,6 +1165,84 @@ fn confined_commands_run_unattended_in_self_approving_build_turns() {
                 "an unconfined command always reaches the person"
             );
         }
+    }
+}
+
+#[test]
+fn web_search_and_fetch_always_reach_the_person_with_the_query_or_url() {
+    let root = TestDirectory::new("scope-route-web");
+    let scopes = NON_COMMAND_SCOPES.into_iter().chain(COMMAND_SCOPES);
+    for scope in scopes {
+        let policy = policy(scope, root.path()).with_confined_commands(true);
+        for (tool, input, subject) in [
+            (
+                "WebSearch",
+                serde_json::json!({ "query": "rust release", "mode": "standard" }),
+                "rust release",
+            ),
+            (
+                "WebFetch",
+                serde_json::json!({ "url": "https://docs.python.org/3/", "prompt": "version" }),
+                "https://docs.python.org/3/",
+            ),
+        ] {
+            for turn in [
+                ask(InteractionMode::Build),
+                modes(SafetyMode::ApproveForMe, InteractionMode::Build),
+                modes(SafetyMode::FullAccess, InteractionMode::Build),
+                modes(SafetyMode::ApproveForMe, InteractionMode::Plan),
+            ] {
+                let request = can_use_tool(tool, input.clone());
+                let routed = crate::claude::session::route_scoped_control_request(
+                    "ctrl-web",
+                    request.as_object().unwrap(),
+                    Some(&policy),
+                    turn,
+                )
+                .unwrap();
+                assert!(
+                    routed.immediate_response.is_none(),
+                    "{scope:?} {tool} {turn:?}"
+                );
+                let crate::events::CanonicalEvent::RequestOpened(opened) = routed.event else {
+                    panic!("{tool} reaches the person in {scope:?} {turn:?}");
+                };
+                assert_eq!(
+                    opened.subject.map(|subject| subject.text).as_deref(),
+                    Some(subject)
+                );
+                assert!(opened.session_grants.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn web_fetch_is_denied_for_urls_a_person_could_not_read_whole() {
+    let root = TestDirectory::new("scope-web-urls");
+    let policy = policy(ProviderOrganizationalScope::Conversation, root.path());
+    let long = format!("https://example.org/{}", "a".repeat(4096));
+    for url in [
+        serde_json::json!("file:///etc/passwd"),
+        serde_json::json!("ftp://example.org/a"),
+        serde_json::json!("https://example.org/\na"),
+        serde_json::json!(long),
+        serde_json::json!(4),
+    ] {
+        assert!(
+            policy
+                .denial("WebFetch", &serde_json::json!({ "url": url }))
+                .is_some(),
+            "{url}"
+        );
+    }
+    assert!(policy.denial("WebFetch", &serde_json::json!({})).is_some());
+    for url in ["https://example.org/a?b=c", "HTTP://example.org"] {
+        assert_eq!(
+            policy.denial("WebFetch", &serde_json::json!({ "url": url })),
+            None,
+            "{url}"
+        );
     }
 }
 

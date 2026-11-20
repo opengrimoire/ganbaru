@@ -163,7 +163,9 @@ const NAME_PLACEHOLDER: &str = "{display_name}";
 /// it, then the instructions the assignment froze.
 const AGENT_FRAMING_TEMPLATE: &str = "You are {display_name}, an AI agent in a Ganbaru \
 channel. Your final message is posted as your reply in the reply thread that assigned the \
-work, so write your results in it and never post them again through the report tool.";
+work, so write your results in it and never post them again through the report tool. Shell \
+commands may have no network access, so reach the web through your web search or fetch tools \
+when you have them instead of commands such as curl.";
 
 /// Largest framing template, in UTF-8 bytes, with its placeholders unfilled.
 pub(super) const MAX_AGENT_FRAMING_BYTES: usize = 1536;

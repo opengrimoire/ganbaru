@@ -78,8 +78,8 @@ impl ProviderDriver for ClaudeProviderDriver {
     }
 
     /// Agent launches load only the tools their scope allows, confine the file tools to
-    /// the working directory, deny the network tools, and send every shell command to Ganbaru
-    /// as a permission request. Where the Ganbaru sandbox is present, the commands run under
+    /// the working directory, and send every web search, web fetch, and shell command to
+    /// Ganbaru as a permission request. Where the Ganbaru sandbox is present, the commands run under
     /// it as the CLI's shell prefix, and a launch on a CLI too old for that is refused unless
     /// the person approves each command. Publication goes through the push request host tool,
     /// which a person confirms.

@@ -356,6 +356,21 @@ fn unverified_reply(frame: &Value) -> ChatResult<Value> {
 const OUTSIDE_SCOPE_DENIAL: &str =
     "This agent run cannot use that tool or path. Stay inside the working directory.";
 
+/// Message a denied web fetch returns to the CLI.
+const WEB_FETCH_DENIAL: &str =
+    "This agent run can fetch only http or https URLs of at most 2048 bytes.";
+
+/// Largest URL a web fetch may name, so the approval shows it whole.
+const MAX_WEB_FETCH_URL_BYTES: usize = 2048;
+
+/// Whether `url` is a short http or https URL a person can read whole before allowing it.
+fn fetchable_url(url: &str) -> bool {
+    let lower = url.trim_start().to_ascii_lowercase();
+    url.len() <= MAX_WEB_FETCH_URL_BYTES
+        && (lower.starts_with("https://") || lower.starts_with("http://"))
+        && !url.chars().any(char::is_control)
+}
+
 /// Permission routing of an organizational session, as defense in depth behind the launch
 /// surface: tools the scope does not allow and file paths outside the working directory are
 /// denied before they reach the person, and nothing grants a session-wide rule.
@@ -421,6 +436,14 @@ impl ClaudeOrganizationalPermissions {
         let tools = organizational_tools(self.scope);
         if !tools.allowed.contains(&tool_name) || tools.disallowed.contains(&tool_name) {
             return Some(OUTSIDE_SCOPE_DENIAL);
+        }
+        if tool_name == "WebFetch"
+            && !input
+                .get("url")
+                .and_then(Value::as_str)
+                .is_some_and(fetchable_url)
+        {
+            return Some(WEB_FETCH_DENIAL);
         }
         let path = match tool_name {
             "Read" | "Edit" | "Write" => Some(input.get("file_path")),

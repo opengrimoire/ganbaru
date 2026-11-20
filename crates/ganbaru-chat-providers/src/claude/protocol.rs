@@ -371,10 +371,10 @@ fn pre_approved_tools_argument(
 /// The built-in tools one organizational scope loads, passed as `--tools`, and the tools it
 /// denies on top of that allowlist as defense in depth, passed as `--disallowed-tools`.
 ///
-/// Every scope loads the reading tools, the planning and question tools the driver maps, and
-/// the todo list. Edit scopes add the file writing tools, and command scopes add the shell.
-/// Anything else the CLI ships (subagents, the network, schedules, other sessions, skills,
-/// worktrees) stays unloaded, and the startup gate fails the session when the init report
+/// Every scope loads the reading tools, the planning and question tools the driver maps, the
+/// todo list, and web search and fetch, which always ask the person. Edit scopes add the file
+/// writing tools, and command scopes add the shell. Anything else the CLI ships (subagents,
+/// schedules, other sessions, skills, worktrees) stays unloaded, and the startup gate fails the session when the init report
 /// carries a built-in tool outside the allowlist. Internal MCP tools are not built-in and
 /// survive the allowlist.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -391,17 +391,10 @@ const READ_ONLY_TOOLS: ClaudeOrganizationalTools = ClaudeOrganizationalTools {
         "ExitPlanMode",
         "AskUserQuestion",
         "TodoWrite",
-    ],
-    disallowed: &[
-        "Task",
-        "Agent",
-        "WebFetch",
         "WebSearch",
-        "Bash",
-        "Edit",
-        "Write",
-        "NotebookEdit",
+        "WebFetch",
     ],
+    disallowed: &["Task", "Agent", "Bash", "Edit", "Write", "NotebookEdit"],
 };
 
 const EDIT_TOOLS: ClaudeOrganizationalTools = ClaudeOrganizationalTools {
@@ -415,8 +408,10 @@ const EDIT_TOOLS: ClaudeOrganizationalTools = ClaudeOrganizationalTools {
         "ExitPlanMode",
         "AskUserQuestion",
         "TodoWrite",
+        "WebSearch",
+        "WebFetch",
     ],
-    disallowed: &["Task", "Agent", "WebFetch", "WebSearch", "Bash"],
+    disallowed: &["Task", "Agent", "Bash"],
 };
 
 const COMMAND_TOOLS: ClaudeOrganizationalTools = ClaudeOrganizationalTools {
@@ -430,9 +425,11 @@ const COMMAND_TOOLS: ClaudeOrganizationalTools = ClaudeOrganizationalTools {
         "ExitPlanMode",
         "AskUserQuestion",
         "TodoWrite",
+        "WebSearch",
+        "WebFetch",
         "Bash",
     ],
-    disallowed: &["Task", "Agent", "WebFetch", "WebSearch"],
+    disallowed: &["Task", "Agent"],
 };
 
 /// The tool surface of one organizational scope.
@@ -748,8 +745,9 @@ pub fn organizational_permission_error() -> ChatError {
 ///
 /// Every launch setting joins this object, because the CLI reads a single `--settings` value.
 /// A configured `--settings` argument stays refused for every run. An organizational launch
-/// confines the file tools to the working directory, and a scope that loads the shell sends
-/// every command to Ganbaru as a permission request: the ask rule outranks the read-only
+/// confines the file tools to the working directory and sends every web search and fetch to
+/// Ganbaru as a permission request, which auto mode would otherwise answer itself; a scope that
+/// loads the shell sends every command the same way: the ask rule outranks the read-only
 /// commands manual mode runs unasked, and plan mode keeps its classifier from approving them.
 /// Because an organizational launch loads no settings files, it also carries the allowlisted
 /// user preferences, which the keys Ganbaru sets override.
@@ -774,10 +772,12 @@ pub fn launch_settings(
                 Value::Bool(true),
             ),
         ]);
+        let mut ask = vec!["WebSearch", "WebFetch"];
         if organizational_runs_commands(scope) {
-            permissions.insert("ask".to_string(), json!(["Bash"]));
+            ask.push("Bash");
             settings.insert("useAutoModeDuringPlan".to_string(), Value::Bool(false));
         }
+        permissions.insert("ask".to_string(), json!(ask));
         settings.insert("permissions".to_string(), Value::Object(permissions));
     }
     (!settings.is_empty()).then(|| Value::Object(settings).to_string())

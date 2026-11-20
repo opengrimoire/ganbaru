@@ -65,6 +65,8 @@ Editing files inside the project's folders never asks under Ask before commands 
 
 Work on their own is offered only on a device that can confine commands, either through the provider's own sandbox or through Ganbaru's sandbox; elsewhere it is shown disabled with the reason.
 
+Agent commands have no network access under confinement. Claude agents search and fetch the web through their own web tools at every level, Talk only included, and each search and fetch asks a person with the query or URL, Work on their own included; Codex agents keep web search off.
+
 Pushing to a Git remote is never part of a level. Agents under Ask before commands or Work on their own may request a push, and every push needs a person's decision, Work on their own included: the confirmation card names the branch, remote, and commit, checked as in [Chat security](../../data/security/chat.md). Push and don't ask again records that decision for that channel, agent, folder, push URL, and destination branch, so later matching requests push when their turn ends; the channel's Agents section lists these approvals, and lowering the channel's effective access below Ask before commands, removing the agent from the channel, or revoking the approval there ends it.
 
 Private scratch follows the same level: Talk only and Read only offer no scratch, Ask before commands asks before each command there, and Work on their own runs commands there without asking under the same confinement rule. Promoting scratch files into a folder needs a level that edits files.

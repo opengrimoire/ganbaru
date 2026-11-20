@@ -1030,7 +1030,7 @@ fn launch_settings_merge_into_one_object_or_none() {
         )
         .as_deref(),
         Some(
-            r#"{"permissions":{"blockReadsOutsideWorkingDirectories":true,"blockWritesOutsideWorkingDirectories":true}}"#
+            r#"{"permissions":{"blockReadsOutsideWorkingDirectories":true,"blockWritesOutsideWorkingDirectories":true,"ask":["WebSearch","WebFetch"]}}"#
         )
     );
     assert_eq!(
@@ -1043,7 +1043,7 @@ fn launch_settings_merge_into_one_object_or_none() {
         )
         .as_deref(),
         Some(
-            r#"{"fastMode":true,"useAutoModeDuringPlan":false,"permissions":{"blockReadsOutsideWorkingDirectories":true,"blockWritesOutsideWorkingDirectories":true,"ask":["Bash"]}}"#
+            r#"{"fastMode":true,"useAutoModeDuringPlan":false,"permissions":{"blockReadsOutsideWorkingDirectories":true,"blockWritesOutsideWorkingDirectories":true,"ask":["WebSearch","WebFetch","Bash"]}}"#
         )
     );
 }
@@ -1068,6 +1068,7 @@ fn agent_launch_settings_carry_user_preferences_below_ganbaru_keys() {
             "permissions": {
                 "blockReadsOutsideWorkingDirectories": true,
                 "blockWritesOutsideWorkingDirectories": true,
+                "ask": ["WebSearch", "WebFetch"],
             },
         })
     );

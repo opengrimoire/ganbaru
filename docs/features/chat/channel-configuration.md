@@ -58,12 +58,12 @@ Access is one setting per channel, inherited from the project and the app. It ap
 | --- | --- |
 | Talk only | Agents reply from the channel alone, with no folder, file name, or path from disk. |
 | Read only | Agents read the project's folders but cannot change them. |
-| Ask before commands (default) | Agents edit files and ask you before running each command. |
-| Work on their own | Agents edit files and run commands without asking, confined to the project's folders. |
+| Ask before commands | Agents edit files and ask you before running each command. |
+| Work on their own (default) | Agents edit files and run commands without asking, confined to the project's folders. |
 
 Editing files inside the project's folders never asks under Ask before commands or Work on their own, but an edit to a hidden path such as `.git` or a provider's settings folder goes to a person, or is refused where the provider's sandbox keeps it read-only.
 
-Work on their own is offered only on a device that can confine commands, either through the provider's own sandbox or through Ganbaru's sandbox; elsewhere it is shown disabled with the reason.
+Work on their own can be chosen only on a device that can confine commands, either through the provider's own sandbox or through Ganbaru's sandbox; elsewhere it is shown disabled with the reason, and a channel that inherits it there, including through the default, works as Ask before commands.
 
 Agent commands have no network access under confinement. Claude, Codex, and OpenCode agents search the web at every level, Talk only included, without asking, because a search runs on the provider service and only returns results. Claude and OpenCode agents can also open a web page, which runs from this device and can reach its local network, so each fetch asks a person with the URL, Work on their own included. Codex searches use OpenAI's cached index and never open a live page. Cursor and Grok agents use their own CLI's web behavior.
 
@@ -81,7 +81,7 @@ Each agent runs its own model: a line agent the newest model of its line, any ot
 
 ## Common journeys
 
-- **First use:** the person installs Claude Code. Settings > Agents shows Claude as ready with `@Fable`, `@Opus`, and each Claude model, adding `@Opus` to `#general` from the channel's member settings puts it in that channel's mention menu and lets it edit the project folder and ask before commands.
+- **First use:** the person installs Claude Code. Settings > Agents shows Claude as ready with `@Fable`, `@Opus`, and each Claude model, adding `@Opus` to `#general` from the channel's member settings puts it in that channel's mention menu and lets it edit the project folder and run commands on its own, confined to it.
 - **A brainstorming channel:** the person sets the channel's access to Talk only. Every agent in it replies without touching files.
 - **A trusted project on Linux:** the person sets the project's access to Work on their own. Every channel of the project inherits it unless it overrides.
 - **A second device:** the laptop shows the same agents and channel settings. Work mentioned there runs on the laptop, which offers setup when the provider is not installed there. Work mentioned from a phone runs on the linked desktop that last ran that agent, or on the only linked desktop.

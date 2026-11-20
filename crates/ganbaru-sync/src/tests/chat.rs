@@ -820,7 +820,7 @@ fn chat_seeding_publishes_the_vault_agent_settings_and_replicas_agree_on_them() 
         for replica in &mut replicas {
             assert_eq!(
                 app_settings(replica).await,
-                "1 ask ",
+                "1 own ",
                 "replica {}",
                 replica.index
             );
@@ -836,7 +836,7 @@ fn chat_seeding_publishes_the_vault_agent_settings_and_replicas_agree_on_them() 
         converge(&mut replicas).await;
         assert_converged(&mut replicas).await;
         for replica in &mut replicas {
-            assert_eq!(app_settings(replica).await, "1 ask Prefer small changes");
+            assert_eq!(app_settings(replica).await, "1 own Prefer small changes");
         }
     });
 }
@@ -874,7 +874,7 @@ fn chat_vault_agent_settings_are_never_deleted() {
             }]
         );
         replicas[1].apply_all().await.unwrap();
-        assert_eq!(app_settings(&mut replicas[1]).await, "1 ask ");
+        assert_eq!(app_settings(&mut replicas[1]).await, "1 own ");
     });
 }
 
@@ -1463,7 +1463,7 @@ fn chat_project_agent_settings_leave_with_their_project() {
                 replica.index
             );
             // The vault settings stay.
-            assert_eq!(app_settings(replica).await, "1 ask ");
+            assert_eq!(app_settings(replica).await, "1 own ");
         }
     });
 }
@@ -1510,7 +1510,7 @@ fn chat_simulated_removal_against_re_add_and_narrowing_against_widening_keep_the
             let mut expected_role = "member active".to_owned();
             let mut expected_presence = "active";
             let mut expected_channel = "inherit";
-            let mut expected_app = "ask";
+            let mut expected_app = "own";
             let channel_value = access_value(Scope::Channel);
             let app_value = access_value(Scope::App);
             for round in 0..ACCESS_ROUNDS {

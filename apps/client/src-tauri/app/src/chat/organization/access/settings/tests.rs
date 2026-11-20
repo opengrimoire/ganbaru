@@ -59,6 +59,15 @@ async fn channel_revision(pool: &SqlitePool) -> u64 {
     u64::try_from(revision).unwrap()
 }
 
+/// The revision of the vault agent settings row.
+async fn app_revision(pool: &SqlitePool) -> u64 {
+    let revision: i64 = sqlx::query_scalar("SELECT revision FROM chat_agent_app_settings")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    u64::try_from(revision).unwrap()
+}
+
 /// The scopes agent access is set at.
 #[derive(Clone, Copy, Debug)]
 enum Scope {
@@ -71,6 +80,7 @@ enum Scope {
 async fn save_access(pool: &SqlitePool, scope: Scope, access: ChatAgentAccess) {
     let now = now_timestamp().unwrap();
     let channel_revision = channel_revision(pool).await;
+    let app_revision = app_revision(pool).await;
     let mut transaction = pool.begin().await.unwrap();
     match scope {
         Scope::App => {
@@ -79,7 +89,7 @@ async fn save_access(pool: &SqlitePool, scope: Scope, access: ChatAgentAccess) {
                 &UpdateChatAppAgentSettingsCommand {
                     access,
                     instructions: String::new(),
-                    expected_revision: 1,
+                    expected_revision: app_revision,
                 },
                 &now,
             )
@@ -161,6 +171,7 @@ fn widening_at_each_scope_keeps_the_work_and_the_push_approvals() {
     tauri::async_runtime::block_on(async {
         for scope in [Scope::App, Scope::Project, Scope::Channel] {
             let pool = pool_with_folder_runs().await;
+            save_access(&pool, Scope::App, ChatAgentAccess::Ask).await;
             approve_push(&pool).await;
 
             save_access(&pool, scope, ChatAgentAccess::Own).await;

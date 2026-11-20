@@ -1945,7 +1945,7 @@ fn terminal_layouts_are_keyed_by_channel_and_folder_and_follow_both() {
 }
 
 #[test]
-fn app_agent_settings_are_one_seeded_row_asking_with_empty_instructions() {
+fn app_agent_settings_are_one_seeded_row_working_on_their_own_with_empty_instructions() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
         let row = sqlx::query(
@@ -1960,9 +1960,9 @@ fn app_agent_settings_are_one_seeded_row_asking_with_empty_instructions() {
             "a fresh vault seeds exactly one app settings row"
         );
         assert_eq!(row[0].get::<String, _>("id"), "vault");
-        assert_eq!(row[0].get::<String, _>("agent_access"), "ask");
+        assert_eq!(row[0].get::<String, _>("agent_access"), "own");
         assert_eq!(row[0].get::<String, _>("agent_instructions"), "");
-        assert_eq!(row[0].get::<i64, _>("revision"), 1);
+        assert_eq!(row[0].get::<i64, _>("revision"), 2);
 
         assert!(
             sqlx::query(
@@ -1981,6 +1981,73 @@ fn app_agent_settings_are_one_seeded_row_asking_with_empty_instructions() {
                 .is_err(),
             "the app scope always names a level"
         );
+    });
+}
+
+/// Version of the migration that moves an unsaved app access from ask to own.
+const OWN_BY_DEFAULT_MIGRATION: i64 = 20261120213144;
+
+#[test]
+fn the_own_default_moves_only_an_app_access_nobody_saved() {
+    super::block_on(async {
+        for (access, revision, seeded, expected, expected_revision, captures) in [
+            ("ask", 1, true, "own", 2, 1),
+            ("ask", 1, false, "own", 2, 0),
+            ("ask", 2, true, "ask", 2, 0),
+            ("read", 3, true, "read", 3, 0),
+            ("talk", 1, true, "talk", 1, 0),
+        ] {
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .unwrap();
+            crate::MIGRATOR
+                .run_to(OWN_BY_DEFAULT_MIGRATION - 1, &pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "UPDATE chat_agent_app_settings SET agent_access = ?, revision = ?
+                 WHERE id = 'vault'",
+            )
+            .bind(access)
+            .bind(revision)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("DELETE FROM sync_capture")
+                .execute(&pool)
+                .await
+                .unwrap();
+            if seeded {
+                sqlx::query("INSERT INTO sync_seeded_tables (table_id) VALUES (357)")
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            crate::run_migrations(&pool).await.unwrap();
+            let captured: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM sync_capture WHERE table_id = 357 AND row_key = 'vault'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                captured, captures,
+                "{access} at revision {revision}, seeded {seeded}"
+            );
+            let (stored, stored_revision): (String, i64) = sqlx::query_as(
+                "SELECT agent_access, revision FROM chat_agent_app_settings WHERE id = 'vault'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                (stored.as_str(), stored_revision),
+                (expected, expected_revision),
+                "{access} at revision {revision}"
+            );
+        }
     });
 }
 

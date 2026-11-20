@@ -87,23 +87,23 @@ async fn execute(pool: &SqlitePool, sql: &str) {
 }
 
 #[tokio::test]
-async fn app_settings_read_the_seeded_ask_default_and_its_saved_values() {
+async fn app_settings_read_the_seeded_own_default_and_its_saved_values() {
     let pool = migrated_pool().await;
     let mut connection = pool.acquire().await.unwrap();
     let seeded = read_app_agent_settings(&mut connection).await.unwrap();
-    assert_eq!(seeded.access, ChatAgentAccess::Ask);
+    assert_eq!(seeded.access, ChatAgentAccess::Own);
     assert_eq!(seeded.instructions, "");
     drop(connection);
 
     execute(
         &pool,
         "UPDATE chat_agent_app_settings
-         SET agent_access = 'own', agent_instructions = 'Be brief', revision = revision + 1",
+         SET agent_access = 'read', agent_instructions = 'Be brief', revision = revision + 1",
     )
     .await;
     let mut connection = pool.acquire().await.unwrap();
     let saved = read_app_agent_settings(&mut connection).await.unwrap();
-    assert_eq!(saved.access, ChatAgentAccess::Own);
+    assert_eq!(saved.access, ChatAgentAccess::Read);
     assert_eq!(saved.instructions, "Be brief");
     assert_eq!(saved.revision, seeded.revision + 1);
 }
@@ -128,7 +128,7 @@ async fn a_project_without_its_own_settings_inherits_the_app_access_at_revision_
     assert_eq!(inherited.access, None);
     assert_eq!(inherited.instructions, "");
     assert_eq!(inherited.revision, 0);
-    assert_eq!(inherited.effective.access, ChatAgentAccess::Ask);
+    assert_eq!(inherited.effective.access, ChatAgentAccess::Own);
     assert_eq!(inherited.effective.source, ChatAgentAccessSource::App);
     drop(connection);
 
@@ -171,16 +171,16 @@ async fn channel_access_resolves_from_the_narrowest_scope_that_sets_it() {
     assert_eq!(app.access, None);
     assert_eq!(
         (app.effective.access, app.effective.source),
-        (ChatAgentAccess::Ask, ChatAgentAccessSource::App)
+        (ChatAgentAccess::Own, ChatAgentAccessSource::App)
     );
 
     execute(
         &pool,
-        "UPDATE chat_agent_app_settings SET agent_access = 'own'",
+        "UPDATE chat_agent_app_settings SET agent_access = 'read'",
     )
     .await;
-    let widened_app = read(pool.clone(), conversation.clone()).await;
-    assert_eq!(widened_app.effective.access, ChatAgentAccess::Own);
+    let narrowed_app = read(pool.clone(), conversation.clone()).await;
+    assert_eq!(narrowed_app.effective.access, ChatAgentAccess::Read);
 
     execute(
         &pool,

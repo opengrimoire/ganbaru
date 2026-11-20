@@ -12,7 +12,7 @@ import { CHAT_AGENT_ACCESS_LEVELS } from "$lib/chat/contracts";
 import type { Translate } from "$lib/i18n/translator.svelte";
 
 /** The access every scope inherits until the app settings choose another. */
-export const CHAT_DEFAULT_AGENT_ACCESS: ChatAgentAccess = "ask";
+export const CHAT_DEFAULT_AGENT_ACCESS: ChatAgentAccess = "own";
 
 /** The longest instructions the app, a project, or a channel may store, in characters. */
 export const CHAT_AGENT_INSTRUCTIONS_LIMIT = 16384;

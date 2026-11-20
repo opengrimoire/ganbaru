@@ -35,7 +35,7 @@ Authorization is checked when work is assigned and again at every privileged bou
 
 ## Access levels
 
-Access is one level per channel, ordered from narrowest: Talk only (`talk`), Read only (`read`), Ask before commands (`ask`), and Work on their own (`own`). The app settings hold a level that is never empty and defaults to `ask`; a project and a channel may each hold one or inherit. The effective level is the channel's value, else the project's, else the app's, and every read reports which scope it came from. It applies to every agent in the channel and every non-archived working folder of the channel's project.
+Access is one level per channel, ordered from narrowest: Talk only (`talk`), Read only (`read`), Ask before commands (`ask`), and Work on their own (`own`). The app settings hold a level that is never empty and defaults to `own`, which a device that cannot confine commands resolves to `ask`; a project and a channel may each hold one or inherit. The effective level is the channel's value, else the project's, else the app's, and every read reports which scope it came from. It applies to every agent in the channel and every non-archived working folder of the channel's project.
 
 Each device resolves the effective level against the native enforcement its provider reports, and never widens it:
 

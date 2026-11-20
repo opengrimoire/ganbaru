@@ -79,10 +79,10 @@ describe("chatAccessOptions", () => {
     expect(chatAccessOptions(tEn, { ownAvailable: true, markDefault: true }).map((option) => option.label)).toEqual([
       "Talk only",
       "Read only",
-      "Ask before commands (default)",
-      "Work on their own",
+      "Ask before commands",
+      "Work on their own (default)",
     ]);
-    expect(chatAccessOptions(tEn, { ownAvailable: true, markDefault: false })[2]?.label).toBe("Ask before commands");
+    expect(chatAccessOptions(tEn, { ownAvailable: true, markDefault: false })[3]?.label).toBe("Work on their own");
   });
 });
 

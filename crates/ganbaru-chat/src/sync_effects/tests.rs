@@ -562,6 +562,7 @@ async fn read_keeps_read_only_folder_work_and_talk_revokes_any_target() {
 async fn auto_approval_needs_own_on_the_authorization_and_on_each_folder_source() {
     let pool = migrated_pool().await;
     seed_organization(&pool).await;
+    set_app_access(&pool, "ask").await;
     let conversation = conversation_id();
     set_channel_access(&pool, &conversation, Some("own")).await;
     seed_folder_authorization(&pool, "execute", "auto_approve").await;

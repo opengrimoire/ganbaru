@@ -3,6 +3,7 @@
   import MailPlus from "@lucide/svelte/icons/mail-plus";
   import UserRoundPlus from "@lucide/svelte/icons/user-round-plus";
   import X from "@lucide/svelte/icons/x";
+  import { agentNeedsSetupHere } from "$lib/chat/agents/agent-setup";
   import type { ChatAiAgentRead } from "$lib/chat/contracts";
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
   import ProjectPickerMobileDialog from "$lib/components/projects/pickers/ProjectPickerMobileDialog.svelte";
@@ -78,7 +79,7 @@
   const confirmText = $derived(selectedIds.size > 0 ? t("contacts.picker.confirmCount", selectedIds.size) : (confirmLabel ?? t("contacts.picker.confirm")));
 
   function agentDetail(agent: ChatAiAgentRead): string {
-    if (agent.configurationState !== "healthy") return t("chat.organization.needsSetup");
+    if (agentNeedsSetupHere(agent.configurationState)) return t("chat.organization.needsSetup");
     return t("chat.organization.aiAgent");
   }
 

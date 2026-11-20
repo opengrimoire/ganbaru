@@ -16,6 +16,7 @@
   import AtSign from "@lucide/svelte/icons/at-sign";
   import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
+  import { agentNeedsSetupHere } from "$lib/chat/agents/agent-setup";
   import { chatAgentDefaultModelId } from "$lib/chat/agents/channel-access";
   import { isActiveChannelMember } from "$lib/chat/agents/channel-members";
   import type {
@@ -1825,7 +1826,7 @@
     if (!agentId) return [];
     const agent = chat.agents.find((candidate) => candidate.participant.id === agentId);
     const blockers: string[] = [];
-    if (agent && agent.configurationState !== "healthy") {
+    if (agent && agentNeedsSetupHere(agent.configurationState, localExecutionAvailable)) {
       blockers.push(t("chat.organization.agentNeedsSetup", agent.participant.displayName));
     }
     if (target && !target.eligible) {

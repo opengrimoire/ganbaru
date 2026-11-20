@@ -8,6 +8,7 @@
   import * as chatApi from "$lib/api/chat";
   import type { ChatChannelRead, ChatChannelMembershipRemovalPreview } from "$lib/chat/contracts";
   import type { ChatSidebarSection } from "$lib/chat/channel-sections";
+  import { agentNeedsSetupHere } from "$lib/chat/agents/agent-setup";
   import { summarizeChannelMembers } from "$lib/chat/agents/channel-members";
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
   import LocalPersonAvatar from "$lib/components/contacts/LocalPersonAvatar.svelte";
@@ -253,7 +254,7 @@
         <span class="member-group-label">{t("chat.organization.agents")}</span>
         <ul class="member-list">
           {#each memberAgents as agent (agent.participant.id)}
-            <MemberRow name={agent.participant.displayName} detail={agent.configurationState === "healthy" ? t("chat.organization.aiAgent") : t("chat.organization.needsSetup")}>
+            <MemberRow name={agent.participant.displayName} detail={agentNeedsSetupHere(agent.configurationState) ? t("chat.organization.needsSetup") : t("chat.organization.aiAgent")}>
               {#snippet avatar()}<ChatParticipantAvatar participant={agent.participant} {agent} size={MEMBER_AVATAR_SIZE} />{/snippet}
               {#snippet trailing()}
                 {#if currentAgentIds.has(agent.participant.id)}

@@ -494,3 +494,101 @@ fn a_scheduled_message_cannot_choose_its_routing() {
         assert_eq!(error.field.as_deref(), Some("followupRouting"));
     });
 }
+
+/// Stores the linked device `device_id` of `kind`, numbered `index` for its unique keys.
+async fn insert_linked_device(pool: &SqlitePool, index: u8, device_id: &str, kind: &str) {
+    sqlx::query(
+        "INSERT OR IGNORE INTO sync_spaces (space_id, vault_id, created_at_ms)
+         VALUES (zeroblob(16), 'vault', 0)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO sync_devices
+            (space_id, device_id, device_key, tls_fingerprint, kind, role, enrolled_revision)
+         VALUES (zeroblob(16), ?1, ?2, ?3, ?4, 'member', 0)",
+    )
+    .bind(device_id)
+    .bind(vec![index; 32])
+    .bind(vec![index; 32])
+    .bind(kind)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Posts a reply mentioning the review agent from `device:phone`, with `writers` writing Chat,
+/// and returns the executing device of the work it created, if any.
+async fn mention_from_phone(pool: &SqlitePool, writers: &[&str]) -> Option<String> {
+    let writers = chat_writers_of(writers);
+    let phone = PostingDevice {
+        id: "device:phone",
+        can_execute: false,
+        chat_writers: &writers,
+    };
+    let posted = persist_post(pool, &review_reply_mention("command:phone"), None, phone)
+        .await
+        .unwrap();
+    assert!(!posted.assignment_write.executes_here);
+    let assignment_id = posted.assignment_write.assignment_id?;
+    super::super::workflow::read_assignment_executing_device(pool, assignment_id.as_str())
+        .await
+        .unwrap()
+}
+
+#[test]
+fn a_phone_mention_runs_on_the_desktop_that_last_ran_the_agent() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "completed").await;
+        insert_linked_device(&pool, 1, "device:old", "desktop").await;
+        insert_linked_device(&pool, 2, "device:other", "desktop").await;
+
+        let executor =
+            mention_from_phone(&pool, &["device:phone", "device:old", "device:other"]).await;
+
+        assert_eq!(executor.as_deref(), Some("device:old"));
+    });
+}
+
+#[test]
+fn a_phone_mention_skips_a_past_executor_that_no_longer_writes_chat() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "completed").await;
+        insert_linked_device(&pool, 1, "device:desk", "desktop").await;
+
+        let executor = mention_from_phone(&pool, &["device:phone", "device:desk"]).await;
+
+        assert_eq!(
+            executor.as_deref(),
+            Some("device:desk"),
+            "the only linked desktop runs it"
+        );
+    });
+}
+
+#[test]
+fn a_phone_mention_without_history_runs_only_when_one_desktop_is_linked() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        insert_linked_device(&pool, 1, "device:desk", "desktop").await;
+        insert_linked_device(&pool, 2, "device:server", "server").await;
+        assert_eq!(
+            mention_from_phone(&pool, &["device:phone", "device:desk", "device:server"])
+                .await
+                .as_deref(),
+            Some("device:desk")
+        );
+
+        let pool = review_thread_without_assignment().await;
+        insert_linked_device(&pool, 1, "device:desk", "desktop").await;
+        insert_linked_device(&pool, 2, "device:laptop", "desktop").await;
+        assert_eq!(
+            mention_from_phone(&pool, &["device:phone", "device:desk", "device:laptop"]).await,
+            None,
+            "with two desktops and no history the post records the mention only"
+        );
+    });
+}

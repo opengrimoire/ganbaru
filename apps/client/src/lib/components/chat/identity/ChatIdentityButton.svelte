@@ -7,6 +7,7 @@
   import { composerMeterRead } from "$lib/chat/composer/composer-meter";
   import { formatNumber } from "$lib/i18n/formatters";
   import { chatParticipantDisplayName } from "$lib/chat/agents/participant-display";
+  import { agentNeedsSetupHere } from "$lib/chat/agents/agent-setup";
   import type { ChatModelParticipant } from "$lib/chat/agents/participant-identity";
   import { compactModelOptionLabel } from "$lib/chat/composer/model-picker-model";
   import { formatModelDisplayName } from "$lib/chat/composer/model-company";
@@ -274,8 +275,8 @@
 
   function agentStatus(): string {
     if (participant?.archivedAt) return t("chat.organization.archivedParticipant");
-    if (agent?.configurationState === "healthy") return t("chat.organization.availableParticipant");
-    return t("chat.organization.needsSetup");
+    if (agent && agentNeedsSetupHere(agent.configurationState)) return t("chat.organization.needsSetup");
+    return t("chat.organization.availableParticipant");
   }
 
   function agentReasoning(): string | null {

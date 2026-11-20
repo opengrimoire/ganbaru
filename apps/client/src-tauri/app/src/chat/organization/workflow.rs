@@ -203,7 +203,6 @@ impl ChatWriters {
     }
 
     /// The writer ids as a JSON array, for queries that read them with `json_each`.
-    #[cfg(desktop)]
     pub(super) fn json(&self) -> ChatResult<String> {
         serde_json::to_string(&self.devices).map_err(serialization_error)
     }
@@ -242,8 +241,7 @@ impl<'a> PostingDevice<'a> {
 }
 
 /// The device an assignment of `agent_id` runs on when `device` creates it: the posting device
-/// when it can run new work and the agent's provider is ready there, else none, so the post
-/// records the mention only and a person starts the work later on a device that can run it.
+/// when it can run new work and the agent's provider is ready there, else none.
 pub(super) async fn new_assignment_executing_device(
     transaction: &mut Transaction<'_, Sqlite>,
     agent_id: &ChatParticipantId,
@@ -261,6 +259,81 @@ pub(super) async fn new_assignment_executing_device(
     Ok(family
         .filter(|family| device.chat_writers.provider_ready_here(family))
         .map(|_| device.id.to_owned()))
+}
+
+/// The device a post's new assignment of `agent_id` in `reply_thread_id` runs on: the posting
+/// device when it can run the agent, else another linked desktop, so a mention from a phone or
+/// from a desktop without the provider starts work by itself. Linked devices belong to one
+/// person, so their posts start work without a confirmation on the executing desktop.
+pub(super) async fn post_executing_device(
+    transaction: &mut Transaction<'_, Sqlite>,
+    agent_id: &ChatParticipantId,
+    reply_thread_id: &ChatReplyThreadId,
+    device: PostingDevice<'_>,
+) -> ChatResult<Option<String>> {
+    if let Some(here) = new_assignment_executing_device(transaction, agent_id, device).await? {
+        return Ok(Some(here));
+    }
+    if let Some(last) = last_linked_executor(transaction, agent_id, reply_thread_id, device).await?
+    {
+        return Ok(Some(last));
+    }
+    sole_linked_desktop(transaction, device).await
+}
+
+/// The linked Chat writer other than `device` that most recently ran work of `agent_id`,
+/// preferring work in the conversation of `reply_thread_id`. Only desktops run work, so a past
+/// executor is a desktop that had the agent's provider.
+async fn last_linked_executor(
+    transaction: &mut Transaction<'_, Sqlite>,
+    agent_id: &ChatParticipantId,
+    reply_thread_id: &ChatReplyThreadId,
+    device: PostingDevice<'_>,
+) -> ChatResult<Option<String>> {
+    sqlx::query_scalar(
+        "SELECT assignment.executing_device_id
+         FROM chat_work_assignments assignment
+         JOIN chat_reply_threads thread ON thread.id = assignment.reply_thread_id
+         WHERE assignment.agent_id = ?1
+           AND assignment.executing_device_id IN (SELECT value FROM json_each(?2))
+           AND assignment.executing_device_id <> ?3
+         ORDER BY thread.conversation_id = (
+                    SELECT conversation_id FROM chat_reply_threads WHERE id = ?4
+                  ) DESC,
+                  assignment.created_at DESC, assignment.id DESC
+         LIMIT 1",
+    )
+    .bind(agent_id.as_str())
+    .bind(device.chat_writers.json()?)
+    .bind(device.id)
+    .bind(reply_thread_id.as_str())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(persistence_error)
+}
+
+/// The only linked desktop that writes Chat besides `device`, when exactly one does. With
+/// several and no history of the agent, none is chosen, so the post records the mention only.
+async fn sole_linked_desktop(
+    transaction: &mut Transaction<'_, Sqlite>,
+    device: PostingDevice<'_>,
+) -> ChatResult<Option<String>> {
+    let desktops: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT linked.device_id FROM sync_devices linked
+         WHERE linked.kind = 'desktop' AND linked.removed_revision IS NULL
+           AND linked.device_id IN (SELECT value FROM json_each(?1))
+           AND linked.device_id <> ?2
+         LIMIT 2",
+    )
+    .bind(device.chat_writers.json()?)
+    .bind(device.id)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    Ok(match desktops.as_slice() {
+        [only] => Some(only.clone()),
+        _ => None,
+    })
 }
 
 /// The executing device of assignment `assignment_id`, if it names one.
@@ -365,7 +438,7 @@ pub(super) async fn persist_assignment_routing(
     }
     let latest_assignment = invocation.latest_assignment.as_ref();
     let Some(executing_device_id) =
-        new_assignment_executing_device(transaction, &invocation.agent_id, device).await?
+        post_executing_device(transaction, &invocation.agent_id, reply_thread_id, device).await?
     else {
         return Ok(AssignmentWrite::NONE);
     };

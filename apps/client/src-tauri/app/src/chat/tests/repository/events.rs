@@ -41,7 +41,7 @@ fn event_append_updates_projection_sequence_and_revision_atomically() {
 }
 
 #[test]
-fn completed_activity_preserves_streamed_command_output() {
+fn completed_activity_preserves_streamed_output_title_and_metadata() {
     tauri::async_runtime::block_on(async {
         let pool = pool_with_thread().await;
         append_canonical_event(
@@ -55,7 +55,10 @@ fn completed_activity_preserves_streamed_command_output() {
                     status: ActivityStatus::Active,
                     title: Some("printf 4".to_string()),
                     detail: None,
-                    safe_metadata: None,
+                    safe_metadata: Some(VersionedJson {
+                        schema_version: 1,
+                        value: serde_json::json!({ "toolInput": { "command": "printf 4" } }),
+                    }),
                 }),
             ),
         )
@@ -77,7 +80,7 @@ fn completed_activity_preserves_streamed_command_output() {
                     item_id: "command-1".to_string(),
                     kind: CanonicalItemKind::CommandExecution,
                     status: ActivityStatus::Completed,
-                    title: Some("printf 4".to_string()),
+                    title: None,
                     detail: None,
                     safe_metadata: None,
                 }),
@@ -86,12 +89,18 @@ fn completed_activity_preserves_streamed_command_output() {
         .await
         .unwrap();
 
-        let detail: String =
-            sqlx::query_scalar("SELECT detail FROM chat_activities WHERE id = 'command-1'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let (detail, title, metadata): (String, String, String) = sqlx::query_as(
+            "SELECT detail, title, safe_metadata_data FROM chat_activities WHERE id = 'command-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(detail, "4\n");
+        assert_eq!(title, "printf 4");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&metadata).unwrap(),
+            serde_json::json!({ "toolInput": { "command": "printf 4" } })
+        );
     });
 }
 

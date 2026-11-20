@@ -1,5 +1,6 @@
 //! Claude streaming content-block normalization.
 
+use super::tool_input::{tool_metadata, tool_title};
 use super::{
     ClaudeEventNormalizer, ClaudeItemEvent, ClaudeRouteState, MAX_TEXT_BYTES, StreamBlock,
     bounded_text, text, unsigned,
@@ -185,6 +186,7 @@ impl ClaudeEventNormalizer {
             .ok_or_else(|| protocol_error("content block"))?;
         let key = state.stream.key(scope, index);
         let block_type = text(block, "type").unwrap_or("unknown");
+        let tool_name = text(block, "name").unwrap_or("Claude tool");
         let (item_id, item_kind, stream_kind, title, complete_on_stop) = match block_type {
             "text" => (
                 self.content_item_id(&key.message, index, "assistant"),
@@ -201,15 +203,14 @@ impl ClaudeEventNormalizer {
                 true,
             ),
             "tool_use" | "server_tool_use" | "mcp_tool_use" => {
-                let name = text(block, "name").unwrap_or("Claude tool");
                 let id = text(block, "id")
                     .map(str::to_string)
                     .unwrap_or_else(|| self.fallback_item_id("tool"));
                 (
                     id,
-                    classify_tool(name),
-                    tool_stream_kind(name),
-                    Some(name.to_string()),
+                    classify_tool(tool_name),
+                    ContentStreamKind::Unknown,
+                    Some(tool_title(tool_name, tool_input(block))),
                     false,
                 )
             }
@@ -265,15 +266,45 @@ impl ClaudeEventNormalizer {
                 kind: item_kind,
                 status: ActivityStatus::Active,
                 title,
-                safe_metadata: Some(VersionedJson {
-                    schema_version: 1,
-                    value: json!({
-                        "blockType": block_type,
-                        "toolInput": block.get("input").filter(|value| value.is_object()),
-                    }),
+                safe_metadata: Some(if complete_on_stop {
+                    VersionedJson {
+                        schema_version: 1,
+                        value: json!({ "blockType": block_type }),
+                    }
+                } else {
+                    tool_metadata(block_type, tool_name, tool_input(block))
                 }),
             },
         )?])
+    }
+
+    /// The finished input of a tool call, which the assistant frame carries once the call's
+    /// streamed input is complete, as an update of the call's activity.
+    pub(super) fn tool_use_update(
+        &self,
+        state: &mut ClaudeRouteState,
+        block: &Map<String, Value>,
+    ) -> ChatResult<Option<CanonicalRuntimeEvent>> {
+        let block_type = text(block, "type").unwrap_or("tool_use");
+        let (Some(item_id), Some(name)) = (text(block, "id"), text(block, "name")) else {
+            return Ok(None);
+        };
+        let kind = *state
+            .tool_kinds
+            .entry(item_id.to_string())
+            .or_insert_with(|| classify_tool(name));
+        let input = tool_input(block);
+        Ok(Some(self.item_event(
+            state,
+            ClaudeItemEvent {
+                source: "assistant/tool_use",
+                item_id: item_id.to_string(),
+                kind,
+                status: ActivityStatus::Active,
+                title: Some(tool_title(name, input)),
+                safe_metadata: Some(tool_metadata(block_type, name, input)),
+            },
+        )?))
     }
 
     pub(super) fn content_block_delta(
@@ -291,9 +322,9 @@ impl ClaudeEventNormalizer {
             .get("delta")
             .and_then(Value::as_object)
             .ok_or_else(|| protocol_error("content delta"))?;
-        let text_delta = text(delta, "text")
-            .or_else(|| text(delta, "thinking"))
-            .or_else(|| text(delta, "partial_json"));
+        // Streamed tool input (`partial_json`) is not output; the finished input arrives with the
+        // assistant frame.
+        let text_delta = text(delta, "text").or_else(|| text(delta, "thinking"));
         let Some(text_delta) = text_delta else {
             return Ok(Vec::new());
         };
@@ -361,11 +392,6 @@ fn classify_tool(name: &str) -> CanonicalItemKind {
     }
 }
 
-fn tool_stream_kind(name: &str) -> ContentStreamKind {
-    match name {
-        "Bash" => ContentStreamKind::CommandOutput,
-        "Edit" | "Write" | "NotebookEdit" => ContentStreamKind::FileChangeOutput,
-        "ExitPlanMode" | "TodoWrite" => ContentStreamKind::PlanText,
-        _ => ContentStreamKind::Unknown,
-    }
+fn tool_input(block: &Map<String, Value>) -> Option<&Map<String, Value>> {
+    block.get("input").and_then(Value::as_object)
 }

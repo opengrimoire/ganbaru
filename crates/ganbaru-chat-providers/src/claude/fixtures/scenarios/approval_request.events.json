@@ -39,6 +39,12 @@
       "turn": "turn-1"
     },
     {
+      "type": "item_started",
+      "turn": "turn-1",
+      "kind": "command_execution",
+      "status": "active"
+    },
+    {
       "type": "request_opened",
       "turn": "turn-1",
       "kind": "command_execution",
@@ -60,7 +66,7 @@
     {
       "type": "item_completed",
       "turn": "turn-1",
-      "kind": "dynamic_tool_call",
+      "kind": "command_execution",
       "status": "completed"
     },
     {

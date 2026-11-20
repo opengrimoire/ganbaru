@@ -796,6 +796,88 @@ fn tool_input_completion_waits_for_the_correlated_tool_result() {
 }
 
 #[test]
+fn streamed_tool_input_is_not_output_and_the_assistant_frame_names_the_command() {
+    let normalizer = ClaudeEventNormalizer::new(
+        ProviderInstanceId::new("claude-instance-1".to_string()).unwrap(),
+        ChatThreadId::new("thread-1".to_string()).unwrap(),
+        ProviderSessionId::new("session-1".to_string()).unwrap(),
+    );
+    let mut state = route_state();
+    state.active_chat_turn_id = Some(ChatTurnId::new("turn-1".to_string()).unwrap());
+    let mut normalize = |message: Value| normalizer.normalize_message(&mut state, message).unwrap();
+    normalize(json!({
+        "type": "stream_event",
+        "event": {
+            "type": "content_block_start",
+            "index": 1,
+            "content_block": { "type": "tool_use", "id": "tool-bash", "name": "Bash", "input": {} }
+        }
+    }));
+    let streamed_input = normalize(json!({
+        "type": "stream_event",
+        "event": {
+            "type": "content_block_delta",
+            "index": 1,
+            "delta": { "type": "input_json_delta", "partial_json": "{\"command\": \"echo 4\"" }
+        }
+    }));
+    normalize(json!({
+        "type": "stream_event",
+        "event": { "type": "content_block_stop", "index": 1 }
+    }));
+    let assistant = normalize(json!({
+        "type": "assistant",
+        "message": {
+            "id": "msg-1",
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "tool-bash",
+                "name": "Bash",
+                "input": { "command": "echo 4", "description": "Print four", "timeout": 5 }
+            }]
+        }
+    }));
+    let result = normalize(json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{ "type": "tool_result", "tool_use_id": "tool-bash", "content": "4" }]
+        }
+    }));
+
+    assert!(streamed_input.is_empty());
+    let update = assistant
+        .iter()
+        .find_map(|event| match &event.event {
+            CanonicalEvent::ItemStarted(item) if item.item_id == "tool-bash" => Some(item),
+            _ => None,
+        })
+        .expect("tool update");
+    assert_eq!(update.kind, CanonicalItemKind::CommandExecution);
+    assert_eq!(update.title.as_deref(), Some("echo 4"));
+    assert_eq!(
+        update
+            .safe_metadata
+            .as_ref()
+            .map(|metadata| &metadata.value),
+        Some(&json!({
+            "blockType": "tool_use",
+            "toolName": "Bash",
+            "toolInput": { "command": "echo 4", "description": "Print four" },
+        }))
+    );
+    let output = result
+        .iter()
+        .filter_map(|event| match &event.event {
+            CanonicalEvent::ContentDelta(delta) => Some(delta.delta.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(output, ["4"]);
+}
+
+#[test]
 fn resume_not_found_classifier_requires_session_specific_evidence() {
     assert!(diagnostic_confirms_resume_not_found(
         "Claude session 1111 was not found"

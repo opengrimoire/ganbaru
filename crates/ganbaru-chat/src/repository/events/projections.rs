@@ -373,9 +373,12 @@ pub(in crate::repository) async fn apply_projection(
                      source_event_type, created_at, updated_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT(id) DO UPDATE SET status = excluded.status,
-                    title = excluded.title,
+                    title = COALESCE(NULLIF(excluded.title, ''), chat_activities.title),
                     detail = COALESCE(NULLIF(excluded.detail, ''), chat_activities.detail),
-                    safe_metadata_data = excluded.safe_metadata_data,
+                    safe_metadata_data = CASE
+                        WHEN excluded.safe_metadata_data = '{}' THEN chat_activities.safe_metadata_data
+                        ELSE excluded.safe_metadata_data
+                    END,
                     updated_at = excluded.updated_at
                  WHERE chat_activities.thread_id = excluded.thread_id",
                 )

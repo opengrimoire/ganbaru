@@ -5,6 +5,7 @@ mod blocks;
 mod limits;
 mod messages;
 mod seen;
+mod tool_input;
 mod usage;
 
 use background::ClaudeBackgroundTasks;
@@ -331,6 +332,9 @@ impl ClaudeEventNormalizer {
                     events.extend(self.unstreamed_text(state, message_id.as_deref(), body)?);
                 }
                 continue;
+            }
+            if matches!(block_type, "tool_use" | "server_tool_use" | "mcp_tool_use") {
+                events.extend(self.tool_use_update(state, block)?);
             }
             if block_type == "tool_use" && text(block, "name") == Some("ExitPlanMode") {
                 let markdown = bounded_text(

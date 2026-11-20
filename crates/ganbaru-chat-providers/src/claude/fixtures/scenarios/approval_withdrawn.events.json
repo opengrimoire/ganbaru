@@ -35,6 +35,12 @@
       "turn": "turn-1"
     },
     {
+      "type": "item_started",
+      "turn": "turn-1",
+      "kind": "command_execution",
+      "status": "active"
+    },
+    {
       "type": "request_opened",
       "turn": "turn-1",
       "kind": "command_execution",

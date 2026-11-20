@@ -45,6 +45,12 @@
       "turn": "turn-1"
     },
     {
+      "type": "item_started",
+      "turn": "turn-1",
+      "kind": "command_execution",
+      "status": "active"
+    },
+    {
       "type": "content_delta",
       "turn": "turn-1",
       "streamKind": "command_output",

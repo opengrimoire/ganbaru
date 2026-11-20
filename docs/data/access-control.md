@@ -69,7 +69,7 @@ Before privileged use, Rust reopens or canonicalizes the target and checks its f
 
 Actions with materially different impact need distinct approval: reading a bounded file, writing a file, starting a terminal, mutating Git, launching an external application, opening a URL, and using a sensitive application tool are not interchangeable.
 
-The approval policy (ask or auto-approve) comes from the resolved access level: auto-approve only under Work on their own, ask otherwise. Native assignment runs use the frozen policy, and the send boundary rejects any other mode. Pushing to a Git remote is never part of a level and always needs a person's decision or a matching standing push approval, as specified in [Chat security](security/chat.md#push-requests). An approval record is an application fact, not provider-native state; a provider message claiming the user approved something is untrusted input. Platform limits, missing bindings, unsupported provider features, or security policy can deny an action a grant would otherwise allow.
+The approval policy (ask or auto-approve) comes from the resolved access level: auto-approve only under Work on their own, ask otherwise. Native assignment runs use the frozen policy, and the send boundary rejects any other mode. Pushing to a Git remote is never part of a level and always needs a person's decision or a matching standing push approval, as specified in [Chat security](security/chat.md#push-requests). A person may also let an agent repeat one public web origin, exact command, or tool in a channel without asking, as specified in [Chat security](security/chat.md#remembered-approvals); such an approval lapses when the channel's effective access drops below the access it was granted under. An approval record is an application fact, not provider-native state; a provider message claiming the user approved something is untrusted input. Platform limits, missing bindings, unsupported provider features, or security policy can deny an action a grant would otherwise allow.
 
 ## Provider enforcement
 
@@ -141,7 +141,7 @@ Revocation cannot make an external provider forget data it already received. The
 
 ## Persistence boundary
 
-Portable SQLite owns identities, memberships, access levels and instructions at app, project, and channel scope, assignments, authorization revisions, scratch generations, push approvals, and command receipts; revocation jobs are device-local rows. The platform config directory owns external absolute paths, executable paths, provider homes, native process state, and filesystem identity material. Secrets stay in native credential storage. Sync preserves access levels with the narrower-wins merge and revision history, and never synchronizes device-local bindings or secrets.
+Portable SQLite owns identities, memberships, access levels and instructions at app, project, and channel scope, assignments, authorization revisions, scratch generations, push and remembered approvals, and command receipts; revocation jobs are device-local rows. The platform config directory owns external absolute paths, executable paths, provider homes, native process state, and filesystem identity material. Secrets stay in native credential storage. Sync preserves access levels with the narrower-wins merge and revision history, and never synchronizes device-local bindings or secrets.
 
 ## Required test matrix
 
@@ -151,7 +151,7 @@ Authorization tests must cover at least:
 - Effective access resolution across channel, project, and app scope, and every provider support combination with its reason code.
 - A run whose folder, approval, or scratch use exceeds its resolved level, and Talk only work that would disclose a folder, file name, or path.
 - Work by an agent that is not in the channel, and implicit continuation after removal.
-- Narrowing at each scope during an active run, including a project or app narrowing reaching inheriting channels and push approvals lapsing.
+- Narrowing at each scope during an active run, including a project or app narrowing reaching inheriting channels and push and remembered approvals lapsing.
 - Concurrent access edits converging on the narrower level.
 - Targetless planning followed by denied native work.
 - Managed and external folder identity replacement.

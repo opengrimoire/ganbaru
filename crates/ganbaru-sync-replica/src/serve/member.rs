@@ -10,7 +10,8 @@
 use super::limits::ConnectionLimits;
 use super::{
     COORDINATOR_BUSY_CODE, CoordinatorListener, LanAdmission, Peer, Routes, TLS_HANDSHAKE_TIMEOUT,
-    accept_connections, admitted_local_address, load_tls_identity, send_error, timeout_control,
+    accept_connections, accept_tls, admitted_local_address, load_tls_identity, send_error,
+    timeout_control,
 };
 use crate::hub::SyncHub;
 use crate::peers::admission::{MemberAdmission, MemberRefusal};
@@ -196,13 +197,11 @@ async fn handle_member_connection<R: Routes>(
         .configs
         .current(connection.manager, fingerprints, true)
         .await?;
-    let mut stream = tokio::time::timeout(
-        TLS_HANDSHAKE_TIMEOUT,
-        TlsAcceptor::from(config).accept(socket),
-    )
-    .await
-    .map_err(|_| "TLS handshake timed out".to_string())?
-    .map_err(|error| format!("accept TLS connection: {error}"))?;
+    let Some(mut stream) =
+        accept_tls(TlsAcceptor::from(config), socket, TLS_HANDSHAKE_TIMEOUT).await?
+    else {
+        return Ok(());
+    };
     let certificate = stream
         .get_ref()
         .1

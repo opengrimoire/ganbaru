@@ -456,16 +456,6 @@ export const chat = {
     backToChannel: (name: string) => `Back to #${name}`,
     closeThread: "Close thread",
     retry: "Retry work",
-    workAwaitsStart: "This work came from another device or its access changed, so it will not run here until you start it.",
-    workAwaitsStartAccess: (provider: string, access: string) => `It would run with ${provider}: ${access}.`,
-    workAccessFolders: (behavior: string, folders: string) => `${behavior} in ${folders}`,
-    workAccessConversation: "Conversation only",
-    workAccessChanged: "This work changed before it started. Review the updated details and start it again.",
-    waitingWork: (count: number, agent: string, channel: string) => count === 1
-      ? `Work for ${agent} in #${channel} waits for you to start it.`
-      : `${count} pieces of work wait for you to start them. The latest is for ${agent} in #${channel}.`,
-    openWaitingWork: "Open",
-    startHere: "Start here",
     cancelWork: "Cancel work",
     reviewReady: "This work is ready for your review.",
     reviewAccept: "Accept",

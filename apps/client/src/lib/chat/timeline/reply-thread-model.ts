@@ -202,13 +202,13 @@ export const STOPPABLE_ASSIGNMENT_STATES: ReadonlySet<ChatWorkAssignmentRead["st
 /**
  * Returns the active work of a reply thread that no visible run stands for, so the thread shows its state and a stop
  * control itself: work whose run has not started, or work another linked device runs, since runs stay on the device
- * that executes them. Work that waits for a Start on this device is left to the composer, which offers that Start.
+ * that executes them.
  */
-export function activeWorkWithoutRun<Work extends Pick<ChatWorkAssignmentRead, "id" | "state" | "localAcceptance">>(
+export function activeWorkWithoutRun<Work extends Pick<ChatWorkAssignmentRead, "id" | "state">>(
   assignment: Work | null,
   runs: readonly Pick<ChatAgentRunRead, "assignmentId" | "state">[],
 ): Work | null {
-  if (!assignment || !STOPPABLE_ASSIGNMENT_STATES.has(assignment.state) || assignment.localAcceptance) return null;
+  if (!assignment || !STOPPABLE_ASSIGNMENT_STATES.has(assignment.state)) return null;
   const runShown = runs.some((run) => run.assignmentId === assignment.id && agentRunIsActive(run));
   return runShown ? null : assignment;
 }

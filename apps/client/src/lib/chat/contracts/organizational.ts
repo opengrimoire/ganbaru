@@ -688,8 +688,6 @@ export interface ChatWorkAssignmentRead {
   updatedAt: UtcTimestamp;
   /** How a person ended the work, present only when it is completed after review. */
   review: ChatAssignmentReview | null;
-  /** What starting this work here would run, present while it waits for a local action on the reading device. */
-  localAcceptance: ChatAssignmentAcceptanceOfferRead | null;
   /** Chat thread of the newest run of this reply thread on the reading device, used to show its usage; null when none ran here. */
   latestRunProviderThreadId: ChatThreadId | null;
 }
@@ -725,41 +723,6 @@ export interface ChatSecretRequestRead {
   purpose: string;
   createdAt: UtcTimestamp;
   expiresAt: UtcTimestamp;
-}
-
-/** A folder an assignment waiting for local acceptance would run in. */
-export interface ChatAssignmentAcceptanceFolderRead {
-  displayName: string;
-  capability: ChatFolderCapability;
-  runtimeApproval: ChatRuntimeApprovalPolicy;
-}
-
-/** What the user accepts by starting work here. */
-export interface ChatAssignmentAcceptanceOfferRead {
-  /** Identifies these exact details; Start here passes it back so a change refreshes the offer. */
-  digest: string;
-  providerInstanceId: ProviderInstanceId;
-  /** What the agent will do here under the channel access. */
-  access: ChatEffectiveAgentAccess;
-  folders: ChatAssignmentAcceptanceFolderRead[];
-}
-
-/** Work that waits for a local action on this device, wherever it sits in the vault. */
-export interface ChatWaitingAssignmentRead {
-  assignmentId: ChatWorkAssignmentId;
-  projectId: string;
-  channelId: ChatChannelId;
-  channelName: string;
-  replyThreadId: ChatReplyThreadId;
-  agentDisplayName: string;
-  createdAt: UtcTimestamp;
-}
-
-/** The waiting list, capped, with how much waits in all. */
-export interface ChatWaitingAssignmentsRead {
-  items: ChatWaitingAssignmentRead[];
-  /** Every waiting assignment, including those past the cap. */
-  total: number;
 }
 
 /** What a review queue item asks of the person, in priority order. */

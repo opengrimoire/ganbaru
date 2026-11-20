@@ -26,7 +26,7 @@ Deferred: a second account of the same provider, or a generic ACP agent, will be
 
 Settings > Agents is provider setup: for each provider, whether it is installed and signed in on this device, its agents, and a test. Agents and their models sync; installation, executables, and credentials stay device-local, as today. When a device's provider does not offer the chosen model, the run uses that provider's recommended model and the thread shows which model ran.
 
-On a device where a provider is not installed, its agent still appears in channels and history, can still be mentioned, and its work waits in the thread for Start here on a device that has it. An agent has no home device: work runs on the desktop where the mention was posted when the provider is ready there, and otherwise waits for Start here. Android never executes agent work; it shows the agents, their work, and reviews.
+On a device where a provider is not installed, its agent still appears in channels and history, and can still be mentioned. An agent has no home device: work runs on the desktop where the mention was posted when the provider is ready there, and otherwise only the mention is recorded. Android never executes agent work; it shows the agents, their work, and reviews.
 
 ## Configuration scopes
 
@@ -82,7 +82,7 @@ Each agent runs its own model: a line agent the newest model of its line, any ot
 - **First use:** the person installs Claude Code. Settings > Agents shows Claude as ready with `@Fable`, `@Opus`, and each Claude model, adding `@Opus` to `#general` from the channel's member settings puts it in that channel's mention menu and lets it edit the project folder and ask before commands.
 - **A brainstorming channel:** the person sets the channel's access to Talk only. Every agent in it replies without touching files.
 - **A trusted project on Linux:** the person sets the project's access to Work on their own. Every channel of the project inherits it unless it overrides.
-- **A second device:** the laptop shows the same agents and channel settings. Work mentioned there runs on the laptop when the provider is installed there; otherwise it waits for Start here on a device that has it.
+- **A second device:** the laptop shows the same agents and channel settings. Work mentioned there runs on the laptop when the provider is installed there; otherwise only the mention is recorded.
 
 ## Data consequences
 

@@ -440,8 +440,7 @@ pub async fn answered_question_awaiting_dispatch(
 
 /// Queues `assignment_id` again on the device `device_id` when it waits for an answer that
 /// arrived after its asking run ended, so a new run receives the answer. The work must run on
-/// this device, which holds its settled dispatch job; the job keeps the subject it consented
-/// to, so a subject that changed since returns the work to Start here when it is claimed.
+/// this device, which holds its settled dispatch job.
 /// Returns whether the work was queued; a second call for the same answer queues nothing.
 ///
 /// # Errors

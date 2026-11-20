@@ -86,7 +86,7 @@
   } from "$lib/chat/composer/reference-candidates";
   import { chatErrorCode, chatErrorMessage, chatErrorReason } from "$lib/chat/error-presentation";
   import { parseChatMessageReference } from "$lib/chat/validation";
-  import { formatDateTime, formatList } from "$lib/i18n/formatters";
+  import { formatDateTime } from "$lib/i18n/formatters";
   import { providerLimitNotice } from "$lib/chat/usage/provider-limit";
   import { parseProjectIcon } from "$lib/projects/icons/values";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -195,7 +195,6 @@
   let alsoSendToChannel = $state(false);
   let sending = $state(false);
   let stopping = $state(false);
-  let retryingAssignment = $state(false);
   let reviewNote = $state("");
   let reviewNoteOpen = $state(false);
   let reviewing = $state(false);
@@ -264,26 +263,9 @@
     const assignment = threadComposer ? chat.replyThread?.assignment : null;
     return assignment && STOPPABLE_ASSIGNMENT_STATES.has(assignment.state) ? assignment : null;
   });
-  const assignmentAwaitingStart = $derived.by(() => {
-    const assignment = threadComposer ? chat.replyThread?.assignment : null;
-    return assignment?.localAcceptance ? assignment : null;
-  });
   const assignmentAwaitingReview = $derived.by(() => {
     const assignment = threadComposer && localExecutionAvailable ? chat.replyThread?.assignment : null;
-    return assignment?.state === "ready_for_review" && !assignment.localAcceptance ? assignment : null;
-  });
-  const workAwaitsStartMessage = $derived.by(() => {
-    const offer = assignmentAwaitingStart?.localAcceptance;
-    if (!offer) return "";
-    const provider = chat.settings?.providerInstances.find(
-      (entry) => entry.configuration.instanceId === offer.providerInstanceId,
-    )?.configuration.label ?? offer.providerInstanceId;
-    const behavior = t(`chat.agentAccess.behavior.${offer.access}`);
-    const folders = offer.folders.map((folder) => folder.displayName);
-    const access = folders.length > 0
-      ? t("chat.organization.workAccessFolders", behavior, formatList(localization.locale, folders, { style: "long", type: "conjunction" }))
-      : t("chat.organization.workAccessConversation");
-    return `${t("chat.organization.workAwaitsStart")} ${t("chat.organization.workAwaitsStartAccess", provider, access)}`;
+    return assignment?.state === "ready_for_review" ? assignment : null;
   });
   const inferredTarget = $derived.by(() => inferAssignmentTarget(
     editorReferences,
@@ -1655,23 +1637,6 @@
     }
   }
 
-  async function startAssignmentHere(): Promise<void> {
-    const assignment = assignmentAwaitingStart;
-    if (!assignment?.localAcceptance || retryingAssignment) return;
-    retryingAssignment = true;
-    error = null;
-    try {
-      const started = await chat.acceptAssignmentHere(assignment.id, assignment.localAcceptance.digest);
-      if (started) onRequestScrollToBottom();
-      else error = t("chat.organization.workAccessChanged");
-    } catch (cause: unknown) {
-      error = chatErrorMessage(cause, t("chatErrors.actions.workAction"));
-      throw cause;
-    } finally {
-      retryingAssignment = false;
-    }
-  }
-
   async function reviewWork(review: ChatAssignmentReviewRequest): Promise<boolean> {
     const assignment = assignmentAwaitingReview;
     if (!assignment || reviewing) return false;
@@ -1923,9 +1888,6 @@
   {/if}
   {#if assignmentAwaitingReview}
     <ChatAssignmentReviewCard bind:note={reviewNote} bind:composingNote={reviewNoteOpen} onAccept={acceptReviewedWork} onRequestChanges={requestChangesOnReviewedWork} />
-  {/if}
-  {#if assignmentAwaitingStart}
-    <Notice class="assignment-notice" role="status" message={workAwaitsStartMessage} retryLabel={t("chat.organization.startHere")} onRetry={startAssignmentHere} copy={false} />
   {/if}
   {#if editingScheduled}
     <div class="scheduled-summary" data-scheduled-edit>

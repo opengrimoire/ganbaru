@@ -744,21 +744,6 @@ async fn follow_assignment_state(
             .await
             .map_err(persistence_error)?
             .rows_affected();
-            sqlx::query("DELETE FROM chat_assignment_requested_targets WHERE assignment_id = ?")
-                .bind(assignment_id)
-                .execute(&mut *connection)
-                .await
-                .map_err(persistence_error)?;
-            sqlx::query(
-                "DELETE FROM chat_assignment_input_requested_targets
-                 WHERE input_id IN (
-                   SELECT id FROM chat_work_assignment_inputs WHERE assignment_id = ?
-                 )",
-            )
-            .bind(assignment_id)
-            .execute(&mut *connection)
-            .await
-            .map_err(persistence_error)?;
             let revoked = revoke_assignment_authorizations(
                 connection,
                 assignment_id,

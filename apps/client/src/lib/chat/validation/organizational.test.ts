@@ -4,7 +4,6 @@ import {
   parseChatReplyThreadPage,
   parseChatReviewQueue,
   parseChatSecretRequests,
-  parseChatWaitingAssignments,
   parseChatWorkAssignment,
 } from "./organizational";
 
@@ -32,7 +31,6 @@ function assignmentWire(overrides: Record<string, unknown>): Record<string, unkn
     createdAt: TIMESTAMP,
     updatedAt: REVIEW_TIME,
     review: null,
-    localAcceptance: null,
     delegation: null,
     modelSelection: { providerManagedModel: true, modelId: null, modelOptions: [] },
     instructions: "",
@@ -185,29 +183,6 @@ describe("parseChatSecretRequests", () => {
     expect(() => parseChatSecretRequests([{ ...request, expiresAt: TIMESTAMP }]))
       .toThrow("Chat secret requests[0].expiresAt must be after createdAt");
     expect(() => parseChatSecretRequests([{ ...request, label: 7 }])).toThrow("Chat secret requests[0].label");
-  });
-});
-
-describe("parseChatWaitingAssignments", () => {
-  const waiting = {
-    assignmentId: "assignment:waiting",
-    projectId: "project:alpha",
-    channelId: "channel:general",
-    channelName: "general",
-    replyThreadId: "reply-thread:waiting",
-    agentDisplayName: "Atlas",
-    createdAt: TIMESTAMP,
-  };
-
-  it("reads the capped list with a total past the cap", () => {
-    expect(parseChatWaitingAssignments({ items: [waiting], total: 40 })).toEqual({ items: [waiting], total: 40 });
-  });
-
-  it("refuses a missing or negative total, or one below the item count", () => {
-    expect(() => parseChatWaitingAssignments({ items: [waiting] })).toThrow();
-    expect(() => parseChatWaitingAssignments({ items: [], total: -1 })).toThrow();
-    expect(() => parseChatWaitingAssignments({ items: [waiting, waiting], total: 1 })).toThrow();
-    expect(() => parseChatWaitingAssignments([waiting])).toThrow();
   });
 });
 

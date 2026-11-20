@@ -8,7 +8,6 @@ import type {
   ChatChannelPageRead,
   ChatReviewQueueItemRead,
   ChatReviewQueueRead,
-  ChatWaitingAssignmentRead,
   ChatProjectPrimaryWorkingFolderRead,
   ChatReplyThreadId,
   ChatReplyThreadPageRead,
@@ -198,10 +197,6 @@ export class ChatStore {
   selectedWorkingFolderId = $state<ProjectWorkingFolderId | null>(null);
   /** The primary working folder of the selected channel's project. */
   primaryWorkingFolder = $state<ChatProjectPrimaryWorkingFolderRead | null>(null);
-  /** Work that waits for a local action on this device across the vault, newest first and capped. */
-  waitingAssignments = $state<ChatWaitingAssignmentRead[]>([]);
-  /** How much work waits here in all, including what the cap leaves out of `waitingAssignments`. */
-  waitingAssignmentTotal = $state(0);
   selectedThreadId = $state<ChatThreadId | null>(null);
   selectedExecutionEnvironmentId = $state<string | null>(null);
   railOpen = $state(true);
@@ -560,8 +555,6 @@ export class ChatStore {
     this.channelSelectionRequest += 1;
     this.settledChannelSelectionRequest = this.channelSelectionRequest;
     this.loaded = false;
-    this.waitingAssignments = [];
-    this.waitingAssignmentTotal = 0;
     this.communicationController.reset();
     this.exactExecutionReads.clear();
     this.channelNavigationController.reset();
@@ -625,7 +618,6 @@ export class ChatStore {
       );
       if (request !== this.loadRequest || vaultGeneration !== this.vaultGeneration) return;
       this.loaded = true;
-      this.refreshWaitingAssignments();
       this.refreshReviewQueue();
       this.listenForOtherWindows();
       this.listenForSync();
@@ -1202,24 +1194,6 @@ export class ChatStore {
     if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
   }
 
-  /**
-   * Starts waiting work with the details the user saw and rereads what it changed. Resolves false when the work
-   * changed since then, which started nothing and refreshes the offer instead.
-   */
-  async acceptAssignmentHere(assignmentId: ChatWorkAssignmentId, seenDigest: string): Promise<boolean> {
-    const started = await chatApi.acceptChatAssignmentHere(assignmentId, seenDigest);
-    this.publishChannelChange(this.selectedChannelId);
-    this.refreshWaitingAssignments();
-    this.refreshReviewQueue();
-    if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
-    return started !== null;
-  }
-
-  /** Opens the reply thread of waiting work, where its details and Start here live. */
-  async openWaitingAssignment(waiting: ChatWaitingAssignmentRead): Promise<void> {
-    await this.openAssignmentReplyThread(waiting);
-  }
-
   /** Opens the reply thread of a review queue item, where its question, approval, review, or failure lives. */
   async openReviewItem(
     item: Pick<ChatReviewQueueItemRead, "projectId" | "channelId" | "replyThreadId">,
@@ -1271,19 +1245,6 @@ export class ChatStore {
   /** Rereads the vault-wide review queue; overlapping requests from every pane coalesce. */
   private refreshReviewQueue(): void {
     void shared.reviewQueue.refresh();
-  }
-
-  /** Rereads the work waiting for a local action here, which only its own reply thread would otherwise reveal. */
-  private refreshWaitingAssignments(): void {
-    if (!localExecutionAvailable) return;
-    const vaultGeneration = this.vaultGeneration;
-    void chatApi.listChatWaitingAssignments().then((waiting) => {
-      if (vaultGeneration !== this.vaultGeneration) return;
-      this.waitingAssignments = waiting.items;
-      this.waitingAssignmentTotal = waiting.total;
-    }).catch((error: unknown) => {
-      console.error("Chat waiting work could not be read", error);
-    });
   }
 
   async archiveChannel(channel: ChatChannelRead): Promise<void> {
@@ -1639,7 +1600,6 @@ export class ChatStore {
     const channels = await chatApi.listChatNavigationChannels();
     if (!isCurrentVault()) return;
     this.channelNavigationController.refreshNavigation(channels);
-    this.refreshWaitingAssignments();
     this.refreshReviewQueue();
     if (this.owner) await this.refreshAgents();
     const channelId = this.selectedChannelId;
@@ -1657,7 +1617,6 @@ export class ChatStore {
     const vaultGeneration = this.vaultGeneration;
     if (!this.loaded) return;
     const isCurrentVault = () => vaultGeneration === this.vaultGeneration;
-    this.refreshWaitingAssignments();
     this.refreshReviewQueue();
     await Promise.all([
       ...[...changes.threadIds].map((threadId) => this.refreshThreadFromOtherWindow(threadId, isCurrentVault)),

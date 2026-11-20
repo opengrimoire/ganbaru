@@ -61,7 +61,7 @@ pub(crate) fn validate_proposed_schedule(
 }
 
 /// Schedules the message a person confirmed from an agent's proposal. `schedule_message`
-/// validates it like any scheduled message and records this device's consent.
+/// validates it like any scheduled message.
 pub(in crate::chat::organization) async fn confirm_schedule_proposal(
     app: tauri::AppHandle,
     db_url: String,

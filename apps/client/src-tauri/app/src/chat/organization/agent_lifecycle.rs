@@ -13,11 +13,10 @@ pub(super) struct AgentLifecycleState {
 /// Reads the work that keeps `agent_id` from being archived.
 ///
 /// Started work counts wherever it runs. Queued work counts only when this device holds a
-/// live (queued or claimed) dispatch job for it, which exists only after a local post or Start
-/// accepted it. Queued work with no live dispatch here waits for an acceptance this device
-/// cannot see, or was moved to another executor, so a peer's row cannot block the archive. It
-/// stays queued, does not start while the agent is archived, and becomes actionable again
-/// after a restore.
+/// live (queued or claimed) dispatch job for it. Queued work with no live dispatch here has
+/// not reached its executing device yet, or was moved to another executor, so a peer's row
+/// cannot block the archive. It stays queued, does not start while the agent is archived, and
+/// becomes actionable again after a restore.
 pub(super) async fn read_agent_lifecycle<'e, E>(
     executor: E,
     agent_id: &ChatParticipantId,

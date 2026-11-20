@@ -32,9 +32,7 @@ import {
   type ChatAssignmentInputRead,
   type ChatAiAgentRead,
   type ChatCustomAgentRemoval,
-  type ChatAssignmentAcceptanceFolderRead,
   type ChatAssignmentDelegationRead,
-  type ChatAssignmentAcceptanceOfferRead,
   type ChatAgentUsageDayRead,
   type ChatAssignmentReview,
   type ChatAssignmentTargetRead,
@@ -75,8 +73,6 @@ import {
   type ChatEffectiveChannelAccessRead,
   type ChatModelSelection,
   type ChatProjectAgentSettingsRead,
-  type ChatWaitingAssignmentRead,
-  type ChatWaitingAssignmentsRead,
   type ChatWorkAssignmentRead,
   type PostChatMessageResult,
 } from "../contracts";
@@ -865,7 +861,6 @@ export function parseChatWorkAssignment(
     createdAt: readUtcTimestamp(record.createdAt, `${label}.createdAt`),
     updatedAt: readUtcTimestamp(record.updatedAt, `${label}.updatedAt`),
     review,
-    localAcceptance: readNullable(record.localAcceptance, `${label}.localAcceptance`, parseAssignmentAcceptanceOffer),
     delegation: readNullable(record.delegation, `${label}.delegation`, parseAssignmentDelegation),
     modelSelection: parseChatModelSelection(record.modelSelection, `${label}.modelSelection`),
     instructions: readString(record.instructions, `${label}.instructions`),
@@ -900,25 +895,6 @@ function parseAssignmentReview(value: unknown, label: string): ChatAssignmentRev
     outcome: readEnum(record.outcome, CHAT_ASSIGNMENT_REVIEW_OUTCOMES, `${label}.outcome`),
     reviewedAt: readUtcTimestamp(record.reviewedAt, `${label}.reviewedAt`),
     reviewedByParticipantId: readIdentifier(record.reviewedByParticipantId, `${label}.reviewedByParticipantId`),
-  };
-}
-
-function parseAssignmentAcceptanceFolder(value: unknown, label: string): ChatAssignmentAcceptanceFolderRead {
-  const record = readRecord(value, label);
-  return {
-    displayName: readString(record.displayName, `${label}.displayName`),
-    capability: readEnum(record.capability, CHAT_FOLDER_CAPABILITIES, `${label}.capability`),
-    runtimeApproval: readEnum(record.runtimeApproval, CHAT_RUNTIME_APPROVAL_POLICIES, `${label}.runtimeApproval`),
-  };
-}
-
-function parseAssignmentAcceptanceOffer(value: unknown, label: string): ChatAssignmentAcceptanceOfferRead {
-  const record = readRecord(value, label);
-  return {
-    digest: readIdentifier(record.digest, `${label}.digest`),
-    providerInstanceId: readIdentifier(record.providerInstanceId, `${label}.providerInstanceId`),
-    access: readEnum(record.access, CHAT_EFFECTIVE_AGENT_ACCESS_LEVELS, `${label}.access`),
-    folders: readArray(record.folders, `${label}.folders`, parseAssignmentAcceptanceFolder),
   };
 }
 
@@ -974,31 +950,6 @@ function parseSecretRequest(value: unknown, label: string): ChatSecretRequestRea
 /** Validates the pending secret requests of one reply thread. */
 export function parseChatSecretRequests(value: unknown, label = "Chat secret requests"): ChatSecretRequestRead[] {
   return readArray(value, label, parseSecretRequest);
-}
-
-function parseWaitingAssignment(value: unknown, label: string): ChatWaitingAssignmentRead {
-  const record = readRecord(value, label);
-  return {
-    assignmentId: readIdentifier(record.assignmentId, `${label}.assignmentId`),
-    projectId: readIdentifier(record.projectId, `${label}.projectId`),
-    channelId: readIdentifier(record.channelId, `${label}.channelId`),
-    channelName: readString(record.channelName, `${label}.channelName`),
-    replyThreadId: readIdentifier(record.replyThreadId, `${label}.replyThreadId`),
-    agentDisplayName: readString(record.agentDisplayName, `${label}.agentDisplayName`),
-    createdAt: readUtcTimestamp(record.createdAt, `${label}.createdAt`),
-  };
-}
-
-/** Validates the capped waiting list and its total, which never counts fewer than the items. */
-export function parseChatWaitingAssignments(
-  value: unknown,
-  label = "Chat waiting assignments",
-): ChatWaitingAssignmentsRead {
-  const record = readRecord(value, label);
-  const items = readArray(record.items, `${label}.items`, parseWaitingAssignment);
-  const total = readNonNegativeSafeInteger(record.total, `${label}.total`);
-  if (total < items.length) throw new Error(`${label}.total is below the item count`);
-  return { items, total };
 }
 
 function parseReviewQueueItem(value: unknown, label: string): ChatReviewQueueItemRead {

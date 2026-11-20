@@ -7,7 +7,7 @@ use crate::chat::organization::tests::{
     seed_test_channel,
 };
 use crate::chat::organization::workflow::PostingDevice;
-use crate::chat::organization::{ScheduledConsent, ScheduledSend, persist_post};
+use crate::chat::organization::{ScheduledSend, persist_post};
 use ganbaru_chat::coordination::contracts::{
     ChatScheduledMessageRead, PostChatMessageCommand, UpdateScheduledChatMessageCommand,
 };
@@ -199,20 +199,16 @@ fn scheduled_series_posts_each_occurrence_once_and_advances() {
         let series = read_series(&pool, &test_id()).await.unwrap().unwrap();
 
         claim(&pool, &now, "claim:first").await;
-        let ClaimedSeries::Post {
-            occurrence: first,
-            spec,
-        } = resolve_claimed_series(&pool, &test_id(), "claim:first", &now, &QuietGate::Open)
-            .await
-            .unwrap()
+        let ClaimedSeries::Post(first) =
+            resolve_claimed_series(&pool, &test_id(), "claim:first", &now, &QuietGate::Open)
+                .await
+                .unwrap()
         else {
             panic!("the first occurrence is due");
         };
-        assert_eq!(spec, hourly());
         let first_send = ScheduledSend {
             scheduled_message_id: &id,
             claim_token: "claim:first",
-            consent: ScheduledConsent::Local,
             occurrence: Some(first.as_send()),
         };
         let first_post = persist_post(&pool, &request, Some(first_send), device)
@@ -266,7 +262,6 @@ fn scheduled_series_posts_each_occurrence_once_and_advances() {
             Some(ScheduledSend {
                 scheduled_message_id: &id,
                 claim_token: "claim:second",
-                consent: ScheduledConsent::Local,
                 occurrence: Some(second.as_send()),
             }),
             device,
@@ -311,7 +306,6 @@ fn scheduled_series_rejects_an_occurrence_it_already_moved_past() {
             Some(ScheduledSend {
                 scheduled_message_id: &id,
                 claim_token: "claim:stale",
-                consent: ScheduledConsent::Local,
                 occurrence: Some(stale.as_send()),
             }),
             device,
@@ -561,7 +555,7 @@ fn scheduled_quiet_hold_posts_when_the_quiet_period_ends() {
         // Past the grace from its due time, the held occurrence still posts.
         let end = UtcTimestamp::new("2026-08-04T00:25:00.000Z").unwrap();
         claim(&pool, &end, "claim:end").await;
-        let ClaimedSeries::Post { occurrence, .. } =
+        let ClaimedSeries::Post(occurrence) =
             resolve_claimed_series(&pool, &test_id(), "claim:end", &end, &QuietGate::Open)
                 .await
                 .unwrap()
@@ -611,7 +605,7 @@ fn scheduled_quiet_state_unavailable_fails_only_a_deferring_attempt() {
             resolve_claimed_series(&pool, &test_id(), "claim:unavailable", &now, &gate)
                 .await
                 .unwrap(),
-            ClaimedSeries::Post { .. }
+            ClaimedSeries::Post(_)
         ));
     });
 }
@@ -667,9 +661,7 @@ async fn edit_series(
     now: &UtcTimestamp,
     edit: UpdateScheduledChatMessageCommand,
 ) -> ChatScheduledMessageRead {
-    apply_scheduled_update(pool, SCHEDULING_DEVICE, edit, now, |_, _, _| ())
-        .await
-        .unwrap()
+    apply_scheduled_update(pool, edit, now).await.unwrap()
 }
 
 async fn recurrence_rows(pool: &SqlitePool) -> i64 {

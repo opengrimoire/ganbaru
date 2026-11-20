@@ -438,12 +438,8 @@ describe("reply thread run outcomes", () => {
 });
 
 describe("active work without a run", () => {
-  type Work = Pick<ChatWorkAssignmentRead, "id" | "state" | "localAcceptance">;
-  const work = (state: Work["state"], localAcceptance: Work["localAcceptance"] = null): Work => ({
-    id: "assignment-1",
-    state,
-    localAcceptance,
-  });
+  type Work = Pick<ChatWorkAssignmentRead, "id" | "state">;
+  const work = (state: Work["state"]): Work => ({ id: "assignment-1", state });
 
   it("stands for active work that another linked device runs, whose runs never reach this device", () => {
     const states: Work["state"][] = [
@@ -471,12 +467,6 @@ describe("active work without a run", () => {
 
     expect(activeWorkWithoutRun(active, [{ assignmentId: "assignment-1", state: "completed" }])).toBe(active);
     expect(activeWorkWithoutRun(active, [{ assignmentId: "assignment-0", state: "working" }])).toBe(active);
-  });
-
-  it("leaves work that waits for a Start on this device to the composer", () => {
-    const offer = { digest: "digest-1", providerInstanceId: "codex-desk", access: "ask" as const, folders: [] };
-
-    expect(activeWorkWithoutRun(work("queued", offer), [])).toBeNull();
   });
 });
 

@@ -202,8 +202,6 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_secret_requests",
             "chat_agent_run_attempt_immutable",
             "chat_assignment_dispatch_jobs",
-            "chat_assignment_requested_targets",
-            "chat_assignment_input_requested_targets",
             "chat_scheduled_messages",
             "chat_push_request_claims",
             "chat_scheduled_message_attachment_references",

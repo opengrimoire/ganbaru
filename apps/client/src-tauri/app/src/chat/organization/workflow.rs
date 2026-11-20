@@ -2,8 +2,6 @@
 
 mod messages;
 
-#[cfg(desktop)]
-use super::assignments::read_assignment_subject;
 use super::common::{
     assignment_input_id, serialization_error, wire_review_outcome, wire_work_state,
     work_assignment_id,
@@ -44,10 +42,6 @@ pub(super) struct AssignmentWrite {
     /// desktop executes assignments.
     #[cfg_attr(mobile, allow(dead_code))]
     pub(super) executes_here: bool,
-    /// Whether the post created work, or a pending reply of reviewed work, that starts only
-    /// through local acceptance.
-    #[cfg_attr(mobile, allow(dead_code))]
-    pub(super) awaits_acceptance: bool,
 }
 
 impl AssignmentWrite {
@@ -57,17 +51,7 @@ impl AssignmentWrite {
         input_queued: false,
         routed_as: None,
         executes_here: false,
-        awaits_acceptance: false,
     };
-
-    /// Whether the post queued the dispatch of new work on this device, the only post that
-    /// carries a local gesture's acceptance of what the work runs. An input of existing work
-    /// starts nothing, since that work may still wait for Start here, and work awaiting
-    /// acceptance has no dispatch.
-    #[cfg(desktop)]
-    pub(super) fn dispatches_here(&self) -> bool {
-        self.executes_here && !self.input_queued && !self.awaits_acceptance
-    }
 }
 
 pub(super) fn has_authority_bearing_references(references: &[ChatMessageReference]) -> bool {
@@ -234,9 +218,6 @@ pub(super) struct PostingDevice<'a> {
     pub(super) can_execute: bool,
     /// Devices that can write Chat, the only ones an assignment may run on.
     pub(super) chat_writers: &'a ChatWriters,
-    /// Whether no one on this device consented to the post, so new work it creates here waits
-    /// for local acceptance instead of queueing its dispatch.
-    pub(super) unattended: bool,
 }
 
 impl<'a> PostingDevice<'a> {
@@ -246,15 +227,6 @@ impl<'a> PostingDevice<'a> {
             id,
             can_execute: cfg!(desktop),
             chat_writers,
-            unattended: false,
-        }
-    }
-
-    /// This device writing a post no one on it consented to.
-    pub(super) fn unattended(self) -> Self {
-        Self {
-            unattended: true,
-            ..self
         }
     }
 
@@ -266,14 +238,6 @@ impl<'a> PostingDevice<'a> {
     /// Whether this device can run new work: it executes assignments and writes Chat.
     pub(super) fn runs_new_work(&self) -> bool {
         self.can_execute && self.chat_writers.includes(self.id)
-    }
-
-    /// Whether the post must leave existing work as it is: no one on this executing device
-    /// consented to it, so it steers no active work and settles no reviewed work. Android
-    /// neither records consent nor executes work, so its scheduled sends route as its user's
-    /// posts and the executing desktop applies its own gates.
-    pub(super) fn leaves_existing_work(&self) -> bool {
-        self.unattended && self.can_execute
     }
 }
 
@@ -366,14 +330,6 @@ pub(super) struct PostRoutingChoices<'a> {
 /// An input of active work follows the `followup_routing` of `choices`: Steer reaches a working
 /// run's current turn and queues for any other state, Queue always waits for the current turn
 /// to end, and `None` steers working work and queues anything else.
-///
-/// A post no one on this executing device consented to leaves existing work as it is. It
-/// records only the mention when the thread has active work. A reply to work that asked for
-/// review becomes a pending reply of that work, which waits for Start here or for a local
-/// acceptance of the agent before a follow-up settles the review, and this device keeps the
-/// execution target the post chose for that follow-up; a mention of another
-/// agent there creates that agent's new work awaiting Start here and leaves the review
-/// open.
 pub(super) async fn persist_assignment_routing(
     transaction: &mut Transaction<'_, Sqlite>,
     reply_thread_id: &ChatReplyThreadId,
@@ -391,11 +347,6 @@ pub(super) async fn persist_assignment_routing(
         return Ok(AssignmentWrite::NONE);
     };
     if let Some(active) = &invocation.active_assignment {
-        if device.leaves_existing_work() {
-            // By design an unattended reply on active work stays a plain message: it would
-            // steer a run no one here agreed to, and the user can repeat it themselves.
-            return Ok(AssignmentWrite::NONE);
-        }
         let routed_as = active_input_routing(active.state, followup_routing);
         let routing_kind = match routed_as {
             ChatFollowupRouting::Steer => "steer",
@@ -410,42 +361,9 @@ pub(super) async fn persist_assignment_routing(
             input_queued: true,
             routed_as: Some(routed_as),
             executes_here: device.executes(executing_device_id.as_deref()),
-            awaits_acceptance: false,
         });
     }
-    let mut latest_assignment = invocation.latest_assignment.as_ref();
-    let reviewed = latest_assignment
-        .filter(|latest| latest.state == ChatWorkAssignmentState::ReadyForReview)
-        .filter(|_| device.leaves_existing_work());
-    if reviewed.is_some_and(|reviewed| reviewed.agent.id != invocation.agent_id) {
-        // New work for another agent does not follow the reviewed work, so creating it
-        // leaves that review open; it waits for Start here like any unattended new work.
-        latest_assignment = None;
-    }
-    if let Some(reviewed) = reviewed.filter(|_| latest_assignment.is_some()) {
-        append_assignment_input(
-            transaction,
-            &reviewed.id,
-            message_item_id,
-            "queued_continuation",
-            now,
-        )
-        .await?;
-        let executing_device_id =
-            read_assignment_executing_device(&mut **transaction, reviewed.id.as_str()).await?;
-        let executes_here = device.executes(executing_device_id.as_deref());
-        #[cfg(desktop)]
-        if let Some(target) = execution_target.filter(|_| executes_here) {
-            record_input_requested_target(transaction, message_item_id, target, now).await?;
-        }
-        return Ok(AssignmentWrite {
-            assignment_id: Some(reviewed.id.clone()),
-            input_queued: true,
-            routed_as: Some(ChatFollowupRouting::Queue),
-            executes_here,
-            awaits_acceptance: executes_here,
-        });
-    }
+    let latest_assignment = invocation.latest_assignment.as_ref();
     let Some(executing_device_id) =
         new_assignment_executing_device(transaction, &invocation.agent_id, device).await?
     else {
@@ -467,13 +385,11 @@ pub(super) async fn persist_assignment_routing(
         now,
     )
     .await?;
-    let executes_here = device.executes(Some(&executing_device_id));
     Ok(AssignmentWrite {
         assignment_id: Some(assignment_id),
         input_queued: false,
         routed_as: None,
-        executes_here,
-        awaits_acceptance: executes_here && device.unattended,
+        executes_here: device.executes(Some(&executing_device_id)),
     })
 }
 
@@ -595,11 +511,9 @@ async fn read_delegation_fields(
 /// for. A trigger message that is already an input moves to the new assignment, since
 /// its input id derives from the message, and the other pending replies of the same reply
 /// thread that a reviewed or completed predecessor holds follow it in order, steered into the
-/// first turn so they reach it together. The execution targets kept for the predecessor's
-/// pending replies go, since no reply waits on it anymore. When this device executes it and
-/// someone here consented to the post, the same transaction freezes its context and queues its
-/// dispatch; otherwise the executing device does both when the assignment passes its acceptance
-/// check.
+/// first turn so they reach it together. When this device executes it, the same transaction
+/// freezes its context and queues its dispatch; otherwise the executing device does both when
+/// the assignment syncs there.
 ///
 /// A successor of delegated work keeps its predecessor's delegation fields unless the caller
 /// names others, so rerouted and follow-up work stays under the parent's ceiling.
@@ -724,30 +638,22 @@ pub(super) async fn create_assignment(
             .map(|input| input.id)
             .collect::<Vec<_>>();
         move_pending_inputs(transaction, &carried, &assignment_id, Some("steer")).await?;
-        drop_input_requested_targets(transaction, &previous.id).await?;
-        drop_input_requested_targets(transaction, &assignment_id).await?;
     }
     #[cfg(desktop)]
     if device.executes(Some(assignment.executing_device_id)) {
-        if device.unattended {
-            if let Some(target) = assignment.execution_target {
-                record_requested_target(transaction, &assignment_id, target, now).await?;
-            }
-        } else {
-            queue_assignment_dispatch(
-                transaction,
-                WorkToFreeze {
-                    assignment_id: &assignment_id,
-                    reply_thread_id: assignment.reply_thread_id,
-                    triggering_message_item_id: assignment.message_item_id,
-                    agent_id: assignment.agent_id,
-                },
-                assignment.execution_target,
-                device.chat_writers.providers(),
-                now,
-            )
-            .await?;
-        }
+        queue_assignment_dispatch(
+            transaction,
+            WorkToFreeze {
+                assignment_id: &assignment_id,
+                reply_thread_id: assignment.reply_thread_id,
+                triggering_message_item_id: assignment.message_item_id,
+                agent_id: assignment.agent_id,
+            },
+            assignment.execution_target,
+            device.chat_writers.providers(),
+            now,
+        )
+        .await?;
     }
     #[cfg(mobile)]
     let _ = (device, assignment.execution_target);
@@ -879,118 +785,9 @@ pub(super) async fn move_pending_inputs(
     Ok(())
 }
 
-/// Keeps on this device the execution target `target` that the post creating `assignment_id`
-/// chose, so the dispatch that a later acceptance queues runs where the request asked.
-#[cfg(desktop)]
-async fn record_requested_target(
-    transaction: &mut Transaction<'_, Sqlite>,
-    assignment_id: &ChatWorkAssignmentId,
-    target: &ChatExecutionTarget,
-    now: &UtcTimestamp,
-) -> ChatResult<()> {
-    let target_data = serde_json::to_string(target).map_err(serialization_error)?;
-    sqlx::query(
-        "INSERT INTO chat_assignment_requested_targets (assignment_id, target_data, created_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(assignment_id) DO UPDATE SET
-            target_data = excluded.target_data, created_at = excluded.created_at",
-    )
-    .bind(assignment_id.as_str())
-    .bind(target_data)
-    .bind(now.as_str())
-    .execute(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
-    Ok(())
-}
-
-/// Removes and returns the execution target the post creating `assignment_id` chose on this
-/// device, if it kept one.
-#[cfg(desktop)]
-pub(super) async fn take_requested_target(
-    transaction: &mut Transaction<'_, Sqlite>,
-    assignment_id: &ChatWorkAssignmentId,
-) -> ChatResult<Option<ChatExecutionTarget>> {
-    let target_data: Option<String> = sqlx::query_scalar(
-        "DELETE FROM chat_assignment_requested_targets WHERE assignment_id = ?
-         RETURNING target_data",
-    )
-    .bind(assignment_id.as_str())
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
-    target_data
-        .map(|data| serde_json::from_str(&data).map_err(serialization_error))
-        .transpose()
-}
-
-/// Keeps on this device the execution target `target` that the post `message_item_id` chose
-/// when it became a pending reply to work awaiting review, so the follow-up that a later
-/// acceptance creates from it runs where the post asked.
-#[cfg(desktop)]
-async fn record_input_requested_target(
-    transaction: &mut Transaction<'_, Sqlite>,
-    message_item_id: &ChatConversationItemId,
-    target: &ChatExecutionTarget,
-    now: &UtcTimestamp,
-) -> ChatResult<()> {
-    let target_data = serde_json::to_string(target).map_err(serialization_error)?;
-    sqlx::query(
-        "INSERT INTO chat_assignment_input_requested_targets (input_id, target_data, created_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(input_id) DO UPDATE SET
-            target_data = excluded.target_data, created_at = excluded.created_at",
-    )
-    .bind(assignment_input_id(message_item_id.as_str())?)
-    .bind(target_data)
-    .bind(now.as_str())
-    .execute(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
-    Ok(())
-}
-
-/// The execution target this device keeps for the pending reply `input_id`, if its post chose
-/// one.
-#[cfg(desktop)]
-pub(super) async fn read_input_requested_target(
-    transaction: &mut Transaction<'_, Sqlite>,
-    input_id: &str,
-) -> ChatResult<Option<ChatExecutionTarget>> {
-    let target_data: Option<String> = sqlx::query_scalar(
-        "SELECT target_data FROM chat_assignment_input_requested_targets WHERE input_id = ?",
-    )
-    .bind(input_id)
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
-    target_data
-        .map(|data| serde_json::from_str(&data).map_err(serialization_error))
-        .transpose()
-}
-
-/// Drops the execution targets this device keeps for the inputs of `assignment_id`, which only
-/// serve replies still waiting on work awaiting review.
-pub(super) async fn drop_input_requested_targets(
-    connection: &mut sqlx::SqliteConnection,
-    assignment_id: &ChatWorkAssignmentId,
-) -> ChatResult<()> {
-    sqlx::query(
-        "DELETE FROM chat_assignment_input_requested_targets
-         WHERE input_id IN (
-           SELECT id FROM chat_work_assignment_inputs WHERE assignment_id = ?
-         )",
-    )
-    .bind(assignment_id.as_str())
-    .execute(&mut *connection)
-    .await
-    .map_err(persistence_error)?;
-    Ok(())
-}
-
-/// Freezes the context of assignment `assignment_id` and queues its dispatch on this device,
-/// with the job consenting to the subject the post or Start agreed to run. Delegated work whose
-/// parent lost its authority is cancelled by the freeze instead, and queues nothing.
+/// Freezes the context of assignment `assignment_id` and queues its dispatch on this device.
+/// Delegated work whose parent lost its authority is cancelled by the freeze instead, and
+/// queues nothing.
 #[cfg(desktop)]
 pub(super) async fn queue_assignment_dispatch(
     transaction: &mut Transaction<'_, Sqlite>,
@@ -1005,17 +802,13 @@ pub(super) async fn queue_assignment_dispatch(
     if outcome == FreezeOutcome::ParentAuthorityRevoked {
         return Ok(());
     }
-    let consented_digest = read_assignment_subject(transaction, assignment_id, providers)
-        .await?
-        .digest();
     sqlx::query(
         "INSERT INTO chat_assignment_dispatch_jobs
-            (id, assignment_id, state, consented_digest, available_at, created_at, updated_at)
-         VALUES (?, ?, 'queued', ?, ?, ?, ?)",
+            (id, assignment_id, state, available_at, created_at, updated_at)
+         VALUES (?, ?, 'queued', ?, ?, ?)",
     )
     .bind(new_id("dispatch")?)
     .bind(assignment_id.as_str())
-    .bind(&consented_digest)
     .bind(now.as_str())
     .bind(now.as_str())
     .bind(now.as_str())
@@ -1374,8 +1167,7 @@ pub(super) async fn set_assignment_state(
 
 /// Ends the local dispatch jobs still queued or claimed for `assignment_id`, which settled as
 /// `state`: they become cancelled when it was cancelled and failed otherwise, so no worker runs
-/// settled work. The execution targets kept for its start and for its pending replies go with
-/// them, since they only served work that was still waiting to run.
+/// settled work.
 pub(super) async fn end_assignment_dispatch_jobs(
     connection: &mut sqlx::SqliteConnection,
     assignment_id: &ChatWorkAssignmentId,
@@ -1396,12 +1188,7 @@ pub(super) async fn end_assignment_dispatch_jobs(
     .execute(&mut *connection)
     .await
     .map_err(persistence_error)?;
-    sqlx::query("DELETE FROM chat_assignment_requested_targets WHERE assignment_id = ?")
-        .bind(assignment_id.as_str())
-        .execute(&mut *connection)
-        .await
-        .map_err(persistence_error)?;
-    drop_input_requested_targets(connection, assignment_id).await
+    Ok(())
 }
 
 pub(super) fn parse_model_selection(data: String) -> ChatResult<ChatModelSelection> {

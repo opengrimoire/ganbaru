@@ -82,8 +82,8 @@ pub(crate) async fn delegate_assignment(
         Ok(created) => created,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    if let Some(unattended) = created.starts_here {
-        start_child(app, &created.child.assignment_id, unattended);
+    if created.starts_here {
+        start_child(app, &created.child.assignment_id);
     }
     Ok(Ok(created.child))
 }
@@ -92,9 +92,9 @@ pub(crate) async fn delegate_assignment(
 #[derive(Debug)]
 pub(super) struct CreatedChild {
     pub(super) child: DelegatedChild,
-    /// Whether this device starts the new child, and if so whether it starts as unattended
-    /// work. A child an earlier call created was already started.
-    pub(super) starts_here: Option<bool>,
+    /// Whether this device starts the new child. A child an earlier call created was already
+    /// started.
+    pub(super) starts_here: bool,
 }
 
 /// Writes the child of `request` on the device `device_id`, as [`delegate_assignment`]
@@ -125,7 +125,7 @@ pub(super) async fn persist_delegation(
                 .matching(&request, &ceiling, thread_id)
                 .map(|child| CreatedChild {
                     child,
-                    starts_here: None,
+                    starts_here: false,
                 }));
         }
         PriorRequest::OtherWork => return Ok(Err(DelegationRefusal::RequestConflict)),
@@ -215,8 +215,7 @@ pub(super) async fn persist_delegation(
     .await?;
     let state = read_state(&mut transaction, &assignment_id).await?;
     transaction.commit().await.map_err(persistence_error)?;
-    let starts_here = (device.executes(Some(&executing_device_id)) && state == "queued")
-        .then_some(device.unattended);
+    let starts_here = device.executes(Some(&executing_device_id)) && state == "queued";
     Ok(Ok(CreatedChild {
         child: DelegatedChild {
             assignment_id,
@@ -227,13 +226,8 @@ pub(super) async fn persist_delegation(
     }))
 }
 
-/// Starts a child this device executes: through its queued dispatch, or, for the child of
-/// unattended work, through the acceptance check of synced work.
-fn start_child(app: &tauri::AppHandle, assignment_id: &ChatWorkAssignmentId, unattended: bool) {
-    if unattended {
-        super::assignments::start_unattended_assignment(app, assignment_id);
-        return;
-    }
+/// Starts a child this device executes through its queued dispatch.
+fn start_child(app: &tauri::AppHandle, assignment_id: &ChatWorkAssignmentId) {
     let app = app.clone();
     let assignment_id = assignment_id.clone();
     tauri::async_runtime::spawn(async move {

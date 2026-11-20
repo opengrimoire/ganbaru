@@ -515,12 +515,6 @@ pub(crate) fn parse_runtime_approval_policy(value: &str) -> ChatResult<ChatRunti
         .ok_or_else(|| stored_value_error("runtime approval policy"))
 }
 
-/// Parses a stored folder capability.
-#[cfg(desktop)]
-pub(super) fn parse_folder_capability(value: &str) -> ChatResult<ChatFolderCapability> {
-    ChatFolderCapability::parse(value).ok_or_else(|| stored_value_error("folder capability"))
-}
-
 /// The stored form of the folder capability `value`.
 #[cfg(desktop)]
 pub(super) fn wire_folder_capability(value: ChatFolderCapability) -> &'static str {

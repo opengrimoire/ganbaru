@@ -1,4 +1,4 @@
-//! Archiving, restoring, and removing agents, and how archiving meets queued and accepted work.
+//! Archiving, restoring, and removing agents, and how archiving meets queued and dispatched work.
 
 use super::*;
 
@@ -323,7 +323,7 @@ fn removing_a_agent_from_a_channel_keeps_the_rows_and_hides_them_from_readers() 
 }
 
 #[test]
-fn unaccepted_work_does_not_block_archiving_a_agent() {
+fn undispatched_work_does_not_block_archiving_a_agent() {
     tauri::async_runtime::block_on(async {
         let pool = review_thread_without_assignment().await;
         seed_assignment_on_old_owner(&pool, "queued").await;
@@ -338,11 +338,11 @@ fn unaccepted_work_does_not_block_archiving_a_agent() {
             &Default::default(),
         )
         .await
-        .expect("queued work nobody accepted here does not block archiving");
+        .expect("queued work with no dispatch here does not block archiving");
         assert!(archived.participant.archived_at.is_some());
         assert_eq!(archived.active_assignment_count, 0);
         let (state, reason, executor, _) = assignment_takeover(&pool, "assignment:old").await;
-        assert_eq!(state, "queued", "the unaccepted work stays queued");
+        assert_eq!(state, "queued", "the undispatched work stays queued");
         assert_eq!(reason, None);
         assert_eq!(executor.as_deref(), Some("device:old"));
         assert!(
@@ -351,7 +351,6 @@ fn unaccepted_work_does_not_block_archiving_a_agent() {
                 &assignment_id,
                 &test_providers(),
                 "device:old",
-                &ChatDeviceScope::default(),
             )
             .await
             .unwrap(),
@@ -368,18 +367,16 @@ fn unaccepted_work_does_not_block_archiving_a_agent() {
         .await
         .unwrap();
         assert!(restored.participant.archived_at.is_none());
-        let scope = scope_accepting(&pool, "assignment:old").await;
         assert!(
             assignments::adopt_synced_assignment(
                 &pool,
                 &assignment_id,
                 &test_providers(),
                 "device:old",
-                &scope
             )
             .await
             .unwrap(),
-            "the restored agent's queued work starts once accepted"
+            "the restored agent's queued work starts"
         );
 
         let error = super::agent_lifecycle::set_agent_archived(
@@ -394,26 +391,24 @@ fn unaccepted_work_does_not_block_archiving_a_agent() {
         assert_eq!(
             error.code,
             ChatErrorCode::Conflict,
-            "work accepted on this device still blocks archiving"
+            "work dispatched on this device still blocks archiving"
         );
     });
 }
 
 #[test]
-fn accepted_work_of_a_agent_archived_elsewhere_waits_at_claim() {
+fn dispatched_work_of_a_agent_archived_elsewhere_waits_at_claim() {
     tauri::async_runtime::block_on(async {
         let pool = review_thread_without_assignment().await;
         seed_assignment_on_old_owner(&pool, "queued").await;
         let agent_id = ChatParticipantId::new("participant:review-agent").unwrap();
         let assignment_id = ChatWorkAssignmentId::new("assignment:old").unwrap();
-        let scope = scope_accepting(&pool, "assignment:old").await;
         assert!(
             assignments::adopt_synced_assignment(
                 &pool,
                 &assignment_id,
                 &test_providers(),
                 "device:old",
-                &scope
             )
             .await
             .unwrap()
@@ -441,11 +436,11 @@ fn accepted_work_of_a_agent_archived_elsewhere_waits_at_claim() {
 
         assert!(
             claim.is_none(),
-            "an archived agent's accepted work does not start"
+            "an archived agent's dispatched work does not start"
         );
         assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 0);
         let (state, reason, executor, _) = assignment_takeover(&pool, "assignment:old").await;
-        assert_eq!(state, "queued", "the accepted work waits for a restore");
+        assert_eq!(state, "queued", "the dispatched work waits for a restore");
         assert_eq!(reason, None);
         assert_eq!(executor.as_deref(), Some("device:old"));
 
@@ -470,29 +465,26 @@ fn accepted_work_of_a_agent_archived_elsewhere_waits_at_claim() {
                 &assignment_id,
                 &test_providers(),
                 "device:old",
-                &scope
             )
             .await
             .unwrap(),
-            "the restored agent's work starts once accepted again"
+            "the restored agent's work starts again"
         );
     });
 }
 
 #[test]
-fn accepted_work_of_a_agent_archived_after_its_claim_waits_for_a_restore() {
+fn dispatched_work_of_a_agent_archived_after_its_claim_waits_for_a_restore() {
     tauri::async_runtime::block_on(async {
         let pool = review_thread_without_assignment().await;
         seed_assignment_on_old_owner(&pool, "queued").await;
         let assignment_id = ChatWorkAssignmentId::new("assignment:old").unwrap();
-        let scope = scope_accepting(&pool, "assignment:old").await;
         assert!(
             assignments::adopt_synced_assignment(
                 &pool,
                 &assignment_id,
                 &test_providers(),
                 "device:old",
-                &scope
             )
             .await
             .unwrap()
@@ -507,7 +499,7 @@ fn accepted_work_of_a_agent_archived_after_its_claim_waits_for_a_restore() {
         )
         .await
         .unwrap()
-        .expect("the accepted work claims while the agent is active");
+        .expect("the dispatched work claims while the agent is active");
         sqlx::query(
             "UPDATE chat_participants SET archived_at = '2026-08-04T17:02:00.000Z',
                  revision = revision + 1
@@ -530,7 +522,7 @@ fn accepted_work_of_a_agent_archived_after_its_claim_waits_for_a_restore() {
         assert_eq!(settlement, super::dispatch::DispatchSettlement::Waiting);
         assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 0);
         let (state, reason, ..) = assignment_takeover(&pool, "assignment:old").await;
-        assert_eq!(state, "queued", "the accepted work waits for a restore");
+        assert_eq!(state, "queued", "the dispatched work waits for a restore");
         assert_eq!(reason, None);
     });
 }
@@ -541,14 +533,12 @@ fn a_dispatch_error_of_an_active_agent_still_fails_the_work() {
         let pool = review_thread_without_assignment().await;
         seed_assignment_on_old_owner(&pool, "queued").await;
         let assignment_id = ChatWorkAssignmentId::new("assignment:old").unwrap();
-        let scope = scope_accepting(&pool, "assignment:old").await;
         assert!(
             assignments::adopt_synced_assignment(
                 &pool,
                 &assignment_id,
                 &test_providers(),
                 "device:old",
-                &scope
             )
             .await
             .unwrap()

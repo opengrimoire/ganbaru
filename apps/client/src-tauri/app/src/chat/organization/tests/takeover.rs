@@ -57,13 +57,11 @@ fn a_new_assignment_runs_on_the_posting_desktop_only_when_its_provider_is_ready_
             id: "device:phone",
             can_execute: false,
             chat_writers: &writers,
-            unattended: false,
         };
         let desk = super::workflow::PostingDevice {
             id: "device:desk",
             can_execute: true,
             chat_writers: &writers,
-            unattended: false,
         };
 
         let pool = review_thread_without_assignment().await;
@@ -123,24 +121,20 @@ fn the_new_owner_takes_over_unstarted_work_queued_on_the_old_owner() {
         let now = UtcTimestamp::new("2026-08-04T17:05:00.000Z").unwrap();
         let pool = review_thread_without_assignment().await;
         seed_assignment_on_old_owner(&pool, "queued").await;
-
-        let scope = scope_accepting(&pool, "assignment:old").await;
-
         let phone = super::workflow::PostingDevice {
             id: "device:phone",
             can_execute: false,
             chat_writers: &writers,
-            unattended: false,
         };
         assert_eq!(
-            assignments::take_over_stranded_assignments(&pool, phone, &scope, &now)
+            assignments::take_over_stranded_assignments(&pool, phone, &now)
                 .await
                 .unwrap(),
             0,
             "only a device that runs work takes it over"
         );
         let new_owner = super::workflow::PostingDevice::this_device(NEW_OWNER, &writers);
-        let taken = assignments::take_over_stranded_assignments(&pool, new_owner, &scope, &now)
+        let taken = assignments::take_over_stranded_assignments(&pool, new_owner, &now)
             .await
             .unwrap();
 
@@ -186,7 +180,7 @@ fn the_new_owner_takes_over_unstarted_work_queued_on_the_old_owner() {
         .unwrap();
         assert_eq!(jobs, 1, "the new owner dispatches the successor");
         assert_eq!(
-            assignments::take_over_stranded_assignments(&pool, new_owner, &scope, &now)
+            assignments::take_over_stranded_assignments(&pool, new_owner, &now)
                 .await
                 .unwrap(),
             0,
@@ -196,35 +190,43 @@ fn the_new_owner_takes_over_unstarted_work_queued_on_the_old_owner() {
 }
 
 #[test]
-fn stranded_takeover_skips_unaccepted_assignment() {
+fn stranded_takeover_skips_work_whose_agent_cannot_run_here() {
     tauri::async_runtime::block_on(async {
-        let writers = chat_writers_of(&[NEW_OWNER]);
-        let new_owner = super::workflow::PostingDevice::this_device(NEW_OWNER, &writers);
         let now = UtcTimestamp::new("2026-08-04T17:05:00.000Z").unwrap();
-        let pool = review_thread_without_assignment().await;
-        seed_assignment_on_old_owner(&pool, "queued").await;
+        for (providers, case) in [
+            (
+                test_providers_with(ProviderAuthoritySupport::default()),
+                "no access resolves on this device",
+            ),
+            (
+                super::provider_agents::DeviceProviders::default(),
+                "no provider installation runs the agent",
+            ),
+        ] {
+            let writers =
+                super::workflow::ChatWriters::new([NEW_OWNER.to_owned()]).with_providers(providers);
+            let new_owner = super::workflow::PostingDevice::this_device(NEW_OWNER, &writers);
+            let pool = review_thread_without_assignment().await;
+            seed_assignment_on_old_owner(&pool, "queued").await;
 
-        let taken = assignments::take_over_stranded_assignments(
-            &pool,
-            new_owner,
-            &ChatDeviceScope::default(),
-            &now,
-        )
-        .await
-        .unwrap();
+            let taken = assignments::take_over_stranded_assignments(&pool, new_owner, &now)
+                .await
+                .unwrap();
 
-        assert_eq!(taken, 0);
-        let (state, reason, executor, successor) =
-            assignment_takeover(&pool, "assignment:old").await;
-        assert_eq!(state, "queued", "the work stays visible");
-        assert_eq!(reason, None);
-        assert_eq!(executor.as_deref(), Some("device:old"));
-        assert_eq!(successor, None, "nothing moved onto this device");
-        let jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_assignment_dispatch_jobs")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(jobs, 0);
+            assert_eq!(taken, 0, "{case}");
+            let (state, reason, executor, successor) =
+                assignment_takeover(&pool, "assignment:old").await;
+            assert_eq!(state, "queued", "{case}: the work stays visible");
+            assert_eq!(reason, None, "{case}");
+            assert_eq!(executor.as_deref(), Some("device:old"), "{case}");
+            assert_eq!(successor, None, "{case}: nothing moved onto this device");
+            let jobs: i64 =
+                sqlx::query_scalar("SELECT count(*) FROM chat_assignment_dispatch_jobs")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(jobs, 0, "{case}");
+        }
     });
 }
 
@@ -238,14 +240,9 @@ fn started_work_on_the_old_owner_fails_visibly_and_retry_or_start_moves_it_here(
 
         let pool = review_thread_without_assignment().await;
         seed_assignment_on_old_owner(&pool, "working").await;
-        let taken = assignments::take_over_stranded_assignments(
-            &pool,
-            new_owner,
-            &ChatDeviceScope::default(),
-            &now,
-        )
-        .await
-        .unwrap();
+        let taken = assignments::take_over_stranded_assignments(&pool, new_owner, &now)
+            .await
+            .unwrap();
         assert_eq!(taken, 1);
         let (state, reason, _, successor) = assignment_takeover(&pool, "assignment:old").await;
         assert_eq!(state, "failed");
@@ -318,8 +315,7 @@ fn started_work_on_the_old_owner_fails_visibly_and_retry_or_start_moves_it_here(
         assert_eq!(started, expected);
         let pool = review_thread_with_unrouted_mention().await;
         seed_assignment_on_old_owner(&pool, "queued").await;
-        let scope = scope_accepting(&pool, "assignment:old").await;
-        assignments::take_over_stranded_assignments(&pool, new_owner, &scope, &now)
+        assignments::take_over_stranded_assignments(&pool, new_owner, &now)
             .await
             .unwrap();
         let (_, _, _, taken_over) = assignment_takeover(&pool, "assignment:old").await;
@@ -373,8 +369,7 @@ fn takeover_ends_the_local_dispatch_jobs_of_the_work_it_settles() {
             .execute(&pool)
             .await
             .unwrap();
-            let scope = scope_accepting(&pool, "assignment:old").await;
-            assignments::take_over_stranded_assignments(&pool, new_owner, &scope, &now)
+            assignments::take_over_stranded_assignments(&pool, new_owner, &now)
                 .await
                 .unwrap();
             let state: String = sqlx::query_scalar(
@@ -508,14 +503,9 @@ fn takeover_visits_every_stranded_assignment_past_one_batch() {
             .unwrap();
         }
 
-        let taken = assignments::take_over_stranded_assignments(
-            &pool,
-            new_owner,
-            &ChatDeviceScope::default(),
-            &now,
-        )
-        .await
-        .unwrap();
+        let taken = assignments::take_over_stranded_assignments(&pool, new_owner, &now)
+            .await
+            .unwrap();
         assert_eq!(i64::from(taken), stranded);
         let active: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM chat_work_assignments WHERE state = 'working'",
@@ -546,11 +536,6 @@ fn only_the_executing_device_claims_dispatch_and_writes_active_states() {
         .execute(&pool)
         .await
         .unwrap();
-        sqlx::query("UPDATE chat_assignment_dispatch_jobs SET consented_digest = ?")
-            .bind(digest_of(&pool, "assignment:review").await)
-            .execute(&pool)
-            .await
-            .unwrap();
 
         let refused = assignments::require_executing_device(&pool, &assignment_id, "device:phone")
             .await

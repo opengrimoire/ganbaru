@@ -459,16 +459,6 @@ export const chat = {
     backToChannel: (name: string) => `Volver a #${name}`,
     closeThread: "Cerrar hilo",
     retry: "Reintentar trabajo",
-    workAwaitsStart: "Este trabajo viene de otro dispositivo o cambió su acceso, así que no se ejecutará aquí hasta que lo inicies.",
-    workAwaitsStartAccess: (provider: string, access: string) => `Se ejecutaría con ${provider}: ${access}.`,
-    workAccessFolders: (behavior: string, folders: string) => `${behavior} en ${folders}`,
-    workAccessConversation: "Solo conversación",
-    workAccessChanged: "Este trabajo cambió antes de iniciarse. Revisa los detalles actualizados e inícialo de nuevo.",
-    waitingWork: (count: number, agent: string, channel: string) => count === 1
-      ? `El trabajo de ${agent} en #${channel} espera a que lo inicies.`
-      : `${count} trabajos esperan a que los inicies. El más reciente es de ${agent} en #${channel}.`,
-    openWaitingWork: "Abrir",
-    startHere: "Iniciar aquí",
     cancelWork: "Cancelar trabajo",
     reviewReady: "Este trabajo está listo para tu revisión.",
     reviewAccept: "Aceptar",

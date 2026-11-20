@@ -214,7 +214,7 @@ async fn delegation_creates_a_queued_child_narrowed_to_the_parent_ceiling() {
     .await
     .unwrap();
     assert_eq!(created.child.state, "queued");
-    assert_eq!(created.starts_here, Some(false));
+    assert!(created.starts_here);
     let child = &created.child.assignment_id;
     let row = sqlx::query(
         "SELECT assignment.parent_assignment_id, assignment.delegation_depth,
@@ -289,10 +289,7 @@ async fn delegation_retry_returns_the_same_child_and_changed_input_conflicts() {
         .await
         .unwrap();
     assert_eq!(retry.child, first.child);
-    assert_eq!(
-        retry.starts_here, None,
-        "a retry does not start the child again"
-    );
+    assert!(!retry.starts_here, "a retry does not start the child again");
     let narrower = [folder("workspace-1", ChatFolderCapability::Read)];
     assert_eq!(
         delegate(&pool, &caller, HELPER, &narrower, "request-1")

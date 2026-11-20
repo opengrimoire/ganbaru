@@ -57,11 +57,9 @@ fn restart_rehomes_review_replies_into_one_ordered_follow_up_assignment() {
         let input_ids = rekey_review_inputs_by_message(&pool).await;
 
         let desk_writers = chat_writers_of(&["device:desk"]);
-        let scope = scope_accepting(&pool, "assignment:review").await;
         let elsewhere = assignments::recover_stranded_follow_up_assignments(
             &pool,
             PostingDevice::this_device("device:phone", &desk_writers),
-            &scope,
             &now,
         )
         .await
@@ -70,7 +68,6 @@ fn restart_rehomes_review_replies_into_one_ordered_follow_up_assignment() {
         let recovered = assignments::recover_stranded_follow_up_assignments(
             &pool,
             PostingDevice::this_device("device:desk", &desk_writers),
-            &scope,
             &now,
         )
         .await
@@ -179,42 +176,15 @@ fn unmentioned_replies_continue_only_with_a_agent_that_still_participates() {
 }
 
 #[test]
-fn follow_up_recovery_skips_unaccepted_work() {
+fn follow_up_recovery_continues_synced_work_without_a_local_acceptance() {
     tauri::async_runtime::block_on(async {
         let pool = migrated_pool().await;
         seed_review_assignment_with_stranded_replies(&pool).await;
         let writers = chat_writers_of(&["device:desk"]);
-        let recovered = assignments::recover_stranded_follow_up_assignments(
-            &pool,
-            PostingDevice::this_device("device:desk", &writers),
-            &ChatDeviceScope::default(),
-            &UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(recovered, 0);
-        let assignments: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_work_assignments")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(assignments, 1, "no queued assignment names this device");
-    });
-}
-
-#[test]
-fn follow_up_recovery_replays_replies_while_the_recorded_acceptance_matches() {
-    tauri::async_runtime::block_on(async {
-        let pool = migrated_pool().await;
-        seed_review_assignment_with_stranded_replies(&pool).await;
-        seed_settled_dispatch_job(&pool).await;
-        let writers = chat_writers_of(&["device:desk"]);
-        let scope = scope_accepting(&pool, "assignment:review").await;
 
         let recovered = assignments::recover_stranded_follow_up_assignments(
             &pool,
             PostingDevice::this_device("device:desk", &writers),
-            &scope,
             &UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap(),
         )
         .await
@@ -222,92 +192,84 @@ fn follow_up_recovery_replays_replies_while_the_recorded_acceptance_matches() {
 
         assert_eq!(
             recovered, 1,
-            "the gesture that queued this work accepted it"
+            "work another linked device queued here continues by itself"
         );
         assert_eq!(review_follow_ups(&pool).await, 1);
     });
 }
 
 #[test]
-fn follow_up_recovery_stops_when_access_widens_after_the_work_ran_here() {
+fn follow_up_recovery_continues_after_the_channel_access_widens() {
     tauri::async_runtime::block_on(async {
         let pool = migrated_pool().await;
         seed_review_assignment_with_stranded_replies(&pool).await;
-        seed_settled_dispatch_job(&pool).await;
-        let writers = chat_writers_of(&["device:desk"]);
-        let device = PostingDevice::this_device("device:desk", &writers);
-        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
-        let assignment_id = ChatWorkAssignmentId::new("assignment:review").unwrap();
-        let accepted_before = scope_accepting(&pool, "assignment:review").await;
         widen_review_channel_access(&pool).await;
-
-        let recovered = assignments::recover_stranded_follow_up_assignments(
-            &pool,
-            device,
-            &accepted_before,
-            &now,
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(recovered, 0);
-        let assignments: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_work_assignments")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(assignments, 1, "no successor starts under the wider access");
-        let jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_assignment_dispatch_jobs")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(jobs, 1, "only the settled job remains");
-        assert_eq!(pending_review_inputs(&pool).await, 2, "the replies stay");
-        assert!(
-            assignments::assignment_awaits_local_acceptance(
-                &pool,
-                &assignment_id,
-                device,
-                &accepted_before,
-            )
-            .await
-            .unwrap(),
-            "the thread offers a local action"
-        );
-
-        let accepted_now = scope_accepting(&pool, "assignment:review").await;
-        assert!(
-            !assignments::assignment_awaits_local_acceptance(
-                &pool,
-                &assignment_id,
-                device,
-                &accepted_now,
-            )
-            .await
-            .unwrap(),
-            "accepting the wider access clears the wait"
-        );
-        let recovered =
-            assignments::recover_stranded_follow_up_assignments(&pool, device, &accepted_now, &now)
-                .await
-                .unwrap();
-        assert_eq!(recovered, 1, "the replies recover after the user accepts");
-        assert_eq!(review_follow_ups(&pool).await, 1);
-    });
-}
-
-#[test]
-fn unaccepted_follow_ups_do_not_block_accepted_ones() {
-    tauri::async_runtime::block_on(async {
-        let pool = migrated_pool().await;
-        seed_review_assignment_with_stranded_replies(&pool).await;
-        let scope = scope_accepting(&pool, "assignment:review").await;
-        insert_unaccepted_review_assignments(&pool, 40).await;
         let writers = chat_writers_of(&["device:desk"]);
 
         let recovered = assignments::recover_stranded_follow_up_assignments(
             &pool,
             PostingDevice::this_device("device:desk", &writers),
-            &scope,
+            &UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            recovered, 1,
+            "a linked device's settings edit is the user's own"
+        );
+        assert_eq!(review_follow_ups(&pool).await, 1);
+    });
+}
+
+#[test]
+fn follow_up_recovery_skips_work_whose_agent_cannot_run_here() {
+    tauri::async_runtime::block_on(async {
+        for (providers, case) in [
+            (
+                test_providers_with(ProviderAuthoritySupport::default()),
+                "no access resolves on this device",
+            ),
+            (
+                super::provider_agents::DeviceProviders::default(),
+                "no provider installation runs the agent",
+            ),
+        ] {
+            let pool = migrated_pool().await;
+            seed_review_assignment_with_stranded_replies(&pool).await;
+            let writers = super::workflow::ChatWriters::new(["device:desk".to_owned()])
+                .with_providers(providers);
+
+            let recovered = assignments::recover_stranded_follow_up_assignments(
+                &pool,
+                PostingDevice::this_device("device:desk", &writers),
+                &UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap(),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(recovered, 0, "{case}");
+            assert_eq!(review_follow_ups(&pool).await, 0, "{case}");
+            assert_eq!(
+                pending_review_inputs(&pool).await,
+                2,
+                "{case}: the replies stay"
+            );
+        }
+    });
+}
+
+#[test]
+fn follow_ups_that_cannot_recover_do_not_block_the_others() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        insert_foreign_trigger_review_assignments(&pool, 40).await;
+        let writers = chat_writers_of(&["device:desk"]);
+
+        let recovered = assignments::recover_stranded_follow_up_assignments(
+            &pool,
+            PostingDevice::this_device("device:desk", &writers),
             &UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap(),
         )
         .await
@@ -322,14 +284,12 @@ fn recovery_skips_a_row_it_cannot_freeze() {
     tauri::async_runtime::block_on(async {
         let pool = migrated_pool().await;
         seed_review_assignment_with_stranded_replies(&pool).await;
-        let scope = scope_accepting(&pool, "assignment:review").await;
         insert_review_assignment_with_outside_reply(&pool).await;
         let writers = chat_writers_of(&["device:desk"]);
 
         let recovered = assignments::recover_stranded_follow_up_assignments(
             &pool,
             PostingDevice::this_device("device:desk", &writers),
-            &scope,
             &UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap(),
         )
         .await
@@ -358,14 +318,12 @@ fn follow_up_recovery_stays_in_the_thread() {
         let pool = migrated_pool().await;
         seed_review_assignment_with_stranded_replies(&pool).await;
         rekey_review_inputs_by_message(&pool).await;
-        let scope = scope_accepting(&pool, "assignment:review").await;
         insert_pending_review_input_from_outside_the_thread(&pool).await;
         let writers = chat_writers_of(&["device:desk"]);
 
         let recovered = assignments::recover_stranded_follow_up_assignments(
             &pool,
             PostingDevice::this_device("device:desk", &writers),
-            &scope,
             &UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap(),
         )
         .await
@@ -498,7 +456,7 @@ async fn insert_pending_review_input_from_outside_the_thread(pool: &SqlitePool) 
     .unwrap();
 }
 
-/// Inserts a review assignment sorted before `assignment:review`, accepted under the same
+/// Inserts a review assignment sorted before `assignment:review`, under the same
 /// subject, whose pending reply was written by a participant outside the conversation, so its
 /// follow-up cannot freeze a context.
 async fn insert_review_assignment_with_outside_reply(pool: &SqlitePool) {
@@ -540,20 +498,6 @@ async fn insert_review_assignment_with_outside_reply(pool: &SqlitePool) {
     .unwrap();
 }
 
-/// Records the settled dispatch job of `assignment:review`, as work this device ran leaves.
-async fn seed_settled_dispatch_job(pool: &SqlitePool) {
-    sqlx::raw_sql(
-        "INSERT INTO chat_assignment_dispatch_jobs
-             (id, assignment_id, state, available_at, created_at, updated_at)
-         VALUES ('dispatch:review', 'assignment:review', 'completed',
-                 '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z',
-                 '2026-08-04T17:00:00.000Z')",
-    )
-    .execute(pool)
-    .await
-    .unwrap();
-}
-
 /// Number of pending inputs still on `assignment:review`.
 async fn pending_review_inputs(pool: &SqlitePool) -> i64 {
     sqlx::query_scalar(
@@ -574,8 +518,8 @@ async fn widen_review_channel_access(pool: &SqlitePool) {
 }
 
 /// Inserts `count` review assignments with a pending reply, sorted before `assignment:review`,
-/// whose trigger sits outside their thread, so no acceptance covers them.
-async fn insert_unaccepted_review_assignments(pool: &SqlitePool, count: u32) {
+/// whose trigger sits outside their thread, so their references do not hold.
+async fn insert_foreign_trigger_review_assignments(pool: &SqlitePool, count: u32) {
     sqlx::raw_sql(
         "INSERT INTO chat_conversation_items
              (id, conversation_id, item_kind, order_key, created_at)

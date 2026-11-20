@@ -89,14 +89,12 @@ pub(super) async fn routed_input(
     .unwrap()
 }
 
-/// Follow-ups recovery creates on `device:desk` with the review work accepted.
+/// Follow-ups recovery creates on `device:desk`.
 pub(super) async fn recover_on_desk(pool: &SqlitePool) -> u32 {
-    let scope = scope_accepting(pool, ROUTED_ASSIGNMENT_ID).await;
     let writers = chat_writers_of(&["device:desk"]);
     assignments::recover_stranded_follow_up_assignments(
         pool,
         PostingDevice::this_device("device:desk", &writers),
-        &scope,
         &UtcTimestamp::new(ROUTING_TIME).unwrap(),
     )
     .await
@@ -162,7 +160,6 @@ fn a_reply_from_a_device_that_cannot_execute_reaches_the_working_run() {
             id: "device:phone",
             can_execute: false,
             chat_writers: &writers,
-            unattended: false,
         };
 
         for (command_id, routing, routing_kind) in [
@@ -334,14 +331,13 @@ fn a_queued_reply_synced_after_the_turn_ended_continues_the_work() {
             // The turn-end hook ran before sync brought the reply, so only the synced work
             // continues it.
             set_review_state(&pool, state).await;
-            let scope = scope_accepting(&pool, ROUTED_ASSIGNMENT_ID).await;
             let writers = chat_writers_of(&["device:desk"]);
             let device = PostingDevice::this_device("device:desk", &writers);
             let assignment_id = ChatWorkAssignmentId::new(ROUTED_ASSIGNMENT_ID).unwrap();
             let now = UtcTimestamp::new(ROUTING_TIME).unwrap();
 
             let follow_up =
-                assignments::continue_stranded_replies(&pool, &assignment_id, device, &scope, &now)
+                assignments::continue_stranded_replies(&pool, &assignment_id, device, &now)
                     .await
                     .unwrap()
                     .expect("the synced reply continues the work");
@@ -351,7 +347,7 @@ fn a_queued_reply_synced_after_the_turn_ended_continues_the_work() {
             assert_eq!(kind, "follow_up", "{state}");
             assert_eq!(delivery, "pending", "{state}");
             assert_eq!(
-                assignments::continue_stranded_replies(&pool, &assignment_id, device, &scope, &now)
+                assignments::continue_stranded_replies(&pool, &assignment_id, device, &now)
                     .await
                     .unwrap(),
                 None,
@@ -482,7 +478,6 @@ fn a_scheduled_message_cannot_choose_its_routing() {
         let send = ScheduledSend {
             scheduled_message_id: &scheduled_message_id,
             claim_token: "claim:a",
-            consent: ScheduledConsent::Local,
             occurrence: None,
         };
         let Err(error) = write_post(

@@ -1,4 +1,4 @@
-//! Scheduled messages: delivery times, claims and sends, request mismatches, consent, and edits.
+//! Scheduled messages: delivery times, claims and sends, request mismatches, and edits.
 
 use super::*;
 
@@ -219,7 +219,6 @@ fn scheduled_send_posts_stored_attachment_values_under_derived_ids() {
         let send = ScheduledSend {
             scheduled_message_id: &scheduled_message_id,
             claim_token: "claim:a",
-            consent: ScheduledConsent::Local,
             occurrence: None,
         };
         let writers = chat_writers_of(&[SCHEDULING_DEVICE]);
@@ -310,7 +309,6 @@ fn scheduled_send_rejects_a_claim_that_changed() {
         let send = ScheduledSend {
             scheduled_message_id: &scheduled_message_id,
             claim_token: "claim:stale",
-            consent: ScheduledConsent::Local,
             occurrence: None,
         };
 
@@ -369,7 +367,6 @@ fn scheduled_request_mismatch_refuses_foreign_channel() {
         let send = ScheduledSend {
             scheduled_message_id: &scheduled_message_id,
             claim_token: "claim:a",
-            consent: ScheduledConsent::Local,
             occurrence: None,
         };
         let writers = chat_writers_of(&[SCHEDULING_DEVICE]);
@@ -428,7 +425,6 @@ fn scheduled_write_post_sends_a_matching_request() {
         let send = ScheduledSend {
             scheduled_message_id: &scheduled_message_id,
             claim_token: "claim:a",
-            consent: ScheduledConsent::Local,
             occurrence: None,
         };
         let writers = chat_writers_of(&[SCHEDULING_DEVICE]);
@@ -551,7 +547,6 @@ fn scheduled_request_mismatch_passes_a_row_with_its_stored_references() {
         let send = ScheduledSend {
             scheduled_message_id: &scheduled_message_id,
             claim_token: "claim:a",
-            consent: ScheduledConsent::Local,
             occurrence: None,
         };
 
@@ -567,122 +562,6 @@ fn scheduled_request_mismatch_passes_a_row_with_its_stored_references() {
                 .await
                 .unwrap();
         assert_eq!(failed_at, None);
-    });
-}
-
-#[test]
-fn scheduled_consent_covers_only_the_request_it_was_given_for() {
-    let id = ChatScheduledMessageId::new("scheduled:test").unwrap();
-    let other = ChatScheduledMessageId::new("scheduled:other").unwrap();
-    let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
-    let mut scope = ChatDeviceScope::default();
-    assert_eq!(
-        scheduled_consent_in(&scope, &id, "request", None),
-        ScheduledConsent::Unattended
-    );
-
-    record_scheduled_message_consent(
-        &mut scope,
-        id.as_str().to_owned(),
-        scheduled_consent_digest(id.as_str(), "request"),
-        now,
-    );
-
-    assert_eq!(
-        scheduled_consent_in(&scope, &id, "request", None),
-        ScheduledConsent::Local
-    );
-    assert!(
-        scope.assignment_acceptances.is_empty(),
-        "a scheduled consent took an assignment acceptance slot"
-    );
-    assert_eq!(
-        scheduled_consent_in(&scope, &id, "rewritten request", None),
-        ScheduledConsent::Unattended,
-        "a request rewritten on a peer kept the consent"
-    );
-    assert_eq!(
-        scheduled_consent_in(&scope, &other, "request", None),
-        ScheduledConsent::Unattended,
-        "the consent reached another message"
-    );
-
-    forget_scheduled_message_consent(
-        &mut scope,
-        id.as_str(),
-        &scheduled_consent_digest(id.as_str(), "rewritten request"),
-    );
-    assert_eq!(
-        scheduled_consent_in(&scope, &id, "request", None),
-        ScheduledConsent::Local,
-        "forgetting another request dropped the consent"
-    );
-    forget_scheduled_message_consent(
-        &mut scope,
-        id.as_str(),
-        &scheduled_consent_digest(id.as_str(), "request"),
-    );
-
-    assert_eq!(
-        scheduled_consent_in(&scope, &id, "request", None),
-        ScheduledConsent::Unattended
-    );
-}
-
-#[test]
-fn scheduled_consent_to_a_message_that_is_gone_is_swept() {
-    tauri::async_runtime::block_on(async {
-        let pool = review_thread_without_assignment().await;
-        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
-        let (request, pending) = claim_scheduled_mention(&pool, &now).await;
-        let request_data = serde_json::to_string(&request).unwrap();
-        let mut scope = ChatDeviceScope::default();
-        for id in [pending.as_str(), "scheduled:cancelled"] {
-            record_scheduled_message_consent(
-                &mut scope,
-                id.to_owned(),
-                scheduled_consent_digest(id, &request_data),
-                now.clone(),
-            );
-        }
-
-        let stale = scheduled_consents_without_a_row(&pool, &scope)
-            .await
-            .unwrap();
-
-        assert_eq!(
-            stale,
-            vec![(
-                "scheduled:cancelled".to_owned(),
-                scheduled_consent_digest("scheduled:cancelled", &request_data)
-            )],
-            "consent to a message that no longer exists was kept"
-        );
-    });
-}
-
-#[test]
-fn consented_scheduled_post_queues_its_dispatch() {
-    tauri::async_runtime::block_on(async {
-        let pool = review_thread_without_assignment().await;
-        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
-        let (request, scheduled_message_id) = claim_scheduled_mention(&pool, &now).await;
-        let send = ScheduledSend {
-            scheduled_message_id: &scheduled_message_id,
-            claim_token: "claim:a",
-            consent: ScheduledConsent::Local,
-            occurrence: None,
-        };
-        let writers = chat_writers_of(&["device:desk"]);
-        let device = PostingDevice::this_device("device:desk", &writers);
-
-        let posted = persist_post(&pool, &request, Some(send), device)
-            .await
-            .unwrap();
-
-        assert!(!posted.assignment_write.awaits_acceptance);
-        let assignment_id = posted.assignment_write.assignment_id.clone().unwrap();
-        assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 1);
     });
 }
 
@@ -720,20 +599,11 @@ fn editing_a_scheduled_message_replaces_it_in_place_and_moves_its_delivery() {
         let request_data = serde_json::to_string(&message("Draft wording")).unwrap();
         insert_test_scheduled_message(&pool, &request_data, Some(SCHEDULING_DEVICE), true, &now)
             .await;
-        let mut consents = Vec::new();
 
         let edited = scheduling::apply_scheduled_update(
             &pool,
-            SCHEDULING_DEVICE,
             scheduled_edit("Final wording", "2026-08-05T09:00:00.000Z"),
             &now,
-            |id, request_data, spec| {
-                consents.push((
-                    id.as_str().to_owned(),
-                    request_data.to_owned(),
-                    spec.cloned(),
-                ));
-            },
         )
         .await
         .unwrap();
@@ -757,24 +627,6 @@ fn editing_a_scheduled_message_replaces_it_in_place_and_moves_its_delivery() {
             scheduled_available_at(&pool).await,
             "2026-08-05T09:00:00.000Z"
         );
-        // The executing device consents to the request it now holds.
-        assert_eq!(consents.len(), 1);
-        assert_eq!(consents[0].0, "scheduled:test");
-        assert_eq!(consents[0].1, serde_json::to_string(&stored).unwrap());
-        assert_eq!(consents[0].2, None);
-
-        // An edit on another device leaves the executing device without consent to it.
-        let mut elsewhere = 0;
-        scheduling::apply_scheduled_update(
-            &pool,
-            "device:phone",
-            scheduled_edit("Phone wording", "2026-08-05T09:00:00.000Z"),
-            &now,
-            |_, _, _| elsewhere += 1,
-        )
-        .await
-        .unwrap();
-        assert_eq!(elsewhere, 0);
     });
 }
 
@@ -800,10 +652,8 @@ fn editing_a_scheduled_message_refuses_one_being_sent_or_gone() {
 
         let busy = scheduling::apply_scheduled_update(
             &pool,
-            SCHEDULING_DEVICE,
             scheduled_edit("Too late", "2026-08-05T09:00:00.000Z"),
             &now,
-            |_, _, _| panic!("a refused edit gives no consent"),
         )
         .await
         .unwrap_err();
@@ -818,15 +668,9 @@ fn editing_a_scheduled_message_refuses_one_being_sent_or_gone() {
 
         let mut missing = scheduled_edit("Nothing", "2026-08-05T09:00:00.000Z");
         missing.scheduled_message_id = ChatScheduledMessageId::new("scheduled:gone").unwrap();
-        let gone = scheduling::apply_scheduled_update(
-            &pool,
-            SCHEDULING_DEVICE,
-            missing,
-            &now,
-            |_, _, _| (),
-        )
-        .await
-        .unwrap_err();
+        let gone = scheduling::apply_scheduled_update(&pool, missing, &now)
+            .await
+            .unwrap_err();
         assert_eq!(gone.code, ChatErrorCode::NotFound);
     });
 }

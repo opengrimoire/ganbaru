@@ -639,7 +639,6 @@ pub(super) async fn read_assignment(
         created_at: timestamp(row.try_get("created_at").map_err(persistence_error)?)?,
         updated_at: timestamp(row.try_get("updated_at").map_err(persistence_error)?)?,
         review: read_assignment_review(&row)?,
-        local_acceptance: None,
     })
 }
 

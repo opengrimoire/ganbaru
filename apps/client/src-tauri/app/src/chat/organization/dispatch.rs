@@ -114,7 +114,7 @@ pub(super) struct AssignmentLaunch {
 }
 
 /// A claimed dispatch job and the system-level instructions its run sends, composed from the
-/// consented subject it verified.
+/// subject it read at claim.
 #[derive(Debug)]
 pub(super) struct ClaimedDispatch {
     pub(super) token: String,
@@ -130,9 +130,10 @@ pub(super) struct ClaimedDispatch {
 /// assignment. An assignment without an executing device runs on the device that holds its
 /// device-local dispatch job.
 ///
-/// The job starts only what it consented to: when the current subject is not its consented
-/// digest, or cannot be read (as for an archived agent), the job is dropped so the
-/// assignment stays queued and waits for Start here again.
+/// When the subject cannot be read (as for an archived agent) or names no provider installation
+/// here, the job is dropped so the assignment stays queued until recovery can start it again.
+/// Narrowed access needs no check here: it revokes the frozen authorization, which cancels the
+/// queued work and refuses its launch.
 pub(super) async fn claim_dispatch_job(
     pool: &SqlitePool,
     assignment_id: &ChatWorkAssignmentId,
@@ -144,34 +145,32 @@ pub(super) async fn claim_dispatch_job(
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(persistence_error)?;
-    let Some(consented_digest) = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT job.consented_digest
-         FROM chat_assignment_dispatch_jobs job
-         JOIN chat_work_assignments assignment ON assignment.id = job.assignment_id
-         WHERE job.assignment_id = ?1 AND job.state = 'queued' AND job.available_at <= ?2
-           AND coalesce(assignment.executing_device_id, ?3) = ?3",
+    let queued: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM chat_assignment_dispatch_jobs job
+           JOIN chat_work_assignments assignment ON assignment.id = job.assignment_id
+           WHERE job.assignment_id = ?1 AND job.state = 'queued' AND job.available_at <= ?2
+             AND coalesce(assignment.executing_device_id, ?3) = ?3
+         )",
     )
     .bind(assignment_id.as_str())
     .bind(now.as_str())
     .bind(device_id)
-    .fetch_optional(&mut *transaction)
+    .fetch_one(&mut *transaction)
     .await
-    .map_err(persistence_error)?
-    else {
+    .map_err(persistence_error)?;
+    if !queued {
         return Ok(None);
-    };
+    }
     let subject = match read_assignment_subject(&mut transaction, assignment_id, providers).await {
         Ok(subject) => Some(subject),
         Err(error) if error.code == ChatErrorCode::Persistence => return Err(error),
         Err(_) => None,
     };
-    let Some((subject, provider_instance_id)) = subject
-        .filter(|subject| consented_digest.as_deref() == Some(subject.digest().as_str()))
-        .and_then(|subject| {
-            let instance = ProviderInstanceId::new(subject.provider_instance_id()).ok()?;
-            Some((subject, instance))
-        })
-    else {
+    let Some((subject, provider_instance_id)) = subject.and_then(|subject| {
+        let instance = ProviderInstanceId::new(subject.provider_instance_id()).ok()?;
+        Some((subject, instance))
+    }) else {
         sqlx::query("DELETE FROM chat_assignment_dispatch_jobs WHERE assignment_id = ?")
             .bind(assignment_id.as_str())
             .execute(&mut *transaction)
@@ -1168,7 +1167,7 @@ pub(super) enum DispatchSettlement {
 ///
 /// When the agent was archived, for example by a linked device after this device claimed
 /// the work, the still queued assignment is not failed: its job is dropped so the work waits,
-/// and after a restore it is started again like any other unaccepted work. Any other error
+/// and after a restore it is started again like any other queued work. Any other error
 /// fails the assignment.
 pub(super) async fn settle_dispatch_error(
     pool: &SqlitePool,

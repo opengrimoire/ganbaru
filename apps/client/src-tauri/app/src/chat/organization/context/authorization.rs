@@ -7,7 +7,6 @@ use super::super::access::{
 };
 use super::super::provider_agents::DeviceProviders;
 use super::super::{i64_value, identifier_error, persistence_error, u64_value};
-use ganbaru_chat::coordination::acceptance::AcceptanceGrant;
 use ganbaru_chat::project_defaults::{
     current_folder_environment_id, ensure_working_folder_chat_defaults,
 };
@@ -22,13 +21,8 @@ pub(super) struct AssignmentAccess {
 
 /// The access an agent would hold if an assignment ran now on this device.
 pub(in crate::chat::organization) struct GrantedAccess {
-    /// Stored spelling of the effective access the device resolved for the channel.
-    pub(in crate::chat::organization) access_level: &'static str,
     /// The access the agent runs under here, `None` when it cannot work on this device.
     pub(in crate::chat::organization) effective: Option<ChatEffectiveAgentAccess>,
-    pub(in crate::chat::organization) grants: Vec<AcceptanceGrant>,
-    /// Stored approval in the agent's scratch, empty when the access allows no scratch.
-    pub(in crate::chat::organization) scratch_runtime_approval: &'static str,
     /// The provider installation that runs the agent here, empty when none is configured.
     pub(in crate::chat::organization) provider_instance_id: String,
 }
@@ -50,25 +44,8 @@ pub(in crate::chat::organization) async fn read_granted_access(
         providers,
     )
     .await?;
-    let grants = folder_grants(transaction, &access.channel)
-        .await?
-        .into_iter()
-        .map(|grant| AcceptanceGrant {
-            working_folder_id: grant.working_folder_id,
-            capability: grant.capability,
-            runtime_approval: grant.runtime_approval.to_owned(),
-        })
-        .collect();
-    let resolved = access.channel.resolved;
     Ok(GrantedAccess {
-        access_level: access.channel.effective_access_name(),
-        effective: resolved.effective,
-        grants,
-        scratch_runtime_approval: if resolved.scratch_allowed {
-            resolved.scratch_approval.as_str()
-        } else {
-            ""
-        },
+        effective: access.channel.resolved.effective,
         provider_instance_id: access
             .channel
             .provider_instance_id

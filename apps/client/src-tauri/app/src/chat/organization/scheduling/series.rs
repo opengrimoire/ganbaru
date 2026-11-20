@@ -99,11 +99,8 @@ impl QuietGate {
 pub(super) enum ClaimedSeries {
     /// A one-time message.
     OneTime,
-    /// The occurrence a repeating message posts now, with its rule for consent.
-    Post {
-        occurrence: PendingOccurrence,
-        spec: RecurrenceSpec,
-    },
+    /// The occurrence a repeating message posts now.
+    Post(PendingOccurrence),
     /// The claim was settled without a post: the occurrence was skipped, is not due yet, waits
     /// for a quiet period to end, or the rule cannot be resolved here, which fails the message
     /// until it is retried.
@@ -709,10 +706,7 @@ pub(super) async fn resolve_claimed_series(
             {
                 return Ok(ClaimedSeries::Failed(error.clone()));
             }
-            return Ok(ClaimedSeries::Post {
-                occurrence,
-                spec: series.spec,
-            });
+            return Ok(ClaimedSeries::Post(occurrence));
         }
         OccurrenceDecision::Skip { due_at, next_at } => SettleStep::Skip { due_at, next_at },
         OccurrenceDecision::Wait { due_at } => SettleStep::Wait { due_at },

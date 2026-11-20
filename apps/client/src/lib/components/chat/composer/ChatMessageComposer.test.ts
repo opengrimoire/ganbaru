@@ -3,7 +3,6 @@
 import { mount, tick, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
-  ChatAssignmentAcceptanceFolderRead,
   ChatAssignmentInputRead,
   ChatFollowupRouting,
   ChatMessageReference,
@@ -71,7 +70,6 @@ function workingReplyThread(): ChatReplyThreadPageRead {
       createdAt: timestamp,
       updatedAt: timestamp,
       review: null,
-      localAcceptance: null,
       delegation: null,
       latestRunProviderThreadId: null,
       modelSelection: { providerManagedModel: true, modelId: null, modelOptions: [] },
@@ -667,73 +665,6 @@ describe("ChatMessageComposer", () => {
     await vi.waitFor(() => expect(chatApi.listChatAssignmentInputs).toHaveBeenCalled());
     await tick();
     expect(root.querySelector("[data-chat-pending-inputs]")).toBeNull();
-  });
-
-  function mountWaitingWork(
-    folders: ChatAssignmentAcceptanceFolderRead[] = [{ displayName: "Website", capability: "edit", runtimeApproval: "ask" }],
-  ): { notice: HTMLElement; startHere: HTMLButtonElement } {
-    const page = workingReplyThread();
-    if (!page.assignment) throw new Error("The fixture holds an assignment");
-    chat.replyThread = {
-      ...page,
-      assignment: {
-        ...page.assignment,
-        state: "queued",
-        localAcceptance: {
-          digest: "digest-seen",
-          providerInstanceId: "codex-phone",
-          access: "ask",
-          folders,
-        },
-      },
-    };
-    vi.spyOn(chat, "listScheduledOrganizationalMessages").mockResolvedValue([]);
-    target = document.createElement("div");
-    document.body.append(target);
-    component = mount(ChatMessageComposer, {
-      target,
-      props: {
-        destination: `reply-thread:${page.thread.id}`,
-        placeholder: "Reply",
-        threadComposer: true,
-      },
-    });
-    const notice = target.querySelector<HTMLElement>(".assignment-notice");
-    const startHere = notice?.querySelector<HTMLButtonElement>("button");
-    if (!notice || !startHere) throw new Error("The waiting work notice did not render");
-    return { notice, startHere };
-  }
-
-  it("names the provider and access of work waiting to start", () => {
-    const { notice } = mountWaitingWork();
-
-    expect(notice.textContent).toContain("It would run with codex-phone");
-    expect(notice.textContent).toContain("It would run with codex-phone: Asks before every command in Website.");
-    expect(notice.textContent).not.toContain("scratch");
-  });
-
-  it("names conversation only for waiting work without folder access", () => {
-    const { notice } = mountWaitingWork([]);
-
-    expect(notice.textContent).toContain("It would run with codex-phone: Conversation only.");
-  });
-
-  it("starts waiting work with the digest the user saw", async () => {
-    const accept = vi.spyOn(chat, "acceptAssignmentHere").mockResolvedValue(true);
-    const { startHere } = mountWaitingWork();
-
-    startHere.click();
-
-    await vi.waitFor(() => expect(accept).toHaveBeenCalledWith("assignment:working", "digest-seen"));
-  });
-
-  it("explains a refused start when the work changed after it rendered", async () => {
-    vi.spyOn(chat, "acceptAssignmentHere").mockResolvedValue(false);
-    const { startHere } = mountWaitingWork();
-
-    startHere.click();
-
-    await vi.waitFor(() => expect(target?.textContent).toContain("This work changed before it started"));
   });
 
   /** The reply draft of the composer `mountReviewedWork` mounts, unique per test so drafts never carry over. */

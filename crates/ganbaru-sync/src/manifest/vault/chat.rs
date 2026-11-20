@@ -2084,8 +2084,6 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         device("chat_assignment_context_sources", &[]),
         device("chat_assignment_context_packages", &[]),
         device("chat_assignment_dispatch_jobs", &[]),
-        device("chat_assignment_input_requested_targets", &[]),
-        device("chat_assignment_requested_targets", &[]),
         device(
             "chat_attachment_references",
             &[gated("chat_attachment_messages_expose_resource")],

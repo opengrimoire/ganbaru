@@ -2,20 +2,15 @@ use super::common::{has_thread_eligible_mention, normalized_fts_query, validate_
 use super::scheduling::{
     SCHEDULED_REQUEST_MISMATCH_REASON, ScheduledRowBinding,
     claim_scheduled_message_for_immediate_send, insert_scheduled_reference,
-    refuse_mismatched_request, scheduled_consent_in, scheduled_consents_without_a_row,
-    scheduled_reference_target, scheduled_request_mismatch, validate_scheduled_for,
+    refuse_mismatched_request, scheduled_reference_target, scheduled_request_mismatch,
+    validate_scheduled_for,
 };
 use super::workflow::{has_authority_bearing_references, require_continuation_scope_is_unchanged};
 use super::*;
-use crate::chat::device_state::{
-    ChatDeviceScope, forget_scheduled_message_consent, record_assignment_acceptance,
-    record_scheduled_message_consent,
-};
-use ganbaru_chat::coordination::acceptance::scheduled_consent_digest;
 use serde_json::json;
 use sqlx::{Row, SqlitePool};
 
-mod acceptance;
+mod adoption;
 mod agents;
 mod channel_reads;
 mod context_packages;
@@ -26,7 +21,6 @@ mod routing;
 mod scheduled;
 mod takeover;
 mod targetless_dispatch;
-mod unattended_scheduled;
 
 pub(super) async fn migrated_pool() -> SqlitePool {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -82,24 +76,6 @@ fn participant_reference(
         participant_id,
         participant_kind,
     }
-}
-
-/// A device scope that accepted what `assignment_id` would run.
-async fn scope_accepting(pool: &SqlitePool, assignment_id: &str) -> ChatDeviceScope {
-    let digest = assignments::assignment_acceptance_digest(
-        pool,
-        &ChatWorkAssignmentId::new(assignment_id).unwrap(),
-        &test_providers(),
-    )
-    .await
-    .unwrap();
-    let mut scope = ChatDeviceScope::default();
-    record_assignment_acceptance(
-        &mut scope,
-        digest,
-        UtcTimestamp::new("2026-08-04T17:00:00.000Z").unwrap(),
-    );
-    scope
 }
 
 async fn seed_review_assignment_with_stranded_replies(pool: &SqlitePool) {
@@ -603,89 +579,6 @@ async fn review_follow_ups(pool: &SqlitePool) -> i64 {
     .fetch_one(pool)
     .await
     .unwrap()
-}
-
-/// An agent of another provider family in the review channel, so its work has another
-/// acceptance digest.
-async fn seed_other_review_agent(pool: &SqlitePool) {
-    sqlx::raw_sql(
-        "INSERT INTO chat_participants
-             (id, participant_kind, display_name, created_at, updated_at)
-         VALUES (
-             'participant:other-agent', 'ai_agent', 'Other agent',
-             '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z'
-         );
-         INSERT INTO chat_agents
-             (participant_id, provider_family_id, created_at, updated_at)
-         VALUES (
-             'participant:other-agent', 'claude',
-             '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z'
-         );
-         INSERT INTO chat_agent_policy_revisions
-             (id, agent_id, model_selection_data, created_at)
-         VALUES (
-             'policy:other', 'participant:other-agent',
-             '{\"providerManagedModel\":true,\"modelId\":null,\"modelOptions\":[]}',
-             '2026-08-04T17:00:00.000Z'
-         );
-         INSERT INTO chat_conversation_memberships
-             (conversation_id, participant_id, sync_key, membership_role, created_at,
-              updated_at)
-         VALUES (
-             'conversation:review', 'participant:other-agent', 'membership:other', 'member',
-             '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z'
-         );
-         INSERT INTO chat_agent_channel_memberships
-             (conversation_id, agent_id, sync_key,
-              created_at, updated_at)
-         VALUES (
-             'conversation:review', 'participant:other-agent', 'channel-membership:other',
-             '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z'
-         );
-         UPDATE chat_agents SET current_policy_revision_id = 'policy:other'
-         WHERE participant_id = 'participant:other-agent';",
-    )
-    .execute(pool)
-    .await
-    .unwrap();
-}
-
-/// Acceptance digest of `assignment_id`.
-async fn digest_of(pool: &SqlitePool, assignment_id: &str) -> String {
-    assignments::assignment_acceptance_digest(
-        pool,
-        &ChatWorkAssignmentId::new(assignment_id).unwrap(),
-        &test_providers(),
-    )
-    .await
-    .unwrap()
-}
-
-#[test]
-fn waiting_replies_leave_the_list_once_their_subject_is_accepted() {
-    tauri::async_runtime::block_on(async {
-        let writers = chat_writers_of(&["device:desk"]);
-        let device = super::workflow::PostingDevice::this_device("device:desk", &writers);
-        let pool = migrated_pool().await;
-        seed_review_assignment_with_stranded_replies(&pool).await;
-
-        let waiting = assignments::waiting_assignments(&pool, device, &ChatDeviceScope::default())
-            .await
-            .unwrap();
-        assert_eq!(waiting.items.len(), 1);
-        assert_eq!(waiting.total, 1);
-        assert_eq!(waiting.items[0].assignment_id.as_str(), "assignment:review");
-
-        let accepted = scope_accepting(&pool, "assignment:review").await;
-        assert!(
-            assignments::waiting_assignments(&pool, device, &accepted)
-                .await
-                .unwrap()
-                .items
-                .is_empty(),
-            "recovery continues accepted replies unasked"
-        );
-    });
 }
 
 /// A review thread whose second reply mentions the review agent without an assignment.

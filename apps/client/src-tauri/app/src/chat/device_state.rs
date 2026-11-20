@@ -57,20 +57,21 @@ impl ChatProviderDeviceState {
         true
     }
 
-    /// Whether this device heard from the instance less than `max_age` before `now`, through a
-    /// successful status probe or a usage limit report.
+    /// Whether this device read the instance's usage limits less than `max_age` before `now`,
+    /// from a probe or a turn. A successful probe alone does not count: its limits read is
+    /// best effort, so a probe that came back without limits leaves the limits to read again.
     #[cfg(desktop)]
-    pub fn has_reading_within(
+    pub fn has_usage_limits_within(
         &self,
         now: chrono::DateTime<chrono::Utc>,
         max_age: chrono::TimeDelta,
     ) -> bool {
-        let limits_at = self.usage_limits.as_ref().map(|limits| &limits.observed_at);
-        [self.last_successful_probe_at.as_ref(), limits_at]
-            .into_iter()
-            .flatten()
-            .filter_map(|value| chrono::DateTime::parse_from_rfc3339(value.as_str()).ok())
-            .any(|observed_at| now.signed_duration_since(observed_at) < max_age)
+        self.usage_limits
+            .as_ref()
+            .and_then(|limits| {
+                chrono::DateTime::parse_from_rfc3339(limits.observed_at.as_str()).ok()
+            })
+            .is_some_and(|observed_at| now.signed_duration_since(observed_at) < max_age)
     }
 }
 
@@ -456,32 +457,32 @@ mod tests {
         ));
     }
     #[test]
-    fn a_reading_is_recent_from_either_a_successful_probe_or_a_limit_report() {
+    fn only_a_recent_limit_report_makes_the_limits_fresh() {
         let now = chrono::DateTime::parse_from_rfc3339("2026-08-04T12:00:00Z")
             .unwrap()
             .to_utc();
         let hour = chrono::TimeDelta::hours(1);
         let mut device = ChatProviderDeviceState::default();
         assert!(
-            !device.has_reading_within(now, hour),
+            !device.has_usage_limits_within(now, hour),
             "an instance never read is stale"
         );
 
-        device.last_successful_probe_at = Some(at(10 * 3600));
-        assert!(!device.has_reading_within(now, hour));
-        device.observe_usage_limits(limits(false), at(11 * 3600 + 30 * 60));
+        device.last_successful_probe_at = Some(at(11 * 3600 + 59 * 60));
         assert!(
-            device.has_reading_within(now, hour),
-            "a newer limit report counts"
+            !device.has_usage_limits_within(now, hour),
+            "a recent probe that returned no limits leaves them to read again"
         );
 
-        device.usage_limits = None;
-        device.last_successful_probe_at = Some(at(11 * 3600));
+        device.observe_usage_limits(limits(false), at(11 * 3600));
         assert!(
-            !device.has_reading_within(now, hour),
+            !device.has_usage_limits_within(now, hour),
             "exactly the maximum age is stale"
         );
-        device.last_successful_probe_at = Some(UtcTimestamp::new("2026-08-04T11:00:01Z").unwrap());
-        assert!(device.has_reading_within(now, hour));
+        device.observe_usage_limits(
+            limits(false),
+            UtcTimestamp::new("2026-08-04T11:00:01Z").unwrap(),
+        );
+        assert!(device.has_usage_limits_within(now, hour));
     }
 }

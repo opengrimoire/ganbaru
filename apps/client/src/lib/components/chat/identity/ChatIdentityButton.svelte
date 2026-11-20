@@ -142,6 +142,10 @@
   });
 
   $effect(() => {
+    if (open && cardProvider) chat.refreshStaleProviderLimits(cardProvider);
+  });
+
+  $effect(() => {
     if (!open) return;
     const reposition = () => positionCard();
     const closeFromOutside = (event: PointerEvent) => {

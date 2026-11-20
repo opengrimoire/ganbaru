@@ -1302,6 +1302,11 @@ export class ChatStore {
     return this.configurationController.probeProvider(instanceId);
   }
 
+  /** Rereads a provider's plan limits when they are missing or out of date; see the configuration controller. */
+  refreshStaleProviderLimits(provider: ProviderInstanceRead): void {
+    this.configurationController.refreshStaleProviderLimits(provider);
+  }
+
   async refreshAllProviders(): Promise<ProviderRefreshResult> {
     return this.configurationController.refreshAllProviders();
   }

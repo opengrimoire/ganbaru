@@ -16,6 +16,7 @@ import type {
   RemoveProviderResult,
 } from "$lib/chat/contracts";
 import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
+import { STALE_PLAN_LIMITS_MS } from "$lib/chat/usage/provider-readiness";
 import { announceConfigSaved, configKeyChanged, onConfigChangedElsewhere } from "$lib/vault/config";
 
 /**
@@ -43,6 +44,8 @@ export class ChatConfigurationController {
   private settingsRequest = 0;
   private providerDiscoveryPromise: Promise<ChatSettingsRead> | null = null;
   private workingFolderRefreshPromise: Promise<void> | null = null;
+  /** When a view last asked each provider for its plan limits, so repeated asks wait out the stale age. */
+  private readonly limitsRequestedAt = new Map<ProviderInstanceId, number>();
   private readonly stopBehaviorRefresh: () => void;
 
   constructor(private readonly options: ChatConfigurationControllerOptions) {
@@ -68,6 +71,7 @@ export class ChatConfigurationController {
     this.workingFolders = [];
     this.providerDiscoveryPromise = null;
     this.workingFolderRefreshPromise = null;
+    this.limitsRequestedAt.clear();
     this.providerDiscoveryLoading = false;
     this.options.onSettingsChanged();
   }
@@ -158,6 +162,24 @@ export class ChatConfigurationController {
     const result = await chatApi.probeChatProvider(instanceId);
     await this.refreshSettings();
     return result;
+  }
+
+  /**
+   * Probes an enabled provider whose plan limits are missing or out of date, so a view that shows them, such as an
+   * agent card, fills in without a visit to Settings. Each provider is asked at most once per stale age, because a
+   * provider without a plan never reports limits. Failures are logged since the limits are advisory.
+   */
+  refreshStaleProviderLimits(provider: ProviderInstanceRead, nowMs: number = Date.now()): void {
+    if (!localExecutionAvailable || !provider.configuration.enabled) return;
+    const observedAtMs = provider.usageLimits ? Date.parse(provider.usageLimits.observedAt) : Number.NaN;
+    if (nowMs - observedAtMs < STALE_PLAN_LIMITS_MS) return;
+    const instanceId = provider.configuration.instanceId;
+    const requestedAtMs = this.limitsRequestedAt.get(instanceId);
+    if (requestedAtMs !== undefined && nowMs - requestedAtMs < STALE_PLAN_LIMITS_MS) return;
+    this.limitsRequestedAt.set(instanceId, nowMs);
+    void this.probeProvider(instanceId).catch((error: unknown) => {
+      console.error("Chat could not read a provider's plan limits", error);
+    });
   }
 
   async refreshAllProviders(): Promise<ProviderRefreshResult> {

@@ -138,7 +138,7 @@ pub async fn chat_discover_default_providers(
     read_settings(&app).await
 }
 
-/// Probes, one at a time, each enabled provider this device has not heard from within
+/// Probes, one at a time, each enabled provider whose usage limits this device has not read within
 /// [`PROVIDER_READING_MAX_AGE`], so plan limits and sign-in state are current without a
 /// visit to Settings. It runs once per vault and app session, beside discovery, and stops
 /// when the active vault changes. Views reread settings after each probe, so a provider's
@@ -160,7 +160,7 @@ async fn refresh_stale_provider_readings(app: tauri::AppHandle) {
             && !scope
                 .provider_instances
                 .get(&provider.instance_id)
-                .is_some_and(|device| device.has_reading_within(now, PROVIDER_READING_MAX_AGE))
+                .is_some_and(|device| device.has_usage_limits_within(now, PROVIDER_READING_MAX_AGE))
     });
     for provider in stale {
         if vault::active_vault_id(&app).ok().as_ref() != Some(&vault_id) {

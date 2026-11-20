@@ -94,10 +94,10 @@ pub async fn publish_provider_statuses(
     {
         let key = provider_status_key(device_id, family)
             .map_err(|_| validation_error("Provider status keys need a device and a family"))?;
-        let (limits_data, limits_observed_at) = content
-            .limits
-            .as_ref()
-            .map_or((None, None), |(data, at)| (Some(data.as_str()), Some(at.as_str())));
+        let (limits_data, limits_observed_at) =
+            content.limits.as_ref().map_or((None, None), |(data, at)| {
+                (Some(data.as_str()), Some(at.as_str()))
+            });
         let result = sqlx::query(
             "INSERT INTO chat_provider_device_status
                 (id, device_id, provider_family_id, available, status_changed_at, catalog_data,
@@ -158,8 +158,9 @@ pub async fn read_provider_status(
     let available: i64 = row.try_get("available").map_err(persistence_error)?;
     let catalog_data: String = row.try_get("catalog_data").map_err(persistence_error)?;
     let limits_data: Option<String> = row.try_get("limits_data").map_err(persistence_error)?;
-    let limits_observed_at: Option<String> =
-        row.try_get("limits_observed_at").map_err(persistence_error)?;
+    let limits_observed_at: Option<String> = row
+        .try_get("limits_observed_at")
+        .map_err(persistence_error)?;
     Ok(Some(ChatLinkedProviderStatusRead {
         device_id: device_id.to_string(),
         available: available == 1,

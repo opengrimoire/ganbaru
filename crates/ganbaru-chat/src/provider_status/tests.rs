@@ -106,12 +106,11 @@ async fn publishing_strips_private_fields_and_reads_back() {
         1
     );
 
-    let stored: (String, String) = sqlx::query_as(
-        "SELECT catalog_data, limits_data FROM chat_provider_device_status",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let stored: (String, String) =
+        sqlx::query_as("SELECT catalog_data, limits_data FROM chat_provider_device_status")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     for data in [&stored.0, &stored.1] {
         assert!(!data.contains("user@example.com"), "{data}");
         assert!(!data.contains("instance-codex"), "{data}");

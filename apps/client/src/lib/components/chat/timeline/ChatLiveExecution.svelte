@@ -30,6 +30,7 @@
     onUpdate: (next) => { view = next; },
   });
   const timelinePage = $derived(liveExecutionTimelinePage(view.state));
+  const assignmentId = $derived(work.id);
 
   $effect(() => {
     const updateForeground = (): void => { foreground = document.visibilityState === "visible"; };
@@ -39,7 +40,7 @@
 
   $effect(() => {
     if (!foreground) return;
-    follower.follow(work.id);
+    follower.follow(assignmentId);
     return () => follower.pause();
   });
 </script>

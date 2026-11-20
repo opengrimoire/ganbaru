@@ -432,8 +432,9 @@ impl ClaudeEventNormalizer {
             let web_metadata = state
                 .web_tools
                 .remove(&item_id)
-                .map(|metadata| web_completion(metadata, object.get("tool_use_result")));
-            // A web call shows its structured result, not the CLI's text rendering of it.
+                .and_then(|metadata| web_completion(metadata, object.get("tool_use_result")));
+            // A web call with a structured result shows it instead of the CLI's text rendering;
+            // a denied or failed one keeps the text, which says why.
             if web_metadata.is_none()
                 && let Some(output) = tool_result_text(block.get("content"))
             {
@@ -643,23 +644,21 @@ fn todo_plan(input: Option<&Value>) -> Option<PlanUpdatedEvent> {
     })
 }
 
-/// The completed metadata of a web call: its kept input plus the bounded structured result.
-fn web_completion(mut metadata: Value, result: Option<&Value>) -> VersionedJson {
+/// The completed metadata of a web call, its kept input plus the bounded structured result, or
+/// `None` when the call produced no structured result, as when it was denied or failed.
+fn web_completion(mut metadata: Value, result: Option<&Value>) -> Option<VersionedJson> {
     let name = metadata
         .get("toolName")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
+        .and_then(Value::as_str)?
         .to_string();
-    if let (Some(object), Some(result)) = (
-        metadata.as_object_mut(),
-        tool_input::web_result(&name, result),
-    ) {
-        object.insert("webResult".to_string(), result);
-    }
-    VersionedJson {
+    let result = tool_input::web_result(&name, result)?;
+    metadata
+        .as_object_mut()?
+        .insert("webResult".to_string(), result);
+    Some(VersionedJson {
         schema_version: 1,
         value: metadata,
-    }
+    })
 }
 
 fn tool_result_text(value: Option<&Value>) -> Option<String> {

@@ -114,16 +114,18 @@
   </button>
 {/snippet}
 
-{#if web?.kind === "search"}
-  {#if web.links.length > 0}
-    <div class="web-links">{#each web.links as link, index (`${index}:${link.url}`)}{@render webLink(link)}{/each}</div>
-  {:else if !webRunning}
-    <p class="web-empty">{t("chat.timeline.webNoResults")}</p>
-  {/if}
+{#if web?.kind === "search" && web.links !== null && web.links.length > 0}
+  <div class="web-links">{#each web.links as link, index (`${index}:${link.url}`)}{@render webLink(link)}{/each}</div>
+{:else if web?.kind === "search" && web.links !== null && !webRunning && activity.status !== "failed"}
+  <p class="web-empty">{t("chat.timeline.webNoResults")}</p>
 {:else if web?.kind === "fetch"}
   {#if web.link}<div class="web-links">{@render webLink(web.link)}</div>{/if}
   {#if web.statusCode !== null && (web.statusCode < 200 || web.statusCode >= 300)}
     <p class="web-empty failed">{t("chat.timeline.webFetchStatus", String(web.statusCode))}</p>
+  {/if}
+  {#if shownDetail}
+    {#if truncationNotice}<p class="detail-notice">{truncationNotice}</p>{/if}
+    <pre class="generic-detail">{shownDetail}</pre>
   {/if}
 {:else if isCommandActivity(activity)}
   <section class="command-card">

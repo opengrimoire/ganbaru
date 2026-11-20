@@ -875,6 +875,58 @@ fn web_search_completes_with_its_links_instead_of_command_output() {
 }
 
 #[test]
+fn denied_web_fetch_keeps_the_reason_as_output() {
+    let normalizer = ClaudeEventNormalizer::new(
+        ProviderInstanceId::new("claude-instance-1".to_string()).unwrap(),
+        ChatThreadId::new("thread-1".to_string()).unwrap(),
+        ProviderSessionId::new("session-1".to_string()).unwrap(),
+    );
+    let mut state = route_state();
+    state.active_chat_turn_id = Some(ChatTurnId::new("turn-1".to_string()).unwrap());
+    let mut normalize = |message: Value| normalizer.normalize_message(&mut state, message).unwrap();
+    normalize(json!({
+        "type": "assistant",
+        "message": {
+            "id": "msg-1",
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "tool-fetch",
+                "name": "WebFetch",
+                "input": { "url": "https://example.org", "prompt": "summarize" }
+            }]
+        }
+    }));
+    let completed = normalize(json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "tool-fetch",
+                "is_error": true,
+                "content": "The person declined this request."
+            }]
+        },
+        "tool_use_result": "Error: The person declined this request."
+    }));
+
+    assert!(completed.iter().any(|event| matches!(
+        &event.event,
+        CanonicalEvent::ContentDelta(delta) if delta.delta == "The person declined this request."
+    )));
+    let item = completed
+        .iter()
+        .find_map(|event| match &event.event {
+            CanonicalEvent::ItemCompleted(item) => Some(item.clone()),
+            _ => None,
+        })
+        .expect("fetch completion");
+    assert_eq!(item.status, ActivityStatus::Failed);
+    assert!(item.safe_metadata.is_none());
+}
+
+#[test]
 fn streamed_tool_input_is_not_output_and_the_assistant_frame_names_the_command() {
     let normalizer = ClaudeEventNormalizer::new(
         ProviderInstanceId::new("claude-instance-1".to_string()).unwrap(),

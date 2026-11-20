@@ -120,9 +120,12 @@ export interface WebLinkPresentation {
   host: string;
 }
 
-/** A web search or page fetch an agent made through its own web tool. */
+/**
+ * A web search or page fetch an agent made through its own web tool. A search has `links` only
+ * once its structured result arrived, so a denied, failed, or still running search has `null`.
+ */
 export type WebActivityPresentation =
-  | { kind: "search"; query: string | null; links: WebLinkPresentation[] }
+  | { kind: "search"; query: string | null; links: WebLinkPresentation[] | null }
   | { kind: "fetch"; link: WebLinkPresentation | null; statusCode: number | null };
 
 /**
@@ -137,15 +140,15 @@ export function webActivityPresentation(activity: TimelineActivityRow): WebActiv
   const input = record(metadata?.toolInput);
   const result = record(metadata?.webResult);
   if (tool === "WebSearch") {
-    const links = Array.isArray(result?.links) ? result.links : [];
+    const links = Array.isArray(result?.links) ? result.links : null;
     return {
       kind: "search",
       query: stringValue(input?.query),
-      links: links.flatMap((link) => {
+      links: links?.flatMap((link) => {
         const entry = record(link);
         const presented = webLink(entry?.url, entry?.title);
         return presented ? [presented] : [];
-      }),
+      }) ?? null,
     };
   }
   if (tool === "WebFetch") {

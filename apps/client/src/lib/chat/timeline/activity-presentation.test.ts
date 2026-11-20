@@ -265,6 +265,13 @@ describe("web activity presentation", () => {
     expect(summarizeActivityKinds([pending, failed])).toEqual([{ kind: "web_fetches", count: 2 }]);
   });
 
+  it("tells a search without a result apart from one that found no pages", () => {
+    const denied = web({ toolName: "WebSearch", toolInput: { query: "rust release" } });
+    expect(webActivityPresentation({ ...denied, status: "failed" })).toEqual({ kind: "search", query: "rust release", links: null });
+    const empty = web({ toolName: "WebSearch", toolInput: { query: "rust release" }, webResult: { links: [] } });
+    expect(webActivityPresentation(empty)).toEqual({ kind: "search", query: "rust release", links: [] });
+  });
+
   it("leaves web activities without a known web tool to the generic presentation", () => {
     expect(webActivityPresentation(web({ query: "rust release" }))).toBeNull();
     expect(webActivityPresentation(activity())).toBeNull();

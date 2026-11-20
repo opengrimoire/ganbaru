@@ -154,6 +154,8 @@ Diagnostics keep only identifiers, the event type, and protocol method or source
 
 Projection changes commit before the frontend is notified, and notifications carry identity and invalidation data, not unbounded payloads.
 
+A linked phone reads the live execution of work a desktop runs only from that desktop, over the pinned mutual TLS listeners sync uses on the LAN, as the [exchange](../sync.md#exchange) describes. The desktop admits each read, including after every wait, against the selected log and its own quarantine, and serves only work it executes. A page is built from an allowlist of presentation fields of the newest run's turn: message, reasoning, plan, and tool titles with bounded text, never approval or question requests, secret requests, provider, environment, or folder data, activity detail beyond the timeline preview, or changed files. The phone validates every page against its frame and the work it asked for, keeps it only in memory while the thread is open, and renders it read-only.
+
 Daily agent usage summaries replicate counts and dates only, never prompts, provider payloads, or costs. A summary's key names the device that counted it, and a receiver holds a summary signed by any other device, so one device cannot rewrite another device's usage.
 
 Work carries no spend limit. Nothing retries automatically after a provider usage limit stop.

@@ -24,7 +24,7 @@ Broader groups, cross-project workspaces, and direct messages are future schema 
 
 A channel can link several provider sessions over time in a stable order. The link explains which execution continuation contributed to which organizational scope and when it was active. Replacing or handing off a provider session creates or updates linkage without rewriting earlier channel history.
 
-Provider thread rows store the continuation and execution timeline understood by the application. Provider-native IDs are opaque handles. They do not encode membership, folder authority, audience, or ownership.
+Provider thread rows store the continuation and execution timeline understood by the application. Provider-native IDs are opaque handles. They do not encode membership, folder authority, audience, or ownership. Threads, turns, and activities stay on the device that executes the work; a linked phone reads the newest run of an assignment live from that device through the [Chat live read](../sync.md#exchange), which serves only an allowlisted projection of that run's turn with messages cut to their last 64 KiB, and stores nothing of it.
 
 Provider configuration and model mapping are separate from provider sessions. Changing a configured provider does not mutate historical messages or sessions.
 

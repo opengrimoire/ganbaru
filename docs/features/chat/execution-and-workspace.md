@@ -18,7 +18,7 @@ Cancellation targets the active run and its owned process tree. It never deletes
 
 On Linux, provider sessions and local provider servers run inside a user systemd resource scope with low CPU and IO weight, a task ceiling, and memory ceilings that leave the desktop headroom, so a runaway provider slows or stops itself instead of the desktop. When the scope stops a provider for memory, the conversation shows a notice before the session failure. Where user systemd is unavailable, such as inside Flatpak, or a scoped launch fails, providers start directly for the rest of the app run, because the scope must never block a provider. Chat terminals and short provider probes are never scoped.
 
-A run executes on one device, and its process, approvals, questions, terminal, and execution state stay there. Other linked devices see its messages and can complete or cancel its assignment, which stops the run on the executing device.
+A run executes on one device, and its process, approvals, questions, terminal, and execution state stay there. Other linked devices see its messages and can complete or cancel its assignment, which stops the run on the executing device. A phone with the reply thread open follows the newest run live from the executing desktop over the LAN, read-only, as the [exchange](../../data/sync.md#exchange) describes; the execution timeline itself never replicates.
 
 ## Interactive requests and approvals
 

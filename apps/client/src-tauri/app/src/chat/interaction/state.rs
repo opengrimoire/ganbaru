@@ -48,28 +48,43 @@ async fn read_pending_request(
     .fetch_optional(pool)
     .await
     .map_err(persistence_error)?;
-    row.map(|row| {
-        Ok(ChatPendingRequestRead {
-            id: row.try_get("id").map_err(persistence_error)?,
-            turn_id: row.try_get("turn_id").map_err(persistence_error)?,
-            provider_request_id: row
-                .try_get("provider_request_id")
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let request_kind: String = row.try_get("request_kind").map_err(persistence_error)?;
+    let rememberable = if request_kind == "approval" {
+        crate::chat::send::offered_rule(
+            pool,
+            thread_id,
+            &row.try_get::<String, _>("safe_display_data")
                 .map_err(persistence_error)?,
-            request_kind: row.try_get("request_kind").map_err(persistence_error)?,
-            safe_display: versioned_row(&row, "safe_display_schema_version", "safe_display_data")?,
-            allowed_decisions: versioned_row(
-                &row,
-                "allowed_decisions_schema_version",
-                "allowed_decisions_data",
-            )?,
-            opened_at: UtcTimestamp::new(
-                row.try_get::<String, _>("opened_at")
-                    .map_err(persistence_error)?,
-            )
-            .map_err(|_| corrupt_data_error())?,
-        })
-    })
-    .transpose()
+            &row.try_get::<String, _>("allowed_decisions_data")
+                .map_err(persistence_error)?,
+        )
+        .await?
+    } else {
+        None
+    };
+    Ok(Some(ChatPendingRequestRead {
+        id: row.try_get("id").map_err(persistence_error)?,
+        turn_id: row.try_get("turn_id").map_err(persistence_error)?,
+        provider_request_id: row
+            .try_get("provider_request_id")
+            .map_err(persistence_error)?,
+        request_kind,
+        safe_display: versioned_row(&row, "safe_display_schema_version", "safe_display_data")?,
+        allowed_decisions: versioned_row(
+            &row,
+            "allowed_decisions_schema_version",
+            "allowed_decisions_data",
+        )?,
+        opened_at: UtcTimestamp::new(
+            row.try_get::<String, _>("opened_at")
+                .map_err(persistence_error)?,
+        )
+        .map_err(|_| corrupt_data_error())?,
+        rememberable,
+    }))
 }
 
 async fn read_latest_event(

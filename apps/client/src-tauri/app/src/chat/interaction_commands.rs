@@ -8,9 +8,9 @@ use ganbaru_chat_contracts::events::{
     AccountStatusEvent, RateLimitStatusEvent, ThreadUsageUpdatedEvent,
 };
 use ganbaru_chat_contracts::models::{
-    ChatAttachmentId, ChatCommandId, ChatPromptCatalogEntry, ChatResult, ChatThreadId,
-    DriverOperationReceipt, McpStatusRead, ProjectWorkingFolderId, ProviderCapabilities,
-    ProviderInstanceId, ProviderSessionState, UtcTimestamp, VersionedJson,
+    ChatAttachmentId, ChatCommandId, ChatPromptCatalogEntry, ChatRememberableApprovalRead,
+    ChatResult, ChatThreadId, DriverOperationReceipt, McpStatusRead, ProjectWorkingFolderId,
+    ProviderCapabilities, ProviderInstanceId, ProviderSessionState, UtcTimestamp, VersionedJson,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -47,6 +47,9 @@ pub struct ChatPendingRequestRead {
     pub safe_display: VersionedJson,
     pub allowed_decisions: VersionedJson,
     pub opened_at: UtcTimestamp,
+    /// The rule an "Allow and don't ask again" choice would record, absent when the request
+    /// cannot be remembered.
+    pub rememberable: Option<ChatRememberableApprovalRead>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]

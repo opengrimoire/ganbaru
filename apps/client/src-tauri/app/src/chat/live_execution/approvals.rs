@@ -152,6 +152,7 @@ fn resolve_command(
             provider_option_id: Some(query.provider_option_id.clone()),
             updated_tool_input: None,
         },
+        remember: false,
     })
 }
 

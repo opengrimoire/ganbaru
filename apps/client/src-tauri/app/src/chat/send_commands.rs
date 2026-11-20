@@ -61,6 +61,10 @@ pub struct ResolveChatApprovalCommand {
     pub request_id: ChatRequestId,
     pub provider_request_id: ProviderRequestId,
     pub decision: ApprovalDecision,
+    /// Also remember the allow-once choice for the agent in the run's channel, so later
+    /// requests the same rule matches are allowed without asking.
+    #[serde(default)]
+    pub remember: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]

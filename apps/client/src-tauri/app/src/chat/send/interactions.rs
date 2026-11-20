@@ -87,6 +87,17 @@ pub(crate) async fn resolve_approval(
     request: ResolveChatApprovalCommand,
 ) -> ChatResult<DriverOperationReceipt> {
     let pool = chat_pool(app.clone(), db_url).await?;
+    resolve_approval_in(&app, &pool, request).await
+}
+
+/// Resolves an open approval through `pool`. A choice to remember the approval is recorded
+/// after every check passed and before the provider receives the choice.
+pub(super) async fn resolve_approval_in(
+    app: &tauri::AppHandle,
+    pool: &sqlx::SqlitePool,
+    request: ResolveChatApprovalCommand,
+) -> ChatResult<DriverOperationReceipt> {
+    let pool = pool.clone();
     validate_pending_request(
         &pool,
         &request.thread_id,
@@ -129,6 +140,11 @@ pub(crate) async fn resolve_approval(
         CommandReceiptClaim::Claimed(_) => {}
     }
     let command_id = request.command.client_command_id.clone();
+    if request.remember {
+        if let Err(error) = super::remembered_approvals::remember_choice(&pool, &request).await {
+            return complete_driver_operation(&pool, &command_id, Err(error)).await;
+        }
+    }
     let result = owner
         .resolve_approval(
             ResolveApprovalRequest {

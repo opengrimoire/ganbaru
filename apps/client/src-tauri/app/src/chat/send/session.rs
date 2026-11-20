@@ -568,6 +568,13 @@ impl ProviderEventSink for DurableChatEventSink {
                 && matches!(&event.event, CanonicalEvent::TurnCompleted(_)))
             .then(|| event.turn_id.clone())
             .flatten();
+            let opened_request = match &event.event {
+                CanonicalEvent::RequestOpened(opened) if self.organizational => Some((
+                    event.thread_id.clone(),
+                    opened.request_id.as_str().to_string(),
+                )),
+                _ => None,
+            };
             let provider_activity = crate::chat::settings::ProviderActivity::of(&event);
             let ingestion: ChatResult<()> = async {
                 let diagnostic_expires_at =
@@ -593,6 +600,13 @@ impl ProviderEventSink for DurableChatEventSink {
                         observed_at,
                     );
                 }
+            }
+            if let Some((thread_id, request_id)) = opened_request.filter(|_| ingestion.is_ok()) {
+                // A request a live remembered approval matches is answered for the person once
+                // it is persisted; anything else leaves it waiting for them.
+                super::remembered_approvals::spawn_remembered_resolution(
+                    &self.app, &self.pool, thread_id, request_id,
+                );
             }
             let settled_thread = settled_turn
                 .as_ref()

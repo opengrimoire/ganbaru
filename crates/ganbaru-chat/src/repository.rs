@@ -10,6 +10,8 @@ pub mod drafts;
 pub mod events;
 #[cfg(feature = "native-runtime")]
 pub mod lifecycle;
+#[cfg(feature = "native-runtime")]
+pub mod live_execution;
 pub mod primary_folder;
 #[cfg(feature = "native-runtime")]
 pub mod project_files;

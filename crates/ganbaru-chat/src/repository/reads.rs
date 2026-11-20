@@ -278,7 +278,7 @@ macro_rules! visible_timeline_rows {
 }
 
 /// Reads `(last_change, removals_pruned_through)` of a thread's timeline change clock.
-async fn read_timeline_clock(
+pub(crate) async fn read_timeline_clock(
     connection: &mut SqliteConnection,
     thread_id: &ChatThreadId,
 ) -> ChatResult<(u64, u64)> {
@@ -698,7 +698,7 @@ fn row_to_timeline_item(
 
 /// Activity kinds whose readers want the end of the detail: command output and reasoning
 /// summaries. Every other kind previews the start.
-const TAIL_PREVIEW_ACTIVITY_KINDS: [&str; 3] =
+pub(crate) const TAIL_PREVIEW_ACTIVITY_KINDS: [&str; 3] =
     ["command_execution", "command_output", "reasoning_summary"];
 
 /// Replaces an activity row's `detail` with `detailPreview`, `detailBytes` (the UTF-8 length of
@@ -784,7 +784,7 @@ pub async fn read_timeline_turns_by_ids(
     read_timeline_turns_in(&mut connection, turn_ids).await
 }
 
-async fn read_timeline_turns_in(
+pub(crate) async fn read_timeline_turns_in(
     connection: &mut SqliteConnection,
     turn_ids: &BTreeSet<String>,
 ) -> ChatResult<Vec<ChatTimelineTurnRead>> {

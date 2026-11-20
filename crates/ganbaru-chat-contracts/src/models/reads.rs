@@ -220,6 +220,34 @@ pub struct ChatTimelineDeltaRead {
     pub thread_revision: u64,
 }
 
+/// The live execution of one work assignment, read by a linked phone from the device that
+/// executes it. Rows carry only the presentation fields the read-only timeline needs, with long
+/// text shortened, and no request, approval, provider, environment, or folder data.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatLiveExecutionRead {
+    pub assignment_id: String,
+    /// The thread the newest run writes, once a run started.
+    pub thread_id: Option<ChatThreadId>,
+    /// The turn of the newest run, once a run started.
+    pub turn_id: Option<ChatTurnId>,
+    pub provider_family_id: Option<ProviderFamilyId>,
+    pub model_id: Option<ModelId>,
+    /// Rows of the run's turn written after the cursor, ordered by change.
+    pub items: Vec<ChatTimelineItemRead>,
+    /// The run's turn, with no changed files.
+    pub turns: Vec<ChatTimelineTurnRead>,
+    /// Rows of the run's turn deleted or hidden after the cursor.
+    pub removed_item_ids: Vec<ChatActivityId>,
+    pub change_cursor: u64,
+    /// More changes follow `change_cursor` than one read returns.
+    pub has_more: bool,
+    /// The cursor no longer applies, so the reader must read again from the start.
+    pub reset_required: bool,
+    /// The run ended or the assignment left its active states, so no further changes follow.
+    pub settled: bool,
+}
+
 /// The whole detail of one activity, read when its disclosure opens because timeline reads carry
 /// only a shortened preview.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ChatMessageRead, ChatParticipantRead, JsonValue } from "$lib/chat/contracts";
 import {
   answerableHostQuestion,
+  answerableRemoteApproval,
   chatAgentUpdatePresentation,
   chatFailureTechnicalDetail,
   isHostToolUpdate,
@@ -311,5 +312,110 @@ describe("chatFailureTechnicalDetail", () => {
     expect(chatFailureTechnicalDetail("timeout", "timeout")).toBe("timeout");
     expect(chatFailureTechnicalDetail(null, "Process exited with status 1")).toBe("Process exited with status 1");
     expect(chatFailureTechnicalDetail(null, "   ")).toBeNull();
+  });
+});
+
+function approvalUpdate(payload: JsonValue, assignmentId = "assignment:1"): ChatMessageRead["richContent"] {
+  return content({ type: "agent_update", updateKind: "approval", assignmentId, agentRunId: "run:1", payload });
+}
+
+const claudeDecisions = [
+  { id: "allow_once", label: "Allow once", decisionKind: "allow_once", description: null },
+  { id: "allow_session", label: "Allow for session", decisionKind: "allow_session", description: null },
+  { id: "deny", label: "Deny", decisionKind: "deny", description: null },
+  { id: "cancel", label: "Cancel turn", decisionKind: "cancel", description: null },
+];
+
+const commandSubject = { kind: "command", text: "pnpm test", location: "/work", truncated: false };
+
+describe("approval updates", () => {
+  it("offers one-time decisions with the subject they act on", () => {
+    expect(chatAgentUpdatePresentation(approvalUpdate({
+      requestId: "request:1",
+      kind: "command",
+      allowedDecisions: claudeDecisions,
+      safePayload: { schemaVersion: 1, value: {} },
+      subject: commandSubject,
+    }))).toEqual({
+      kind: "approval",
+      assignmentId: "assignment:1",
+      requestId: "request:1",
+      subject: commandSubject,
+      choices: [
+        { id: "allow_once", label: "Allow once", decision: "allow_once" },
+        { id: "deny", label: "Deny", decision: "deny" },
+        { id: "cancel", label: "Cancel turn", decision: "cancel" },
+      ],
+    });
+  });
+
+  it("never offers Allow without a readable subject", () => {
+    for (const subject of [undefined, null, { kind: "command", text: 3 }]) {
+      const presentation = chatAgentUpdatePresentation(approvalUpdate({
+        requestId: "request:1",
+        allowedDecisions: claudeDecisions,
+        ...(subject === undefined ? {} : { subject }),
+      }));
+      expect(presentation).toMatchObject({ kind: "approval", subject: null });
+      expect(presentation?.kind === "approval" && presentation.choices.map((choice) => choice.decision))
+        .toEqual(["deny", "cancel"]);
+    }
+  });
+
+  it("skips malformed or repeated decisions and refuses an approval without a request", () => {
+    const presentation = chatAgentUpdatePresentation(approvalUpdate({
+      requestId: "request:1",
+      subject: commandSubject,
+      allowedDecisions: [
+        { id: "", label: "Allow", decisionKind: "allow_once" },
+        { id: "deny", label: "Deny", decisionKind: "deny" },
+        { id: "deny", label: "Deny again", decisionKind: "deny" },
+        { id: "edit", label: "Edit", decisionKind: "allow_with_edits" },
+        "text",
+      ],
+    }));
+    expect(presentation?.kind === "approval" && presentation.choices).toEqual([{ id: "deny", label: "Deny", decision: "deny" }]);
+    expect(chatAgentUpdatePresentation(approvalUpdate({ allowedDecisions: claudeDecisions }))).toBeNull();
+    expect(chatAgentUpdatePresentation(approvalUpdate({ requestId: "request:1" }, ""))).toBeNull();
+  });
+});
+
+describe("answerableRemoteApproval", () => {
+  const waiting = { id: "assignment:1", state: "waiting_for_approval" } as const;
+  const opened = (requestId: string) => approvalUpdate({ requestId, allowedDecisions: claudeDecisions, subject: commandSubject });
+
+  it("offers the newest approval of the work while it waits for approval", () => {
+    const replies = [
+      reply("item:new", "b", opened("request:new")),
+      reply("item:old", "a", opened("request:old")),
+    ];
+    expect(answerableRemoteApproval(replies, waiting)).toMatchObject({
+      messageItemId: "item:new",
+      assignmentId: "assignment:1",
+      requestId: "request:new",
+      subject: commandSubject,
+    });
+    expect(answerableRemoteApproval(replies, { ...waiting, state: "working" })).toBeNull();
+    expect(answerableRemoteApproval(replies, null)).toBeNull();
+  });
+
+  it("keeps the decisions after a person's message and ignores other work", () => {
+    expect(answerableRemoteApproval([
+      reply("item:approval", "a", opened("request:1")),
+      reply("item:message", "b", content({}), person),
+    ], waiting)?.requestId).toBe("request:1");
+    expect(answerableRemoteApproval([
+      reply("item:approval", "a", approvalUpdate({ requestId: "request:1", allowedDecisions: claudeDecisions }, "assignment:2")),
+    ], waiting)).toBeNull();
+  });
+
+  it("offers nothing when the newest approval has no decision a linked device may send", () => {
+    expect(answerableRemoteApproval([
+      reply("item:old", "a", opened("request:old")),
+      reply("item:new", "b", approvalUpdate({
+        requestId: "request:new",
+        allowedDecisions: [{ id: "allow_session", label: "Allow for session", decisionKind: "allow_session" }],
+      })),
+    ], waiting)).toBeNull();
   });
 });

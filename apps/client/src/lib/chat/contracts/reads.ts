@@ -209,6 +209,23 @@ export type ChatLiveFollowRead =
   /** No other device serves this execution, so the synced work row stands in. */
   | { kind: "notServed" };
 
+/** Decisions a phone may send for an approval a linked desktop holds open; session grants stay on the desktop. */
+export const CHAT_REMOTE_APPROVAL_DECISIONS = ["allow_once", "deny", "cancel"] as const;
+
+/** A decision a phone may send for an approval a linked desktop holds open. */
+export type ChatRemoteApprovalDecision = (typeof CHAT_REMOTE_APPROVAL_DECISIONS)[number];
+
+/** What became of an approval answer sent to the linked desktop that runs the work. */
+export type ChatRemoteApprovalOutcome =
+  /** The desktop resolved the approval with the answer. */
+  | { kind: "resolved" }
+  /** The approval is no longer open there: it was answered elsewhere, withdrawn, or the run moved on. */
+  | { kind: "stale" }
+  /** No other device runs this work now. */
+  | { kind: "notServed" }
+  /** The desktop could not be reached or could not take the answer now. */
+  | { kind: "unreachable" };
+
 /** The whole detail of one activity, read when its disclosure opens. */
 export interface ChatActivityDetailRead {
   activityId: ChatActivityId;

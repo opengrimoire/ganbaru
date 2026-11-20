@@ -1,15 +1,18 @@
 import {
   CHAT_ERROR_CODES,
+  CHAT_REMOTE_APPROVAL_DECISIONS,
   CHAT_WORK_ASSIGNMENT_STATES,
+  type ApprovalSubject,
   type ChatErrorCode,
   type ChatMessageRead,
   type ChatPushRequest,
+  type ChatRemoteApprovalDecision,
   type ChatScheduleProposal,
   type ChatWorkAssignmentRead,
   type ChatWorkAssignmentState,
   type VersionedJson,
 } from "$lib/chat/contracts";
-import { parseChatPushRequest, parseChatScheduleProposal } from "$lib/chat/validation";
+import { parseApprovalSubject, parseChatPushRequest, parseChatScheduleProposal } from "$lib/chat/validation";
 import { compareOrderKeyThenId } from "$lib/utils/order-key";
 
 /** Payload source a host tool call writes on the agent updates it posts. */
@@ -29,6 +32,15 @@ export type ChatAgentUpdatePresentation =
   | { kind: "schedule_proposal"; assignmentId: string; proposal: ChatScheduleProposal }
   | { kind: "note_proposal"; assignmentId: string }
   | {
+    kind: "approval";
+    assignmentId: string;
+    requestId: string;
+    /** The exact command, path, or other target the approval acts on, or `null` when it was not shared. */
+    subject: ApprovalSubject | null;
+    /** The decisions a linked device may send; Allow is left out when there is no subject to show. */
+    choices: ChatRemoteApprovalChoice[];
+  }
+  | {
     kind: "delegation_outcome";
     parentAssignmentId: string;
     childAssignmentId: string;
@@ -43,6 +55,14 @@ export type ChatAgentUpdatePresentation =
     /** The stored code, such as `timeout` or `provider_usage_limit`, for the technical detail only. */
     code: string | null;
   };
+
+/** One decision a linked device may send for an approval, as the provider offered it. */
+export interface ChatRemoteApprovalChoice {
+  /** The provider option id the executing device resolves with. */
+  id: string;
+  label: string;
+  decision: ChatRemoteApprovalDecision;
+}
 
 /** Why work failed, as far as the reply thread explains it in localized text. */
 export type ChatAgentFailureCause =
@@ -67,6 +87,7 @@ export function chatAgentUpdatePresentation(richContent: VersionedJson): ChatAge
   if (updateKind === "failure") {
     return assignmentId === null ? null : failure(assignmentId, nonEmptyString(value.agentRunId), payload);
   }
+  if (updateKind === "approval") return assignmentId === null ? null : approval(assignmentId, payload);
   if (assignmentId === null || payload.source !== HOST_TOOL_UPDATE_SOURCE) return null;
   if (updateKind === "question") {
     if (payload.push !== undefined) {
@@ -111,6 +132,38 @@ function failure(
 ): ChatAgentUpdatePresentation {
   const code = nonEmptyString(payload.code);
   return { kind: "failure", assignmentId, agentRunId, cause: failureCause(code, payload), code };
+}
+
+/**
+ * Reads an approval the executing device posted. Only one-time decisions are offered to linked devices, and Allow
+ * only with the subject it acts on, so nobody approves what they cannot see.
+ */
+function approval(assignmentId: string, payload: Record<string, unknown>): ChatAgentUpdatePresentation | null {
+  const requestId = nonEmptyString(payload.requestId);
+  if (requestId === null) return null;
+  const subject = approvalSubject(payload.subject);
+  const choices: ChatRemoteApprovalChoice[] = [];
+  for (const entry of Array.isArray(payload.allowedDecisions) ? payload.allowedDecisions : []) {
+    const option = objectRecord(entry);
+    const id = nonEmptyString(option?.id);
+    const label = nonEmptyString(option?.label);
+    const decision = CHAT_REMOTE_APPROVAL_DECISIONS.find((candidate) => candidate === option?.decisionKind);
+    if (id === null || label === null || !decision) continue;
+    if (decision === "allow_once" && subject === null) continue;
+    if (choices.some((choice) => choice.id === id)) continue;
+    choices.push({ id, label, decision });
+  }
+  return { kind: "approval", assignmentId, requestId, subject, choices };
+}
+
+/** Reads the subject another device wrote, or `null` when it is missing or malformed. */
+function approvalSubject(value: unknown): ApprovalSubject | null {
+  if (value === undefined || value === null) return null;
+  try {
+    return parseApprovalSubject(value, "approval subject");
+  } catch {
+    return null;
+  }
 }
 
 function failureCause(code: string | null, payload: Record<string, unknown>): ChatAgentFailureCause {
@@ -202,6 +255,44 @@ export function answerableHostQuestion(
     }
     if (presentation?.kind === "push_request" && presentation.assignmentId === assignment.id) return null;
     if (reply.author && reply.author.kind !== "ai_agent") return null;
+  }
+  return null;
+}
+
+/** The approval a person on a linked device can still answer, with what it acts on. */
+export interface AnswerableRemoteApproval {
+  messageItemId: string;
+  assignmentId: string;
+  requestId: string;
+  subject: ApprovalSubject | null;
+  choices: ChatRemoteApprovalChoice[];
+}
+
+/**
+ * Returns the newest approval of the thread's work while that work waits for approval and it offers a decision. A
+ * person's later message does not answer an approval, so it keeps the decisions.
+ */
+export function answerableRemoteApproval(
+  replies: readonly QuestionReply[],
+  assignment: Pick<ChatWorkAssignmentRead, "id" | "state"> | null,
+): AnswerableRemoteApproval | null {
+  if (assignment?.state !== "waiting_for_approval") return null;
+  const ordered = [...replies].sort((left, right) => (
+    compareOrderKeyThenId(left.orderKey, left.itemId, right.orderKey, right.itemId)
+  ));
+  for (let index = ordered.length - 1; index >= 0; index -= 1) {
+    const reply = ordered[index];
+    if (!reply) continue;
+    const presentation = chatAgentUpdatePresentation(reply.richContent);
+    if (presentation?.kind !== "approval" || presentation.assignmentId !== assignment.id) continue;
+    if (presentation.choices.length === 0) return null;
+    return {
+      messageItemId: reply.itemId,
+      assignmentId: presentation.assignmentId,
+      requestId: presentation.requestId,
+      subject: presentation.subject,
+      choices: presentation.choices,
+    };
   }
   return null;
 }

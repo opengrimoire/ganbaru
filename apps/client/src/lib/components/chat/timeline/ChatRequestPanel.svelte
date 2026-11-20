@@ -7,7 +7,8 @@
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import ShieldAlert from "@lucide/svelte/icons/shield-alert";
   import * as chatApi from "$lib/api/chat";
-  import type { ApprovalSubjectKind, ChatAttachmentRead, ChatPendingRequestRead, SessionPermissionGrant, UserInputAnswer } from "$lib/chat/contracts";
+  import ChatApprovalSubject from "./ChatApprovalSubject.svelte";
+  import type { ChatAttachmentRead, ChatPendingRequestRead, SessionPermissionGrant, UserInputAnswer } from "$lib/chat/contracts";
   import { CHAT_IMAGE_LIMIT, clipboardImageFiles, parseApprovalChoices, parseApprovalDisplay, parseUserInputQuestions, validateImageFiles, validateUserInputAnswers } from "$lib/chat/composer/model";
   import { MAX_TEXT_SNIPPET_BYTES, classifyPastedText, pastedTextLineCount } from "$lib/chat/composer/paste";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
@@ -285,17 +286,6 @@
     }
   }
 
-  function subjectLabel(kind: ApprovalSubjectKind): string {
-    switch (kind) {
-      case "command": return t("chat.composer.approvalSubjectCommand");
-      case "path": return t("chat.composer.approvalSubjectPath");
-      case "url": return t("chat.composer.approvalSubjectUrl");
-      case "pattern": return t("chat.composer.approvalSubjectPattern");
-      case "query": return t("chat.composer.approvalSubjectQuery");
-      case "tool": return t("chat.composer.approvalSubjectTool");
-    }
-  }
-
   function grantLabel(grant: SessionPermissionGrant): string {
     switch (grant.kind) {
       case "allow_rule": return grant.ruleContent === null
@@ -310,14 +300,7 @@
 <section bind:this={panel} class="chat-request-panel" tabindex="-1">
   {#if pending.requestKind === "approval"}
     <header><ShieldAlert size={16} /><div><strong>{approvalDisplay.title ?? t("chat.composer.approval")}</strong>{#if approvalDisplay.detail}<p>{approvalDisplay.detail}</p>{/if}</div></header>
-    {#if approvalDisplay.subject}
-      <div class="approval-subject" data-testid="approval-subject">
-        <small>{subjectLabel(approvalDisplay.subject.kind)}</small>
-        <pre>{approvalDisplay.subject.text}</pre>
-        {#if approvalDisplay.subject.location}<small>{t("chat.composer.approvalSubjectLocation", approvalDisplay.subject.location)}</small>{/if}
-        {#if approvalDisplay.subject.truncated}<small>{t("chat.composer.approvalSubjectTruncated")}</small>{/if}
-      </div>
-    {/if}
+    {#if approvalDisplay.subject}<ChatApprovalSubject subject={approvalDisplay.subject} />{/if}
     {#if sessionGrants.length > 0}
       <div class="session-grants" data-testid="session-grants"><small>{t("chat.composer.sessionGrantsTitle")}</small><ul>{#each sessionGrants as grant}<li>{grantLabel(grant)}</li>{/each}</ul></div>
     {/if}
@@ -352,9 +335,8 @@
   header p, .chat-request-panel > small { color: var(--muted-foreground); font-size: calc(0.7rem * var(--type-scale)); }
   details summary { display: inline-flex; cursor: pointer; align-items: center; gap: 0.25rem; color: var(--muted-foreground); font-size: calc(0.7rem * var(--type-scale)); }
   pre { margin-top: 0.4rem; max-height: 10rem; overflow: auto; white-space: pre-wrap; border-radius: 0.35rem; background: var(--muted); padding: 0.5rem; font-size: calc(0.666667rem * var(--type-scale)); }
-  .approval-subject, .session-grants { display: grid; gap: 0.2rem; }
-  .approval-subject small, .session-grants small { color: var(--muted-foreground); font-size: calc(0.666667rem * var(--type-scale)); }
-  .approval-subject pre { margin-top: 0; overflow-wrap: anywhere; }
+  .session-grants { display: grid; gap: 0.2rem; }
+  .session-grants small { color: var(--muted-foreground); font-size: calc(0.666667rem * var(--type-scale)); }
   .session-grants ul { list-style: disc; padding-left: 1.1rem; font-size: calc(0.7rem * var(--type-scale)); overflow-wrap: anywhere; }
   .request-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.4rem; }
   .request-actions button { min-height: 2rem; border: 1px solid var(--border); border-radius: 0.35rem; padding: 0.3rem 0.6rem; font-size: calc(0.733333rem * var(--type-scale)); }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readJsonValue } from "./readers";
-import { parseChatChangeNotification, parseChatLiveFollow, parseChatTimelineDelta } from "./reads";
+import { parseChatChangeNotification, parseChatLiveFollow, parseChatRemoteApprovalOutcome, parseChatTimelineDelta } from "./reads";
 
 describe("readJsonValue", () => {
   it("keeps untrusted __proto__ keys as data without changing object prototypes", () => {
@@ -108,5 +108,15 @@ describe("parseChatLiveFollow", () => {
     const { settled: _settled, ...withoutSettled } = read;
     expect(() => parseChatLiveFollow({ kind: "page", read: withoutSettled })).toThrow("Chat live follow.read.settled");
     expect(() => parseChatLiveFollow({ kind: "page", read: { ...read, removedItemIds: [""] } })).toThrow();
+  });
+});
+
+describe("parseChatRemoteApprovalOutcome", () => {
+  it("reads each outcome and rejects an unknown one", () => {
+    for (const kind of ["resolved", "stale", "notServed", "unreachable"] as const) {
+      expect(parseChatRemoteApprovalOutcome({ kind })).toEqual({ kind });
+    }
+    expect(() => parseChatRemoteApprovalOutcome({ kind: "allowed" })).toThrow("Chat remote approval outcome.kind");
+    expect(() => parseChatRemoteApprovalOutcome(null)).toThrow();
   });
 });

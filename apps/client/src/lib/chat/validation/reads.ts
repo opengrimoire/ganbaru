@@ -9,6 +9,7 @@ import {
   type ChatError,
   type ChatLiveExecutionRead,
   type ChatLiveFollowRead,
+  type ChatRemoteApprovalOutcome,
   type ChatThreadShellRead,
   type ChatTimelineDeltaRead,
   type ChatTimelineItemRead,
@@ -218,6 +219,17 @@ export function parseChatLiveFollow(value: unknown, label = "Chat live follow"):
   const kind = readEnum(record.kind, CHAT_LIVE_FOLLOW_KINDS, `${label}.kind`);
   if (kind === "page") return { kind, read: parseChatLiveExecution(record.read, `${label}.read`) };
   return { kind };
+}
+
+const CHAT_REMOTE_APPROVAL_OUTCOME_KINDS = ["resolved", "stale", "notServed", "unreachable"] as const;
+
+/** Validates what became of an approval answer a phone sent to the linked desktop that runs the work. */
+export function parseChatRemoteApprovalOutcome(
+  value: unknown,
+  label = "Chat remote approval outcome",
+): ChatRemoteApprovalOutcome {
+  const record = readRecord(value, label);
+  return { kind: readEnum(record.kind, CHAT_REMOTE_APPROVAL_OUTCOME_KINDS, `${label}.kind`) };
 }
 
 /** Validates the whole detail of one activity read from the native timeline. */

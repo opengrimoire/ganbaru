@@ -512,6 +512,12 @@ export const chat = {
       cancelled: "Cancelado",
     },
   },
+  remoteApproval: {
+    title: (name: string) => `${name} pide aprobación`,
+    noSubject: "El escritorio no compartió qué se aprueba, así que aquí solo puedes rechazarlo o responder en el escritorio.",
+    notServed: "Este trabajo ya no se ejecuta en otro dispositivo.",
+    unreachable: "No se pudo contactar el escritorio que ejecuta este trabajo, así que comprueba que ambos dispositivos compartan red y versión de la app, o responde en el escritorio.",
+  },
   questions: {
     choices: "Respuestas sugeridas",
     useChoice: (choice: string) => `Responder con "${choice}"`,

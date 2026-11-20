@@ -25,6 +25,8 @@ import type {
   UpdateChatProjectAgentSettingsRequest,
   ChatChannelRosterRead,
   ChatLiveFollowRead,
+  ChatRemoteApprovalDecision,
+  ChatRemoteApprovalOutcome,
   ChatChannelMembershipRemovalPreview,
   PreviewChatChannelMembershipRemovalRequest,
   ChatAssignmentTargetRead,
@@ -68,6 +70,7 @@ import {
   parseChatProjectAgentSettings,
   parseChatChannelRoster,
   parseChatLiveFollow,
+  parseChatRemoteApprovalOutcome,
   parseChatChannelMembershipRemovalPreview,
   parseChatAssignmentTargets,
   parseChatScratchCleanupPreview,
@@ -321,6 +324,22 @@ export async function readChatLiveExecution(
 ): Promise<ChatLiveFollowRead> {
   return parseChatLiveFollow(await invoke<unknown>("chat_read_live_execution", {
     dbUrl: await ensureDbUrl(), assignmentId, afterChange, wait,
+  }));
+}
+
+/**
+ * Answers an approval that work a linked desktop runs holds open, on that desktop over the LAN. `commandId` names the
+ * answer, so sending it again never resolves twice. Only phones register the command.
+ */
+export async function resolveChatRemoteApproval(request: {
+  assignmentId: ChatWorkAssignmentId;
+  requestId: string;
+  decision: ChatRemoteApprovalDecision;
+  providerOptionId: string;
+  commandId: string;
+}): Promise<ChatRemoteApprovalOutcome> {
+  return parseChatRemoteApprovalOutcome(await invoke<unknown>("chat_resolve_remote_approval", {
+    dbUrl: await ensureDbUrl(), ...request,
   }));
 }
 

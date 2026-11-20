@@ -44,7 +44,8 @@
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import ChatRequestPanel from "./ChatRequestPanel.svelte";
-  import { answerableHostQuestion } from "$lib/chat/timeline/agent-update";
+  import ChatRemoteApprovalPanel from "./ChatRemoteApprovalPanel.svelte";
+  import { answerableHostQuestion, answerableRemoteApproval } from "$lib/chat/timeline/agent-update";
   import { chatComposerDocumentFromText, chatComposerDocumentVersioned, chatComposerMarkdown } from "$lib/chat/composer/rich-text";
   import { chatParticipantDisplayName } from "$lib/chat/agents/participant-display";
   import { getPreferences } from "$lib/stores/preferences.svelte";
@@ -158,6 +159,14 @@
   /** Changes to remount the composer after its draft was replaced from outside, such as by an answer choice. */
   let composerRevision = $state(0);
   const answerableQuestion = $derived(answerableHostQuestion(page?.replies ?? [], assignment));
+  /** Approvals this device answered on the linked desktop, hidden until the synced work row moves on. */
+  let answeredRemoteApprovals = $state<readonly string[]>([]);
+  /** The approval a phone can answer on the linked desktop that runs the thread's work. */
+  const remoteApproval = $derived.by(() => {
+    if (localExecutionAvailable) return null;
+    const approval = answerableRemoteApproval(page?.replies ?? [], assignment);
+    return approval && !answeredRemoteApprovals.includes(approval.requestId) ? approval : null;
+  });
   const executionAgentName = $derived(executionAgent
     ? chatParticipantDisplayName(executionAgent, preferences.profileDisplayName, t("chat.timeline.you"))
     : null);
@@ -590,6 +599,17 @@
   {#if composerDocked}
     <div class="thread-dock" use:chatComposerDock={{ onMeasure: reserveDockSpace, scroller }}>
       {#if chat.interaction?.pendingRequest}<div class="thread-request"><ChatRequestPanel pending={chat.interaction.pendingRequest} /></div>{/if}
+      {#if remoteApproval}
+        <div class="thread-request">
+          {#key remoteApproval.requestId}
+            <ChatRemoteApprovalPanel
+              approval={remoteApproval}
+              agentName={executionAgentName ?? t("chat.runs.outcome.agentFallback")}
+              onAnswered={(requestId) => { answeredRemoteApprovals = [...answeredRemoteApprovals, requestId]; }}
+            />
+          {/key}
+        </div>
+      {/if}
       {#if localExecutionAvailable && chat.openReplyThreadId}
         <div class="thread-secrets"><ChatSecretRequests replyThreadId={chat.openReplyThreadId} refreshKey={page} agentName={executionAgentName} /></div>
       {/if}

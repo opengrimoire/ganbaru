@@ -587,12 +587,14 @@
 
   /*
    * The phone composer rests as one row, with its first tool and Send at the ends of a pill, and grows by `--expand` into
-   * its full height as its other tools fade in, as the collapsible composer frame draws it.
+   * its full height as its other tools fade in, as the collapsible composer frame draws it with touch-sized controls.
    */
-  .collapsible { --row: 2.4rem; --line: 1.3125rem; }
+  .collapsible { --control: 2.75rem; --send-visual: 2.35rem; --row: calc(var(--control) + 0.5rem); --line: 1.3125rem; }
+  .collapsible .tool-button, .collapsible .send-button { width: var(--control); height: var(--control); }
+  .collapsible .send-button { padding: calc((var(--control) - var(--send-visual)) / 2); background-clip: content-box; box-shadow: none; filter: drop-shadow(0 2px 4px color-mix(in srgb, var(--primary) 22%, transparent)); }
   .collapsible .editor-frame { padding-block: calc((var(--row) - var(--line)) / 2 * (1 - var(--expand)) + 1rem * var(--expand)) calc((var(--row) - var(--line)) / 2 * (1 - var(--expand))); padding-inline: calc((var(--row) + 0.25rem) * (1 - var(--expand)) + 1.25rem * var(--expand)); }
   .collapsible .organizational-editor.empty::before { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .collapsible .composer-footer { position: relative; min-height: calc(var(--row) + (2.6rem - var(--row)) * var(--expand)); margin-top: calc(-1 * var(--row) * (1 - var(--expand))); padding: calc(0.25rem * (1 - var(--expand))) calc(0.25rem + 0.5rem * var(--expand)) calc(0.25rem + 0.25rem * var(--expand)); }
+  .collapsible .composer-footer { position: relative; min-height: var(--row); margin-top: calc(-1 * var(--row) * (1 - var(--expand))); padding: calc(0.25rem + 0.25rem * var(--expand)) calc(0.25rem + 0.5rem * var(--expand)); }
   .collapsible .composer-tools > :not(:first-child) { opacity: var(--expand); }
 
   /* The reply thread, as its panel draws it. */

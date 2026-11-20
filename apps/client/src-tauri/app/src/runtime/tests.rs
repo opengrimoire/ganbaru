@@ -141,6 +141,7 @@ fn mobile_runtime_registers_portable_core_commands() {
         "chat::organization::chat_steer_assignment_input",
         "chat::organization::chat_reorder_assignment_inputs",
         "chat::settings_commands::chat_read_settings",
+        "chat::live_execution::follow::chat_read_live_execution",
     ] {
         assert!(
             MOBILE_RUNTIME.contains(command),

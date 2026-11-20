@@ -23,10 +23,7 @@ use tokio::sync::{Notify, watch};
 pub const CHAT_LIVE_WAIT: Duration = Duration::from_secs(12);
 const _: () = assert!(CHAT_LIVE_WAIT.as_secs() + 3 <= CONTROL_TIMEOUT.as_secs());
 
-/// Error code for an assignment this device does not execute or does not know.
-pub const CHAT_LIVE_NOT_HERE_CODE: &str = "chat_live_not_here";
-/// Error code for a read this device could not answer now.
-pub const CHAT_LIVE_UNAVAILABLE_CODE: &str = "chat_live_unavailable";
+pub use ganbaru_handoff::protocol::{CHAT_LIVE_NOT_HERE_CODE, CHAT_LIVE_UNAVAILABLE_CODE};
 
 /// The execution read one admitted request asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]

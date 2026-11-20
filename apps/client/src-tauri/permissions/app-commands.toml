@@ -139,6 +139,7 @@ commands.allow = [
   "chat_read_diagnostics",
   "chat_read_draft",
   "chat_read_interaction_state",
+  "chat_read_live_execution",
   "chat_read_mcp_status",
   "chat_read_mobile_channel_roster",
   "chat_read_note_proposal_states",

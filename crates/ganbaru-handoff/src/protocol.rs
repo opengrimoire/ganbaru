@@ -50,6 +50,12 @@ const MAX_PERSON_KEY_TEXT_BYTES: usize = 256;
 pub const MAX_CHAT_LIVE_PAYLOAD_BYTES: usize = 640 * 1024;
 /// Upper bound on a Chat identifier a [`ControlMessage::ChatLiveRead`] names.
 const MAX_CHAT_IDENTIFIER_BYTES: usize = 160;
+/// Error code a desktop answers a [`ControlMessage::ChatLiveRead`] with when it does not execute
+/// the assignment or does not know it.
+pub const CHAT_LIVE_NOT_HERE_CODE: &str = "chat_live_not_here";
+/// Error code a desktop answers a [`ControlMessage::ChatLiveRead`] with when it could not read
+/// the execution now.
+pub const CHAT_LIVE_UNAVAILABLE_CODE: &str = "chat_live_unavailable";
 /// Tolerated clock skew for signed status requests.
 const STATUS_REPLAY_WINDOW_MS: i64 = 5 * 60 * 1000;
 

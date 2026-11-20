@@ -10,6 +10,8 @@ mod authority;
 #[cfg(any(mobile, test))]
 mod background_changes;
 pub(crate) mod backup_keys;
+#[cfg(any(mobile, test))]
+pub(crate) mod chat_live;
 pub(crate) mod commands;
 pub(crate) mod connectivity;
 mod contests;

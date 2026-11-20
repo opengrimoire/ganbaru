@@ -50,6 +50,12 @@ const RUNNING_ASSIGNMENT_STATES: [&str; 4] = [
 const SETTLED_RUN_STATES: [&str; 3] = ["completed", "failed", "cancelled"];
 /// Activity metadata keys whose short text a live read keeps.
 const LIVE_METADATA_TEXT_KEYS: [&str; 4] = ["toolKind", "tool", "toolName", "name"];
+/// Byte limit of a web search query or page URL a live read keeps.
+const LIVE_WEB_FIELD_BYTES: usize = 2048;
+/// Most web search result links a live read keeps.
+const LIVE_WEB_LINKS: usize = 24;
+/// Byte limit of one web search result title a live read keeps.
+const LIVE_WEB_LINK_TITLE_BYTES: usize = 256;
 
 /// What a live read asks for.
 #[derive(Clone, Copy, Debug)]
@@ -317,6 +323,7 @@ async fn read_live_items(
                   END AS phase,
                   NULL AS tool_kind, NULL AS tool, NULL AS tool_name, NULL AS name,
                   NULL AS exit_code, NULL AS duration_ms, NULL AS steps,
+                  NULL AS web_query, NULL AS web_url, NULL AS web_result,
                   created_at, updated_at
            FROM chat_messages
            WHERE thread_id = ? AND turn_id = ? AND role = 'assistant' AND change_sequence > ?
@@ -350,6 +357,18 @@ async fn read_live_items(
                     WHEN 'real' THEN CAST(json_extract(safe_metadata_data, '$.durationMs') AS INTEGER)
                   END,
                   NULL,
+                  CASE WHEN item_kind = 'web_search'
+                    AND json_type(safe_metadata_data, '$.toolInput.query') = 'text'
+                    THEN substr(json_extract(safe_metadata_data, '$.toolInput.query'), 1, ?)
+                  END,
+                  CASE WHEN item_kind = 'web_search'
+                    AND json_type(safe_metadata_data, '$.toolInput.url') = 'text'
+                    THEN substr(json_extract(safe_metadata_data, '$.toolInput.url'), 1, ?)
+                  END,
+                  CASE WHEN item_kind = 'web_search'
+                    AND json_type(safe_metadata_data, '$.webResult') = 'object'
+                    THEN json_extract(safe_metadata_data, '$.webResult')
+                  END,
                   created_at, updated_at
            FROM chat_activities
            WHERE thread_id = ? AND turn_id = ? AND item_kind != 'user_message'
@@ -360,7 +379,7 @@ async fn read_live_items(
                   CASE WHEN length(markdown) > ? THEN substr(markdown, 1, ?) ELSE markdown END,
                   length(CAST(markdown AS BLOB)),
                   NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-                  steps_data,
+                  steps_data, NULL, NULL, NULL,
                   created_at, updated_at
            FROM chat_plans
            WHERE thread_id = ? AND origin_turn_id = ? AND change_sequence > ?
@@ -382,6 +401,8 @@ async fn read_live_items(
     .bind(LIVE_LABEL_BYTES as i64)
     .bind(LIVE_LABEL_BYTES as i64)
     .bind(LIVE_LABEL_BYTES as i64)
+    .bind(LIVE_WEB_FIELD_BYTES as i64)
+    .bind(LIVE_WEB_FIELD_BYTES as i64)
     .bind(thread_id.as_str())
     .bind(turn_id.as_str())
     .bind(after)
@@ -552,7 +573,69 @@ fn activity_metadata(row: &sqlx::sqlite::SqliteRow) -> ChatResult<Map<String, Va
     {
         metadata.insert("durationMs".into(), json!(duration));
     }
+    let mut tool_input = Map::new();
+    for (key, column) in [("query", "web_query"), ("url", "web_url")] {
+        if let Some(text) = row
+            .try_get::<Option<String>, _>(column)
+            .map_err(persistence_error)?
+        {
+            tool_input.insert(key.into(), json!(capped(&text, LIVE_WEB_FIELD_BYTES)));
+        }
+    }
+    if !tool_input.is_empty() {
+        metadata.insert("toolInput".into(), Value::Object(tool_input));
+    }
+    if let Some(result) = row
+        .try_get::<Option<String>, _>("web_result")
+        .map_err(persistence_error)?
+    {
+        let result: Value = serde_json::from_str(&result).map_err(serialization_error)?;
+        metadata.insert("webResult".into(), web_result(&result));
+    }
     Ok(metadata)
+}
+
+/// The fields of a stored web search or fetch result that a live read keeps: at most
+/// [`LIVE_WEB_LINKS`] result links with an http or https URL and a capped title, and a fetch's
+/// URL, status code, and size.
+fn web_result(result: &Value) -> Value {
+    let mut kept = Map::new();
+    if let Some(links) = result.get("links").and_then(Value::as_array) {
+        let links = links
+            .iter()
+            .filter_map(|link| {
+                let url = web_url(link.get("url"))?;
+                let mut entry = Map::from_iter([("url".to_string(), json!(url))]);
+                if let Some(title) = link.get("title").and_then(Value::as_str) {
+                    entry.insert(
+                        "title".into(),
+                        json!(capped(title, LIVE_WEB_LINK_TITLE_BYTES)),
+                    );
+                }
+                Some(Value::Object(entry))
+            })
+            .take(LIVE_WEB_LINKS)
+            .collect();
+        kept.insert("links".into(), Value::Array(links));
+    }
+    if let Some(url) = web_url(result.get("url")) {
+        kept.insert("url".into(), json!(url));
+    }
+    for key in ["code", "bytes"] {
+        if let Some(number) = result.get(key).and_then(Value::as_u64) {
+            kept.insert(key.into(), json!(number));
+        }
+    }
+    Value::Object(kept)
+}
+
+/// `value` when it is an http or https URL no longer than [`LIVE_WEB_FIELD_BYTES`].
+fn web_url(value: Option<&Value>) -> Option<&str> {
+    let url = value?.as_str()?;
+    let scheme = url.get(..8).unwrap_or(url).to_ascii_lowercase();
+    (url.len() <= LIVE_WEB_FIELD_BYTES
+        && (scheme.starts_with("https://") || scheme.starts_with("http://")))
+    .then_some(url)
 }
 
 /// The first [`LIVE_PLAN_STEPS`] well-formed steps of a stored plan, each with only its id,

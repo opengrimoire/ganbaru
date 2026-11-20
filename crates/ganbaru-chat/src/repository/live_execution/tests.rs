@@ -446,3 +446,48 @@ async fn set_applying(pool: &SqlitePool, applying: bool) {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn web_activities_carry_their_query_and_bounded_result_links() {
+    let pool = seeded_pool(Some(DEVICE), "working", "working").await;
+    let long_title = "t".repeat(400);
+    let mut links = vec![
+        json!({ "url": "https://example.com/a", "title": long_title, "snippet": "secret" }),
+        json!({ "url": "javascript:secret" }),
+        json!({ "url": format!("https://example.com/{}", "x".repeat(3000)) }),
+    ];
+    links.extend((0..30).map(|index| json!({ "url": format!("https://example.com/{index}") })));
+    let metadata = json!({
+        "toolName": "WebSearch",
+        "toolInput": { "query": "riemann", "token": "secret" },
+        "webResult": { "links": links, "summary": "secret" },
+    });
+    sqlx::query(
+        "INSERT INTO chat_activities
+            (id, thread_id, turn_id, sequence_anchor, item_kind, status, title, detail,
+             provider_item_id, safe_metadata_data, source_event_type, created_at, updated_at)
+         VALUES ('activity:search', ?, ?, 2, 'web_search', 'completed', 'riemann', NULL,
+                 'provider-item', ?, 'item_completed', ?, ?)",
+    )
+    .bind(THREAD)
+    .bind(TURN)
+    .bind(metadata.to_string())
+    .bind(NOW)
+    .bind(NOW)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let read = read(&pool, None, 600_000).await;
+    let encoded = serde_json::to_string(&read).unwrap();
+
+    assert!(!encoded.contains("secret"), "{encoded}");
+    let metadata = &read.items[0].data.value["metadata"];
+    assert_eq!(metadata["toolName"], json!("WebSearch"));
+    assert_eq!(metadata["toolInput"], json!({ "query": "riemann" }));
+    let links = metadata["webResult"]["links"].as_array().unwrap();
+    assert_eq!(links.len(), 24);
+    assert_eq!(links[0]["url"], json!("https://example.com/a"));
+    assert_eq!(links[0]["title"].as_str().unwrap().len(), 256);
+    assert_eq!(links[1], json!({ "url": "https://example.com/0" }));
+}

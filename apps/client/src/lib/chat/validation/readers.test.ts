@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readJsonValue } from "./readers";
-import { parseChatChangeNotification, parseChatTimelineDelta } from "./reads";
+import { parseChatChangeNotification, parseChatLiveFollow, parseChatTimelineDelta } from "./reads";
 
 describe("readJsonValue", () => {
   it("keeps untrusted __proto__ keys as data without changing object prototypes", () => {
@@ -77,5 +77,35 @@ describe("parseChatTimelineDelta", () => {
       resetRequired: false,
       threadRevision: 4,
     })).toThrow("removedItemIds[0] is required");
+  });
+});
+
+describe("parseChatLiveFollow", () => {
+  const read = {
+    assignmentId: "assignment-1",
+    threadId: null,
+    turnId: null,
+    providerFamilyId: null,
+    modelId: null,
+    items: [],
+    turns: [],
+    removedItemIds: [],
+    changeCursor: 0,
+    hasMore: false,
+    resetRequired: false,
+    settled: true,
+  };
+
+  it("reads a page and the answers that carry no page", () => {
+    expect(parseChatLiveFollow({ kind: "page", read })).toEqual({ kind: "page", read });
+    expect(parseChatLiveFollow({ kind: "unreachable" })).toEqual({ kind: "unreachable" });
+    expect(parseChatLiveFollow({ kind: "notServed" })).toEqual({ kind: "notServed" });
+  });
+
+  it("rejects an unknown answer or a page without its flags", () => {
+    expect(() => parseChatLiveFollow({ kind: "stream" })).toThrow("Chat live follow.kind has an unsupported value");
+    const { settled: _settled, ...withoutSettled } = read;
+    expect(() => parseChatLiveFollow({ kind: "page", read: withoutSettled })).toThrow("Chat live follow.read.settled");
+    expect(() => parseChatLiveFollow({ kind: "page", read: { ...read, removedItemIds: [""] } })).toThrow();
   });
 });

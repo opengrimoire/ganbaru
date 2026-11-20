@@ -34,6 +34,7 @@
   import { useChat } from "$lib/stores/chat.svelte";
   import ChatAgentRunStatus from "./ChatAgentRunStatus.svelte";
   import ChatRemoteWorkRow from "./ChatRemoteWorkRow.svelte";
+  import ChatLiveExecution from "./ChatLiveExecution.svelte";
   import ChatExecutionTimeline from "./ChatExecutionTimeline.svelte";
   import ChatMessageComposer from "$lib/components/chat/composer/ChatMessageComposer.svelte";
   import { chatComposerDock, type ChatComposerDockMetrics } from "$lib/components/chat/composer/composer-dock";
@@ -534,12 +535,22 @@
           {/if}
         {/each}
         {#if workWithoutRun}
-          <ChatRemoteWorkRow
-            work={workWithoutRun}
-            agent={executionAgent}
-            agentName={executionAgentName ?? t("chat.runs.outcome.agentFallback")}
-            onActionError={reportMessageActionError}
-          />
+          <!-- A phone follows the run live from the linked desktop that executes it; a desktop shows the work row. -->
+          {#if localExecutionAvailable}
+            <ChatRemoteWorkRow
+              work={workWithoutRun}
+              agent={executionAgent}
+              agentName={executionAgentName ?? t("chat.runs.outcome.agentFallback")}
+              onActionError={reportMessageActionError}
+            />
+          {:else}
+            <ChatLiveExecution
+              work={workWithoutRun}
+              agent={executionAgent}
+              agentName={executionAgentName ?? t("chat.runs.outcome.agentFallback")}
+              onActionError={reportMessageActionError}
+            />
+          {/if}
         {/if}
         {#if page.delegatedChildren.length > 0}<ChatDelegatedWorkList delegatedChildren={page.delegatedChildren} onOpenThread={openThread} />{/if}
       </div>

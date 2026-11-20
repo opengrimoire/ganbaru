@@ -7,6 +7,8 @@ import {
   type ChatChangeNotification,
   type ChatProjectionKey,
   type ChatError,
+  type ChatLiveExecutionRead,
+  type ChatLiveFollowRead,
   type ChatThreadShellRead,
   type ChatTimelineDeltaRead,
   type ChatTimelineItemRead,
@@ -186,6 +188,35 @@ export function parseChatTimelineDelta(value: unknown, label = "Chat timeline de
     resetRequired: readBoolean(record.resetRequired, `${label}.resetRequired`),
     threadRevision: readNonNegativeSafeInteger(record.threadRevision, `${label}.threadRevision`),
   };
+}
+
+const CHAT_LIVE_FOLLOW_KINDS = ["page", "unreachable", "notServed"] as const;
+
+/** Validates one page of a live execution read from the linked desktop that runs the work. */
+export function parseChatLiveExecution(value: unknown, label = "Chat live execution"): ChatLiveExecutionRead {
+  const record = readRecord(value, label);
+  return {
+    assignmentId: readIdentifier(record.assignmentId, `${label}.assignmentId`),
+    threadId: readNullable(record.threadId, `${label}.threadId`, readIdentifier),
+    turnId: readNullable(record.turnId, `${label}.turnId`, readIdentifier),
+    providerFamilyId: readNullable(record.providerFamilyId, `${label}.providerFamilyId`, readIdentifier),
+    modelId: readNullable(record.modelId, `${label}.modelId`, readIdentifier),
+    items: readArray(record.items, `${label}.items`, parseChatTimelineItem),
+    turns: readArray(record.turns, `${label}.turns`, parseChatTimelineTurn),
+    removedItemIds: readArray(record.removedItemIds, `${label}.removedItemIds`, readIdentifier),
+    changeCursor: readNonNegativeSafeInteger(record.changeCursor, `${label}.changeCursor`),
+    hasMore: readBoolean(record.hasMore, `${label}.hasMore`),
+    resetRequired: readBoolean(record.resetRequired, `${label}.resetRequired`),
+    settled: readBoolean(record.settled, `${label}.settled`),
+  };
+}
+
+/** Validates what a phone can show of the live execution of work a linked desktop runs. */
+export function parseChatLiveFollow(value: unknown, label = "Chat live follow"): ChatLiveFollowRead {
+  const record = readRecord(value, label);
+  const kind = readEnum(record.kind, CHAT_LIVE_FOLLOW_KINDS, `${label}.kind`);
+  if (kind === "page") return { kind, read: parseChatLiveExecution(record.read, `${label}.read`) };
+  return { kind };
 }
 
 /** Validates the whole detail of one activity read from the native timeline. */

@@ -21,7 +21,7 @@
   import { executionMessageActionTarget } from "$lib/chat/timeline/message-action-target";
   import { noticeCode, resolveNoticeTitle } from "$lib/chat/timeline/notice-title";
   import { chatScrollBehavior } from "$lib/chat/responsive-layout";
-  import type { ChatParticipantRead, ChatThreadShellRead, ChatTimelinePageRead, ChatTurnId, ProviderInstanceId, ProviderProbeResult } from "$lib/chat/contracts";
+  import type { ChatParticipantRead, ChatThreadShellRead, ChatTimelinePageRead, ChatTurnId, ProviderFamilyId, ProviderInstanceId, ProviderProbeResult } from "$lib/chat/contracts";
   import { activityFilePath, fileChangePresentation, fileReadActivityPresentation, fileSearchActivityPresentation, isFileReadActivity, isFileSearchActivity, isImageViewActivity, summarizeActivityKinds, transientActivitySummary, type ActivitySummaryCount } from "$lib/chat/timeline/activity-presentation";
   import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/agents/participant-display";
   import { chatModelParticipant, type ChatModelParticipant } from "$lib/chat/agents/participant-identity";
@@ -58,6 +58,8 @@
     turnId = null,
     timelinePage = null,
     executionThread = null,
+    readOnly = false,
+    providerFamilyId = null,
   } = $props<{
     bottomInsetPx?: number;
     embedded?: boolean;
@@ -66,6 +68,14 @@
     turnId?: ChatTurnId | null;
     timelinePage?: ChatTimelinePageRead | null;
     executionThread?: ChatThreadShellRead | null;
+    /**
+     * Shows an embedded `timelinePage` another device executes: rows stay visible, while activity detail, changed
+     * files, reactions, message actions, plan actions, revert, and usage, which read or change data this device does
+     * not hold, are left out.
+     */
+    readOnly?: boolean;
+    /** The provider family that names the model in a read-only page, which has no thread shell on this device. */
+    providerFamilyId?: ProviderFamilyId | null;
   }>();
   const COMPOSER_READING_GAP_PX = 8;
   const TIMELINE_EDGE_PADDING_PX = 16;
@@ -467,6 +477,7 @@
   }
 
   function touchActionsKey(row: TimelineDisplayRow): string | null {
+    if (readOnly) return null;
     if (isModelOwnedRow(row) && row.turnId) return `${touchActionsScope}:turn:${row.turnId}`;
     if (row.kind === "message" && row.role === "user") return `${touchActionsScope}:message:${row.id}`;
     return null;
@@ -742,15 +753,16 @@
     const sourceThread = [executionThread, ...chat.activeThreads, ...chat.archivedThreads]
       .filter((thread): thread is ChatThreadShellRead => thread !== null)
       .find((thread) => thread.id === sourceThreadId)
-      ?? selectedThread;
+      ?? (readOnly ? null : selectedThread);
     const sourceProvider = chat.settings?.providerInstances.find((provider) => (
       provider.configuration.instanceId === sourceThread?.providerInstanceId
-    )) ?? selectedProvider;
+    )) ?? (readOnly ? null : selectedProvider);
     const turn = row.turnId ? turnsById.get(row.turnId) : null;
     const modelId = row.kind === "message" && row.metadata?.modelId
       ? row.metadata.modelId
       : turn?.effectiveModelId ?? turn?.modelId ?? sourceThread?.modelId ?? null;
-    const familyId = sourceThread?.providerFamilyId
+    const familyId = (readOnly ? providerFamilyId : null)
+      ?? sourceThread?.providerFamilyId
       ?? sourceProvider?.configuration.familyId
       ?? "opencode";
     return {
@@ -802,7 +814,7 @@
 
 {#snippet activityHistoryRow(activity: TimelineActivityRow, simplified: boolean)}
   {@const changeCounts = simplified ? null : fileChangeLineCounts(activity)}
-  {#if timelineActivitySupportsDisclosure(activity)}
+  {#if !readOnly && timelineActivitySupportsDisclosure(activity)}
     {@const activityExpanded = expandedActivities.includes(activity.id)}
     <div class="chat-process-step disclosure" class:active={activityIsInProgress(activity)} class:failed={activity.status === "failed"}>
       <button type="button" class="chat-process-step-trigger" data-timeline-disclosure-expanded={activityExpanded} aria-expanded={activityExpanded} onclick={() => { expandedActivities = toggle(expandedActivities, activity.id); }}>
@@ -842,7 +854,7 @@
       : null}
     <article class="chat-assistant-message">
       <ChatMarkdown markdown={message.markdown} renderKey={timelineFinishedRenderKey(message)} onError={reportError} />
-      {#if message.turnId && message.metadata?.changedFiles.length}
+      {#if !readOnly && message.turnId && message.metadata?.changedFiles.length}
         <ChatChangedFilesSummary
           turnId={message.turnId}
           files={message.metadata.changedFiles}
@@ -850,7 +862,7 @@
           {sourceWorkingFolderId}
         />
       {/if}
-      {#if message.state === "complete"}
+      {#if !readOnly && message.state === "complete"}
         <ChatMessageReactionList target={executionMessageActionTarget(message)} />
       {/if}
     </article>
@@ -901,7 +913,7 @@
       <h3><ListChecks size={16} />{t("chat.timeline.plan")}</h3>
       <ChatMarkdown markdown={plan.markdown} renderKey={timelineFinishedRenderKey(plan)} onError={reportError} />
       {#if plan.steps.length > 0}<ol>{#each plan.steps as step}<li><span>{step.text}</span><small>{statusLabel(step.status)}</small></li>{/each}</ol>{/if}
-      <div class="chat-plan-actions"><button type="button" onclick={() => paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-continue-plan", { detail: { planId: plan.id } }))}>{t("chat.timeline.continuePlanning")}</button><button type="button" onclick={() => paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-implement-plan", { detail: { planId: plan.id } }))}>{t("chat.timeline.implementPlan")}</button><button type="button" onclick={() => { dismissedPlans = [...dismissedPlans, plan.id]; }}>{t("chat.timeline.dismiss")}</button></div>
+      {#if !readOnly}<div class="chat-plan-actions"><button type="button" onclick={() => paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-continue-plan", { detail: { planId: plan.id } }))}>{t("chat.timeline.continuePlanning")}</button><button type="button" onclick={() => paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-implement-plan", { detail: { planId: plan.id } }))}>{t("chat.timeline.implementPlan")}</button><button type="button" onclick={() => { dismissedPlans = [...dismissedPlans, plan.id]; }}>{t("chat.timeline.dismiss")}</button></div>{/if}
     </article>
   {/if}
 {/snippet}
@@ -1007,18 +1019,20 @@
                     <div use:measureExpandableHeight class="chat-message-expandable" data-selectable-content class:collapsed={message.markdown.length > 1200 && !messageExpanded} class:expanded={messageExpanded}><div><p class="wrap-break-word whitespace-pre-wrap">{message.markdown}</p></div></div>
                     {#if messageImages(message).length > 0}<ChatImageGallery images={messageImages(message)} />{/if}
                     {#if message.userContext && hasMessageContextChips(message)}<div class="chat-user-context">{#each message.userContext.attachments.filter((attachment) => attachment.kind !== "image") as attachment}<button type="button" title={attachment.status} onclick={() => copy(attachment.displayName)}><FileText size={12} /><span>{attachment.displayName}</span><small>{formatNumber(localization.locale, attachment.byteSize)} B</small></button>{/each}{#each message.userContext.mentions as mention}<button type="button" title={t("chat.timeline.mention")} onclick={() => copy(mention.relativePath)}><span>@</span><span>{mention.relativePath}</span></button>{/each}{#each message.userContext.terminalContext as context}<button type="button" title={t("chat.timeline.terminalContext")} onclick={() => copy(context)}><Terminal size={12} /><span>{context}</span></button>{/each}</div>{/if}
-                    <ChatMessageReactionList target={executionMessageActionTarget(message)} />
-                    {#if message.markdown.length > 1200 || message.userContext?.preCheckpointId && (!message.sourceThreadId || message.sourceThreadId === chat.selectedThreadId)}
+                    {#if !readOnly}<ChatMessageReactionList target={executionMessageActionTarget(message)} />{/if}
+                    {#if message.markdown.length > 1200 || !readOnly && message.userContext?.preCheckpointId && (!message.sourceThreadId || message.sourceThreadId === chat.selectedThreadId)}
                       <div class="chat-message-secondary-actions text-muted-foreground">
                         {#if message.markdown.length > 1200}<button type="button" data-timeline-disclosure-expanded={messageExpanded} aria-expanded={messageExpanded} onclick={() => { expandedMessages = toggle(expandedMessages, message.id); }}>{messageExpanded ? t("chat.timeline.showLess") : t("chat.timeline.showMore")}</button>{/if}
-                        {#if message.userContext?.preCheckpointId && (!message.sourceThreadId || message.sourceThreadId === chat.selectedThreadId)}<button type="button" class="inline-flex items-center gap-1" onclick={() => paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-revert-message", { detail: { threadId: message.sourceThreadId ?? chat.selectedThreadId, checkpointId: message.userContext?.preCheckpointId, turnId: message.turnId } }))}><RotateCcw size={11} />{t("chat.timeline.revert")}</button>{/if}
+                        {#if !readOnly && message.userContext?.preCheckpointId && (!message.sourceThreadId || message.sourceThreadId === chat.selectedThreadId)}<button type="button" class="inline-flex items-center gap-1" onclick={() => paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-revert-message", { detail: { threadId: message.sourceThreadId ?? chat.selectedThreadId, checkpointId: message.userContext?.preCheckpointId, turnId: message.turnId } }))}><RotateCcw size={11} />{t("chat.timeline.revert")}</button>{/if}
                       </div>
                     {/if}
-                    <ChatMessageActionToolbar
-                      target={executionMessageActionTarget(message)}
-                      visible={hoveredActionMessageId === message.id || heldMessageActionsKey() === touchActionsKey(row)}
-                      onError={reportError}
-                    />
+                    {#if !readOnly}
+                      <ChatMessageActionToolbar
+                        target={executionMessageActionTarget(message)}
+                        visible={hoveredActionMessageId === message.id || heldMessageActionsKey() === touchActionsKey(row)}
+                        onError={reportError}
+                      />
+                    {/if}
                   </article>
                 </div>
               </div>
@@ -1026,8 +1040,8 @@
               {@const identity = modelIdentityForRow(row)}
               {@const actionMessage = row.turnId ? assistantActionMessages.get(row.turnId) : undefined}
               <div class="chat-participant-row">
-                <ChatIdentityButton participant={agent} model={identity.model} presentation="avatar" size={embedded ? 34 : 36} currentResponseSettings={embedded} usageThreadId={embedded ? selectedThread?.id ?? null : null} />
-                <div class="chat-participant-content"><div class="chat-participant-header"><strong><ChatIdentityButton participant={agent} model={identity.model} presentation="name" triggerLabel={agent?.displayName ?? identity.model.displayName} currentResponseSettings={embedded} usageThreadId={embedded ? selectedThread?.id ?? null : null} /></strong><span>{timestampLabel(row.createdAt)}</span></div>{#if actionMessage}<ChatMessageActionToolbar target={executionMessageActionTarget(actionMessage)} visible={hoveredActionTurnId === row.turnId || heldMessageActionsKey() === touchActionsKey(row)} onError={reportError} />{/if}{@render modelRowContent(row)}</div>
+                <ChatIdentityButton participant={agent} model={identity.model} presentation="avatar" size={embedded ? 34 : 36} currentResponseSettings={embedded} usageThreadId={embedded && !readOnly ? selectedThread?.id ?? null : null} />
+                <div class="chat-participant-content"><div class="chat-participant-header"><strong><ChatIdentityButton participant={agent} model={identity.model} presentation="name" triggerLabel={agent?.displayName ?? identity.model.displayName} currentResponseSettings={embedded} usageThreadId={embedded && !readOnly ? selectedThread?.id ?? null : null} /></strong><span>{timestampLabel(row.createdAt)}</span></div>{#if actionMessage && !readOnly}<ChatMessageActionToolbar target={executionMessageActionTarget(actionMessage)} visible={hoveredActionTurnId === row.turnId || heldMessageActionsKey() === touchActionsKey(row)} onError={reportError} />{/if}{@render modelRowContent(row)}</div>
               </div>
             {:else}
               <div class="chat-participant-followup">{@render modelRowContent(row)}</div>
@@ -1037,8 +1051,8 @@
               {@const identity = modelIdentityForRow(row)}
               {@const actionMessage = row.turnId ? assistantActionMessages.get(row.turnId) : undefined}
               <div class="chat-participant-row">
-                <ChatIdentityButton participant={agent} model={identity.model} presentation="avatar" size={embedded ? 34 : 36} currentResponseSettings={embedded} usageThreadId={embedded ? selectedThread?.id ?? null : null} />
-                <div class="chat-participant-content"><div class="chat-participant-header"><strong><ChatIdentityButton participant={agent} model={identity.model} presentation="name" triggerLabel={agent?.displayName ?? identity.model.displayName} currentResponseSettings={embedded} usageThreadId={embedded ? selectedThread?.id ?? null : null} /></strong><span>{timestampLabel(row.createdAt)}</span></div>{#if actionMessage}<ChatMessageActionToolbar target={executionMessageActionTarget(actionMessage)} visible={hoveredActionTurnId === row.turnId || heldMessageActionsKey() === touchActionsKey(row)} onError={reportError} />{/if}{@render modelRowContent(row)}</div>
+                <ChatIdentityButton participant={agent} model={identity.model} presentation="avatar" size={embedded ? 34 : 36} currentResponseSettings={embedded} usageThreadId={embedded && !readOnly ? selectedThread?.id ?? null : null} />
+                <div class="chat-participant-content"><div class="chat-participant-header"><strong><ChatIdentityButton participant={agent} model={identity.model} presentation="name" triggerLabel={agent?.displayName ?? identity.model.displayName} currentResponseSettings={embedded} usageThreadId={embedded && !readOnly ? selectedThread?.id ?? null : null} /></strong><span>{timestampLabel(row.createdAt)}</span></div>{#if actionMessage && !readOnly}<ChatMessageActionToolbar target={executionMessageActionTarget(actionMessage)} visible={hoveredActionTurnId === row.turnId || heldMessageActionsKey() === touchActionsKey(row)} onError={reportError} />{/if}{@render modelRowContent(row)}</div>
               </div>
             {:else}
               <div class="chat-participant-followup">{@render modelRowContent(row)}</div>

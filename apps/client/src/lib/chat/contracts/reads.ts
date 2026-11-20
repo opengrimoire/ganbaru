@@ -7,6 +7,7 @@ import type {
   ChatThreadState,
   ChatTurnId,
   ChatTurnState,
+  ChatWorkAssignmentId,
   ProjectWorkingFolderId,
   ContinuationGroupId,
   ModelId,
@@ -170,6 +171,40 @@ export interface ChatTimelineDeltaRead {
   resetRequired: boolean;
   threadRevision: number;
 }
+
+/**
+ * The live execution of one work assignment, read by a phone from the linked desktop that runs it. Rows carry only what
+ * the read-only timeline shows, with long text shortened.
+ */
+export interface ChatLiveExecutionRead {
+  assignmentId: ChatWorkAssignmentId;
+  /** The thread the newest run writes, once a run started. */
+  threadId: ChatThreadId | null;
+  /** The turn of the newest run, once a run started. */
+  turnId: ChatTurnId | null;
+  providerFamilyId: ProviderFamilyId | null;
+  modelId: ModelId | null;
+  /** Rows of the run's turn written after the cursor, ordered by change. */
+  items: ChatTimelineItemRead[];
+  turns: ChatTimelineTurnRead[];
+  /** Rows of the run's turn deleted or hidden after the cursor. */
+  removedItemIds: ChatActivityId[];
+  changeCursor: number;
+  /** More changes follow `changeCursor` than one read returns. */
+  hasMore: boolean;
+  /** The cursor no longer applies, so the reader reads again from the start. */
+  resetRequired: boolean;
+  /** The run ended or the work left its active states, so no further changes follow. */
+  settled: boolean;
+}
+
+/** What a phone can show of the live execution of work a linked desktop runs. */
+export type ChatLiveFollowRead =
+  | { kind: "page"; read: ChatLiveExecutionRead }
+  /** The executing desktop cannot be reached now, so the synced work row stands in and the read is tried again. */
+  | { kind: "unreachable" }
+  /** No other device serves this execution, so the synced work row stands in. */
+  | { kind: "notServed" };
 
 /** The whole detail of one activity, read when its disclosure opens. */
 export interface ChatActivityDetailRead {

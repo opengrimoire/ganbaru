@@ -24,6 +24,7 @@ import type {
   UpdateChatChannelAgentSettingsRequest,
   UpdateChatProjectAgentSettingsRequest,
   ChatChannelRosterRead,
+  ChatLiveFollowRead,
   ChatChannelMembershipRemovalPreview,
   PreviewChatChannelMembershipRemovalRequest,
   ChatAssignmentTargetRead,
@@ -66,6 +67,7 @@ import {
   parseChatChannelAgentSettings,
   parseChatProjectAgentSettings,
   parseChatChannelRoster,
+  parseChatLiveFollow,
   parseChatChannelMembershipRemovalPreview,
   parseChatAssignmentTargets,
   parseChatScratchCleanupPreview,
@@ -305,6 +307,20 @@ export async function readChatChannelRoster(channelId: ChatChannelId): Promise<C
     : "chat_read_mobile_channel_roster";
   return parseChatChannelRoster(await invoke<unknown>(command, {
     dbUrl: await ensureDbUrl(), channelId,
+  }));
+}
+
+/**
+ * Reads one page of the live execution of work a linked desktop runs, from that desktop over the LAN. With `wait`, the
+ * desktop holds the answer until the execution changes or a short bound passes. Only phones register the command.
+ */
+export async function readChatLiveExecution(
+  assignmentId: ChatWorkAssignmentId,
+  afterChange: number | null,
+  wait: boolean,
+): Promise<ChatLiveFollowRead> {
+  return parseChatLiveFollow(await invoke<unknown>("chat_read_live_execution", {
+    dbUrl: await ensureDbUrl(), assignmentId, afterChange, wait,
   }));
 }
 

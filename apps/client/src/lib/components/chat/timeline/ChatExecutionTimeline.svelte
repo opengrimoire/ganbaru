@@ -1,6 +1,6 @@
 <script lang="ts">
   import ChatTimeline from "./ChatTimeline.svelte";
-  import type { ChatParticipantRead, ChatThreadShellRead, ChatTimelinePageRead, ChatTurnId } from "$lib/chat/contracts";
+  import type { ChatParticipantRead, ChatThreadShellRead, ChatTimelinePageRead, ChatTurnId, ProviderFamilyId } from "$lib/chat/contracts";
 
   let {
     bottomInsetPx = 0,
@@ -10,6 +10,8 @@
     turnId = null,
     timelinePage = null,
     executionThread = null,
+    readOnly = false,
+    providerFamilyId = null,
   }: {
     bottomInsetPx?: number;
     embedded?: boolean;
@@ -18,7 +20,10 @@
     turnId?: ChatTurnId | null;
     timelinePage?: ChatTimelinePageRead | null;
     executionThread?: ChatThreadShellRead | null;
+    /** Shows an embedded page another device executes, without controls that read or change local execution data. */
+    readOnly?: boolean;
+    providerFamilyId?: ProviderFamilyId | null;
   } = $props();
 </script>
 
-<ChatTimeline {bottomInsetPx} {embedded} {hideUserMessages} {agent} {turnId} {timelinePage} {executionThread} />
+<ChatTimeline {bottomInsetPx} {embedded} {hideUserMessages} {agent} {turnId} {timelinePage} {executionThread} {readOnly} {providerFamilyId} />

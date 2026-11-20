@@ -15,6 +15,7 @@
     agent,
     agentName,
     onActionError,
+    identity = true,
   }: {
     work: Pick<ChatWorkAssignmentRead, "id" | "state" | "createdAt">;
     /** The agent doing the work, or `null` when the thread does not name one. */
@@ -22,6 +23,8 @@
     agentName: string;
     /** Reports a failed stop request. */
     onActionError: (error: unknown) => void;
+    /** Whether the row shows the agent and start time; the live execution above it shows them instead. */
+    identity?: boolean;
   } = $props();
 
   const localization = getLocalization();
@@ -31,13 +34,13 @@
 
 <div class="remote-work" data-work-state={work.state}>
   <div class="avatar-cell">
-    {#if agent}<ChatIdentityButton participant={agent} presentation="avatar" size={34} currentResponseSettings />{/if}
+    {#if identity && agent}<ChatIdentityButton participant={agent} presentation="avatar" size={34} currentResponseSettings />{/if}
   </div>
   <div class="remote-work-body">
-    <header>
+    {#if identity}<header>
       <strong>{#if agent}<ChatIdentityButton participant={agent} presentation="name" triggerLabel={agentName} currentResponseSettings />{:else}{agentName}{/if}</strong>
       {#if Number.isFinite(startedAt)}<time datetime={work.createdAt}>{formatDateTime(localization.locale, startedAt, { timeStyle: "short" })}</time>{/if}
-    </header>
+    </header>{/if}
     <p class="remote-work-state" class:active={work.state === "working"} role="status"><span>{t(`chat.delegation.states.${work.state}`)}</span></p>
     <ChatStopWorkButton assignmentId={work.id} {agentName} {onActionError} />
   </div>

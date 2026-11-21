@@ -52,6 +52,12 @@ import {
   resolveMusicYouTubeSource,
   type MusicYouTubeSourcePreview,
 } from "./youtube-source-resolver";
+import {
+  IDLE_YOUTUBE_RESOLUTION,
+  isCurrentYouTubeResolution,
+  transitionYouTubeResolution,
+  type YouTubeResolutionState,
+} from "./youtube-resolution-state";
 
 /** A local source this device cannot scan until the user chooses its folder. */
 export interface UnlinkedMusicSource {
@@ -126,9 +132,7 @@ export class MusicSourcesController {
   busy = $state(false);
   loaded = $state(false);
   error = $state<string | null>(null);
-  resolving = $state(false);
-  resolutionError = $state<string | null>(null);
-  youtubePreview = $state<MusicYouTubeSourcePreview | null>(null);
+  private resolution = $state.raw<YouTubeResolutionState>(IDLE_YOUTUBE_RESOLUTION);
   removalImpact = $state<MusicSourceRemovalImpact | null>(null);
   relinkPlan = $state<MusicRelinkPlanSummary | null>(null);
   relinkEntries = $state<MusicRelinkPlanEntry[]>([]);
@@ -148,7 +152,6 @@ export class MusicSourcesController {
   private readonly now: () => number;
   private readonly id: () => string;
   private readonly refresh: MusicSourceRefreshController;
-  private resolutionController: AbortController | null = null;
   private loadGeneration = 0;
   private pendingLoad: Promise<boolean> | null = null;
   private defaultFolderChecked = false;
@@ -194,6 +197,21 @@ export class MusicSourcesController {
         },
       },
     );
+  }
+
+  /** Whether a YouTube link is being resolved. */
+  get resolving(): boolean {
+    return this.resolution.phase === "resolving";
+  }
+
+  /** Why the last YouTube resolution failed, or `null`. */
+  get resolutionError(): string | null {
+    return this.resolution.phase === "failed" ? this.resolution.error : null;
+  }
+
+  /** The last resolved YouTube preview, or `null`. */
+  get youtubePreview(): MusicYouTubeSourcePreview | null {
+    return this.resolution.phase === "resolved" ? this.resolution.preview : null;
   }
 
   setVault(vaultId: string | null): void {
@@ -421,34 +439,28 @@ export class MusicSourcesController {
   async resolveYouTube(source: YouTubeVideoSource | YouTubePlaylistSource): Promise<MusicYouTubeSourcePreview | null> {
     this.cancelResolution();
     const controller = new AbortController();
-    this.resolutionController = controller;
-    this.resolving = true;
-    this.resolutionError = null;
-    this.youtubePreview = null;
+    this.resolution = transitionYouTubeResolution(this.resolution, { type: "started", controller });
     try {
       const resolved = await this.api.resolveYouTube(source, controller.signal);
-      if (this.resolutionController !== controller) return null;
+      if (!isCurrentYouTubeResolution(this.resolution, controller)) return null;
       const duplicateCount = await this.api.youtubeDuplicateCount(resolved.videoIds);
-      if (this.resolutionController !== controller) return null;
+      if (!isCurrentYouTubeResolution(this.resolution, controller)) return null;
       const preview = { ...resolved, duplicateCount };
-      this.youtubePreview = preview;
+      this.resolution = transitionYouTubeResolution(this.resolution, { type: "resolved", controller, preview });
       return preview;
     } catch (error) {
-      if (this.resolutionController !== controller || controller.signal.aborted) return null;
-      this.resolutionError = musicErrorMessage(error, translate("music.errors.youtubeResolveFailed"));
+      if (!isCurrentYouTubeResolution(this.resolution, controller) || controller.signal.aborted) return null;
+      const message = musicErrorMessage(error, translate("music.errors.youtubeResolveFailed"));
+      this.resolution = transitionYouTubeResolution(this.resolution, { type: "failed", controller, error: message });
       return null;
     } finally {
-      if (this.resolutionController === controller) {
-        this.resolutionController = null;
-        this.resolving = false;
-      }
+      this.resolution = transitionYouTubeResolution(this.resolution, { type: "settled", controller });
     }
   }
 
   cancelResolution(): void {
-    this.resolutionController?.abort();
-    this.resolutionController = null;
-    this.resolving = false;
+    if (this.resolution.phase === "resolving") this.resolution.controller.abort();
+    this.resolution = transitionYouTubeResolution(this.resolution, { type: "cancelled" });
   }
 
   async addYouTube(preview: MusicYouTubeSourcePreview, name: string): Promise<string> {

@@ -565,6 +565,64 @@ describe("MusicSourcesController", () => {
     expect(controller.youtubePreview).toBeNull();
   });
 
+  it("reports resolving until the newest YouTube resolution settles and exposes only its result", async () => {
+    const releases: Array<() => void> = [];
+    const resolveYouTube = vi.fn(async (source: Parameters<MusicSourcesControllerApi["resolveYouTube"]>[0]) => {
+      await new Promise<void>((resolve) => { releases.push(resolve); });
+      return {
+        kind: source.kind, videoId: null, playlistId: null, title: `Title ${releases.length}`, channel: "",
+        durationMs: null, videoIds: [], videos: [], metadataTruncated: false, duplicateCount: 0,
+      };
+    });
+    const controller = createMusicSourcesController(api({ resolveYouTube }), () => 20, () => "id", refreshStub());
+    const parsed = controller.parseYouTubeInput("https://youtu.be/abcDEF_1234");
+
+    const first = controller.resolveYouTube(parsed.source!);
+    expect(controller.resolving).toBe(true);
+    const second = controller.resolveYouTube(parsed.source!);
+    releases[0]!();
+    expect(await first).toBeNull();
+    expect(controller.resolving).toBe(true);
+    expect(controller.youtubePreview).toBeNull();
+
+    releases[1]!();
+    const preview = await second;
+    expect(preview?.title).toBe("Title 2");
+    expect(controller.youtubePreview).toEqual(preview);
+    expect(controller.resolving).toBe(false);
+  });
+
+  it("surfaces a failed YouTube resolution and clears it when the next one starts", async () => {
+    const resolveYouTube = vi.fn<MusicSourcesControllerApi["resolveYouTube"]>()
+      .mockRejectedValueOnce(new Error("offline"));
+    const controller = createMusicSourcesController(api({ resolveYouTube }), () => 20, () => "id", refreshStub());
+    const parsed = controller.parseYouTubeInput("https://youtu.be/abcDEF_1234");
+
+    expect(await controller.resolveYouTube(parsed.source!)).toBeNull();
+    expect(controller.resolving).toBe(false);
+    expect(controller.resolutionError).not.toBeNull();
+    expect(controller.youtubePreview).toBeNull();
+
+    const pending = controller.resolveYouTube(parsed.source!);
+    expect(controller.resolutionError).toBeNull();
+    controller.cancelResolution();
+    expect(controller.resolving).toBe(false);
+    await pending;
+    expect(controller.resolutionError).toBeNull();
+  });
+
+  it("keeps a resolved preview when a later cancel finds nothing running", async () => {
+    const controller = createMusicSourcesController(api(), () => 20, () => "id", refreshStub());
+    const parsed = controller.parseYouTubeInput("https://youtu.be/abcDEF_1234");
+    const preview = await controller.resolveYouTube(parsed.source!);
+
+    controller.cancelResolution();
+
+    expect(preview).not.toBeNull();
+    expect(controller.youtubePreview).toEqual(preview);
+    expect(controller.resolving).toBe(false);
+  });
+
   it("applies a confirmed item repair as another location and can undo it", async () => {
     const applyItemRepair = vi.fn(async (request: Parameters<MusicSourcesControllerApi["applyItemRepair"]>[0]) => ({ id: "repair-location", version: 1 }));
     const bindRoot = vi.fn(async (_vaultId: string, rootId: string, folderPath: string) => ({ rootId, folderPath, status: "available" as const }));

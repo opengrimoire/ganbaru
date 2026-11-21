@@ -134,7 +134,7 @@ fn pending_kit(seed: &RecoverySeed, active: bool) -> Result<PendingRecoveryKit, 
 /// What decides whether a waiting kit protects the vault.
 enum Protection {
     /// The selected log of the vault's sync space names the kit's recovery admin key.
-    Charter(AuthorizationView),
+    Charter(Box<AuthorizationView>),
     /// Without a charter, the vault database keeps these kit keys for the first one.
     Unlinked(Option<RecoveryPublicKeys>),
 }
@@ -169,7 +169,7 @@ async fn lifecycle(
     let view = authorization(conn, vault_id).await?;
     let stored = stored_keys(conn).await?;
     let protection = match view {
-        Some(view) => Protection::Charter(view),
+        Some(view) => Protection::Charter(Box::new(view)),
         None => Protection::Unlinked(stored),
     };
     let waiting = match pending_seed(keys, vault_id).await? {

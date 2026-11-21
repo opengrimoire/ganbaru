@@ -183,6 +183,7 @@
     ? (detail.item.artistOverride ?? detail.item.originalArtist) || t("music.builder.noArtist")
     : item?.artist || t("music.builder.noArtist"));
   const reviewPlayerReady = $derived(audition.ownsPlayback && audition.reviewItemId === item?.id);
+  const previewError = $derived(audition.errorFor(item?.id ?? null));
   const reviewPlaybackStarting = $derived(Boolean(item && (
     (reviewStartItemId === item.id && !reviewPlayerReady)
     || (reviewPlayerReady && player.youtubePlaybackStarting)
@@ -478,10 +479,16 @@
       await player.togglePlay();
       return;
     }
+    await startReviewPreview();
+  }
+
+  /** Starts the preview of the current item, resolving whether it plays so a retry can report a failed attempt. */
+  async function startReviewPreview(): Promise<boolean> {
+    if (!detail) return false;
     const itemId = detail.item.id;
     if (detail.item.sourceKind === "youtube-video") reviewStartItemId = itemId;
     try {
-      await audition.preview(detail, sources.bindings, true);
+      return await audition.preview(detail, sources.bindings, true);
     } finally {
       if (reviewStartItemId === itemId) reviewStartItemId = null;
     }
@@ -644,6 +651,7 @@
           </div>
         </div>
       </div>
+      {#if previewError}<Notice class="mt-2 text-xs" message={previewError} onRetry={startReviewPreview} onDismiss={() => audition.dismissError()} />{/if}
     {/if}
   </section>
 

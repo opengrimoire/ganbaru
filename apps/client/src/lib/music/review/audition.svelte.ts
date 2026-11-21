@@ -1,6 +1,6 @@
 import type { LocalRootBinding, MusicInspectorDetail } from "$lib/music/library/contracts";
 import { getMusicPlayer } from "$lib/stores/music-player.svelte";
-import { musicErrorMessage } from "$lib/music/user-errors";
+import { musicErrorMessage, type MusicErrorKey } from "$lib/music/user-errors";
 import { translate } from "$lib/i18n/translator.svelte";
 import {
   IDLE_MUSIC_AUDITION,
@@ -11,8 +11,14 @@ import {
 
 export const MUSIC_CONTEXT_BOUNDARY_EVENT = "ganbaru-music-context-boundary";
 
+/** A preview that failed, kept with the item it was for so another item never shows it. */
+interface MusicAuditionFailure {
+  itemId: string;
+  message: string;
+}
+
 export class MusicReviewAuditionController {
-  error = $state<string | null>(null);
+  private failure = $state.raw<MusicAuditionFailure | null>(null);
   private state = $state.raw<MusicAuditionState>(IDLE_MUSIC_AUDITION);
   private reviewPositions: Record<string, number> = {};
   private readonly player = getMusicPlayer();
@@ -37,6 +43,15 @@ export class MusicReviewAuditionController {
     return this.active && this.player.contextOwner === "review";
   }
 
+  /** The message of the last preview of `itemId` that failed, or `null` when it did not fail. */
+  errorFor(itemId: string | null): string | null {
+    return itemId !== null && this.failure?.itemId === itemId ? this.failure.message : null;
+  }
+
+  dismissError(): void {
+    this.failure = null;
+  }
+
   async preview(
     detail: MusicInspectorDetail,
     _bindings: readonly LocalRootBinding[],
@@ -45,6 +60,7 @@ export class MusicReviewAuditionController {
     if (this.restoreTask) await this.restoreTask;
     if (this.ownsPlayback && this.reviewItemId === detail.item.id) return true;
     const generation = ++this.operationGeneration;
+    this.failure = null;
     if (this.state.phase !== "auditioning") {
       this.dispatch({ type: "suspendStarted" });
       try {
@@ -56,14 +72,13 @@ export class MusicReviewAuditionController {
         this.dispatch({ type: "suspended", checkpoint });
       } catch (error) {
         if (generation === this.operationGeneration) {
-          this.error = musicErrorMessage(error, translate("music.errors.playerFailed"));
           this.clearOwnership();
+          this.fail(detail.item.id, error, "music.errors.playerFailed");
         }
         return false;
       }
     }
     if (generation !== this.operationGeneration) return false;
-    this.error = null;
     try {
       await this.player.loadReviewItem(detail.item.id, autoplay);
       if (generation !== this.operationGeneration) return false;
@@ -73,7 +88,7 @@ export class MusicReviewAuditionController {
       if (retainedPosition > 0) await this.player.seekToMs(retainedPosition);
       return true;
     } catch (error) {
-      this.error = musicErrorMessage(error, translate("music.errors.playerFailed"));
+      if (generation === this.operationGeneration) this.fail(detail.item.id, error, "music.errors.playbackFailed");
       return false;
     }
   }
@@ -86,7 +101,8 @@ export class MusicReviewAuditionController {
     if (!checkpoint) return;
     const task = this.player.restoreAfterReview(checkpoint)
       .catch((error: unknown) => {
-        this.error = musicErrorMessage(error, translate("music.errors.playerFailed"));
+        // Review has closed by now, so the player reports it where playback is shown.
+        this.player.playerError = musicErrorMessage(error, translate("music.errors.playerFailed"));
       })
       .finally(() => {
         if (this.restoreTask === task) this.restoreTask = null;
@@ -112,9 +128,13 @@ export class MusicReviewAuditionController {
     this.state = transitionMusicAudition(this.state, event);
   }
 
+  private fail(itemId: string, error: unknown, fallbackKey: MusicErrorKey): void {
+    this.failure = { itemId, message: musicErrorMessage(error, translate(fallbackKey)) };
+  }
+
   private clearOwnership(): void {
     this.dispatch({ type: "ended" });
-    this.error = null;
+    this.failure = null;
   }
 }
 

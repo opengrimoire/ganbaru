@@ -6,6 +6,7 @@ const checkpoint = vi.hoisted((): MusicReviewPlaybackCheckpoint => ({ checkpoint
 const player = vi.hoisted(() => ({
   contextOwner: "manual" as "manual" | "review" | "calendar-event" | "pomodoro",
   snapshot: { positionMs: 0 },
+  playerError: null as string | null,
   suspendForReview: vi.fn(async () => checkpoint),
   restoreAfterReview: vi.fn(async (_checkpoint: MusicReviewPlaybackCheckpoint): Promise<void> => undefined),
   loadReviewItem: vi.fn(async () => undefined),
@@ -153,7 +154,7 @@ describe("MusicReviewAuditionController interleavings", () => {
     expect(await audition.preview(detail(), bindings, true)).toBe(false);
     expect(audition.active).toBe(true);
     expect(audition.reviewItemId).toBeNull();
-    expect(audition.error).not.toBeNull();
+    expect(audition.errorFor("review-item")).not.toBeNull();
 
     await audition.restore();
     expect(player.restoreAfterReview).toHaveBeenCalledWith(checkpoint);
@@ -191,5 +192,76 @@ describe("MusicReviewAuditionController interleavings", () => {
     await audition.restore();
     expect(player.restoreAfterReview).not.toHaveBeenCalled();
     expect(audition.active).toBe(false);
+  });
+});
+
+describe("MusicReviewAuditionController failures", () => {
+  const bindings = [{ rootId: "root", folderPath: "/Music", status: "available" as const }];
+
+  beforeEach(() => {
+    player.contextOwner = "manual";
+    player.snapshot.positionMs = 0;
+    player.playerError = null;
+    vi.clearAllMocks();
+  });
+
+  it("keeps the failure of a preview whose playback could not be suspended", async () => {
+    player.suspendForReview.mockRejectedValueOnce(new Error("busy"));
+    const audition = new MusicReviewAuditionController();
+
+    expect(await audition.preview(detail(), bindings, true)).toBe(false);
+    expect(audition.active).toBe(false);
+    expect(audition.errorFor("review-item")).not.toBeNull();
+  });
+
+  it("shows a failed load only for the item it was for", async () => {
+    player.loadReviewItem.mockRejectedValueOnce(new Error("missing file"));
+    const audition = new MusicReviewAuditionController();
+
+    await audition.preview(detail(), bindings, true);
+
+    expect(audition.errorFor("review-item")).not.toBeNull();
+    expect(audition.errorFor("other-item")).toBeNull();
+    expect(audition.errorFor(null)).toBeNull();
+  });
+
+  it("clears an earlier failure when the next preview starts and when it is dismissed", async () => {
+    player.loadReviewItem.mockRejectedValueOnce(new Error("missing file"));
+    const audition = new MusicReviewAuditionController();
+    await audition.preview(detail(), bindings, true);
+
+    audition.dismissError();
+    expect(audition.errorFor("review-item")).toBeNull();
+
+    player.loadReviewItem.mockRejectedValueOnce(new Error("missing file"));
+    await audition.preview(detail(), bindings, true);
+    expect(audition.errorFor("review-item")).not.toBeNull();
+    expect(await audition.preview(detail(), bindings, true)).toBe(true);
+    expect(audition.errorFor("review-item")).toBeNull();
+  });
+
+  it("drops the failure of a preview that a later operation superseded", async () => {
+    let failLoad!: (error: Error) => void;
+    player.loadReviewItem.mockImplementationOnce(() => new Promise((_resolve, reject) => { failLoad = reject; }));
+    const audition = new MusicReviewAuditionController();
+
+    const previewing = audition.preview(detail(), bindings, true);
+    await vi.waitFor(() => expect(player.loadReviewItem).toHaveBeenCalledOnce());
+    audition.discard();
+    failLoad(new Error("missing file"));
+
+    expect(await previewing).toBe(false);
+    expect(audition.errorFor("review-item")).toBeNull();
+  });
+
+  it("reports a failed return to the earlier playback through the player once Review has closed", async () => {
+    player.restoreAfterReview.mockRejectedValueOnce(new Error("gone"));
+    const audition = new MusicReviewAuditionController();
+    await audition.preview(detail(), bindings, true);
+
+    await audition.restore();
+
+    expect(audition.errorFor("review-item")).toBeNull();
+    expect(player.playerError).not.toBeNull();
   });
 });

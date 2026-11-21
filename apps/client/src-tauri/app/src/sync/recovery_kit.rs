@@ -11,7 +11,7 @@ use ganbaru_handoff::protocol::{QrMatrix, qr_matrix_for_bytes};
 use ganbaru_sync::{AuthorizationView, Engine, local};
 use ganbaru_sync_contracts::{KitCode, RecoveryPublicKeys, RecoverySeed};
 use ganbaru_sync_replica::authority;
-use ganbaru_sync_replica::writer::SyncKeyStore;
+use ganbaru_sync_replica::writer::{SyncKey, SyncKeyStore};
 use serde::{Serialize, Serializer};
 use sqlx::SqliteConnection;
 
@@ -174,20 +174,90 @@ pub(crate) async fn create(
     vault_id: &str,
     now_ms: u64,
 ) -> Result<(), String> {
+    let replaced = replace_seed(conn, keys, vault_id).await?;
+    finish_create(conn, keys, vault_id, &replaced, now_ms).await
+}
+
+/// A seed [`create`] wrote over the one that waited in the key store.
+struct ReplacedSeed {
+    previous: Option<RecoverySeed>,
+    seed: RecoverySeed,
+}
+
+/// Writes a new seed for a vault without a charter, remembering the seed it replaced.
+async fn replace_seed(
+    conn: &mut SqliteConnection,
+    keys: &Arc<dyn SyncKeyStore>,
+    vault_id: &str,
+) -> Result<ReplacedSeed, String> {
     if has_charter(conn, vault_id).await? {
         return Err("this vault already syncs; an admin computer replaces its kit".to_string());
     }
+    let previous = pending_seed(keys, vault_id).await?;
     let seed = {
         let keys = keys.clone();
         let vault_id = vault_id.to_string();
         blocking(move || authority::create_recovery_seed(keys.as_ref(), &vault_id)).await?
     };
-    let public = authority::recovery_public_keys(&seed)?;
+    Ok(ReplacedSeed { previous, seed })
+}
+
+/// Stores the public keys of the replaced seed, unless the first link founded a charter since
+/// [`replace_seed`] checked. A creation that fails puts the replaced seed back, unless the
+/// charter founded meanwhile names the new one, so a refused creation never loses the kit the
+/// vault keeps nor leaves an unnamed seed waiting forever.
+async fn finish_create(
+    conn: &mut SqliteConnection,
+    keys: &Arc<dyn SyncKeyStore>,
+    vault_id: &str,
+    replaced: &ReplacedSeed,
+    now_ms: u64,
+) -> Result<(), String> {
+    let Err(error) = store_unless_founded(conn, vault_id, &replaced.seed, now_ms).await else {
+        return Ok(());
+    };
+    match undo_replaced_seed(conn, keys, vault_id, replaced).await {
+        Ok(()) => Err(error),
+        Err(undo) => Err(format!("{error}; the replaced recovery seed stays: {undo}")),
+    }
+}
+
+/// Puts back the seed `replaced` wrote over, unless the vault's charter names the new seed.
+async fn undo_replaced_seed(
+    conn: &mut SqliteConnection,
+    keys: &Arc<dyn SyncKeyStore>,
+    vault_id: &str,
+    replaced: &ReplacedSeed,
+) -> Result<(), String> {
+    if let Some(view) = authorization(conn, vault_id).await?
+        && authority::recovery_kit_active(&view, &replaced.seed)?
+    {
+        return Ok(());
+    }
+    let keys = keys.clone();
+    let vault_id = vault_id.to_string();
+    let previous = replaced
+        .previous
+        .as_ref()
+        .map(|seed| RecoverySeed::from_bytes(*seed.as_bytes()));
+    blocking(move || match previous {
+        Some(previous) => keys.write(&vault_id, SyncKey::RecoverySeed, previous.as_bytes()),
+        None => keys.remove(&vault_id, SyncKey::RecoverySeed),
+    })
+    .await
+}
+
+/// Stores the public keys of `seed` as the vault's kit, unless the vault has a charter.
+async fn store_unless_founded(
+    conn: &mut SqliteConnection,
+    vault_id: &str,
+    seed: &RecoverySeed,
+    now_ms: u64,
+) -> Result<(), String> {
+    let public = authority::recovery_public_keys(seed)?;
     let mut tx = sqlx::Connection::begin(&mut *conn)
         .await
         .map_err(|error| format!("begin the recovery kit transaction: {error}"))?;
-    // The first link may have founded a charter since the check above; that charter names the
-    // kit the vault kept then, and the new kit stays inactive until the user replaces it again.
     if has_charter(&mut tx, vault_id).await? {
         return Err("this vault started syncing; create the kit again".to_string());
     }

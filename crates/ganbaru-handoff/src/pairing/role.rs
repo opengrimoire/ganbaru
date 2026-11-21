@@ -310,6 +310,7 @@ mod tests {
                 archive_sha256: "a".repeat(64),
                 derived_state_stale: false,
             },
+            expires_at_ms: 1_000,
         }
     }
 

@@ -266,6 +266,24 @@ pub struct PendingAcknowledgement {
 #[serde(rename_all = "camelCase")]
 pub struct StoredOutgoingTransfer {
     pub metadata: BundleMetadata,
+    /// When the coordinator stops offering the copy and removes it, in Unix milliseconds.
+    pub expires_at_ms: i64,
+}
+
+/// How long a coordinator offers one prepared vault copy before it releases it, the same window
+/// a member desktop keeps its prepared snapshot.
+pub const OUTGOING_TRANSFER_LIFETIME_MS: i64 = 30 * 60 * 1000;
+
+impl StoredOutgoingTransfer {
+    /// Whether the copy is past its lifetime at `now_ms`. A clock that moved back before the copy
+    /// was prepared also counts as expired, so a wrong clock cannot keep the coordinator busy.
+    pub fn is_expired(&self, now_ms: i64) -> bool {
+        now_ms >= self.expires_at_ms
+            || now_ms
+                < self
+                    .expires_at_ms
+                    .saturating_sub(OUTGOING_TRANSFER_LIFETIME_MS)
+    }
 }
 
 pub struct TlsIdentity {
@@ -392,7 +410,8 @@ impl PairingManager {
             inner.invitations.clear();
             inner.outgoing_bundles.clear();
         }
-        Ok(())
+        drop(inner);
+        self.restore_outgoing_transfer(super::protocol::unix_time_ms())
     }
 
     /// Turns linking off for this run after startup could not load or reconcile pairing state.
@@ -721,6 +740,7 @@ impl PairingManager {
 
     fn unlink_with(&self, reason: Option<UnlinkReason>) -> Result<(), String> {
         let mut inner = self.lock()?;
+        transfers::release_expired_outgoing(&mut inner, super::protocol::unix_time_ms())?;
         update_state(&mut inner, |state| {
             state.apply(LinkEvent::UnlinkAll { reason })?;
             let removed_peers = std::mem::take(&mut state.linked_peers);
@@ -740,6 +760,7 @@ impl PairingManager {
     pub fn unlink_device(&self, device_id: &str) -> Result<(), String> {
         validate_identifier("peer device id", device_id)?;
         let mut inner = self.lock()?;
+        transfers::release_expired_outgoing(&mut inner, super::protocol::unix_time_ms())?;
         let removed_peer = update_state(&mut inner, |state| {
             if state.role.has_active_handoff() {
                 return Err(role::ACTIVE_HANDOFF_ERROR.to_string());

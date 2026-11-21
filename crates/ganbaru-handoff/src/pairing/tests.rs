@@ -951,19 +951,6 @@ fn expired_invitation_is_rejected() {
     );
 }
 
-fn transfer_metadata(transfer_id: &str) -> BundleMetadata {
-    BundleMetadata {
-        protocol_version: PROTOCOL_VERSION,
-        compatibility: crate::protocol::test_compatibility(),
-        vault_id: "vault-1".to_string(),
-        device_id: "device-phone".to_string(),
-        transfer_id: transfer_id.to_string(),
-        archive_bytes: 42,
-        archive_sha256: "a".repeat(64),
-        derived_state_stale: false,
-    }
-}
-
 #[test]
 fn unlink_clears_the_peer_but_refuses_active_transfer_state() {
     let temporary = TestDirectory::new("unlink");
@@ -983,16 +970,15 @@ fn unlink_clears_the_peer_but_refuses_active_transfer_state() {
     manager
         .enroll_peer(enrollment(&invitation, &phone), 101)
         .expect("enroll");
+    let metadata = stage_outgoing_copy(&manager, "transfer-unlink");
     manager
-        .store_outgoing_transfer(StoredOutgoingTransfer {
-            metadata: transfer_metadata("transfer-unlink"),
-        })
-        .expect("store outgoing transfer");
+        .begin_outgoing_transfer(metadata, crate::protocol::unix_time_ms())
+        .expect("offer outgoing copy");
 
     assert!(manager.unlink().is_err());
     manager
-        .clear_outgoing_transfer("transfer-unlink")
-        .expect("clear outgoing transfer");
+        .release_outgoing_transfer("transfer-unlink")
+        .expect("release outgoing copy");
     manager.unlink().expect("unlink stable pairing");
     assert!(manager.linked_peers().expect("peer status").is_empty());
 }
@@ -1035,27 +1021,27 @@ fn activation_acknowledgement_survives_restart() {
 #[test]
 fn outgoing_transfer_and_its_completion_survive_restart() {
     let temporary = TestDirectory::new("outgoing-restart");
-    let manager = PairingManager::default();
-    manager
-        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
-        .expect("initialize");
-    enroll_device(&manager, "device-phone", "Phone", 100);
-    let metadata = transfer_metadata("transfer-copy");
-    let outgoing = StoredOutgoingTransfer {
-        metadata: metadata.clone(),
-    };
-    manager
-        .store_outgoing_transfer(outgoing.clone())
-        .expect("store outgoing transfer");
+    let manager = desktop_with_phone(temporary.path());
+    let metadata = stage_outgoing_copy(&manager, "transfer-copy");
+    let outgoing = manager
+        .begin_outgoing_transfer(metadata.clone(), crate::protocol::unix_time_ms())
+        .expect("offer outgoing copy");
     drop(manager);
 
-    let restarted = PairingManager::default();
-    restarted
-        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
-        .expect("restart");
+    let restarted = desktop_manager(temporary.path());
+    let now_ms = crate::protocol::unix_time_ms();
     assert_eq!(
-        restarted.outgoing_transfer().expect("outgoing transfer"),
+        restarted
+            .active_outgoing_transfer(now_ms)
+            .expect("outgoing transfer"),
         Some(outgoing)
+    );
+    assert_eq!(
+        restarted
+            .outgoing_bundle("transfer-copy")
+            .expect("served after restart")
+            .metadata,
+        metadata
     );
     let completed = PendingAcknowledgement {
         vault_id: metadata.vault_id,
@@ -1065,14 +1051,15 @@ fn outgoing_transfer_and_its_completion_survive_restart() {
     restarted
         .complete_outgoing_activation(completed.clone())
         .expect("complete outgoing activation");
+    assert!(restarted.outgoing_bundle("transfer-copy").is_err());
+    assert!(!outgoing_archive(&restarted, "transfer-copy").exists());
     drop(restarted);
 
-    let acknowledged = PairingManager::default();
-    acknowledged
-        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
-        .expect("restart completed transfer");
+    let acknowledged = desktop_manager(temporary.path());
     assert_eq!(
-        acknowledged.outgoing_transfer().expect("cleared outgoing"),
+        acknowledged
+            .active_outgoing_transfer(now_ms)
+            .expect("cleared outgoing"),
         None
     );
     assert_eq!(
@@ -2094,5 +2081,196 @@ fn unlinking_the_last_device_ends_the_coordinator_role() {
             .expect("revoked")
             .len(),
         1
+    );
+}
+
+fn desktop_manager(root: &Path) -> PairingManager {
+    let manager = PairingManager::default();
+    manager
+        .initialize(root.to_path_buf(), "device-desktop".to_string())
+        .expect("initialize desktop");
+    manager
+}
+
+fn desktop_with_phone(root: &Path) -> PairingManager {
+    let manager = desktop_manager(root);
+    enroll_device(&manager, "device-phone", "Phone", 100);
+    manager
+}
+
+fn outgoing_archive(manager: &PairingManager, transfer_id: &str) -> PathBuf {
+    manager
+        .outgoing_snapshot_paths(transfer_id)
+        .expect("outgoing paths")
+        .1
+}
+
+/// Writes an archive into staging for `transfer_id` and returns the metadata that describes it,
+/// as the coordinator does before it offers a copy to the phone.
+fn stage_outgoing_copy(manager: &PairingManager, transfer_id: &str) -> BundleMetadata {
+    let archive = outgoing_archive(manager, transfer_id);
+    fs::write(&archive, format!("archive {transfer_id}")).expect("write archive");
+    BundleMetadata {
+        protocol_version: PROTOCOL_VERSION,
+        compatibility: crate::protocol::test_compatibility(),
+        vault_id: "vault-1".to_string(),
+        device_id: "device-phone".to_string(),
+        transfer_id: transfer_id.to_string(),
+        archive_bytes: archive.metadata().expect("archive size").len(),
+        archive_sha256: crate::protocol::sha256_file(&archive).expect("archive digest"),
+        derived_state_stale: false,
+    }
+}
+
+#[test]
+fn an_outgoing_copy_is_released_when_its_lifetime_passes_or_the_clock_moves_back() {
+    for (label, offset_ms) in [
+        ("lifetime-passed", OUTGOING_TRANSFER_LIFETIME_MS),
+        ("clock-moved-back", -1),
+    ] {
+        let temporary = TestDirectory::new(label);
+        let manager = desktop_with_phone(temporary.path());
+        let metadata = stage_outgoing_copy(&manager, "transfer-expiring");
+        let prepared_at_ms = crate::protocol::unix_time_ms();
+        manager
+            .begin_outgoing_transfer(metadata, prepared_at_ms)
+            .expect("offer outgoing copy");
+        assert!(
+            manager
+                .active_outgoing_transfer(prepared_at_ms + OUTGOING_TRANSFER_LIFETIME_MS - 1)
+                .expect("still offered")
+                .is_some()
+        );
+
+        assert_eq!(
+            manager
+                .active_outgoing_transfer(prepared_at_ms + offset_ms)
+                .expect("released"),
+            None
+        );
+        assert!(manager.outgoing_bundle("transfer-expiring").is_err());
+        assert!(!outgoing_archive(&manager, "transfer-expiring").exists());
+        let restarted = desktop_manager(temporary.path());
+        assert!(!restarted.has_pending_transfer().expect("pending"));
+    }
+}
+
+#[test]
+fn an_expired_outgoing_copy_does_not_hold_the_coordinator_busy() {
+    let temporary = TestDirectory::new("expired-busy");
+    let manager = desktop_with_phone(temporary.path());
+    enroll_device(&manager, "device-laptop", "Laptop", 200);
+    let stale = stage_outgoing_copy(&manager, "transfer-stale");
+    let long_ago_ms = crate::protocol::unix_time_ms() - OUTGOING_TRANSFER_LIFETIME_MS - 1;
+    manager
+        .begin_outgoing_transfer(stale, long_ago_ms)
+        .expect("offer stale copy");
+
+    assert!(!manager.has_pending_transfer().expect("pending"));
+    assert!(!outgoing_archive(&manager, "transfer-stale").exists());
+    manager
+        .unlink_device("device-laptop")
+        .expect("unlink after the copy expired");
+    let fresh = stage_outgoing_copy(&manager, "transfer-fresh");
+    manager
+        .begin_outgoing_transfer(fresh, crate::protocol::unix_time_ms())
+        .expect("offer a new copy");
+}
+
+/// A test label and a change made to the state folder and the archive while the app is stopped.
+type RestartDamage = (&'static str, fn(&Path, &Path));
+
+#[test]
+fn a_restart_serves_the_stored_copy_only_while_it_is_usable() {
+    let cases: [RestartDamage; 3] = [
+        ("archive-missing", |_, archive| {
+            fs::remove_file(archive).expect("remove archive");
+        }),
+        ("archive-changed", |_, archive| {
+            fs::write(archive, b"tampered").expect("change archive");
+        }),
+        ("expired-while-stopped", |root, _| {
+            let path = root.join(PAIRING_STATE_FILE);
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).expect("read state")).expect("decode");
+            value["outgoingTransfer"]["expiresAtMs"] = serde_json::json!(1);
+            fs::write(&path, serde_json::to_vec(&value).expect("encode")).expect("write");
+        }),
+    ];
+    for (label, damage) in cases {
+        let temporary = TestDirectory::new(label);
+        let manager = desktop_with_phone(temporary.path());
+        let metadata = stage_outgoing_copy(&manager, "transfer-restart");
+        manager
+            .begin_outgoing_transfer(metadata, crate::protocol::unix_time_ms())
+            .expect("offer outgoing copy");
+        let archive = outgoing_archive(&manager, "transfer-restart");
+        drop(manager);
+        damage(temporary.path(), &archive);
+
+        let restarted = desktop_manager(temporary.path());
+        assert!(
+            !restarted.has_pending_transfer().expect("pending"),
+            "{label}"
+        );
+        assert!(restarted.outgoing_bundle("transfer-restart").is_err());
+        assert!(!archive.exists(), "{label}");
+        assert!(!state_text(temporary.path()).contains("transfer-restart"));
+    }
+}
+
+#[test]
+fn an_outgoing_copy_is_offered_only_to_a_device_linked_for_its_vault_and_only_one_at_a_time() {
+    let temporary = TestDirectory::new("offer-rules");
+    let manager = desktop_with_phone(temporary.path());
+    let now_ms = crate::protocol::unix_time_ms();
+
+    let mut unknown = stage_outgoing_copy(&manager, "transfer-unknown");
+    unknown.device_id = "device-unknown".to_string();
+    assert!(manager.begin_outgoing_transfer(unknown, now_ms).is_err());
+    assert!(!outgoing_archive(&manager, "transfer-unknown").exists());
+
+    let mut other_vault = stage_outgoing_copy(&manager, "transfer-other-vault");
+    other_vault.vault_id = "vault-2".to_string();
+    assert!(
+        manager
+            .begin_outgoing_transfer(other_vault, now_ms)
+            .is_err()
+    );
+    assert!(!outgoing_archive(&manager, "transfer-other-vault").exists());
+
+    let first = stage_outgoing_copy(&manager, "transfer-first");
+    manager
+        .begin_outgoing_transfer(first, now_ms)
+        .expect("offer first copy");
+    let second = stage_outgoing_copy(&manager, "transfer-second");
+    let busy = manager
+        .begin_outgoing_transfer(second, now_ms)
+        .expect_err("refuse a second copy");
+    assert!(busy.contains("already serving"), "{busy}");
+    assert!(!outgoing_archive(&manager, "transfer-second").exists());
+    assert!(outgoing_archive(&manager, "transfer-first").exists());
+    assert!(manager.outgoing_bundle("transfer-first").is_ok());
+}
+
+#[test]
+fn a_stored_copy_without_an_expiry_is_refused() {
+    let temporary = TestDirectory::new("no-expiry");
+    let manager = desktop_with_phone(temporary.path());
+    let metadata = stage_outgoing_copy(&manager, "transfer-no-expiry");
+    manager
+        .begin_outgoing_transfer(metadata, crate::protocol::unix_time_ms())
+        .expect("offer outgoing copy");
+    drop(manager);
+    assert_stored_state_refused(
+        temporary.path(),
+        "device-desktop",
+        |state| {
+            state["outgoingTransfer"]
+                .as_object_mut()
+                .expect("outgoing transfer")
+                .remove("expiresAtMs");
+        },
+        "expiresAtMs",
     );
 }

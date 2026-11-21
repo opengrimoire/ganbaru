@@ -24,6 +24,9 @@ pub(super) fn persist_initialized_state(inner: &PairingManagerInner) -> Result<(
 
 pub(super) fn validate_stored_outgoing(transfer: &StoredOutgoingTransfer) -> Result<(), String> {
     transfer.metadata.validate()?;
+    if transfer.expires_at_ms <= 0 {
+        return Err("outgoing transfer expiry is invalid".to_string());
+    }
     Ok(())
 }
 

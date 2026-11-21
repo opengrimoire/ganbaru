@@ -55,10 +55,15 @@ const RESTORE_TRANSFER_PREFIX: &str = "restore-";
 const SAVE_TRANSFER_PREFIX: &str = "save-";
 /// The decrypted archive inside a restore transfer directory.
 const RESTORED_ARCHIVE_FILE: &str = "archive.zip";
-/// Folder name that holds a restored vault before it replaces the vault beside it.
-const RESTORE_STAGING_NAME: &str = ".ganbaru.restore";
-/// Prefix of the private folder an independent copy is restored in beside its new folder.
-const RESTORE_COPY_STAGING_PREFIX: &str = ".ganbaru.restore-";
+/// Prefix of the folder that holds a restored vault before it replaces the vault beside it. The
+/// target folder's name follows, so vaults sharing a parent folder, such as a production and a
+/// development vault, never share or sweep each other's staging.
+const RESTORE_STAGING_PREFIX: &str = ".ganbaru.restore.";
+/// Prefix of the private folder an independent copy is restored in beside its new folder. The
+/// new folder's name, a dot, and a random lowercase hex suffix follow.
+const RESTORE_COPY_STAGING_PREFIX: &str = ".ganbaru.restore-copy.";
+/// Length of the random suffix of an independent copy's staging folder.
+const RESTORE_COPY_SUFFIX_CHARS: usize = 32;
 /// Trigger names that keep the person identity and contact card from being deleted. An
 /// independent copy recreates them unchanged after removing both rows.
 const IDENTITY_TRIGGERS: [&str; 2] = [
@@ -519,11 +524,8 @@ fn sweep_interrupted_backups_at(
     if let Err(error) = sweep_backup_staging(transfer_root) {
         failures.push(error.to_string());
     }
-    // A swap left pending may still need its staged vault, so its staging stays until it settles.
     if let Some(target) = restore_target
-        && !swap_journal::has_unfinished_swap(target)
-        && let Some(parent) = target.parent()
-        && let Err(error) = sweep_restore_staging(parent)
+        && let Err(error) = sweep_restore_staging(target)
     {
         failures.push(error);
     }
@@ -534,12 +536,56 @@ fn sweep_interrupted_backups_at(
     }
 }
 
-/// Removes in-place and independent-copy restore staging directly below `parent`.
-fn sweep_restore_staging(parent: &Path) -> Result<(), String> {
+/// Removes the in-place and independent-copy restore staging of `target` beside it, and nothing
+/// staged for another folder. A swap of `target` left pending may still need its staged vault,
+/// so the in-place staging stays until the swap settles.
+fn sweep_restore_staging(target: &Path) -> Result<(), String> {
+    let parent = staging_parent(target)?;
+    let in_place = restore_staging_name(target)?;
+    let copy = restore_copy_staging_prefix(target)?;
+    let keep_in_place = swap_journal::has_unfinished_swap(target);
     sweep_staging_entries(parent, |name| {
-        name == RESTORE_STAGING_NAME || name.starts_with(RESTORE_COPY_STAGING_PREFIX)
+        (name == in_place && !keep_in_place) || is_restore_copy_staging(name, &copy)
     })
     .map_err(|error| format!("sweep restore staging: {error}"))
+}
+
+/// The folder restore staging of `target` lives in.
+fn staging_parent(target: &Path) -> Result<&Path, String> {
+    target
+        .parent()
+        .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())
+}
+
+/// The name of `target`'s folder, which its staging names carry.
+fn staging_target_name(target: &Path) -> Result<&str, String> {
+    target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "the Ganbaru folder name is not valid text".to_string())
+}
+
+/// The name of the folder a restore stages `target`'s replacement in.
+fn restore_staging_name(target: &Path) -> Result<String, String> {
+    Ok(format!("{RESTORE_STAGING_PREFIX}{}", staging_target_name(target)?))
+}
+
+/// The prefix of the private folders an independent copy for `target` is staged in.
+fn restore_copy_staging_prefix(target: &Path) -> Result<String, String> {
+    Ok(format!(
+        "{RESTORE_COPY_STAGING_PREFIX}{}.",
+        staging_target_name(target)?
+    ))
+}
+
+/// Whether `name` is a private staging folder made with `prefix` and a random suffix.
+fn is_restore_copy_staging(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix).is_some_and(|suffix| {
+        suffix.len() == RESTORE_COPY_SUFFIX_CHARS
+            && suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
 }
 
 /// Removes a folder a restore staged when the restore stops before using it.
@@ -1207,10 +1253,7 @@ async fn remove_person_identity(conn: &mut sqlx::SqliteConnection) -> Result<(),
 
 /// The staging folder a restore uses beside `target`.
 fn restore_staging_path(target: &Path) -> Result<PathBuf, String> {
-    let parent = target
-        .parent()
-        .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
-    Ok(parent.join(RESTORE_STAGING_NAME))
+    Ok(staging_parent(target)?.join(restore_staging_name(target)?))
 }
 
 /// Replaces the vault at `target` with the staged vault while every runtime is drained, then
@@ -1330,11 +1373,11 @@ async fn restore_in_new_folder(
     let parent = target
         .parent()
         .ok_or_else(|| "the chosen folder has no parent directory".to_string())?;
-    let sweep_parent = parent.to_path_buf();
-    blocking(move || sweep_restore_staging(&sweep_parent)).await??;
+    let sweep_target = target.clone();
+    blocking(move || sweep_restore_staging(&sweep_target)).await??;
     let staging_parent = ganbaru_atomic_files::create_private_temporary_directory(
         parent,
-        RESTORE_COPY_STAGING_PREFIX,
+        &restore_copy_staging_prefix(&target)?,
     )
     .map_err(|error| format!("create restore staging: {error}"))?;
     let staged = StagedFolder::new(&staging_parent);

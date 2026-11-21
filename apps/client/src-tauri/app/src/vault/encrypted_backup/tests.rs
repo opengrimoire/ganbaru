@@ -655,13 +655,22 @@ fn startup_sweep_clears_transfers_and_restore_staging() {
     let documents = root.join("documents");
     let vault = documents.join("Ganbaru");
     let sibling = documents.join("Other");
+    let suffix = "0123456789abcdef".repeat(2);
+    let copy = documents.join(format!(".ganbaru.restore-copy.Ganbaru.{suffix}"));
+    // Another build's vault beside this one keeps its own staging.
+    let other_build = documents.join(".ganbaru.restore.Ganbaru Dev");
+    let other_copy = documents.join(format!(".ganbaru.restore-copy.Ganbaru Dev.{suffix}"));
+    let not_random = documents.join(".ganbaru.restore-copy.Ganbaru.kept");
     for folder in [
         transfers.join("restore-picked"),
         transfers.join("save-written"),
         transfers.join(".ganbaru-backup-killed"),
         transfers.join("unrelated"),
-        documents.join(RESTORE_STAGING_NAME),
-        documents.join(".ganbaru.restore-copy/vault"),
+        restore_staging_path(&vault).unwrap(),
+        copy.join("vault"),
+        other_build.clone(),
+        other_copy.clone(),
+        not_random.clone(),
         vault.clone(),
         sibling.clone(),
     ] {
@@ -675,12 +684,19 @@ fn startup_sweep_clears_transfers_and_restore_staging() {
         transfers.join("restore-picked"),
         transfers.join("save-written"),
         transfers.join(".ganbaru-backup-killed"),
-        documents.join(RESTORE_STAGING_NAME),
-        documents.join(".ganbaru.restore-copy"),
+        restore_staging_path(&vault).unwrap(),
+        copy,
     ] {
         assert!(!removed.exists(), "{} is swept", removed.display());
     }
-    for kept in [transfers.join("unrelated"), vault, sibling] {
+    for kept in [
+        transfers.join("unrelated"),
+        vault,
+        sibling,
+        other_build,
+        other_copy,
+        not_random,
+    ] {
         assert!(kept.join("data").exists(), "{} stays", kept.display());
     }
     sweep_interrupted_backups_at(&root.join("missing"), None).unwrap();
@@ -799,7 +815,7 @@ async fn a_replaced_vault_copy_stages_as_the_vault_it_was_and_detaches_into_a_ne
         .unwrap();
 
     let archive = replaced_vault_backup_path(&kept, &backup.id).unwrap();
-    let staging = root.join(RESTORE_STAGING_NAME);
+    let staging = restore_staging_path(&root.join("Ganbaru")).unwrap();
     let info = stage_restored_vault(&archive, &staging, ArchiveOrigin::PrivateArchive)
         .await
         .unwrap();

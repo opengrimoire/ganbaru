@@ -28,4 +28,6 @@ pub mod recovery;
 #[cfg(feature = "native-runtime")]
 pub mod resources;
 #[cfg(feature = "native-runtime")]
+pub mod state_writes;
+#[cfg(feature = "native-runtime")]
 pub mod workspaces;

@@ -111,6 +111,12 @@ fn canonical_events_rebuild_equivalent_projections() {
         .await
         .unwrap();
         assert_eq!(after, before);
+        let latest_turn_state: Option<String> =
+            sqlx::query_scalar("SELECT latest_turn_state FROM chat_threads WHERE id = 'thread-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(latest_turn_state.as_deref(), Some("completed"));
     });
 }
 

@@ -56,6 +56,44 @@ pub enum ChatThreadState {
     Closed,
 }
 
+impl ChatThreadState {
+    pub const ALL: [Self; 7] = [
+        Self::Draft,
+        Self::Active,
+        Self::Waiting,
+        Self::Idle,
+        Self::Error,
+        Self::Archived,
+        Self::Closed,
+    ];
+
+    /// Returns the persisted and wire literal of the state.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Draft => "draft",
+            Self::Active => "active",
+            Self::Waiting => "waiting",
+            Self::Idle => "idle",
+            Self::Error => "error",
+            Self::Archived => "archived",
+            Self::Closed => "closed",
+        }
+    }
+
+    /// Returns whether the thread has ended and accepts no further state changes.
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Closed)
+    }
+
+    /// Returns whether the state can be stored in `chat_threads.state`.
+    ///
+    /// Archiving is recorded only by `archived_at`, and reads report `Archived` from that
+    /// timestamp, so unarchiving restores the activity state the thread already had.
+    pub fn is_persisted(self) -> bool {
+        !matches!(self, Self::Archived)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderSessionState {
@@ -107,8 +145,27 @@ impl ChatTurnState {
         Self::Failed,
     ];
 
+    /// Returns the persisted and wire literal of the state.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Dispatching => "dispatching",
+            Self::Active => "active",
+            Self::WaitingForApproval => "waiting_for_approval",
+            Self::WaitingForUserInput => "waiting_for_user_input",
+            Self::Completed => "completed",
+            Self::Interrupted => "interrupted",
+            Self::Failed => "failed",
+        }
+    }
+
     pub fn is_terminal(self) -> bool {
         matches!(self, Self::Completed | Self::Interrupted | Self::Failed)
+    }
+
+    /// Returns whether a provider holds the turn: it has left `Pending` and is not terminal.
+    pub fn is_running(self) -> bool {
+        !self.is_terminal() && self != Self::Pending
     }
 }
 

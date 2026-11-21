@@ -659,3 +659,51 @@ fn timeline_reads_carry_a_shortened_detail_that_loads_whole_for_its_own_visible_
         assert_eq!(error.code, ChatErrorCode::NotFound);
     });
 }
+
+#[test]
+fn archiving_is_read_from_the_timestamp_and_keeps_the_stored_activity() {
+    use ganbaru_chat_contracts::models::ChatThreadState;
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let thread_id = ChatThreadId::new("thread-1").unwrap();
+        let now = UtcTimestamp::new(NOW).unwrap();
+        sqlx::query("UPDATE chat_threads SET state = 'error' WHERE id = 'thread-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let revision = read_thread_shell(&pool, &thread_id).await.unwrap().revision;
+        let revision = set_thread_archived(&pool, &thread_id, true, revision, &now)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_thread_shell(&pool, &thread_id).await.unwrap().state,
+            ChatThreadState::Archived
+        );
+        let stored: String =
+            sqlx::query_scalar("SELECT state FROM chat_threads WHERE id = 'thread-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stored, "error");
+
+        sqlx::query("UPDATE chat_threads SET state = 'closed' WHERE id = 'thread-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_thread_shell(&pool, &thread_id).await.unwrap().state,
+            ChatThreadState::Closed
+        );
+        sqlx::query("UPDATE chat_threads SET state = 'error' WHERE id = 'thread-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        set_thread_archived(&pool, &thread_id, false, revision, &now)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_thread_shell(&pool, &thread_id).await.unwrap().state,
+            ChatThreadState::Error
+        );
+    });
+}

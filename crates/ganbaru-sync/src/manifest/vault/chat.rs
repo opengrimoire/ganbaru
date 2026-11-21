@@ -2366,6 +2366,8 @@ pub const DOMAIN: DomainManifest = DomainManifest {
                 applier_visible("chat_threads_execution_target_update"),
                 gated("chat_threads_project_matches_working_folder_insert"),
                 applier_visible("chat_threads_project_matches_working_folder_update"),
+                applier_visible("chat_threads_state_not_archived_insert"),
+                applier_visible("chat_threads_state_not_archived_update"),
             ],
         ),
         device(

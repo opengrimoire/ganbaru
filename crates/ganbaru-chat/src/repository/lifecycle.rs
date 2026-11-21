@@ -69,6 +69,10 @@ pub async fn set_thread_read(
     require_updated(pool, thread_id, updated.rows_affected()).await
 }
 
+/// Archives or unarchives a thread.
+///
+/// `archived_at` is the only record of archiving. The activity state stays as it is, so turn
+/// events keep projecting into an archived thread and unarchiving shows its real state.
 pub async fn set_thread_archived(
     pool: &SqlitePool,
     thread_id: &ChatThreadId,
@@ -77,13 +81,11 @@ pub async fn set_thread_archived(
     now: &UtcTimestamp,
 ) -> ChatResult<u64> {
     let archived_at = archived.then_some(now.as_str());
-    let state = if archived { "archived" } else { "idle" };
     let updated = sqlx::query(
-        "UPDATE chat_threads SET archived_at = ?, state = ?, revision = revision + 1,
+        "UPDATE chat_threads SET archived_at = ?, revision = revision + 1,
                 updated_at = ? WHERE id = ? AND revision = ?",
     )
     .bind(archived_at)
-    .bind(state)
     .bind(now.as_str())
     .bind(thread_id.as_str())
     .bind(i64_value(expected_revision))

@@ -1,4 +1,5 @@
 use super::events::{AppendCanonicalEventRequest, append_canonical_event};
+use super::state_writes::running_turn_states_sql;
 use crate::events::{CanonicalEvent, CanonicalRuntimeEvent, TurnAbortedEvent};
 use crate::models::{
     ChatError, ChatErrorCode, ChatEventId, ChatResult, ChatThreadId, ChatTurnId, ChatTurnState,
@@ -12,16 +13,18 @@ pub async fn recover_orphaned_turns(
     resumable_threads: &HashSet<ChatThreadId>,
     now: &UtcTimestamp,
 ) -> ChatResult<u64> {
-    let rows = sqlx::query(
+    let statement = format!(
         "SELECT t.id AS turn_id, t.thread_id, th.provider_family_id,
                 th.provider_instance_id, th.last_event_sequence
          FROM chat_turns t JOIN chat_threads th ON th.id = t.thread_id
-         WHERE t.state IN ('dispatching', 'active', 'waiting_for_approval', 'waiting_for_user_input')
+         WHERE t.state IN ({})
          ORDER BY t.thread_id, t.ordinal, t.id",
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(persistence_error)?;
+        running_turn_states_sql()
+    );
+    let rows = sqlx::query(sqlx::AssertSqlSafe(statement.as_str()))
+        .fetch_all(pool)
+        .await
+        .map_err(persistence_error)?;
     let mut recovered = 0;
     for row in rows {
         let thread_id = id::<ChatThreadId>(&row, "thread_id")?;
@@ -70,7 +73,7 @@ pub async fn recover_orphaned_turns(
         .await?;
         recovered += 1;
     }
-    sqlx::query(
+    let statement = format!(
         "UPDATE chat_pending_requests
          SET resolution_state = 'interrupted', resolved_at = ?
          WHERE resolution_state = 'open' AND (
@@ -79,16 +82,16 @@ pub async fn recover_orphaned_turns(
                  WHERE chat_turns.id = chat_pending_requests.turn_id
                    AND chat_turns.thread_id = chat_pending_requests.thread_id
                    AND chat_turns.invalidated_at IS NULL
-                   AND chat_turns.state IN (
-                       'dispatching', 'active', 'waiting_for_approval', 'waiting_for_user_input'
-                   )
+                   AND chat_turns.state IN ({})
              )
          )",
-    )
-    .bind(now.as_str())
-    .execute(pool)
-    .await
-    .map_err(persistence_error)?;
+        running_turn_states_sql()
+    );
+    sqlx::query(sqlx::AssertSqlSafe(statement.as_str()))
+        .bind(now.as_str())
+        .execute(pool)
+        .await
+        .map_err(persistence_error)?;
     Ok(recovered)
 }
 

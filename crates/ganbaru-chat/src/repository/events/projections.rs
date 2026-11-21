@@ -1,5 +1,10 @@
 use super::codec::*;
 use super::*;
+use crate::models::{ChatThreadState, ChatTurnState};
+use crate::repository::state_writes::{
+    StateWrite, StateWriteColumns, StateWriteValue, guarded_thread_state_assignment,
+    persist_thread_state, persist_turn_transition,
+};
 
 pub(in crate::repository) async fn apply_projection(
     transaction: &mut Transaction<'_, Sqlite>,
@@ -32,13 +37,15 @@ pub(in crate::repository) async fn apply_projection(
             changed.push(ChatProjectionKey::Thread);
         }
         CanonicalEvent::ThreadStateChanged(event) => {
-            sqlx::query("UPDATE chat_threads SET state = ? WHERE id = ?")
-                .bind(wire_literal(&event.state)?)
-                .bind(thread_id)
-                .execute(&mut **transaction)
-                .await
-                .map_err(persistence_error)?;
-            changed.push(ChatProjectionKey::Thread);
+            // Providers report thread activity independently of Ganbaru's own lifecycle, so a
+            // report that the table rejects (a closed thread, or the never persisted archived
+            // state) or that repeats the current state leaves the row as it is.
+            if persist_thread_state(transaction, thread_id, event.state)
+                .await?
+                .is_applied()
+            {
+                changed.push(ChatProjectionKey::Thread);
+            }
         }
         CanonicalEvent::ThreadMetadataUpdated(event) => {
             let resume = versioned_parts(event.resume_cursor.as_ref())?;
@@ -81,44 +88,65 @@ pub(in crate::repository) async fn apply_projection(
                 "options": event.model_options,
             }))
             .map_err(serialization_error)?;
-            sqlx::query(
+            let provider_turn_id = event.provider_turn_id.as_ref().map(|value| value.as_str());
+            let safety_mode = wire_literal(&event.modes.safety_mode)?;
+            let interaction_mode = wire_literal(&event.modes.interaction_mode)?;
+            let inserted = sqlx::query(
                 "INSERT INTO chat_turns
                     (id, thread_id, ordinal, provider_turn_id, state, started_at,
                      model_selection_data, safety_mode, interaction_mode, created_at, updated_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                 ON CONFLICT(id) DO UPDATE SET
-                    provider_turn_id = excluded.provider_turn_id,
-                    state = excluded.state,
-                    started_at = excluded.started_at,
-                    model_selection_data = excluded.model_selection_data,
-                    safety_mode = excluded.safety_mode,
-                    interaction_mode = excluded.interaction_mode,
-                    updated_at = excluded.updated_at
-                 WHERE chat_turns.thread_id = excluded.thread_id",
+                 ON CONFLICT(id) DO NOTHING",
             )
             .bind(turn_id)
             .bind(thread_id)
             .bind(ordinal)
-            .bind(event.provider_turn_id.as_ref().map(|value| value.as_str()))
-            .bind(wire_literal(&event.state)?)
+            .bind(provider_turn_id)
+            .bind(event.state.as_str())
             .bind(runtime.created_at.as_str())
-            .bind(model_selection)
-            .bind(wire_literal(&event.modes.safety_mode)?)
-            .bind(wire_literal(&event.modes.interaction_mode)?)
+            .bind(&model_selection)
+            .bind(&safety_mode)
+            .bind(&interaction_mode)
             .bind(runtime.created_at.as_str())
             .bind(runtime.created_at.as_str())
             .execute(&mut **transaction)
             .await
             .map_err(persistence_error)?;
-            sqlx::query(
-                "UPDATE chat_threads SET latest_turn_state = ?, state = 'active' WHERE id = ?",
-            )
-            .bind(wire_literal(&event.state)?)
-            .bind(thread_id)
-            .execute(&mut **transaction)
-            .await
-            .map_err(persistence_error)?;
-            changed.extend([ChatProjectionKey::Turns, ChatProjectionKey::Thread]);
+            // A start for a turn the send already stored moves it through the transition
+            // table, so a replayed or late start never revives a settled turn. A start whose
+            // ID belongs to another thread is ignored, as the insert conflict did before.
+            let started = inserted.rows_affected() == 1
+                || persist_turn_transition(
+                    transaction,
+                    thread_id,
+                    turn_id,
+                    event.state,
+                    StateWriteColumns {
+                        assignments: "provider_turn_id = ?, started_at = ?,
+                                      model_selection_data = ?, safety_mode = ?,
+                                      interaction_mode = ?, updated_at = ?",
+                        values: &[
+                            StateWriteValue::OptionalText(provider_turn_id),
+                            StateWriteValue::Text(runtime.created_at.as_str()),
+                            StateWriteValue::Text(&model_selection),
+                            StateWriteValue::Text(&safety_mode),
+                            StateWriteValue::Text(&interaction_mode),
+                            StateWriteValue::Text(runtime.created_at.as_str()),
+                        ],
+                    },
+                )
+                .await?
+                .is_applied();
+            if started {
+                settle_thread_after_turn(
+                    transaction,
+                    thread_id,
+                    event.state,
+                    ChatThreadState::Active,
+                )
+                .await?;
+                changed.extend([ChatProjectionKey::Turns, ChatProjectionKey::Thread]);
+            }
         }
         CanonicalEvent::TurnCompleted(event) => {
             let turn_id = required_turn_id(runtime)?;
@@ -145,75 +173,80 @@ pub(in crate::repository) async fn apply_projection(
                 .unwrap_or_default();
             merge_changed_file_summaries(&mut files, &event.changed_files);
             let files = serde_json::to_string(&files).map_err(serialization_error)?;
-            let updated = sqlx::query(
-                "UPDATE chat_turns
-                 SET state = ?, completed_at = ?, stop_reason = ?,
-                     usage_schema_version = CASE WHEN ? IS NULL THEN NULL ELSE 1 END,
-                     usage_data = ?, changed_file_summary_schema_version = 1,
-                     changed_file_summary_data = ?, updated_at = ?
-                 WHERE id = ? AND thread_id = ?",
+            let outcome = persist_turn_transition(
+                transaction,
+                thread_id,
+                turn_id,
+                event.state,
+                StateWriteColumns {
+                    assignments: "completed_at = ?, stop_reason = ?,
+                                  usage_schema_version = CASE WHEN ? IS NULL THEN NULL ELSE 1 END,
+                                  usage_data = ?, changed_file_summary_schema_version = 1,
+                                  changed_file_summary_data = ?, updated_at = ?",
+                    values: &[
+                        StateWriteValue::Text(runtime.created_at.as_str()),
+                        StateWriteValue::OptionalText(event.stop_reason.as_deref()),
+                        StateWriteValue::OptionalText(usage.as_deref()),
+                        StateWriteValue::OptionalText(usage.as_deref()),
+                        StateWriteValue::Text(&files),
+                        StateWriteValue::Text(runtime.created_at.as_str()),
+                    ],
+                },
             )
-            .bind(wire_literal(&event.state)?)
-            .bind(runtime.created_at.as_str())
-            .bind(event.stop_reason.as_deref())
-            .bind(usage.as_deref())
-            .bind(usage.as_deref())
-            .bind(files)
-            .bind(runtime.created_at.as_str())
-            .bind(turn_id)
-            .bind(thread_id)
-            .execute(&mut **transaction)
-            .await
-            .map_err(persistence_error)?;
-            if updated.rows_affected() != 1 {
+            .await?;
+            if outcome == StateWrite::Missing {
                 return Err(ChatError::validation(
                     "event.turnId",
                     "Canonical turn completion references an unknown turn",
                 ));
             }
-            sqlx::query(
-                "UPDATE chat_threads SET latest_turn_state = ?, state = 'idle' WHERE id = ?",
-            )
-            .bind(wire_literal(&event.state)?)
-            .bind(thread_id)
-            .execute(&mut **transaction)
-            .await
-            .map_err(persistence_error)?;
-            changed.extend([ChatProjectionKey::Turns, ChatProjectionKey::Thread]);
+            if outcome.is_applied() {
+                settle_thread_after_turn(
+                    transaction,
+                    thread_id,
+                    event.state,
+                    ChatThreadState::Idle,
+                )
+                .await?;
+                changed.extend([ChatProjectionKey::Turns, ChatProjectionKey::Thread]);
+            }
             if expire_open_requests_for_turn(transaction, runtime, "stale").await? {
                 changed.push(ChatProjectionKey::PendingRequests);
             }
         }
         CanonicalEvent::TurnAborted(event) => {
             let turn_id = required_turn_id(runtime)?;
-            let updated = sqlx::query(
-                "UPDATE chat_turns SET state = ?, completed_at = ?, stop_reason = ?, updated_at = ?
-                 WHERE id = ? AND thread_id = ?",
+            let outcome = persist_turn_transition(
+                transaction,
+                thread_id,
+                turn_id,
+                event.state,
+                StateWriteColumns {
+                    assignments: "completed_at = ?, stop_reason = ?, updated_at = ?",
+                    values: &[
+                        StateWriteValue::Text(runtime.created_at.as_str()),
+                        StateWriteValue::Text(&event.reason),
+                        StateWriteValue::Text(runtime.created_at.as_str()),
+                    ],
+                },
             )
-            .bind(wire_literal(&event.state)?)
-            .bind(runtime.created_at.as_str())
-            .bind(&event.reason)
-            .bind(runtime.created_at.as_str())
-            .bind(turn_id)
-            .bind(thread_id)
-            .execute(&mut **transaction)
-            .await
-            .map_err(persistence_error)?;
-            if updated.rows_affected() != 1 {
+            .await?;
+            if outcome == StateWrite::Missing {
                 return Err(ChatError::validation(
                     "event.turnId",
                     "Canonical turn abort references an unknown turn",
                 ));
             }
-            sqlx::query(
-                "UPDATE chat_threads SET latest_turn_state = ?, state = 'idle' WHERE id = ?",
-            )
-            .bind(wire_literal(&event.state)?)
-            .bind(thread_id)
-            .execute(&mut **transaction)
-            .await
-            .map_err(persistence_error)?;
-            changed.extend([ChatProjectionKey::Turns, ChatProjectionKey::Thread]);
+            if outcome.is_applied() {
+                settle_thread_after_turn(
+                    transaction,
+                    thread_id,
+                    event.state,
+                    ChatThreadState::Idle,
+                )
+                .await?;
+                changed.extend([ChatProjectionKey::Turns, ChatProjectionKey::Thread]);
+            }
             if expire_open_requests_for_turn(transaction, runtime, "interrupted").await? {
                 changed.push(ChatProjectionKey::PendingRequests);
             }
@@ -706,6 +739,27 @@ async fn resolve_request<T: Serialize>(
             true,
         ));
     }
+    Ok(())
+}
+
+/// Records the state of a turn that just moved and moves the thread to `thread_state` when the
+/// thread table allows it, so turn events never reopen a closed thread.
+async fn settle_thread_after_turn(
+    transaction: &mut Transaction<'_, Sqlite>,
+    thread_id: &str,
+    turn_state: ChatTurnState,
+    thread_state: ChatThreadState,
+) -> ChatResult<()> {
+    let statement = format!(
+        "UPDATE chat_threads SET latest_turn_state = ?, {} WHERE id = ?",
+        guarded_thread_state_assignment(thread_state)
+    );
+    sqlx::query(sqlx::AssertSqlSafe(statement.as_str()))
+        .bind(turn_state.as_str())
+        .bind(thread_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(persistence_error)?;
     Ok(())
 }
 

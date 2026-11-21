@@ -1,6 +1,6 @@
-//! Pure provider session and turn state transitions.
+//! Pure provider session, turn, and thread state transitions.
 
-use super::models::{ChatError, ChatResult, ChatTurnState, ProviderSessionState};
+use super::models::{ChatError, ChatResult, ChatThreadState, ChatTurnState, ProviderSessionState};
 
 pub const SESSION_TRANSITIONS: &[(ProviderSessionState, ProviderSessionState)] = &[
     (
@@ -69,8 +69,11 @@ pub const SESSION_TRANSITIONS: &[(ProviderSessionState, ProviderSessionState)] =
     (ProviderSessionState::Failed, ProviderSessionState::Stopped),
 ];
 
+/// Legal turn moves. A send stores the turn as `Pending`, and every provider reports the start
+/// it dispatched as `Active`, so `Pending` moves to `Active` directly.
 pub const TURN_TRANSITIONS: &[(ChatTurnState, ChatTurnState)] = &[
     (ChatTurnState::Pending, ChatTurnState::Dispatching),
+    (ChatTurnState::Pending, ChatTurnState::Active),
     (ChatTurnState::Pending, ChatTurnState::Interrupted),
     (ChatTurnState::Pending, ChatTurnState::Failed),
     (ChatTurnState::Dispatching, ChatTurnState::Active),
@@ -135,4 +138,41 @@ pub fn transition_turn(current: ChatTurnState, next: ChatTurnState) -> ChatResul
             "Chat turn cannot transition from {current:?} to {next:?}"
         )))
     }
+}
+
+/// Returns the turn states that may move to `to`, in `ChatTurnState::ALL` order.
+pub fn turn_sources(to: ChatTurnState) -> impl Iterator<Item = ChatTurnState> {
+    ChatTurnState::ALL
+        .into_iter()
+        .filter(move |from| can_transition_turn(*from, to))
+}
+
+/// Returns whether a persisted thread may move from `from` to `to`.
+///
+/// `Closed` is absorbing, and `Archived` is never persisted (archiving only sets
+/// `archived_at`), so it is neither a source nor a target. Every other pair of distinct
+/// activity states is legal because providers, turn events, and restores each report the
+/// thread's activity independently.
+pub fn can_transition_thread(from: ChatThreadState, to: ChatThreadState) -> bool {
+    from != to && from.is_persisted() && to.is_persisted() && !from.is_terminal()
+}
+
+pub fn transition_thread(
+    current: ChatThreadState,
+    next: ChatThreadState,
+) -> ChatResult<ChatThreadState> {
+    if can_transition_thread(current, next) {
+        Ok(next)
+    } else {
+        Err(ChatError::invalid_transition(format!(
+            "Chat thread cannot transition from {current:?} to {next:?}"
+        )))
+    }
+}
+
+/// Returns the thread states that may move to `to`, in `ChatThreadState::ALL` order.
+pub fn thread_sources(to: ChatThreadState) -> impl Iterator<Item = ChatThreadState> {
+    ChatThreadState::ALL
+        .into_iter()
+        .filter(move |from| can_transition_thread(*from, to))
 }

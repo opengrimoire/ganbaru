@@ -645,3 +645,180 @@ fn projections_skip_user_echoes_resolve_requests_and_reject_duplicate_events() {
         assert_eq!(last_sequence, 5);
     });
 }
+
+fn turn_started(event_id: &str, turn_id: &str) -> AppendCanonicalEventRequest {
+    canonical_request(
+        event_id,
+        Some(turn_id),
+        CanonicalEvent::TurnStarted(TurnStartedEvent {
+            provider_turn_id: None,
+            state: ChatTurnState::Active,
+            modes: TurnModeSnapshot {
+                safety_mode: SafetyMode::AskForApproval,
+                interaction_mode: InteractionMode::Build,
+            },
+            model_id: None,
+            model_options: Vec::new(),
+        }),
+    )
+}
+
+fn turn_completed(event_id: &str, turn_id: &str, stop_reason: &str) -> AppendCanonicalEventRequest {
+    canonical_request(
+        event_id,
+        Some(turn_id),
+        CanonicalEvent::TurnCompleted(TurnCompletedEvent {
+            state: ChatTurnState::Completed,
+            stop_reason: Some(stop_reason.to_string()),
+            usage: None,
+            changed_files: Vec::new(),
+        }),
+    )
+}
+
+async fn turn_row(pool: &sqlx::SqlitePool, turn_id: &str) -> (String, Option<String>) {
+    sqlx::query_as("SELECT state, stop_reason FROM chat_turns WHERE id = ?")
+        .bind(turn_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn thread_states(pool: &sqlx::SqlitePool) -> (String, Option<String>) {
+    sqlx::query_as("SELECT state, latest_turn_state FROM chat_threads WHERE id = 'thread-1'")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[test]
+fn turn_started_replay_never_revives_a_settled_turn() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        append_canonical_event(&pool, turn_started("start-1", "turn-1"))
+            .await
+            .unwrap();
+        assert_eq!(
+            thread_states(&pool).await,
+            ("active".to_string(), Some("active".to_string()))
+        );
+        append_canonical_event(&pool, turn_completed("complete-1", "turn-1", "done"))
+            .await
+            .unwrap();
+        append_canonical_event(&pool, turn_started("start-again", "turn-1"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            turn_row(&pool, "turn-1").await,
+            ("completed".to_string(), Some("done".to_string()))
+        );
+        assert_eq!(
+            thread_states(&pool).await,
+            ("idle".to_string(), Some("completed".to_string()))
+        );
+    });
+}
+
+#[test]
+fn duplicate_turn_settlement_keeps_the_first_outcome() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        append_canonical_event(&pool, turn_started("start-1", "turn-1"))
+            .await
+            .unwrap();
+        append_canonical_event(&pool, turn_completed("complete-1", "turn-1", "first"))
+            .await
+            .unwrap();
+        append_canonical_event(&pool, turn_completed("complete-2", "turn-1", "second"))
+            .await
+            .unwrap();
+        append_canonical_event(
+            &pool,
+            canonical_request(
+                "abort-late",
+                Some("turn-1"),
+                CanonicalEvent::TurnAborted(TurnAbortedEvent {
+                    state: ChatTurnState::Interrupted,
+                    reason: "late".to_string(),
+                    recoverable: true,
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            turn_row(&pool, "turn-1").await,
+            ("completed".to_string(), Some("first".to_string()))
+        );
+        assert_eq!(
+            thread_states(&pool).await,
+            ("idle".to_string(), Some("completed".to_string()))
+        );
+    });
+}
+
+#[test]
+fn late_settlement_of_an_older_turn_keeps_the_newer_turn_state() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        append_canonical_event(&pool, turn_started("start-1", "turn-1"))
+            .await
+            .unwrap();
+        append_canonical_event(&pool, turn_completed("complete-1", "turn-1", "done"))
+            .await
+            .unwrap();
+        append_canonical_event(&pool, turn_started("start-2", "turn-2"))
+            .await
+            .unwrap();
+        append_canonical_event(&pool, turn_completed("complete-1-again", "turn-1", "done"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            thread_states(&pool).await,
+            ("active".to_string(), Some("active".to_string()))
+        );
+    });
+}
+
+#[test]
+fn turn_events_never_reopen_a_closed_thread() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        append_canonical_event(&pool, turn_started("start-1", "turn-1"))
+            .await
+            .unwrap();
+        sqlx::query("UPDATE chat_threads SET state = 'closed' WHERE id = 'thread-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        append_canonical_event(&pool, turn_completed("complete-1", "turn-1", "done"))
+            .await
+            .unwrap();
+        assert_eq!(
+            thread_states(&pool).await,
+            ("closed".to_string(), Some("completed".to_string()))
+        );
+        append_canonical_event(&pool, turn_started("start-2", "turn-2"))
+            .await
+            .unwrap();
+        assert_eq!(
+            thread_states(&pool).await,
+            ("closed".to_string(), Some("active".to_string()))
+        );
+    });
+}
+
+#[test]
+fn stored_thread_state_rejects_archived() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let error = sqlx::query("UPDATE chat_threads SET state = 'archived' WHERE id = 'thread-1'")
+            .execute(&pool)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("archived_at"), "{error}");
+    });
+}

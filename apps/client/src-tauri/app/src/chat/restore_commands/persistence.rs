@@ -76,9 +76,10 @@ pub(super) async fn persist_restore(
         now,
     )
     .await?;
-    sqlx::query(
+    // A restore never reopens a closed thread.
+    let statement = format!(
         "UPDATE chat_threads
-         SET state = 'idle', latest_turn_state = (
+         SET {}, latest_turn_state = (
                 SELECT state FROM chat_turns
                 WHERE thread_id = chat_threads.id AND invalidated_at IS NULL
                 ORDER BY ordinal DESC LIMIT 1
@@ -111,16 +112,20 @@ pub(super) async fn persist_restore(
              changed_file_summary_data = NULL,
              revision = revision + 1, updated_at = ?, last_activity_at = ?
          WHERE id = ?",
-    )
-    .bind(provider_history_action)
-    .bind(provider_history_action)
-    .bind(provider_history_action)
-    .bind(now.as_str())
-    .bind(now.as_str())
-    .bind(request.thread_id.as_str())
-    .execute(&mut *transaction)
-    .await
-    .map_err(persistence_error)?;
+        ganbaru_chat::repository::state_writes::guarded_thread_state_assignment(
+            ganbaru_chat_contracts::models::ChatThreadState::Idle
+        )
+    );
+    sqlx::query(sqlx::AssertSqlSafe(statement.as_str()))
+        .bind(provider_history_action)
+        .bind(provider_history_action)
+        .bind(provider_history_action)
+        .bind(now.as_str())
+        .bind(now.as_str())
+        .bind(request.thread_id.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(persistence_error)?;
     sqlx::query(
         "INSERT INTO chat_restore_operations
             (id, thread_id, checkpoint_id, preview_id, provider_history_action,

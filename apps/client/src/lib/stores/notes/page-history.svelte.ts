@@ -17,6 +17,14 @@ import {
   notesPostAppendResult,
   type NotesPostMutationResult,
 } from "$lib/notes/post-mutation";
+import {
+  IDLE_PAGE_HISTORY_ACTION,
+  isCurrentPageHistoryAction,
+  transitionPageHistoryAction,
+  type NotesPageHistoryAction,
+  type NotesPageHistoryActionEvent,
+  type NotesPageHistoryActionKind,
+} from "./page-history-state";
 
 export interface NotesPageHistoryControllerContext {
   readSelectedPageId: () => string | null;
@@ -63,8 +71,8 @@ export function createNotesPageHistoryController(
   let settings = $state<NotesPageHistorySettings | null>(null);
   let settingsLoading = $state(false);
   let settingsError = $state<string | null>(null);
-  let actionLoading = $state(false);
-  let actionError = $state<string | null>(null);
+  let action = $state<NotesPageHistoryAction>(IDLE_PAGE_HISTORY_ACTION);
+  let actionToken = 0;
   let snapshotsRequestId = 0;
   let versionRequestId = 0;
   let settingsRequestId = 0;
@@ -79,8 +87,7 @@ export function createNotesPageHistoryController(
     versionSnapshotId = null;
     versionLoading = false;
     versionError = null;
-    actionLoading = false;
-    actionError = null;
+    dispatchAction({ type: "reset" });
   }
 
   async function loadSettings(): Promise<void> {
@@ -171,52 +178,68 @@ export function createNotesPageHistoryController(
     }
   }
 
-  async function restoreVersion(snapshotId: string): Promise<void> {
+  function dispatchAction(event: NotesPageHistoryActionEvent): void {
+    action = transitionPageHistoryAction(action, event);
+  }
+
+  /**
+   * Run one write to the selected page's history, refusing a second while one runs. `apply` receives whether the
+   * result still belongs to the open page; a failure is shown only for the current action.
+   */
+  async function runAction(
+    kind: NotesPageHistoryActionKind,
+    write: (pageId: string) => Promise<(current: boolean) => void>,
+  ): Promise<void> {
     const pageId = context.readSelectedPageId();
-    if (!pageId) return;
-    actionLoading = true;
-    actionError = null;
+    if (!pageId || action.phase === "running") return;
+    const token = ++actionToken;
+    dispatchAction({ type: "started", kind, pageId, token });
+    const current = () => isCurrentPageHistoryAction(action, token) && context.readSelectedPageId() === pageId;
     try {
       await context.flushPendingBlockSaves();
-      const loaded = await restoreNotesPageHistorySnapshot(pageId, snapshotId);
-      context.applyPostMutation({
-        loadedPage: loaded,
-        pages: [loaded.page],
-        sidebarImpact: "visible-metadata",
-      });
-      context.requestPageLoadFocus();
+      const apply = await write(pageId);
+      apply(current());
+      dispatchAction({ type: "finished", token });
     } catch (error) {
-      actionError = notesErrorDetail(error);
-      context.setLoadError(actionError);
-    } finally {
-      actionLoading = false;
+      if (!current()) return;
+      const message = notesErrorDetail(error);
+      dispatchAction({ type: "failed", token, error: message });
+      context.setLoadError(message);
     }
   }
 
-  async function copyBlocks(snapshotId: string): Promise<void> {
-    const pageId = context.readSelectedPageId();
-    if (!pageId) return;
-    actionLoading = true;
-    actionError = null;
-    try {
-      await context.flushPendingBlockSaves();
+  function restoreVersion(snapshotId: string): Promise<void> {
+    return runAction("restore", async (pageId) => {
+      const loaded = await restoreNotesPageHistorySnapshot(pageId, snapshotId);
+      return (current) => {
+        // A restore for a page no longer open still updates its metadata, but never replaces the open page.
+        if (!current) {
+          context.applyPostMutation({ pages: [loaded.page], sidebarImpact: "visible-metadata" });
+          return;
+        }
+        context.applyPostMutation({ loadedPage: loaded, pages: [loaded.page], sidebarImpact: "visible-metadata" });
+        context.requestPageLoadFocus();
+      };
+    });
+  }
+
+  function copyBlocks(snapshotId: string): Promise<void> {
+    return runAction("copy", async (pageId) => {
       const request = {
         parent: { type: "page_id", page_id: pageId } as const,
         after_block_id: null,
       };
       const copied = await copyNotesPageHistoryBlocks(pageId, snapshotId, request);
-      context.applyPostMutation(notesPostAppendResult({
-        parent: request.parent,
-        after: request.after_block_id,
-        children: [],
-      }, copied));
-      context.requestPageLoadFocus(copied.results[0]?.id ?? null);
-    } catch (error) {
-      actionError = notesErrorDetail(error);
-      context.setLoadError(actionError);
-    } finally {
-      actionLoading = false;
-    }
+      return (current) => {
+        if (!current) return;
+        context.applyPostMutation(notesPostAppendResult({
+          parent: request.parent,
+          after: request.after_block_id,
+          children: [],
+        }, copied));
+        context.requestPageLoadFocus(copied.results[0]?.id ?? null);
+      };
+    });
   }
 
   return {
@@ -248,10 +271,10 @@ export function createNotesPageHistoryController(
       return settingsError;
     },
     get actionLoading() {
-      return actionLoading;
+      return action.phase === "running";
     },
     get actionError() {
-      return actionError;
+      return action.phase === "failed" ? action.error : null;
     },
     resetPageState,
     loadSettings,

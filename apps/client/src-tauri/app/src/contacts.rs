@@ -389,8 +389,7 @@ pub async fn contacts_decline_request<R: Runtime>(
         &pool,
         &request.id,
         request.expected_revision,
-        RequestDirection::Received,
-        RequestState::Declined,
+        requests::RequestClosure::Decline,
     )
     .await?;
     snapshot(&app, &pool).await
@@ -406,8 +405,7 @@ pub async fn contacts_cancel_request<R: Runtime>(
         &pool,
         &request.id,
         request.expected_revision,
-        RequestDirection::Sent,
-        RequestState::Expired,
+        requests::RequestClosure::Cancel,
     )
     .await?;
     snapshot(&app, &pool).await

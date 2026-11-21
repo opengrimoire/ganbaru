@@ -2,7 +2,7 @@ use super::identity::LocalIdentity;
 use super::requests::{
     self, CARD_REVOKED_CODE, INVALID_REQUEST_CODE, MAX_PENDING_RECEIVED, PeerReply, StatusOutcome,
 };
-use super::store::{self, ContactState, RequestDirection, RequestState, TrustGrant};
+use super::store::{self, ContactState, RequestDirection, TrustGrant};
 use crate::vault::handoff::protocol::{ContactRequestOutcome, ControlMessage};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -121,6 +121,27 @@ async fn peer_ids(pool: &SqlitePool) -> Vec<String> {
 fn received(request_id: &str) -> PeerReply {
     PeerReply::Received {
         request_id: request_id.to_string(),
+    }
+}
+
+#[test]
+fn a_closure_names_its_direction_and_a_final_state() {
+    use requests::RequestClosure::{Cancel, Decline};
+    use store::{ClosedRequestState, RequestState};
+    assert_eq!(Decline.direction(), RequestDirection::Received);
+    assert_eq!(Decline.target(), ClosedRequestState::Declined);
+    assert_eq!(Cancel.direction(), RequestDirection::Sent);
+    assert_eq!(Cancel.target(), ClosedRequestState::Expired);
+    for closed in [
+        ClosedRequestState::Accepted,
+        ClosedRequestState::Declined,
+        ClosedRequestState::Expired,
+    ] {
+        assert_ne!(
+            closed.state(),
+            RequestState::Pending,
+            "a closed request never returns to pending"
+        );
     }
 }
 
@@ -425,9 +446,16 @@ async fn handled_requests_are_capped_with_the_oldest_deleted_first() {
                 .unwrap()
                 .unwrap();
         assert!(
-            store::set_request_state(&pool, &row.id, None, RequestState::Declined, None, now)
-                .await
-                .unwrap()
+            store::set_request_state(
+                &pool,
+                &row.id,
+                None,
+                store::ClosedRequestState::Declined,
+                None,
+                now
+            )
+            .await
+            .unwrap()
         );
     }
     deliver(&pool, &recipient, &Person::new("Last"), "contact-last").await;
@@ -633,8 +661,7 @@ async fn declining_answers_declined_and_cancel_only_touches_sent_rows() {
         &pool,
         &row.id,
         row.revision,
-        RequestDirection::Sent,
-        RequestState::Expired,
+        requests::RequestClosure::Cancel,
     )
     .await;
     assert!(matches!(
@@ -646,8 +673,7 @@ async fn declining_answers_declined_and_cancel_only_touches_sent_rows() {
         &pool,
         &row.id,
         row.revision,
-        RequestDirection::Received,
-        RequestState::Declined,
+        requests::RequestClosure::Decline,
     )
     .await
     .unwrap();
@@ -927,8 +953,7 @@ async fn an_accepted_poll_does_not_reopen_a_request_cancelled_while_in_flight() 
         &pool,
         "contact-one",
         in_flight.revision,
-        RequestDirection::Sent,
-        RequestState::Expired,
+        requests::RequestClosure::Cancel,
     )
     .await
     .unwrap();

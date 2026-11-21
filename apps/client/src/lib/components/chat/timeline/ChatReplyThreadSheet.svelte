@@ -78,9 +78,9 @@
    * The grabber and the sheet name: the whole strip moves the sheet, and the name says what the sheet holds. Once the
    * timeline scrolls away from its top, a divider like the date dividers separates the strip from it.
    */
-  .thread-sheet-handle { display:flex; flex:0 0 auto; flex-direction:column; align-items:center; gap:0.4rem; padding-block:0.5rem 0.375rem; border-bottom:1px solid transparent; background:var(--cal-bg); touch-action:none; user-select:none; }
+  .thread-sheet-handle { display:flex; flex:0 0 auto; flex-direction:column; align-items:center; gap:0.8rem; padding-block:1rem 0.75rem; border-bottom:1px solid transparent; background:var(--cal-bg); touch-action:none; user-select:none; }
   .thread-sheet-handle.scrolled { border-bottom-color:var(--border); }
-  .thread-sheet-grabber { width:2.25rem; height:3px; border-radius:9999px; background:var(--foreground); }
-  .thread-sheet-title { color:var(--foreground); font-size:var(--chat-organizational-font-size,calc(0.875rem * var(--type-scale))); font-weight:600; line-height:1; }
+  .thread-sheet-grabber { width:2.25rem; height:2px; border-radius:9999px; background:var(--foreground); }
+  .thread-sheet-title { color:var(--foreground); font-size:var(--chat-organizational-font-size,calc(0.875rem * var(--type-scale))); font-weight:500; line-height:1; }
   @media (prefers-reduced-motion: reduce) { .thread-sheet[data-sheet-motion="settle"], .thread-sheet-backdrop[data-sheet-motion="settle"] { transition:none; } }
 </style>

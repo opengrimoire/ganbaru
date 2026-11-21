@@ -4,7 +4,9 @@
 //! coordinator, or a member its coordinator revoked. Each role carries only the progress it can
 //! hold, so a revoked device has no coordinator pin and a member never serves its own copy.
 
-use super::{CoordinatorPin, PendingAcknowledgement, StoredOutgoingTransfer, UnlinkReason};
+use super::{
+    CoordinatorPin, PendingAcknowledgement, PendingActivation, StoredOutgoingTransfer, UnlinkReason,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum LinkRole {
@@ -30,6 +32,12 @@ pub(super) enum LinkRole {
 pub(super) enum MemberCopy {
     /// The linked vault has not been activated here yet.
     Required,
+    /// A received copy is being activated. `was_ready` is the readiness an abandoned activation
+    /// returns to: whether a copy was active here before it.
+    Activating {
+        activation: PendingActivation,
+        was_ready: bool,
+    },
     /// A copy is active here. `pending_acknowledgement` names the coordinator copy whose
     /// activation the coordinator has not acknowledged yet.
     Ready {
@@ -53,10 +61,13 @@ pub(super) enum LinkEvent {
     CoordinatorRevoked,
     /// A coordinator linked this device and presented `pin`.
     CoordinatorPinned { pin: CoordinatorPin },
-    /// A received copy was activated here and awaits its acknowledgement.
-    CopyActivated {
-        acknowledgement: PendingAcknowledgement,
-    },
+    /// A received copy is about to be activated here.
+    ActivationStarted { activation: PendingActivation },
+    /// The copy being activated is in use here. A coordinator copy then awaits its
+    /// acknowledgement.
+    CopyActivated { transfer_id: String },
+    /// The copy being activated never replaced the vault, so the member keeps its readiness.
+    ActivationAbandoned { transfer_id: String },
     /// The coordinator acknowledged the activation of `transfer_id`.
     CopyAcknowledged { transfer_id: String },
     /// The coordinator prepared a copy for one of its devices. Only desktop serves copies.
@@ -111,6 +122,20 @@ impl LinkRole {
     pub(super) fn outgoing(&self) -> Option<&StoredOutgoingTransfer> {
         match self {
             Self::Coordinator { outgoing, .. } => outgoing.as_ref(),
+            _ => None,
+        }
+    }
+
+    pub(super) fn activation(&self) -> Option<(&PendingActivation, bool)> {
+        match self {
+            Self::Member {
+                copy:
+                    MemberCopy::Activating {
+                        activation,
+                        was_ready,
+                    },
+                ..
+            } => Some((activation, *was_ready)),
             _ => None,
         }
     }
@@ -192,17 +217,77 @@ pub(super) fn transition(role: &LinkRole, event: LinkEvent) -> Result<LinkRole, 
             "unlink coordinated devices before linking this device to another coordinator"
                 .to_string(),
         ),
-        (Role::Member { coordinator, .. }, Event::CopyActivated { acknowledgement }) => {
+        (Role::Member { coordinator, copy }, Event::ActivationStarted { activation }) => {
+            let was_ready = match copy {
+                MemberCopy::Required => false,
+                MemberCopy::Ready {
+                    pending_acknowledgement: None,
+                } => true,
+                MemberCopy::Ready {
+                    pending_acknowledgement: Some(_),
+                } => {
+                    return Err(
+                        "acknowledge the previous vault copy before activating another".to_string(),
+                    );
+                }
+                MemberCopy::Activating { .. } => {
+                    return Err("another vault copy is being activated".to_string());
+                }
+            };
             Ok(Role::Member {
                 coordinator: coordinator.clone(),
-                copy: MemberCopy::Ready {
-                    pending_acknowledgement: Some(acknowledgement),
+                copy: MemberCopy::Activating {
+                    activation,
+                    was_ready,
                 },
             })
         }
-        (_, Event::CopyActivated { .. }) => {
+        (_, Event::ActivationStarted { .. }) => {
             Err("this device is not linked to a coordinator".to_string())
         }
+        (
+            Role::Member {
+                coordinator,
+                copy: MemberCopy::Activating { activation, .. },
+            },
+            Event::CopyActivated { transfer_id },
+        ) if activation.acknowledgement.transfer_id == transfer_id => Ok(Role::Member {
+            coordinator: coordinator.clone(),
+            copy: MemberCopy::Ready {
+                pending_acknowledgement: activation
+                    .from_coordinator
+                    .then(|| activation.acknowledgement.clone()),
+            },
+        }),
+        (_, Event::CopyActivated { .. }) => {
+            Err("no vault copy with this transfer is being activated".to_string())
+        }
+        (
+            Role::Member {
+                coordinator,
+                copy:
+                    MemberCopy::Activating {
+                        activation,
+                        was_ready,
+                    },
+            },
+            Event::ActivationAbandoned { transfer_id },
+        ) => {
+            if activation.acknowledgement.transfer_id != transfer_id {
+                return Err("abandoned activation does not match".to_string());
+            }
+            Ok(Role::Member {
+                coordinator: coordinator.clone(),
+                copy: if *was_ready {
+                    MemberCopy::Ready {
+                        pending_acknowledgement: None,
+                    }
+                } else {
+                    MemberCopy::Required
+                },
+            })
+        }
+        (_, Event::ActivationAbandoned { .. }) => Ok(role.clone()),
         (
             Role::Member {
                 coordinator,
@@ -278,6 +363,7 @@ pub(super) fn transition(role: &LinkRole, event: LinkEvent) -> Result<LinkRole, 
 mod tests {
     use super::*;
     use crate::protocol::{BundleMetadata, PROTOCOL_VERSION};
+    use std::path::PathBuf;
 
     fn pin(device_id: &str) -> CoordinatorPin {
         CoordinatorPin {
@@ -330,6 +416,22 @@ mod tests {
         }
     }
 
+    fn activation(transfer_id: &str, from_coordinator: bool) -> PendingActivation {
+        PendingActivation {
+            acknowledgement: acknowledgement(transfer_id),
+            target: PathBuf::from("/vaults/Ganbaru"),
+            staging: PathBuf::from("/vaults/.ganbaru.handoff-staging"),
+            from_coordinator,
+        }
+    }
+
+    fn activating(transfer_id: &str, from_coordinator: bool, was_ready: bool) -> MemberCopy {
+        MemberCopy::Activating {
+            activation: activation(transfer_id, from_coordinator),
+            was_ready,
+        }
+    }
+
     fn ready(pending: Option<&str>) -> MemberCopy {
         MemberCopy::Ready {
             pending_acknowledgement: pending.map(acknowledgement),
@@ -350,6 +452,9 @@ mod tests {
             member(MemberCopy::Required),
             member(ready(None)),
             member(ready(Some("transfer-1"))),
+            member(activating("transfer-2", true, false)),
+            member(activating("transfer-2", false, true)),
+            member(activating("transfer-3", true, true)),
             LinkRole::Revoked,
         ]
     }
@@ -375,8 +480,17 @@ mod tests {
             LinkEvent::CoordinatorPinned {
                 pin: pin("device-other"),
             },
+            LinkEvent::ActivationStarted {
+                activation: activation("transfer-2", true),
+            },
+            LinkEvent::ActivationStarted {
+                activation: activation("transfer-2", false),
+            },
             LinkEvent::CopyActivated {
-                acknowledgement: acknowledgement("transfer-2"),
+                transfer_id: "transfer-2".to_string(),
+            },
+            LinkEvent::ActivationAbandoned {
+                transfer_id: "transfer-2".to_string(),
             },
             LinkEvent::CopyAcknowledged {
                 transfer_id: "transfer-1".to_string(),
@@ -442,14 +556,44 @@ mod tests {
                 }
                 _ => None,
             },
-            Event::CopyActivated { acknowledgement } => match role {
-                Role::Member { coordinator, .. } => Some(Role::Member {
+            Event::ActivationStarted { activation: next } => match role {
+                Role::Member {
+                    coordinator,
+                    copy:
+                        MemberCopy::Required
+                        | MemberCopy::Ready {
+                            pending_acknowledgement: None,
+                        },
+                } => Some(Role::Member {
                     coordinator: coordinator.clone(),
-                    copy: MemberCopy::Ready {
-                        pending_acknowledgement: Some(acknowledgement.clone()),
+                    copy: MemberCopy::Activating {
+                        activation: next.clone(),
+                        was_ready: role.copy_ready(),
                     },
                 }),
                 _ => None,
+            },
+            Event::CopyActivated { transfer_id } => match role.activation() {
+                Some((current, _)) if &current.acknowledgement.transfer_id == transfer_id => {
+                    // Only a coordinator copy has its acknowledgement retried.
+                    Some(member(ready(
+                        current.from_coordinator.then_some(transfer_id.as_str()),
+                    )))
+                }
+                _ => None,
+            },
+            Event::ActivationAbandoned { transfer_id } => match role.activation() {
+                Some((current, was_ready))
+                    if &current.acknowledgement.transfer_id == transfer_id =>
+                {
+                    Some(member(if was_ready {
+                        ready(None)
+                    } else {
+                        MemberCopy::Required
+                    }))
+                }
+                Some(_) => None,
+                None => Some(role.clone()),
             },
             Event::CopyAcknowledged { transfer_id } => match role.pending_acknowledgement() {
                 Some(pending) if &pending.transfer_id == transfer_id => Some(member(ready(None))),
@@ -558,5 +702,42 @@ mod tests {
         )
         .expect("link again");
         assert!(!relinked.copy_ready());
+    }
+
+    #[test]
+    fn an_activation_ends_ready_or_back_where_it_started() {
+        for start in [MemberCopy::Required, ready(None)] {
+            for from_coordinator in [false, true] {
+                let activating = transition(
+                    &member(start.clone()),
+                    LinkEvent::ActivationStarted {
+                        activation: activation("transfer-2", from_coordinator),
+                    },
+                )
+                .expect("start");
+                assert!(!activating.copy_ready());
+                assert!(!activating.has_active_handoff());
+                let abandoned = transition(
+                    &activating,
+                    LinkEvent::ActivationAbandoned {
+                        transfer_id: "transfer-2".to_string(),
+                    },
+                )
+                .expect("abandon");
+                assert_eq!(abandoned, member(start.clone()));
+                let activated = transition(
+                    &activating,
+                    LinkEvent::CopyActivated {
+                        transfer_id: "transfer-2".to_string(),
+                    },
+                )
+                .expect("activate");
+                assert!(activated.copy_ready());
+                assert_eq!(
+                    activated.pending_acknowledgement().is_some(),
+                    from_coordinator
+                );
+            }
+        }
     }
 }

@@ -262,6 +262,20 @@ pub struct PendingAcknowledgement {
     pub transfer_id: String,
 }
 
+/// A received copy this member is activating: the folders the activation moves between and who
+/// served it, so an activation that a crash or an error interrupted is judged from disk.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingActivation {
+    pub acknowledgement: PendingAcknowledgement,
+    /// The vault folder the copy replaces or moves into.
+    pub target: PathBuf,
+    /// The staged copy, which the activation renames into `target`.
+    pub staging: PathBuf,
+    /// Whether the coordinator served the copy. Only its acknowledgement is retried.
+    pub from_coordinator: bool,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredOutgoingTransfer {

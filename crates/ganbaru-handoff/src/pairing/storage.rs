@@ -3,9 +3,10 @@
 use super::role::{LinkRole, MemberCopy};
 use super::{
     CoordinatorPin, LinkedPeer, MAX_LINKED_PEERS, MAX_REVOKED_PEERS, PAIRING_STATE_SCHEMA_VERSION,
-    PairingManagerInner, PairingState, PendingAcknowledgement, RevokedPeer, StoredIdentity,
-    StoredOutgoingTransfer, UnlinkReason, certificate_fingerprint, decode_certificate,
-    decode_private_key, initialized_state, random_token, validate_pinned_endpoint,
+    PairingManagerInner, PairingState, PendingAcknowledgement, PendingActivation, RevokedPeer,
+    StoredIdentity, StoredOutgoingTransfer, UnlinkReason, certificate_fingerprint,
+    decode_certificate, decode_private_key, initialized_state, random_token,
+    validate_pinned_endpoint,
 };
 use crate::protocol::{self, validate_device_label, validate_identifier};
 use serde::{Deserialize, Serialize};
@@ -37,6 +38,23 @@ fn validate_pending_acknowledgement(
     validate_activation_record(pending)?;
     if pending.device_id != expected_device_id {
         return Err("pending activation acknowledgement is inconsistent".to_string());
+    }
+    Ok(())
+}
+
+/// Refuses an activation record whose folders are not two distinct absolute paths, so recovery
+/// never judges a folder it would have to resolve against the working directory.
+fn validate_pending_activation(
+    activation: &PendingActivation,
+    expected_device_id: &str,
+) -> Result<(), String> {
+    validate_pending_acknowledgement(&activation.acknowledgement, expected_device_id)?;
+    let folder = |path: &Path| path.is_absolute() && path.parent().is_some();
+    if !folder(&activation.target)
+        || !folder(&activation.staging)
+        || activation.target == activation.staging
+    {
+        return Err("pending activation folders are inconsistent".to_string());
     }
     Ok(())
 }
@@ -175,6 +193,9 @@ pub(super) fn validate_state(state: &PairingState, expected_device_id: &str) -> 
     if let Some(pending) = state.role.pending_acknowledgement() {
         validate_pending_acknowledgement(pending, expected_device_id)?;
     }
+    if let Some((activation, _)) = state.role.activation() {
+        validate_pending_activation(activation, expected_device_id)?;
+    }
     if let Some(transfer) = state.role.outgoing() {
         validate_stored_outgoing(transfer)?;
     }
@@ -209,6 +230,17 @@ struct StoredPairingState {
     outgoing_transfer: Option<StoredOutgoingTransfer>,
     #[serde(default)]
     completed_activation: Option<PendingAcknowledgement>,
+    /// The copy a member is activating, with the readiness it returns to when abandoned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    activation: Option<StoredActivation>,
+}
+
+/// A member activation as `vault-handoff.json` stores it.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredActivation {
+    activation: PendingActivation,
+    was_ready: bool,
 }
 
 impl TryFrom<StoredPairingState> for PairingState {
@@ -224,6 +256,7 @@ impl TryFrom<StoredPairingState> for PairingState {
             stored.pending_acknowledgement,
             stored.outgoing_transfer,
             stored.completed_activation,
+            stored.activation,
         )?;
         Ok(Self {
             schema_version: stored.schema_version,
@@ -253,6 +286,12 @@ impl From<&PairingState> for StoredPairingState {
             pending_acknowledgement: role.pending_acknowledgement().cloned(),
             outgoing_transfer: role.outgoing().cloned(),
             completed_activation: role.completed().cloned(),
+            activation: role
+                .activation()
+                .map(|(activation, was_ready)| StoredActivation {
+                    activation: activation.clone(),
+                    was_ready,
+                }),
         }
     }
 }
@@ -272,10 +311,11 @@ fn decode_role(
     pending: Option<PendingAcknowledgement>,
     outgoing: Option<StoredOutgoingTransfer>,
     completed: Option<PendingAcknowledgement>,
+    activation: Option<StoredActivation>,
 ) -> Result<LinkRole, String> {
     let serves_copies = outgoing.is_some() || completed.is_some();
     let Some(coordinator) = coordinator else {
-        if copy_ready || pending.is_some() {
+        if copy_ready || pending.is_some() || activation.is_some() {
             return Err(inconsistent(
                 "a vault copy is recorded without a coordinator",
             ));
@@ -312,14 +352,35 @@ fn decode_role(
     if serves_copies {
         return Err(inconsistent("a member serves a coordinator copy"));
     }
-    let copy = match (copy_ready, pending) {
-        (false, Some(_)) => {
+    let copy = match (copy_ready, pending, activation) {
+        (true, _, Some(_)) => {
+            return Err(inconsistent(
+                "a vault copy is recorded as ready while it is being activated",
+            ));
+        }
+        (_, Some(_), Some(_)) => {
+            return Err(inconsistent(
+                "an activation awaits acknowledgement while another copy is being activated",
+            ));
+        }
+        (
+            false,
+            None,
+            Some(StoredActivation {
+                activation,
+                was_ready,
+            }),
+        ) => MemberCopy::Activating {
+            activation,
+            was_ready,
+        },
+        (false, Some(_), None) => {
             return Err(inconsistent(
                 "an activation awaits acknowledgement without a vault copy",
             ));
         }
-        (false, None) => MemberCopy::Required,
-        (true, pending_acknowledgement) => MemberCopy::Ready {
+        (false, None, None) => MemberCopy::Required,
+        (true, pending_acknowledgement, None) => MemberCopy::Ready {
             pending_acknowledgement,
         },
     };

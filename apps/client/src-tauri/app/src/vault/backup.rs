@@ -432,6 +432,20 @@ impl HandoffPlacement {
     }
 }
 
+/// The folder a received vault replaces: the one Android vault folder.
+#[cfg(target_os = "android")]
+pub(crate) fn handoff_replace_target(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    default_vault_path(app)
+}
+
+/// The folder a received vault replaces: the vault in use.
+#[cfg(desktop)]
+pub(crate) fn handoff_replace_target<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<PathBuf, String> {
+    super::active_vault_path(app)
+}
+
 #[cfg(target_os = "android")]
 pub(crate) async fn activate_android_handoff(
     app: &tauri::AppHandle,
@@ -440,7 +454,7 @@ pub(crate) async fn activate_android_handoff(
     expected_vault_id: &str,
     previous: ReplacedVault,
 ) -> Result<VaultInfo, String> {
-    let target = default_vault_path(app)?;
+    let target = handoff_replace_target(app)?;
     activate_handoff_at_path(
         app,
         staging,
@@ -459,7 +473,7 @@ pub(crate) async fn activate_active_handoff<R: Runtime>(
     expected_vault_id: &str,
     previous: ReplacedVault,
 ) -> Result<VaultInfo, String> {
-    let target = super::active_vault_path(app)?;
+    let target = handoff_replace_target(app)?;
     activate_handoff_at_path(
         app,
         staging,
@@ -488,6 +502,59 @@ pub(crate) async fn activate_handoff_in_new_folder<R: Runtime>(
         expected_vault_id,
     )
     .await
+}
+
+/// What an interrupted handoff activation left on disk, read after the swap journal of its
+/// target is recovered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ActivationDisk {
+    /// How recovery left the swap of the target folder.
+    pub(crate) swap: swap_journal::Recovery,
+    /// Whether the staged copy is still there, so it never took the target's place.
+    pub(crate) staging: bool,
+    /// Whether the target folder holds the received vault.
+    pub(crate) target_holds_vault: bool,
+    /// Whether the target folder is the vault in use.
+    pub(crate) target_active: bool,
+}
+
+/// Recovers the swap of `target` and reports what the activation of the copy staged at
+/// `staging` left there. Recovery only ever moves folders its swap journal names.
+pub(crate) fn observe_handoff_activation<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    target: &Path,
+    staging: &Path,
+    vault_id: &str,
+) -> Result<ActivationDisk, String> {
+    let swap = swap_journal::recover(target)?;
+    Ok(ActivationDisk {
+        swap,
+        staging: fs::symlink_metadata(staging).is_ok(),
+        target_holds_vault: holds_vault(target, vault_id),
+        target_active: match (super::active_vault_path(app), fs::canonicalize(target)) {
+            (Ok(active), Ok(target)) => active == target,
+            _ => false,
+        },
+    })
+}
+
+/// Makes the received vault `vault_id` in `target`, which an interrupted activation moved into
+/// place, the vault in use.
+#[cfg(desktop)]
+pub(crate) async fn select_activated_handoff<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    target: &Path,
+    vault_id: &str,
+) -> Result<(), String> {
+    let info = vault_info_from_path(target)?;
+    if info.vault_id != vault_id {
+        return Err("activated handoff belongs to a different vault".to_string());
+    }
+    let quiescence = super::quiescence::begin_snapshot_quiescence(app).await?;
+    let selected = select_quiesced_vault(app, &info, &quiescence);
+    let resumed = quiescence.finish();
+    selected?;
+    resumed
 }
 
 /// Whether the folder at `path` is the vault `vault_id`.

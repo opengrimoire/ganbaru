@@ -983,6 +983,21 @@ fn unlink_clears_the_peer_but_refuses_active_transfer_state() {
     assert!(manager.linked_peers().expect("peer status").is_empty());
 }
 
+/// Activates a coordinator copy described by `acknowledgement` on `manager`.
+fn activate_coordinator_copy(
+    manager: &PairingManager,
+    acknowledgement: PendingAcknowledgement,
+) -> Result<(), String> {
+    let transfer_id = acknowledgement.transfer_id.clone();
+    manager.begin_activation(PendingActivation {
+        acknowledgement,
+        target: PathBuf::from("/vaults/Ganbaru"),
+        staging: PathBuf::from("/vaults/.ganbaru.handoff-transfer.staging"),
+        from_coordinator: true,
+    })?;
+    manager.record_activation(&transfer_id)
+}
+
 #[test]
 fn activation_acknowledgement_survives_restart() {
     let (temporary, manager, _, _) = linked_phone("pending-ack");
@@ -991,9 +1006,7 @@ fn activation_acknowledgement_survives_restart() {
         device_id: "device-phone".to_string(),
         transfer_id: "transfer-1".to_string(),
     };
-    manager
-        .record_activation(pending.clone())
-        .expect("record activation");
+    activate_coordinator_copy(&manager, pending.clone()).expect("record activation");
     drop(manager);
 
     let restarted = PairingManager::default();
@@ -1820,7 +1833,7 @@ fn a_revoked_member_needs_a_new_copy_when_it_links_again() {
         device_id: "device-phone".to_string(),
         transfer_id: "transfer-1".to_string(),
     };
-    phone.record_activation(pending).expect("activate copy");
+    activate_coordinator_copy(&phone, pending).expect("activate copy");
     phone
         .clear_pending_acknowledgement("transfer-1")
         .expect("acknowledge copy");
@@ -1921,9 +1934,62 @@ fn acknowledgement_json(transfer_id: &str) -> serde_json::Value {
     })
 }
 
+fn activation_json(target: &str) -> serde_json::Value {
+    serde_json::json!({
+        "activation": {
+            "acknowledgement": acknowledgement_json("transfer-2"),
+            "target": target,
+            "staging": "/vaults/.ganbaru.handoff-transfer-2.staging",
+            "fromCoordinator": true,
+        },
+        "wasReady": false,
+    })
+}
+
+#[test]
+fn an_interrupted_activation_survives_restart_and_returns_to_its_readiness() {
+    let (phone_root, phone, _, _) = linked_phone("activating");
+    let activation = PendingActivation {
+        acknowledgement: PendingAcknowledgement {
+            vault_id: "vault-1".to_string(),
+            device_id: "device-phone".to_string(),
+            transfer_id: "transfer-2".to_string(),
+        },
+        target: PathBuf::from("/vaults/Ganbaru"),
+        staging: PathBuf::from("/vaults/.ganbaru.handoff-transfer-2.staging"),
+        from_coordinator: false,
+    };
+    phone.begin_activation(activation.clone()).expect("begin");
+    assert!(phone.begin_activation(activation.clone()).is_err());
+    drop(phone);
+
+    let restarted = PairingManager::default();
+    restarted
+        .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+        .expect("restart");
+    assert_eq!(
+        restarted.pending_activation().expect("activation"),
+        Some(activation.clone())
+    );
+    assert!(!restarted.replica_ready().expect("ready"));
+    assert!(restarted.abandon_activation("transfer-9").is_err());
+    restarted.abandon_activation("transfer-2").expect("abandon");
+    assert!(!restarted.replica_ready().expect("ready"));
+    assert_eq!(restarted.pending_activation().expect("activation"), None);
+
+    restarted.begin_activation(activation).expect("begin again");
+    restarted.record_activation("transfer-2").expect("activate");
+    assert!(restarted.replica_ready().expect("ready"));
+    assert_eq!(
+        restarted.pending_acknowledgement().expect("pending"),
+        None,
+        "a member copy is settled without a retried acknowledgement"
+    );
+}
+
 #[test]
 fn stored_member_states_that_no_role_holds_are_refused() {
-    let cases: [StateCase; 5] = [
+    let cases: [StateCase; 10] = [
         (
             "revoked-pin",
             |state| {
@@ -1965,6 +2031,49 @@ fn stored_member_states_that_no_role_holds_are_refused() {
                 state.insert("replicaReady".to_string(), true.into());
             },
             "without a coordinator",
+        ),
+        (
+            "activating-while-ready",
+            |state| {
+                state.insert("replicaReady".to_string(), true.into());
+                state.insert("activation".to_string(), activation_json("/vaults/Ganbaru"));
+            },
+            "ready while it is being activated",
+        ),
+        (
+            "activating-with-ack",
+            |state| {
+                state.insert(
+                    "pendingAcknowledgement".to_string(),
+                    acknowledgement_json("transfer-1"),
+                );
+                state.insert("activation".to_string(), activation_json("/vaults/Ganbaru"));
+            },
+            "while another copy is being activated",
+        ),
+        (
+            "activating-without-pin",
+            |state| {
+                state.insert("coordinator".to_string(), serde_json::Value::Null);
+                state.insert("activation".to_string(), activation_json("/vaults/Ganbaru"));
+            },
+            "without a coordinator",
+        ),
+        (
+            "activating-relative",
+            |state| {
+                state.insert("activation".to_string(), activation_json("Ganbaru"));
+            },
+            "folders are inconsistent",
+        ),
+        (
+            "activating-unknown",
+            |state| {
+                let mut activation = activation_json("/vaults/Ganbaru");
+                activation["extra"] = true.into();
+                state.insert("activation".to_string(), activation);
+            },
+            "unknown field",
         ),
     ];
     for (label, edit, expected) in cases {
@@ -2023,13 +2132,15 @@ fn every_role_round_trips_through_the_stored_state() {
             .expect("restart");
         manager
     };
-    phone
-        .record_activation(PendingAcknowledgement {
+    activate_coordinator_copy(
+        &phone,
+        PendingAcknowledgement {
             vault_id: "vault-1".to_string(),
             device_id: "device-phone".to_string(),
             transfer_id: "transfer-1".to_string(),
-        })
-        .expect("activate");
+        },
+    )
+    .expect("activate");
     let restarted = restart(phone_root.path(), "device-phone");
     assert!(restarted.replica_ready().expect("ready"));
     assert!(restarted.has_pending_transfer().expect("pending"));

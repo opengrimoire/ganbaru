@@ -8,8 +8,8 @@ use super::RegisteredBundle;
 use super::storage::validate_stored_outgoing;
 use super::storage::{validate_activation_record, write_private_file_atomically};
 use super::{
-    LinkEvent, PairingManager, PairingManagerInner, PendingAcknowledgement, StoredOutgoingTransfer,
-    initialized_state, update_state,
+    LinkEvent, PairingManager, PairingManagerInner, PendingAcknowledgement, PendingActivation,
+    StoredOutgoingTransfer, initialized_state, update_state,
 };
 #[cfg(desktop)]
 use crate::protocol;
@@ -39,13 +39,44 @@ impl PairingManager {
             .cloned())
     }
 
-    pub fn record_activation(&self, acknowledgement: PendingAcknowledgement) -> Result<(), String> {
-        validate_identifier("vault id", &acknowledgement.vault_id)?;
-        validate_identifier("device id", &acknowledgement.device_id)?;
-        validate_identifier("transfer id", &acknowledgement.transfer_id)?;
+    /// The received copy this member was activating when it last stopped, if any.
+    pub fn pending_activation(&self) -> Result<Option<PendingActivation>, String> {
+        let inner = self.lock()?;
+        Ok(initialized_state(&inner)?
+            .role
+            .activation()
+            .map(|(activation, _)| activation.clone()))
+    }
+
+    /// Records that `activation` is about to replace or fill its target folder. It is stored
+    /// before any folder moves, so recovery judges an interrupted activation from disk.
+    pub fn begin_activation(&self, activation: PendingActivation) -> Result<(), String> {
         let mut inner = self.lock()?;
         update_state(&mut inner, |state| {
-            state.apply(LinkEvent::CopyActivated { acknowledgement })
+            state.apply(LinkEvent::ActivationStarted { activation })
+        })
+    }
+
+    /// Records that the copy of `transfer_id` is in use here.
+    pub fn record_activation(&self, transfer_id: &str) -> Result<(), String> {
+        validate_identifier("transfer id", transfer_id)?;
+        let mut inner = self.lock()?;
+        update_state(&mut inner, |state| {
+            state.apply(LinkEvent::CopyActivated {
+                transfer_id: transfer_id.to_string(),
+            })
+        })
+    }
+
+    /// Records that the copy of `transfer_id` never replaced the vault, so the member keeps the
+    /// readiness it had before.
+    pub fn abandon_activation(&self, transfer_id: &str) -> Result<(), String> {
+        validate_identifier("transfer id", transfer_id)?;
+        let mut inner = self.lock()?;
+        update_state(&mut inner, |state| {
+            state.apply(LinkEvent::ActivationAbandoned {
+                transfer_id: transfer_id.to_string(),
+            })
         })
     }
 

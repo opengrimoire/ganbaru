@@ -1,10 +1,12 @@
 //! Snapshot bootstrap: receiving a vault copy, activating it, acknowledging it, and reporting
 //! the link status of this device.
 
-use super::pairing::{PairingManager, PendingAcknowledgement};
+use super::pairing::{PairingManager, PendingAcknowledgement, PendingActivation};
 use super::protocol::BundleMetadata;
 use super::transport::{BundleSource, FetchedBundle, TransferCancellation};
+use crate::vault::backup::ActivationDisk;
 use crate::vault::backup::ReplacedVault;
+use crate::vault::backup::swap_journal::Recovery;
 use serde::Serialize;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -308,8 +310,16 @@ async fn receive(
     app: &tauri::AppHandle,
     cancellation: &TransferCancellation,
 ) -> Result<ReceiveOutcome, String> {
-    flush_pending_acknowledgement(app).await?;
     let pairing = app.state::<PairingManager>().inner().clone();
+    if let Some(transfer_id) = finish_interrupted_activation(app, &pairing).await? {
+        reload_application_shell(app)?;
+        return Ok(ReceiveOutcome {
+            transfer_id: Some(transfer_id),
+            activated: true,
+            in_progress: false,
+        });
+    }
+    flush_pending_acknowledgement(app).await?;
     let coordinator = pairing
         .coordinator_pin()?
         .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
@@ -382,49 +392,76 @@ async fn receive(
     };
 
     #[cfg(desktop)]
-    if let Some(target) = new_folder {
-        crate::vault::backup::activate_handoff_in_new_folder(
-            app,
-            &staging,
-            target,
-            &metadata.transfer_id,
-            &metadata.vault_id,
-        )
-        .await?;
-        app.state::<ReceiverLifecycle>().set_link_folder(None)?;
-    } else {
-        activate_handoff(
-            app,
-            &staging,
-            &metadata.transfer_id,
-            &metadata.vault_id,
-            previous,
-        )
-        .await?;
-    }
+    let target = match &new_folder {
+        Some(target) => target.clone(),
+        None => replace_target(app)?,
+    };
     #[cfg(not(desktop))]
-    activate_handoff(
+    let target = replace_target(app)?;
+    let pending = PendingAcknowledgement {
+        vault_id: metadata.vault_id.clone(),
+        device_id: pairing.device_id()?,
+        transfer_id: metadata.transfer_id.clone(),
+    };
+    pairing.begin_activation(PendingActivation {
+        acknowledgement: pending.clone(),
+        target,
+        staging: staging.clone(),
+        from_coordinator,
+    })?;
+    #[cfg(desktop)]
+    let activated = match new_folder {
+        Some(target) => {
+            let activated = crate::vault::backup::activate_handoff_in_new_folder(
+                app,
+                &staging,
+                target,
+                &metadata.transfer_id,
+                &metadata.vault_id,
+            )
+            .await;
+            if activated.is_ok() {
+                app.state::<ReceiverLifecycle>().set_link_folder(None)?;
+            }
+            activated
+        }
+        None => {
+            activate_handoff(
+                app,
+                &staging,
+                &metadata.transfer_id,
+                &metadata.vault_id,
+                previous,
+            )
+            .await
+        }
+    };
+    #[cfg(not(desktop))]
+    let activated = activate_handoff(
         app,
         &staging,
         &metadata.transfer_id,
         &metadata.vault_id,
         previous,
     )
-    .await?;
-    let device_id = pairing.device_id()?;
-    let pending = PendingAcknowledgement {
-        vault_id: metadata.vault_id.clone(),
-        device_id,
-        transfer_id: metadata.transfer_id.clone(),
-    };
-    pairing.record_activation(pending.clone())?;
+    .await;
+    if let Err(error) = activated {
+        // The activation may have failed after the copy took its place, so the outcome is
+        // judged from disk instead of assumed.
+        match finish_interrupted_activation(app, &pairing).await {
+            Ok(Some(_)) => reload_application_shell(app)?,
+            Ok(None) => {}
+            Err(resolve) => eprintln!("vault copy activation left undecided: {resolve}"),
+        }
+        return Err(error);
+    }
+    pairing.record_activation(&pending.transfer_id)?;
     let acknowledgement = if from_coordinator {
         super::transport::acknowledge_activation(&pairing, &source, &pending).await
     } else {
         // A pending acknowledgement is only ever retried with the coordinator, so a member's
-        // copy is settled first and acknowledged once; a member releases an unacknowledged
-        // copy when its reservation expires.
-        pairing.clear_pending_acknowledgement(&pending.transfer_id)?;
+        // copy is settled as it activates and acknowledged once; a member releases an
+        // unacknowledged copy when its reservation expires.
         if let Err(error) =
             super::transport::acknowledge_activation(&pairing, &source, &pending).await
         {
@@ -704,10 +741,94 @@ async fn flush_pending_acknowledgement(app: &tauri::AppHandle) -> Result<(), Str
     Ok(())
 }
 
+/// How an activation that stopped before recording its outcome ends.
+#[derive(Debug, PartialEq, Eq)]
+enum ActivationResolution {
+    /// The swap of its target still needs recovery, so nothing is decided.
+    Pending(String),
+    /// The copy never took the target's place, or is gone, so the member keeps the readiness
+    /// it had before.
+    Abandon,
+    /// The copy took its place but is not in use yet, so it is selected and then recorded.
+    Select,
+    /// The copy is in use, so it is recorded as activated.
+    Commit,
+}
+
+/// Judges an interrupted activation from what it left on disk. The staged copy is renamed into
+/// the target as the activation's only move of it, so a staged copy that is still there proves
+/// the vault was never replaced.
+fn resolve_activation(disk: &ActivationDisk) -> ActivationResolution {
+    if let Recovery::Pending(reason) = &disk.swap {
+        return ActivationResolution::Pending(reason.clone());
+    }
+    if disk.staging || !disk.target_holds_vault {
+        ActivationResolution::Abandon
+    } else if disk.target_active {
+        ActivationResolution::Commit
+    } else {
+        ActivationResolution::Select
+    }
+}
+
+/// Settles the activation this member recorded but never finished, judged from disk. Returns
+/// the transfer whose copy it made the vault in use, so the caller reloads the shell.
+async fn finish_interrupted_activation(
+    app: &tauri::AppHandle,
+    pairing: &PairingManager,
+) -> Result<Option<String>, String> {
+    let Some(activation) = pairing.pending_activation()? else {
+        return Ok(None);
+    };
+    let transfer_id = activation.acknowledgement.transfer_id.clone();
+    let disk = crate::vault::backup::observe_handoff_activation(
+        app,
+        &activation.target,
+        &activation.staging,
+        &activation.acknowledgement.vault_id,
+    )?;
+    match resolve_activation(&disk) {
+        ActivationResolution::Pending(reason) => Err(reason),
+        ActivationResolution::Abandon => {
+            pairing.abandon_activation(&transfer_id)?;
+            discard_refused_copy(pairing, &activation.staging, &transfer_id);
+            Ok(None)
+        }
+        ActivationResolution::Commit => {
+            pairing.record_activation(&transfer_id)?;
+            Ok(None)
+        }
+        ActivationResolution::Select => {
+            #[cfg(desktop)]
+            crate::vault::backup::select_activated_handoff(
+                app,
+                &activation.target,
+                &activation.acknowledgement.vault_id,
+            )
+            .await?;
+            pairing.record_activation(&transfer_id)?;
+            Ok(Some(transfer_id))
+        }
+    }
+}
+
 /// One pass of the link loop: retries a pending activation acknowledgement and asks the
 /// coordinator for the person key while the linked vault is active here.
 async fn reconcile_link(app: &tauri::AppHandle) {
     let pairing = app.state::<PairingManager>().inner().clone();
+    // Settling holds the receive guard, so it never judges the folders of a running receive.
+    let lifecycle = app.state::<ReceiverLifecycle>();
+    if let Ok(Some(_guard)) = lifecycle.try_begin() {
+        match finish_interrupted_activation(app, &pairing).await {
+            Ok(Some(_)) => {
+                if let Err(error) = reload_application_shell(app) {
+                    eprintln!("vault copy activation finished; reload failed: {error}");
+                }
+            }
+            Ok(None) => {}
+            Err(error) => eprintln!("vault copy activation left undecided: {error}"),
+        }
+    }
     if !pairing.replica_ready().unwrap_or(false) {
         return;
     }
@@ -770,6 +891,17 @@ fn handoff_staging_path(
     _app: &tauri::AppHandle,
     _transfer_id: &str,
 ) -> Result<std::path::PathBuf, String> {
+    Err("vault handoff is not available on iOS".to_string())
+}
+
+/// The folder a received copy replaces when it does not go into a new folder.
+#[cfg(any(desktop, target_os = "android"))]
+fn replace_target(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    crate::vault::backup::handoff_replace_target(app)
+}
+
+#[cfg(target_os = "ios")]
+fn replace_target(_app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     Err("vault handoff is not available on iOS".to_string())
 }
 
@@ -908,6 +1040,49 @@ pub(crate) fn test_linked_phone(root: &std::path::Path) -> PairingManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn disk(staging: bool, target_holds_vault: bool, target_active: bool) -> ActivationDisk {
+        ActivationDisk {
+            swap: Recovery::Settled,
+            staging,
+            target_holds_vault,
+            target_active,
+        }
+    }
+
+    #[test]
+    fn an_interrupted_activation_is_judged_from_what_it_left_on_disk() {
+        use ActivationResolution::{Abandon, Commit, Select};
+        // Before the copy moved: the staging is still there, whatever the target holds.
+        assert_eq!(resolve_activation(&disk(true, false, true)), Abandon);
+        assert_eq!(resolve_activation(&disk(true, true, true)), Abandon);
+        assert_eq!(resolve_activation(&disk(true, true, false)), Abandon);
+        // The copy is gone and the target is not the received vault.
+        assert_eq!(resolve_activation(&disk(false, false, true)), Abandon);
+        assert_eq!(resolve_activation(&disk(false, false, false)), Abandon);
+        // The copy took its place in a new folder that was never selected.
+        assert_eq!(resolve_activation(&disk(false, true, false)), Select);
+        // The copy took its place in the vault in use.
+        assert_eq!(resolve_activation(&disk(false, true, true)), Commit);
+    }
+
+    #[test]
+    fn an_activation_whose_swap_still_needs_recovery_stays_undecided() {
+        for (staging, holds, active) in [
+            (true, true, true),
+            (false, true, true),
+            (false, false, false),
+        ] {
+            let disk = ActivationDisk {
+                swap: Recovery::Pending("swap left as found".to_string()),
+                ..disk(staging, holds, active)
+            };
+            assert_eq!(
+                resolve_activation(&disk),
+                ActivationResolution::Pending("swap left as found".to_string())
+            );
+        }
+    }
 
     #[test]
     fn only_a_first_link_on_a_computer_over_another_vault_uses_a_new_folder() {

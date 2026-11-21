@@ -1113,6 +1113,9 @@
   .chat-execution-timeline.embedded .chat-timeline-row.participant-start { margin-top:0; }
   .chat-execution-timeline.embedded .chat-participant-row { grid-template-columns:34px minmax(0,1fr); }
   .chat-execution-timeline.embedded .chat-participant-followup { margin-left:calc(34px + var(--chat-participant-gap)); }
+  /* The header matches a Chat message's, so a reply that gives way to its run's turn keeps its text in place. */
+  .chat-execution-timeline.embedded .chat-participant-header { min-height:1.3rem; gap:0.4rem; margin-bottom:0; line-height:inherit; }
+  .chat-execution-timeline.embedded .chat-participant-header strong { font-weight:700; }
   .chat-execution-timeline.embedded .chat-participant-header span { font-size:var(--chat-organizational-time-font-size,calc(0.6875rem * var(--type-scale))); }
   .chat-timeline-content { width:min(calc(100% - var(--chat-conversation-gutter,1rem) - var(--chat-conversation-gutter,1rem)),var(--chat-conversation-max-width,60rem)); }
   .chat-timeline-scroller { overflow-anchor: none; scrollbar-width: none; }

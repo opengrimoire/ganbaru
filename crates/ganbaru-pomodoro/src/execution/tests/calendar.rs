@@ -485,11 +485,10 @@ fn a_run_closed_outside_focus_is_reported_as_invalid_state_without_partial_write
             .await
             .unwrap_err();
             assert_eq!(error.code, FocusErrorCode::InvalidState, "{closed}");
-            let revision: i64 =
-                sqlx::query_scalar("SELECT revision FROM pomodoro_execution_state")
-                    .fetch_one(&pool)
-                    .await
-                    .unwrap();
+            let revision: i64 = sqlx::query_scalar("SELECT revision FROM pomodoro_execution_state")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
             assert_eq!(revision, initial.revision, "{closed}");
         }
     });

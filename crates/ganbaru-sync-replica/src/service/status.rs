@@ -9,7 +9,7 @@ use serde::Serialize;
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
 
-/// What the service is doing for the active vault.
+/// The wire name of a [`SyncPhase`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncState {
@@ -28,6 +28,111 @@ pub enum SyncState {
     WaitingForIdentity,
     /// The last exchange or pass failed.
     Error,
+}
+
+/// What the service is doing for the active vault, with the problem that stopped it, so a state
+/// and an error that contradict each other cannot be reported.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum SyncPhase {
+    /// The vault is not linked to other devices.
+    #[default]
+    Off,
+    /// Current with the hub, or the hub with nothing to do. The coordinator stays idle while
+    /// paused, since it still serves its members; `paused` carries the switch.
+    Idle,
+    /// An exchange is running.
+    Syncing,
+    /// A linked device's exchanges are paused; sealing continues.
+    Paused,
+    /// The person key has not reached this device yet.
+    WaitingForIdentity,
+    /// The hub cannot be reached; changes queue locally.
+    Offline {
+        /// Why the hub was not reached.
+        error: String,
+    },
+    /// The last exchange or pass failed.
+    Error {
+        /// The native error text.
+        error: String,
+        /// The problem the interface explains in its own words, if it is one of those.
+        code: Option<SyncErrorCode>,
+    },
+}
+
+impl SyncPhase {
+    /// An offline phase.
+    pub fn offline(error: impl Into<String>) -> Self {
+        Self::Offline {
+            error: error.into(),
+        }
+    }
+
+    /// A failed phase.
+    pub fn error(error: impl Into<String>, code: Option<SyncErrorCode>) -> Self {
+        Self::Error {
+            error: error.into(),
+            code,
+        }
+    }
+
+    /// The wire name.
+    pub const fn state(&self) -> SyncState {
+        match self {
+            Self::Off => SyncState::Off,
+            Self::Idle => SyncState::Idle,
+            Self::Syncing => SyncState::Syncing,
+            Self::Paused => SyncState::Paused,
+            Self::WaitingForIdentity => SyncState::WaitingForIdentity,
+            Self::Offline { .. } => SyncState::Offline,
+            Self::Error { .. } => SyncState::Error,
+        }
+    }
+
+    /// The native error text of an offline or failed phase.
+    pub fn last_error(&self) -> Option<&str> {
+        match self {
+            Self::Offline { error } | Self::Error { error, .. } => Some(error),
+            _ => None,
+        }
+    }
+
+    /// The code of a failed phase.
+    pub const fn code(&self) -> Option<SyncErrorCode> {
+        match self {
+            Self::Error { code, .. } => *code,
+            _ => None,
+        }
+    }
+}
+
+/// The phase of a pass and whether the selected log removed the coordinator, which outlasts
+/// every phase: the device keeps syncing with members and an anchor server, and the
+/// interface keeps explaining the removal. On the wire it is `state`, `lastError`, and
+/// `lastErrorCode`, where a failure's own code wins over the removal.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct SyncCondition {
+    phase: SyncPhase,
+    coordinator_removed: bool,
+}
+
+impl SyncCondition {
+    fn last_error_code(&self) -> Option<SyncErrorCode> {
+        self.phase.code().or(self
+            .coordinator_removed
+            .then_some(SyncErrorCode::CoordinatorRemoved))
+    }
+}
+
+impl Serialize for SyncCondition {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(3))?;
+        map.serialize_entry("state", &self.phase.state())?;
+        map.serialize_entry("lastError", &self.phase.last_error())?;
+        map.serialize_entry("lastErrorCode", &self.last_error_code())?;
+        map.end()
+    }
 }
 
 /// The side of the exchange this device takes.
@@ -272,12 +377,13 @@ impl DegradedReasons {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncStatusView {
-    pub state: SyncState,
+    /// Changed only through [`SyncStatusView::set_phase`] and
+    /// [`SyncStatusView::mark_coordinator_removed`].
+    #[serde(flatten)]
+    condition: SyncCondition,
     pub role: Option<SyncRole>,
     pub paused: bool,
     pub last_exchange_at_ms: Option<u64>,
-    pub last_error: Option<String>,
-    pub last_error_code: Option<SyncErrorCode>,
     pub pending_local_changes: usize,
     pub waiting: usize,
     pub held: HeldView,
@@ -316,6 +422,41 @@ pub struct SyncStatusView {
 }
 
 impl SyncStatusView {
+    /// What the service is doing, with the problem that stopped it.
+    pub fn phase(&self) -> &SyncPhase {
+        &self.condition.phase
+    }
+
+    /// The wire name of the phase.
+    pub fn state(&self) -> SyncState {
+        self.condition.phase.state()
+    }
+
+    /// The native error text of an offline or failed phase.
+    pub fn last_error(&self) -> Option<&str> {
+        self.condition.phase.last_error()
+    }
+
+    /// The problem the interface explains in its own words.
+    pub fn last_error_code(&self) -> Option<SyncErrorCode> {
+        self.condition.last_error_code()
+    }
+
+    /// Whether the selected log removed the coordinator this device is linked to.
+    pub fn coordinator_removed(&self) -> bool {
+        self.condition.coordinator_removed
+    }
+
+    /// Moves to `phase`, replacing the state, the error, and its code together.
+    pub fn set_phase(&mut self, phase: SyncPhase) {
+        self.condition.phase = phase;
+    }
+
+    /// Records that the selected log removed the coordinator, for the rest of the pass.
+    pub fn mark_coordinator_removed(&mut self) {
+        self.condition.coordinator_removed = true;
+    }
+
     /// Copies the engine counts into the view.
     pub fn set_counts(&mut self, status: &SyncStatus) {
         self.pending_local_changes = status.pending_captures;
@@ -401,6 +542,98 @@ mod tests {
     use ganbaru_sync::{WriterState, WriterSummary};
     use ganbaru_sync_contracts::{Hlc, WriterId};
     use std::collections::HashMap;
+
+    fn phases() -> Vec<SyncPhase> {
+        let mut phases = vec![
+            SyncPhase::Off,
+            SyncPhase::Idle,
+            SyncPhase::Syncing,
+            SyncPhase::Paused,
+            SyncPhase::WaitingForIdentity,
+            SyncPhase::offline("unreachable"),
+            SyncPhase::error("failed", None),
+        ];
+        for code in [
+            SyncErrorCode::WriterLimit,
+            SyncErrorCode::BootstrapRequired,
+            SyncErrorCode::CoordinatorRemoved,
+            SyncErrorCode::ServerNeedsUpdate,
+            SyncErrorCode::ForkClaimUnproven,
+        ] {
+            phases.push(SyncPhase::error("failed", Some(code)));
+        }
+        phases
+    }
+
+    fn condition_wire(view: &SyncStatusView) -> serde_json::Value {
+        let wire = serde_json::to_value(view).expect("serialize status");
+        serde_json::json!([wire["state"], wire["lastError"], wire["lastErrorCode"]])
+    }
+
+    #[test]
+    fn only_an_offline_or_failed_phase_reports_an_error_and_only_a_failure_its_code() {
+        for phase in phases() {
+            let mut view = SyncStatusView::default();
+            view.set_phase(phase.clone());
+            let wire = serde_json::to_value(&view).expect("serialize status");
+            let state = serde_json::to_value(phase.state()).expect("serialize state");
+            assert_eq!(wire["state"], state, "{phase:?}");
+            let erring = matches!(
+                phase.state(),
+                SyncState::Offline | SyncState::Error
+            );
+            assert_eq!(!wire["lastError"].is_null(), erring, "{phase:?}");
+            assert_eq!(
+                !wire["lastErrorCode"].is_null(),
+                phase.code().is_some(),
+                "{phase:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_phase_replaces_the_error_and_code_of_the_last_one() {
+        for before in phases() {
+            for after in phases() {
+                let mut moved = SyncStatusView::default();
+                moved.set_phase(before.clone());
+                moved.set_phase(after.clone());
+                let mut fresh = SyncStatusView::default();
+                fresh.set_phase(after.clone());
+                assert_eq!(
+                    condition_wire(&moved),
+                    condition_wire(&fresh),
+                    "{before:?} then {after:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_removed_coordinator_stays_reported_in_every_phase_unless_a_failure_names_its_own_code() {
+        for phase in phases() {
+            let mut view = SyncStatusView::default();
+            view.mark_coordinator_removed();
+            view.set_phase(phase.clone());
+            let expected = phase.code().unwrap_or(SyncErrorCode::CoordinatorRemoved);
+            assert_eq!(view.last_error_code(), Some(expected), "{phase:?}");
+            assert_eq!(
+                serde_json::to_value(&view).expect("serialize status")["lastErrorCode"],
+                serde_json::to_value(expected).expect("serialize code"),
+                "{phase:?}"
+            );
+        }
+        // An anchor server that answers after the coordinator was found removed clears the
+        // offline error but not the removal.
+        let mut view = SyncStatusView::default();
+        view.set_phase(SyncPhase::offline("the selected log removed the coordinator"));
+        view.mark_coordinator_removed();
+        view.set_phase(SyncPhase::Idle);
+        assert_eq!(
+            condition_wire(&view),
+            serde_json::json!(["idle", null, "coordinatorRemoved"])
+        );
+    }
 
     fn summary(writer: WriterId, device_id: &str) -> WriterSummary {
         WriterSummary {

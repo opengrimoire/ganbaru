@@ -396,7 +396,7 @@ async fn headless_pass_converges_with_the_hub_and_runs_hooks() {
     .expect("the priming pass finishes")
     .expect("priming headless pass");
     assert_eq!(
-        priming.status.state,
+        priming.status.state(),
         SyncState::Idle,
         "{:?}",
         priming.status
@@ -411,7 +411,7 @@ async fn headless_pass_converges_with_the_hub_and_runs_hooks() {
     .expect("headless pass");
 
     assert!(!pass.delegated, "no runtime was live");
-    assert_eq!(pass.status.state, SyncState::Idle, "{:?}", pass.status);
+    assert_eq!(pass.status.state(), SyncState::Idle, "{:?}", pass.status);
     let phone_registry = DatabasePoolRegistry::default();
     let phone_pool = phone_registry
         .connect_path_read_only(&phone_database)
@@ -561,8 +561,8 @@ async fn a_failed_apply_still_runs_proposal_actions() {
         matches!(answer, Ok(AuthorityAnswer::Proposed)),
         "{answer:?}"
     );
-    assert_eq!(status.state, SyncState::Error, "{status:?}");
-    let error = status.last_error.expect("the pass reports the failure");
+    assert_eq!(status.state(), SyncState::Error, "{status:?}");
+    let error = status.last_error().expect("the pass reports the failure");
     assert!(error.contains("apply sync operations"), "{error}");
     drop(hub_pool);
     hub_registry.close_all().await.expect("close hub pools");
@@ -667,7 +667,7 @@ async fn a_member_gives_a_coordinator_its_log_removed_record_exchange_only() {
         .await
         .unwrap_or_else(|_| panic!("{label} finishes"))
         .unwrap_or_else(|error| panic!("{label}: {error}"));
-        assert_eq!(pass.status.state, SyncState::Idle, "{:?}", pass.status);
+        assert_eq!(pass.status.state(), SyncState::Idle, "{:?}", pass.status);
     }
     let hub_ops = count_rows(&hub_pool, "SELECT COUNT(*) FROM sync_ops").await;
     assert!(hub_ops > 1, "the linked passes pushed the phone writer");
@@ -829,7 +829,7 @@ async fn a_member_gives_a_coordinator_its_log_removed_record_exchange_only() {
         "the phone took no stable vector from the removed coordinator"
     );
     assert_eq!(
-        pass.status.last_error_code,
+        pass.status.last_error_code(),
         Some(SyncErrorCode::CoordinatorRemoved),
         "{:?}",
         pass.status
@@ -890,7 +890,7 @@ async fn headless_pass_waits_for_the_pass_gate() {
         .expect("headless pass");
     assert!(!pass.delegated);
     assert_eq!(
-        pass.status.state,
+        pass.status.state(),
         SyncState::Error,
         "a device without an active vault reports why it cannot sync"
     );

@@ -325,7 +325,7 @@ fn outcome_of(pass: &Result<HeadlessPass, String>) -> PassOutcome {
     let Ok(pass) = pass else {
         return PassOutcome::Failed;
     };
-    match pass.status.state {
+    match pass.status.state() {
         SyncState::Offline => PassOutcome::Unreachable,
         SyncState::Error => PassOutcome::Failed,
         _ if pass.delegated => PassOutcome::Delegated,
@@ -653,19 +653,26 @@ pub(crate) fn configure_background<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sync::status::SyncStatusView;
+    use crate::sync::status::{SyncPhase, SyncStatusView};
 
     fn store() -> PassInputs {
         PassInputs::new()
     }
 
     fn pass(state: SyncState, role: Option<SyncRole>, delegated: bool) -> HeadlessPass {
+        let mut status = SyncStatusView::default();
+        status.set_phase(match state {
+            SyncState::Off => SyncPhase::Off,
+            SyncState::Idle => SyncPhase::Idle,
+            SyncState::Syncing => SyncPhase::Syncing,
+            SyncState::Paused => SyncPhase::Paused,
+            SyncState::WaitingForIdentity => SyncPhase::WaitingForIdentity,
+            SyncState::Offline => SyncPhase::offline("unreachable"),
+            SyncState::Error => SyncPhase::error("failed", None),
+        });
+        status.role = role;
         HeadlessPass {
-            status: SyncStatusView {
-                state,
-                role,
-                ..SyncStatusView::default()
-            },
+            status,
             delegated,
             more: false,
         }
@@ -1098,14 +1105,12 @@ mod tests {
     #[test]
     fn relay_work_is_scheduled_only_while_passes_find_a_relay() {
         let without = SyncStatusView::default();
-        let with = SyncStatusView {
-            relay: Some(crate::sync::status::RelayDeliveryView::failed(
-                crate::sync::status::RelayProblem::Unreachable,
-                1,
-                None,
-            )),
-            ..SyncStatusView::default()
-        };
+        let mut with = SyncStatusView::default();
+        with.relay = Some(crate::sync::status::RelayDeliveryView::failed(
+            crate::sync::status::RelayProblem::Unreachable,
+            1,
+            None,
+        ));
         assert!(!BackgroundConfig::of(true, &without, PathBuf::from("/config")).relay);
         assert!(BackgroundConfig::of(true, &with, PathBuf::from("/config")).relay);
         let desired = Mutex::new(None);
@@ -1165,7 +1170,7 @@ mod tests {
             &sent,
             BackgroundConfig::of(true, &view, dir.clone())
         ));
-        view.state = SyncState::Syncing;
+        view.set_phase(SyncPhase::Syncing);
         assert!(!take_change(
             &sent,
             BackgroundConfig::of(true, &view, dir.clone())

@@ -35,7 +35,7 @@ pub use host::{SYNC_DIRECTORY, SyncHost};
 #[cfg(desktop)]
 pub use hubs::{log_admission_source, quarantined_devices, server_hub, sync_hub};
 pub use hubs::{member_admission_source, member_hub};
-use status::{DegradedReasons, SyncRole, SyncState, SyncStatusView};
+use status::{DegradedReasons, SyncPhase, SyncRole, SyncState, SyncStatusView};
 use transport::PairedTransport;
 
 use crate::assets::{AssetMemory, AssetStore, AssetTransfer};
@@ -1117,13 +1117,11 @@ impl ServiceState {
     ) -> Next {
         let _gate = gate.lock().await;
         let number = runtime.pass_started();
-        let mut view = SyncStatusView {
-            last_exchange_at_ms: self.view.last_exchange_at_ms,
-            anchor_unreachable_since_ms: self.view.anchor_unreachable_since_ms,
-            connection: self.view.connection.clone(),
-            degraded: self.view.degraded.clone(),
-            ..SyncStatusView::default()
-        };
+        let mut view = SyncStatusView::default();
+        view.last_exchange_at_ms = self.view.last_exchange_at_ms;
+        view.anchor_unreachable_since_ms = self.view.anchor_unreachable_since_ms;
+        view.connection = self.view.connection.clone();
+        view.degraded = self.view.degraded.clone();
         let mut recovery = runtime.take_recovery_requests();
         let mut resets = runtime.take_reset_requests();
         let mut succeeded = false;
@@ -1138,8 +1136,7 @@ impl ServiceState {
             Err(error) => {
                 eprintln!("sync: {error}");
                 host.recover_lost_keys().await;
-                view.state = SyncState::Error;
-                view.last_error = Some(error);
+                view.set_phase(SyncPhase::error(error, None));
                 Next::Retry
             }
         };
@@ -1234,7 +1231,7 @@ impl ServiceState {
                 None => None,
             };
         let Some(session) = session else {
-            view.state = SyncState::WaitingForIdentity;
+            view.set_phase(SyncPhase::WaitingForIdentity);
             return Ok(Next::Idle);
         };
         if peer.is_none() {
@@ -1257,9 +1254,9 @@ impl ServiceState {
             .seal_pending(&mut self.writer, &mut self.stalled_captures)
             .await?;
         self.hold_expiry = session.next_hold_expiry().await?;
-        view.state = SyncState::Idle;
+        view.set_phase(SyncPhase::Idle);
         if !session.ensure_writer(&mut self.writer).await? {
-            view.state = SyncState::WaitingForIdentity;
+            view.set_phase(SyncPhase::WaitingForIdentity);
         }
         self.apply_pause_request(runtime)?;
         view.paused = self.paused(runtime)?;
@@ -1270,10 +1267,11 @@ impl ServiceState {
         let mut linked_ids = None;
         match peer {
             None => {}
-            Some(_) if view.paused => view.state = SyncState::Paused,
+            Some(_) if view.paused => view.set_phase(SyncPhase::Paused),
             Some(_) if session.coordinator_quarantined(&manager).await? => {
-                view.state = SyncState::Offline;
-                view.last_error = Some("this device quarantined the coordinator".to_string());
+                view.set_phase(SyncPhase::offline(
+                    "this device quarantined the coordinator",
+                ));
             }
             Some((linked_vault, device_id)) if session.coordinator_removed(&manager).await? => {
                 let ids = PeerIds {
@@ -1286,14 +1284,9 @@ impl ServiceState {
                     .await?;
             }
             Some((linked_vault, device_id)) => {
-                self.publish(
-                    host,
-                    runtime,
-                    SyncStatusView {
-                        state: SyncState::Syncing,
-                        ..view.clone()
-                    },
-                );
+                let mut syncing = view.clone();
+                syncing.set_phase(SyncPhase::Syncing);
+                self.publish(host, runtime, syncing);
                 let assets = AssetPeer {
                     transport: PairedTransport {
                         manager: manager.clone(),
@@ -1338,7 +1331,7 @@ impl ServiceState {
                 asset_peer = Some((assets, transfer));
             }
         }
-        let coordinator_answered = asset_peer.is_some() && view.state != SyncState::Offline;
+        let coordinator_answered = asset_peer.is_some() && view.state() != SyncState::Offline;
         if !view.paused
             && self.relay_pass(&session, view).await
             && matches!(next, Next::Idle | Next::Online(_))
@@ -1352,9 +1345,10 @@ impl ServiceState {
                 .await
         };
         if let Some(link) = &server_link {
-            if view.state == SyncState::Offline {
-                view.state = SyncState::Idle;
-                view.last_error = None;
+            // The anchor server answered, so the device is not offline; a removed coordinator
+            // stays reported.
+            if view.state() == SyncState::Offline {
+                view.set_phase(SyncPhase::Idle);
             }
             if link.more && matches!(next, Next::Idle | Next::Online(_) | Next::Retry) {
                 next = Next::Continue;
@@ -1413,7 +1407,7 @@ impl ServiceState {
             .filter(|link| link.anchors)
             .map(|link| link.stored.clone());
         if let Some((assets, _)) = asset_peer.as_ref()
-            && view.state != SyncState::Offline
+            && view.state() != SyncState::Offline
         {
             let coordinator = manager
                 .coordinator_pin()?
@@ -1422,7 +1416,7 @@ impl ServiceState {
             #[cfg(desktop)]
             {
                 let old_anchor_stored = anchor_server_stored.clone().or_else(|| match &next {
-                    Next::Online(wait) if view.state == SyncState::Idle => Some(wait.hub.clone()),
+                    Next::Online(wait) if view.state() == SyncState::Idle => Some(wait.hub.clone()),
                     _ => None,
                 });
                 for request in take_anchor.drain(..) {
@@ -2181,10 +2175,8 @@ pub async fn stored_admin_key<H: SyncHost>(
 #[cfg(desktop)]
 pub async fn seal_enrollment(runtime: &SyncRuntime) -> Result<Option<PinnedCharter>, String> {
     let status = delegate_pass(runtime, DELEGATED_PASS_TIMEOUT).await?;
-    match status.state {
-        SyncState::Error => Err(status
-            .last_error
-            .unwrap_or_else(|| "the sync pass failed".to_string())),
+    match status.phase() {
+        SyncPhase::Error { error, .. } => Err(error.clone()),
         _ => runtime.pairing_charter(),
     }
 }

@@ -4,7 +4,7 @@
 //! exchanges: it moves operations, records, and assets, and it is what lets a phone sync while
 //! its coordinator desktop is off.
 
-use super::status::{SyncErrorCode, SyncState, SyncStatusView};
+use super::status::{SyncErrorCode, SyncPhase, SyncStatusView};
 use super::{ActiveWriter, RELAY_LOOPBACK, ServiceState, Session, SyncHost, acquire, blocking};
 use crate::anchor_link::{ServerTarget, ServerTransport, protocol_gap};
 use crate::assets::{AssetSession, AssetStore, AssetTransfer, MAX_ASSET_PASS_BYTES};
@@ -100,9 +100,10 @@ impl ServiceState {
         if !self.server_version_checked {
             match protocol_gap(&transport, BUILD_VERSION).await {
                 Some(SERVER_NEEDS_UPDATE_CODE) => {
-                    view.state = SyncState::Error;
-                    view.last_error = Some("the anchor server needs an update".to_string());
-                    view.last_error_code = Some(SyncErrorCode::ServerNeedsUpdate);
+                    view.set_phase(SyncPhase::error(
+                        "the anchor server needs an update",
+                        Some(SyncErrorCode::ServerNeedsUpdate),
+                    ));
                     return Ok(None);
                 }
                 Some(_) => return Err("this device needs an update".to_string()),

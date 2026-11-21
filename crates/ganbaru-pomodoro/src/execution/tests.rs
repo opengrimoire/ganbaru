@@ -752,6 +752,33 @@ fn recovery_does_not_adopt_runs_without_native_execution_state() {
 }
 
 #[test]
+fn recovery_closes_an_open_run_even_when_the_state_row_names_a_closed_mode() {
+    block_on(async {
+        let pool = pool().await;
+        start(&pool).await;
+        let (_, mut state): (i64, sqlx::types::Json<ExecutionState>) =
+            sqlx::query_as("SELECT revision, state_json FROM pomodoro_execution_state")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        state.mode = FocusMode::Stopped;
+        sqlx::query("UPDATE pomodoro_execution_state SET state_json = ?")
+            .bind(state)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let recovered = observe(&pool, FocusObservation::Recover, &context(START + MINUTE)).await;
+        assert_eq!(recovered.mode, FocusMode::Stopped);
+        let open_runs: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM pomodoro_runs WHERE ended_at IS NULL")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(open_runs, 0);
+    });
+}
+
+#[test]
 fn execution_recovery_preserves_idle_pause_without_reusing_a_previous_controllers_visibility() {
     block_on(async {
         let pool = pool().await;
@@ -921,8 +948,8 @@ const ALL_MODES: [FocusMode; 8] = [
 fn expected_focus_move(from: FocusMode, to: FocusMode) -> bool {
     use FocusMode::*;
     match (from, to) {
-        (Stopped | Expired, next) => next == Running,
         (_, Stopped | Expired) => true,
+        (Stopped | Expired, next) => next == Running,
         (Running, Running | ManualPause | IdlePause | Suspended | ReturnWait) => true,
         (ManualPause | Suspended, Running | ReturnWait) => true,
         (IdlePause, Running | IdleFailed | ReturnWait) => true,
@@ -945,13 +972,17 @@ fn every_focus_mode_pair_is_legal_only_when_the_lifecycle_allows_it() {
     assert!(
         FOCUS_MODE_TRANSITIONS
             .iter()
-            .all(|(from, to)| !(is_closed(*from) && is_closed(*to))),
-        "a closed mode can only start a run"
+            .filter(|(from, _)| matches!(from, FocusMode::Stopped | FocusMode::Expired))
+            .all(|(_, to)| !matches!(
+                to,
+                FocusMode::ManualPause
+                    | FocusMode::IdlePause
+                    | FocusMode::IdleFailed
+                    | FocusMode::Suspended
+                    | FocusMode::ReturnWait
+            )),
+        "a closed mode only starts a run or closes one SQLite still holds open"
     );
-}
-
-fn is_closed(mode: FocusMode) -> bool {
-    matches!(mode, FocusMode::Stopped | FocusMode::Expired)
 }
 
 #[test]
@@ -981,6 +1012,6 @@ fn an_illegal_focus_mode_move_is_rejected_without_changing_the_mode() {
     }
     session.enter_mode(FocusMode::Running).unwrap();
     session.enter_mode(FocusMode::Expired).unwrap();
-    assert!(session.enter_mode(FocusMode::Stopped).is_err());
+    assert!(session.enter_mode(FocusMode::ManualPause).is_err());
     assert_eq!(session.state.mode, FocusMode::Expired);
 }

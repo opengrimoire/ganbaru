@@ -52,12 +52,19 @@ pub enum FocusMode {
 }
 
 /// Every legal Focus mode change. `Stopped` and `Expired` hold no open run; every other
-/// mode belongs to exactly one open run, so only a run start leaves a closed mode and any
-/// open mode can close. `Running` to `Running` is a phase change inside the same run, and
-/// `Running` to a pause mode also restores a pause across a Calendar reconfiguration.
+/// mode belongs to exactly one open run, so a run start leaves a closed mode and any open
+/// mode can close. A closed mode may also close again: closing requires an open run in
+/// SQLite, so that move only happens when the state row disagrees with committed execution,
+/// and recovery must still close the run. `Running` to `Running` is a phase change inside
+/// the same run, and `Running` to a pause mode also restores a pause across a Calendar
+/// reconfiguration.
 pub(super) const FOCUS_MODE_TRANSITIONS: &[(FocusMode, FocusMode)] = &[
     (FocusMode::Stopped, FocusMode::Running),
+    (FocusMode::Stopped, FocusMode::Stopped),
+    (FocusMode::Stopped, FocusMode::Expired),
     (FocusMode::Expired, FocusMode::Running),
+    (FocusMode::Expired, FocusMode::Stopped),
+    (FocusMode::Expired, FocusMode::Expired),
     (FocusMode::Running, FocusMode::Running),
     (FocusMode::Running, FocusMode::ManualPause),
     (FocusMode::Running, FocusMode::IdlePause),

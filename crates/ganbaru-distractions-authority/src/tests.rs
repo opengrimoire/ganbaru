@@ -1,6 +1,9 @@
 use super::*;
 use serde_json::json;
 
+/// A named edit that turns a valid state file into a malformed one.
+type StateFileMutation = (&'static str, fn(&mut Value));
+
 fn active(phase: BlockingPhase, pause_reason: Option<PauseReason>) -> RuntimeAuthority {
     RuntimeAuthority::Active(ActivePhase {
         phase,
@@ -176,7 +179,7 @@ fn every_state_round_trips_through_the_file_format() {
 
 #[test]
 fn rejects_malformed_state_files() {
-    let mutations: [(&str, fn(&mut Value)); 16] = [
+    let mutations: [StateFileMutation; 16] = [
         ("unknown status", |file| {
             file["authority"]["status"] = json!("running")
         }),

@@ -399,7 +399,6 @@ export class ChatStore {
   get interaction(): ChatInteractionStateRead | null { return this.composerRuntimeController.interaction; }
   set interaction(interaction: ChatInteractionStateRead | null) { this.composerRuntimeController.interaction = interaction; }
   get interactionLoading(): boolean { return this.composerRuntimeController.interactionLoading; }
-  set interactionLoading(loading: boolean) { this.composerRuntimeController.interactionLoading = loading; }
   get sendError(): string | null { return this.composerRuntimeController.sendError; }
   set sendError(error: string | null) { this.composerRuntimeController.sendError = error; }
   get draftWorkingFolderId(): ProjectWorkingFolderId | null { return this.composerRuntimeController.draftWorkingFolderId; }

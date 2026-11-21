@@ -1,5 +1,12 @@
 import * as chatApi from "$lib/api/chat";
 import {
+  NO_INTERACTION,
+  shownInteraction,
+  transitionInteractionLoad,
+  type InteractionLoad,
+  type InteractionLoadEvent,
+} from "./interaction-state";
+import {
   ChatComposerController,
   parseDraftMentions,
   type ChatComposerSeed,
@@ -64,8 +71,7 @@ export class ChatComposerRuntimeController {
 
   composer = $state<ChatComposerSnapshot>(this.composerController.snapshot());
   attachments = $state<ChatAttachmentRead[]>([]);
-  interaction = $state<ChatInteractionStateRead | null>(null);
-  interactionLoading = $state(false);
+  private interactionLoad = $state.raw<InteractionLoad>(NO_INTERACTION);
   sendError = $state<string | null>(null);
   pendingUserMessage = $state<{ threadId: ChatThreadId; row: TimelineMessageRow } | null>(null);
   draftWorkingFolderId = $state<ProjectWorkingFolderId | null>(null);
@@ -73,8 +79,6 @@ export class ChatComposerRuntimeController {
 
   private attachmentRequest = 0;
   private interactionRequest = 0;
-  /** The thread whose interaction was last read, so another thread's read never shows it. */
-  private interactionThreadId: ChatThreadId | null = null;
   private attachmentKey = "";
   private failedSendOptions: ChatComposerSendOptions | null = null;
   private readonly queuedDispatches = new Set<string>();
@@ -96,8 +100,7 @@ export class ChatComposerRuntimeController {
     this.interactionRequest += 1;
     this.queuedDispatches.clear();
     this.attachments = [];
-    this.interaction = null;
-    this.interactionLoading = false;
+    this.interactionLoad = NO_INTERACTION;
     this.sendError = null;
     this.pendingUserMessage = null;
     this.draftWorkingFolderId = null;
@@ -164,6 +167,20 @@ export class ChatComposerRuntimeController {
     this.composerController.markSent();
   }
 
+  /** The interaction state shown for the selected thread. */
+  get interaction(): ChatInteractionStateRead | null {
+    return shownInteraction(this.interactionLoad);
+  }
+
+  set interaction(interaction: ChatInteractionStateRead | null) {
+    this.dispatchInteraction({ type: "replaced", interaction });
+  }
+
+  /** Whether a read for the selected thread is in flight. */
+  get interactionLoading(): boolean {
+    return this.interactionLoad.phase === "loading";
+  }
+
   flush(): Promise<void> {
     return this.composerController.flush();
   }
@@ -171,30 +188,37 @@ export class ChatComposerRuntimeController {
   async refreshInteraction(threadId = this.options.selectedThreadId()): Promise<void> {
     // A thread out of view has no interaction to show, so its read must not supersede the selected thread's.
     if (threadId && threadId !== this.options.selectedThreadId()) return;
-    const request = ++this.interactionRequest;
     if (!threadId) {
-      this.interaction = null;
-      this.interactionThreadId = null;
-      this.interactionLoading = false;
+      this.dispatchInteraction({ type: "cleared" });
       return;
     }
-    if (this.interactionThreadId !== threadId) this.interaction = null;
-    this.interactionThreadId = threadId;
-    this.interactionLoading = true;
+    const request = ++this.interactionRequest;
+    this.dispatchInteraction({ type: "started", threadId, request });
+    let interaction: ChatInteractionStateRead;
     try {
-      const interaction = await chatApi.readChatInteractionState(threadId);
-      if (request !== this.interactionRequest || threadId !== this.options.selectedThreadId()) return;
-      this.interaction = interaction;
-      const latestTurnState = this.options.selectedThread()?.latestTurnState ?? null;
-      if (queuedFollowupDispatchReady(interaction.sessionState, latestTurnState)
-        && interaction.queuedFollowup) {
-        void this.dispatchQueuedFollowup(interaction.queuedFollowup).catch((error: unknown) => {
-          this.sendError = chatErrorMessage(error, translate("chatErrors.actions.sendMessage"));
-        });
-      }
-    } finally {
-      if (request === this.interactionRequest) this.interactionLoading = false;
+      interaction = await chatApi.readChatInteractionState(threadId);
+    } catch (error) {
+      this.dispatchInteraction({ type: "failed", request });
+      throw error;
     }
+    if (threadId !== this.options.selectedThreadId()) {
+      this.dispatchInteraction({ type: "abandoned", request });
+      return;
+    }
+    const before = this.interactionLoad;
+    this.dispatchInteraction({ type: "loaded", request, interaction });
+    if (this.interactionLoad === before) return;
+    const latestTurnState = this.options.selectedThread()?.latestTurnState ?? null;
+    if (queuedFollowupDispatchReady(interaction.sessionState, latestTurnState)
+      && interaction.queuedFollowup) {
+      void this.dispatchQueuedFollowup(interaction.queuedFollowup).catch((error: unknown) => {
+        this.sendError = chatErrorMessage(error, translate("chatErrors.actions.sendMessage"));
+      });
+    }
+  }
+
+  private dispatchInteraction(event: InteractionLoadEvent): void {
+    this.interactionLoad = transitionInteractionLoad(this.interactionLoad, event);
   }
 
   async send(options: ChatComposerSendOptions = {}): Promise<void> {

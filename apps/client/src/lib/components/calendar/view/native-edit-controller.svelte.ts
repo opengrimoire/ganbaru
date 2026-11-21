@@ -4,6 +4,10 @@ import {
   type CalendarEditPreview, type CalendarPreviewRequest,
 } from "$lib/api/calendar-edit";
 import { activeVaultIdentity } from "$lib/vault/active-vault";
+import {
+  IDLE_NATIVE_COMMIT, commitRunning, commitUncertain, retainedCommit, transitionNativeCommit,
+  type NativeCommitEvent, type NativeCommitState,
+} from "./native-commit-state";
 import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
 
 export interface CalendarEditContext {
@@ -37,6 +41,13 @@ interface PendingCommit {
   preview: CalendarEditPreview;
 }
 
+/** A write whose reply arrived; a deletion or Undo also waits for its projections to refresh. */
+interface AcceptedCommit extends PendingCommit {
+  receipt: CalendarCommitReceipt;
+  receivedAt: number;
+  awaitsRefresh: boolean;
+}
+
 function intentKey(input: CalendarEditDraft): string {
   // View navigation does not alter an already reviewed durable intent.
   return JSON.stringify([input.vaultId, input.sessionKey, input.edit]);
@@ -46,10 +57,9 @@ function intentKey(input: CalendarEditDraft): string {
 export class NativeCalendarEditController {
   preview = $state.raw<CalendarEditPreview | null>(null);
   loading = $state(false);
-  committing = $state(false);
-  uncertain = $state(false);
   error = $state<string | null>(null);
-  resultPending = $state(false);
+  private commitState = $state.raw<NativeCommitState<PendingCommit>>(IDLE_NATIVE_COMMIT);
+  private accepted = $state.raw<AcceptedCommit | null>(null);
   private generation = 0;
   private commandId: string;
   private desired: PendingPreview | null = null;
@@ -58,8 +68,6 @@ export class NativeCalendarEditController {
   private wakeRetry: (() => void) | null = null;
   private failedGeneration: number | null = null;
   private lastError: unknown;
-  private pendingCommit: PendingCommit | null = null;
-  private accepted: PendingCommit & { receipt: CalendarCommitReceipt; receivedAt: number } | null = null;
 
   constructor(
     private readonly context: () => CalendarEditContext | null,
@@ -69,6 +77,25 @@ export class NativeCalendarEditController {
     private readonly vaultIdentity: () => string | null = () => this.context()?.vaultId ?? null,
   ) {
     this.commandId = this.newCommandId();
+  }
+
+  /** Whether a Save, deletion, or Undo is writing or reading the review it writes from. */
+  get committing(): boolean {
+    return commitRunning(this.commitState);
+  }
+
+  /** Whether the reply to the retained request was lost, including while it is retried. */
+  get uncertain(): boolean {
+    return commitUncertain(this.commitState);
+  }
+
+  /** Whether an accepted deletion or Undo still waits for its projections to refresh. */
+  get resultPending(): boolean {
+    return this.accepted?.awaitsRefresh ?? false;
+  }
+
+  private get pendingCommit(): PendingCommit | null {
+    return retainedCommit(this.commitState);
   }
 
   /** Replace pending work, with at most one IPC preview and one latest draft retained. */
@@ -219,22 +246,21 @@ export class NativeCalendarEditController {
       || this.pendingCommit.request.vaultId !== this.vaultIdentity())) {
       throw new CalendarCommitFailure("unknown", "The previous Save is unresolved; retry its original draft first");
     }
-    this.committing = true;
+    const retained = this.pendingCommit;
+    if (!retained) this.dispatchCommit({ type: "reviewStarted" });
     try {
-      if (!this.pendingCommit) {
-        const preview = await this.review(input);
-        this.pendingCommit = { intentKey: key, preview, request: {
-          vaultId: preview.vaultId, vaultGeneration: preview.vaultGeneration,
-          commandId: preview.commandId, reviewRevision: preview.reviewRevision,
-          edit: structuredClone($state.snapshot(input.edit)),
-        } };
-      }
-      return await this.sendPending();
+      if (retained) return await this.send(retained);
+      const preview = await this.review(input);
+      return await this.send({ intentKey: key, preview, request: {
+        vaultId: preview.vaultId, vaultGeneration: preview.vaultGeneration,
+        commandId: preview.commandId, reviewRevision: preview.reviewRevision,
+        edit: structuredClone($state.snapshot(input.edit)),
+      } });
     } catch (error) {
       this.error = error instanceof Error ? error.message : String(error);
       throw error;
     } finally {
-      this.committing = false;
+      this.dispatchCommit({ type: "reviewEnded" });
     }
   }
 
@@ -252,13 +278,11 @@ export class NativeCalendarEditController {
       || this.previewFor(input) !== preview || !this.isCurrentContext(input)) {
       throw new Error("Calendar deletion selection changed during confirmation");
     }
-    this.pendingCommit = { intentKey: intentKey(input), preview, request: {
+    return this.send({ intentKey: intentKey(input), preview, request: {
       vaultId: preview.vaultId, vaultGeneration: preview.vaultGeneration,
       commandId: preview.commandId, reviewRevision: preview.reviewRevision,
       edit: { ...structuredClone($state.snapshot(input.edit)), stopActive },
-    } };
-    this.committing = true;
-    try { return await this.sendPending(); } finally { this.committing = false; }
+    } });
   }
 
   /** Submit only the accepted deletion identity and native preimage revision. */
@@ -268,9 +292,7 @@ export class NativeCalendarEditController {
     const request: CalendarCommitRequest = { vaultId: preview.vaultId, vaultGeneration: preview.vaultGeneration,
       commandId: this.newCommandId(), reviewRevision: receipt.undoReviewRevision,
       edit: { kind: "undo_delete", deleteCommandId: receipt.commandId } };
-    this.pendingCommit = { intentKey: JSON.stringify(["undo_delete", request.vaultId, receipt.commandId]), request, preview };
-    this.committing = true;
-    try { return await this.sendPending(); } finally { this.committing = false; }
+    return this.send({ intentKey: JSON.stringify(["undo_delete", request.vaultId, receipt.commandId]), request, preview });
   }
 
   get pendingKind(): "edit" | "create" | "schedule_tasks" | "delete" | "undo_delete" | undefined {
@@ -289,7 +311,6 @@ export class NativeCalendarEditController {
   /** Acknowledge only after all affected projections have refreshed successfully. */
   acknowledgeResult(commandId: string): void {
     if (this.accepted?.receipt.commandId === commandId) {
-      this.resultPending = false;
       this.accepted = null;
       this.commandId = this.newCommandId();
     }
@@ -304,37 +325,39 @@ export class NativeCalendarEditController {
   async retryPending(): Promise<CalendarCommitReceipt> {
     if (this.committing) throw new Error("Calendar Save is already in progress");
     if (this.resultPending && this.accepted?.request.vaultId === this.vaultIdentity()) return this.accepted.receipt;
-    if (!this.pendingCommit || this.pendingCommit.request.vaultId !== this.vaultIdentity()) {
+    const retained = this.pendingCommit;
+    if (!retained || retained.request.vaultId !== this.vaultIdentity()) {
       throw new Error("Return to the original Calendar vault before retrying Save");
     }
-    this.committing = true;
-    try {
-      return await this.sendPending();
-    } finally {
-      this.committing = false;
-    }
+    return this.send(retained);
   }
 
-  private async sendPending(): Promise<CalendarCommitReceipt> {
-    const pending = this.pendingCommit;
-    if (!pending) throw new Error("Calendar has no retained Save request");
+  private dispatchCommit(event: NativeCommitEvent<PendingCommit>): void {
+    this.commitState = transitionNativeCommit(this.commitState, event);
+  }
+
+  /** Write `pending`, a new request or the uncertain one retained, and keep it until its reply is known. */
+  private async send(pending: PendingCommit): Promise<CalendarCommitReceipt> {
+    this.dispatchCommit({ type: "sendStarted", pending });
+    if (this.commitState.phase !== "sending" || this.commitState.pending !== pending) {
+      throw new Error("Calendar operation is already in progress");
+    }
     try {
       const receipt = await this.writeCommit(pending.request);
-      this.accepted = { ...pending, receipt, receivedAt: performance.now() };
-      this.resultPending = "kind" in pending.request.edit && (pending.request.edit.kind === "delete" || pending.request.edit.kind === "undo_delete");
-      this.pendingCommit = null;
-      this.uncertain = false;
+      const edit = pending.request.edit;
+      const awaitsRefresh = "kind" in edit && (edit.kind === "delete" || edit.kind === "undo_delete");
+      this.accepted = { ...pending, receipt, receivedAt: performance.now(), awaitsRefresh };
+      this.dispatchCommit({ type: "sendResolved" });
       this.error = null;
       return receipt;
     } catch (error) {
       if (error instanceof CalendarCommitFailure && error.outcome === "rejected") {
-        this.pendingCommit = null;
-        this.uncertain = false;
+        this.dispatchCommit({ type: "sendResolved" });
         this.commandId = this.newCommandId();
         this.desired = null;
         this.preview = null;
       } else {
-        this.uncertain = true;
+        this.dispatchCommit({ type: "sendLost" });
       }
       this.error = error instanceof Error ? error.message : String(error);
       throw error;

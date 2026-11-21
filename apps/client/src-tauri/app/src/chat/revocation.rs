@@ -725,7 +725,7 @@ pub(super) async fn persist_revocation_before_cleanup(
     for run in runs {
         // A turn that already settled keeps its outcome; only a turn still in progress is
         // interrupted by the revocation.
-        persist_turn_transition(
+        let interrupted = persist_turn_transition(
             &mut transaction,
             run.thread_id.as_str(),
             run.turn_id.as_str(),
@@ -740,10 +740,11 @@ pub(super) async fn persist_revocation_before_cleanup(
                 ],
             },
         )
-        .await?;
+        .await?
+        .is_applied();
         let statement = format!(
             "UPDATE chat_threads
-             SET {}, latest_turn_state = 'interrupted',
+             SET {}, latest_turn_state = CASE WHEN ? THEN ? ELSE latest_turn_state END,
                  provider_thread_id = NULL, resume_cursor_schema_version = NULL,
                  resume_cursor_data = NULL, revision = revision + 1, updated_at = ?
              WHERE id = ? AND NOT EXISTS (
@@ -755,6 +756,8 @@ pub(super) async fn persist_revocation_before_cleanup(
             guarded_thread_state_assignment(ChatThreadState::Closed)
         );
         sqlx::query(sqlx::AssertSqlSafe(statement.as_str()))
+            .bind(interrupted)
+            .bind(ChatTurnState::Interrupted.as_str())
             .bind(&settled_at)
             .bind(run.thread_id.as_str())
             .bind(run.authorization_revision_id.as_str())

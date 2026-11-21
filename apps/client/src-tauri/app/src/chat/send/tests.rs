@@ -767,5 +767,33 @@ fn dispatch_failure_fails_a_running_turn_but_never_overwrites_a_settled_one() {
                 ("error".to_string(), "failed".to_string())
             )
         );
+
+        sqlx::query(
+            "INSERT INTO chat_turns
+                (id, thread_id, ordinal, state, safety_mode, interaction_mode,
+                 created_at, updated_at)
+             VALUES ('turn-pending', 'thread-1', 10, 'pending', 'ask_for_approval', 'build',
+                     ?, ?)",
+        )
+        .bind(now.as_str())
+        .bind(now.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE chat_threads SET state = 'active' WHERE id = 'thread-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let pending = ChatTurnId::new("turn-pending").unwrap();
+        mark_turn_dispatch_failed(&pool, &thread_id, &pending, &error, &now)
+            .await
+            .unwrap();
+        assert_eq!(
+            read("turn-pending").await,
+            (
+                "failed".to_string(),
+                ("error".to_string(), "failed".to_string())
+            )
+        );
     });
 }

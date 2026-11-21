@@ -822,3 +822,113 @@ fn stored_thread_state_rejects_archived() {
         assert!(error.to_string().contains("archived_at"), "{error}");
     });
 }
+
+#[test]
+fn persisted_turn_writer_applies_only_declared_transitions() {
+    use ganbaru_chat::repository::state_writes::{
+        StateWrite, StateWriteColumns, persist_turn_transition,
+    };
+    use ganbaru_chat::state::can_transition_turn;
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let mut connection = pool.acquire().await.unwrap();
+        let mut ordinal = 0_i64;
+        for from in ChatTurnState::ALL {
+            for to in ChatTurnState::ALL {
+                let turn_id = format!("turn-{}-{}", from.as_str(), to.as_str());
+                sqlx::query(
+                    "INSERT INTO chat_turns
+                        (id, thread_id, ordinal, state, safety_mode, interaction_mode,
+                         created_at, updated_at)
+                     VALUES (?, 'thread-1', ?, ?, 'ask_for_approval', 'build', ?, ?)",
+                )
+                .bind(&turn_id)
+                .bind(ordinal)
+                .bind(from.as_str())
+                .bind(NOW)
+                .bind(NOW)
+                .execute(&mut *connection)
+                .await
+                .unwrap();
+                ordinal += 1;
+                let outcome = persist_turn_transition(
+                    &mut connection,
+                    "thread-1",
+                    &turn_id,
+                    to,
+                    StateWriteColumns::default(),
+                )
+                .await
+                .unwrap();
+                let expected = if can_transition_turn(from, to) {
+                    StateWrite::Applied
+                } else if from == to {
+                    StateWrite::AlreadyInState
+                } else {
+                    StateWrite::Rejected { from }
+                };
+                assert_eq!(outcome, expected, "turn write {from:?} to {to:?}");
+                let stored: String =
+                    sqlx::query_scalar("SELECT state FROM chat_turns WHERE id = ?")
+                        .bind(&turn_id)
+                        .fetch_one(&mut *connection)
+                        .await
+                        .unwrap();
+                let landed = if outcome.is_applied() { to } else { from };
+                assert_eq!(stored, landed.as_str(), "stored {from:?} to {to:?}");
+            }
+        }
+        assert_eq!(
+            persist_turn_transition(
+                &mut connection,
+                "thread-other",
+                "turn-pending-active",
+                ChatTurnState::Active,
+                StateWriteColumns::default(),
+            )
+            .await
+            .unwrap(),
+            StateWrite::Missing
+        );
+    });
+}
+
+#[test]
+fn persisted_thread_writer_applies_only_declared_transitions() {
+    use ganbaru_chat::repository::state_writes::{StateWrite, persist_thread_state};
+    use ganbaru_chat::state::can_transition_thread;
+    use ganbaru_chat_contracts::models::ChatThreadState;
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let mut connection = pool.acquire().await.unwrap();
+        for from in ChatThreadState::ALL
+            .into_iter()
+            .filter(|state| state.is_persisted())
+        {
+            for to in ChatThreadState::ALL {
+                sqlx::query("UPDATE chat_threads SET state = ? WHERE id = 'thread-1'")
+                    .bind(from.as_str())
+                    .execute(&mut *connection)
+                    .await
+                    .unwrap();
+                let outcome = persist_thread_state(&mut connection, "thread-1", to)
+                    .await
+                    .unwrap();
+                let expected = if can_transition_thread(from, to) {
+                    StateWrite::Applied
+                } else if from == to {
+                    StateWrite::AlreadyInState
+                } else {
+                    StateWrite::Rejected { from }
+                };
+                assert_eq!(outcome, expected, "thread write {from:?} to {to:?}");
+            }
+        }
+        assert_eq!(
+            persist_thread_state(&mut connection, "thread-missing", ChatThreadState::Idle)
+                .await
+                .unwrap(),
+            StateWrite::Missing
+        );
+    });
+}

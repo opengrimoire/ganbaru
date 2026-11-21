@@ -426,23 +426,27 @@ pub(super) async fn persist_user_turn(context: PersistUserTurnContext<'_>) -> Ch
     .execute(&mut *transaction)
     .await
     .map_err(persistence_error)?;
-    sqlx::query(
+    // A thread closed after the send read it stays closed.
+    let statement = format!(
         "UPDATE chat_threads SET model_selection_data = ?, safety_mode = ?,
-                interaction_mode = ?, state = 'active', latest_turn_state = 'pending',
+                interaction_mode = ?, {}, latest_turn_state = ?,
                 latest_preview = ?, message_count = message_count + 1,
                 revision = revision + 1, last_activity_at = ?, updated_at = ?
          WHERE id = ?",
-    )
-    .bind(model_selection)
-    .bind(wire_safety(request.modes.safety_mode))
-    .bind(wire_interaction(request.modes.interaction_mode))
-    .bind(prompt_preview(&request.prompt))
-    .bind(now.as_str())
-    .bind(now.as_str())
-    .bind(thread_id.as_str())
-    .execute(&mut *transaction)
-    .await
-    .map_err(persistence_error)?;
+        guarded_thread_state_assignment(ChatThreadState::Active)
+    );
+    sqlx::query(sqlx::AssertSqlSafe(statement.as_str()))
+        .bind(model_selection)
+        .bind(wire_safety(request.modes.safety_mode))
+        .bind(wire_interaction(request.modes.interaction_mode))
+        .bind(ChatTurnState::Pending.as_str())
+        .bind(prompt_preview(&request.prompt))
+        .bind(now.as_str())
+        .bind(now.as_str())
+        .bind(thread_id.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(persistence_error)?;
     if let Some((binding, launch)) = origin.assignment_run() {
         ganbaru_chat::agent_runs::insert_starting_run(
             &mut transaction,

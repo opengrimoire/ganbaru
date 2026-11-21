@@ -27,6 +27,7 @@
   } from "$lib/chat/timeline/reply-thread-model";
   import { formatDateTime } from "$lib/i18n/formatters";
   import { organizationalScrollFollowsEnd } from "$lib/chat/timeline/organizational-scroll";
+  import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import {
     loadChatScratchManager,
     type ChatScratchManagerComponent,
@@ -68,6 +69,10 @@
   const { t } = localization;
   /** A phone shows the thread in a sheet that a swipe down closes, so it leaves out the header row and its tab. */
   const mobileShell = BUILD_PLATFORM_PROFILE.shell === "mobile";
+  /** On a phone the timeline fades only toward its composer; the sheet marks scrolled content above with a divider. */
+  function threadScrollFade(node: HTMLElement) {
+    return mobileShell ? scrollEdgeFadeAction(node, { edges: "bottom" }) : undefined;
+  }
   const localExecutionAvailable = platformHasCapability(
     BUILD_PLATFORM_PROFILE,
     "chat.local-execution",
@@ -511,7 +516,7 @@
 
   <div
     bind:this={scroller}
-    data-mobile-scroll-fade class="thread-scroll"
+    use:threadScrollFade class="thread-scroll"
     data-reply-thread-scroll
     aria-busy={!executionPresentationReady || chat.replyThreadLoading || undefined}
     onscroll={rememberScrollPosition}

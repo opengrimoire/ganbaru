@@ -29,6 +29,13 @@
   });
   /** The backdrop darkens with how far the sheet is open, so it fades in and out with the slide. */
   const backdropOpacity = $derived(sheet.heights.peek > 0 ? Math.min(1, sheet.visibleHeight / sheet.heights.peek) : 0);
+  /** Whether the thread timeline is scrolled away from its top, which the handle marks with a divider below it. */
+  let scrolledFromTop = $state(false);
+
+  function noteThreadScroll(event: Event): void {
+    const target = event.target;
+    if (target instanceof HTMLElement && target.hasAttribute("data-reply-thread-scroll")) scrolledFromTop = target.scrollTop >= 1;
+  }
 
   onMount(() => (androidSystemBackAvailable ? mobileBackStack.activate({ handle: () => sheet.close() }) : undefined));
 </script>
@@ -51,8 +58,8 @@
       style:height={`${sheet.visibleHeight}px`}
       inert={sheet.closing}
     >
-      <div class="thread-sheet-content" style:height={`${sheet.contentHeight}px`}>
-        <div class="thread-sheet-handle" data-reply-thread-sheet-handle aria-hidden="true"><span class="thread-sheet-grabber"></span><span class="thread-sheet-title">{t("chat.organization.thread")}</span></div>
+      <div class="thread-sheet-content" style:height={`${sheet.contentHeight}px`} onscrollcapture={noteThreadScroll}>
+        <div class="thread-sheet-handle" class:scrolled={scrolledFromTop} data-reply-thread-sheet-handle aria-hidden="true"><span class="thread-sheet-grabber"></span><span class="thread-sheet-title">{t("chat.organization.thread")}</span></div>
         <div class="min-h-0 flex-1"><ChatReplyThreadPanel presentation="dialog" onClose={() => sheet.close()} /></div>
       </div>
     </div>
@@ -67,9 +74,13 @@
   .thread-sheet { position:absolute; right:0; bottom:0; left:0; max-height:100%; overflow:clip; background:var(--cal-bg); box-shadow:var(--floating-shadow); pointer-events:auto; }
   .thread-sheet[data-sheet-motion="settle"], .thread-sheet-backdrop[data-sheet-motion="settle"] { transition:height var(--thread-sheet-settle) cubic-bezier(0.2, 0.8, 0.2, 1), opacity var(--thread-sheet-settle) ease; }
   .thread-sheet-content { display:flex; flex-direction:column; }
-  /* The grabber and the sheet name: the whole strip moves the sheet, and the name says what the sheet holds. */
-  .thread-sheet-handle { display:flex; flex:0 0 auto; flex-direction:column; align-items:center; gap:0.4rem; padding-block:0.5rem 0.375rem; background:var(--cal-bg); touch-action:none; user-select:none; }
-  .thread-sheet-grabber { width:2.25rem; height:0.25rem; border-radius:9999px; background:var(--foreground); }
+  /*
+   * The grabber and the sheet name: the whole strip moves the sheet, and the name says what the sheet holds. Once the
+   * timeline scrolls away from its top, a divider like the date dividers separates the strip from it.
+   */
+  .thread-sheet-handle { display:flex; flex:0 0 auto; flex-direction:column; align-items:center; gap:0.4rem; padding-block:0.5rem 0.375rem; border-bottom:1px solid transparent; background:var(--cal-bg); touch-action:none; user-select:none; }
+  .thread-sheet-handle.scrolled { border-bottom-color:var(--border); }
+  .thread-sheet-grabber { width:2.25rem; height:3px; border-radius:9999px; background:var(--foreground); }
   .thread-sheet-title { color:var(--foreground); font-size:var(--chat-organizational-font-size,calc(0.875rem * var(--type-scale))); font-weight:600; line-height:1; }
   @media (prefers-reduced-motion: reduce) { .thread-sheet[data-sheet-motion="settle"], .thread-sheet-backdrop[data-sheet-motion="settle"] { transition:none; } }
 </style>

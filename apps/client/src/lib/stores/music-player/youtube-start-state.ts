@@ -14,14 +14,18 @@ export type YouTubeStartState =
 
 export const YOUTUBE_START_IDLE: YouTubeStartState = { phase: "idle" };
 
-/** Starts waiting for playback when a load autoplays; a paused load never waits. */
+/**
+ * Starts waiting for playback when a load autoplays; a paused load never waits. `resolveMs`
+ * extends the deadline by the time the host may first spend resolving what to play.
+ */
 export function beginYouTubeStart(
   generation: number,
   autoplay: boolean,
   nowMs: number,
+  resolveMs = 0,
 ): YouTubeStartState {
   return autoplay
-    ? { phase: "starting", generation, deadlineMs: nowMs + YOUTUBE_START_TIMEOUT_MS }
+    ? { phase: "starting", generation, deadlineMs: nowMs + resolveMs + YOUTUBE_START_TIMEOUT_MS }
     : YOUTUBE_START_IDLE;
 }
 

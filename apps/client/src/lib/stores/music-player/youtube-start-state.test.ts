@@ -31,4 +31,11 @@ describe("YouTube start state", () => {
     expect(youtubeStartAfterDeadline(starting, 3, deadline)).toEqual(YOUTUBE_START_IDLE);
     expect(youtubeStartAfterDeadline(YOUTUBE_START_IDLE, 3, deadline)).toEqual(YOUTUBE_START_IDLE);
   });
+
+  it("extends the deadline by the time spent resolving what to play", () => {
+    const starting = beginYouTubeStart(3, true, 1_000, 18_000);
+    const deadline = 1_000 + 18_000 + YOUTUBE_START_TIMEOUT_MS;
+    expect(youtubeStartAfterDeadline(starting, 3, deadline - 1)).toBe(starting);
+    expect(youtubeStartAfterDeadline(starting, 3, deadline)).toEqual(YOUTUBE_START_IDLE);
+  });
 });

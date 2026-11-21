@@ -127,7 +127,7 @@ export function createMusicYouTubeAdapter(
     const { generation, deadlineMs } = next;
     startTimeoutId = setTimeout(() => {
       startTimeoutId = null;
-      const expired = youtubeStartAfterDeadline(start, generation, deadlineMs);
+      const expired = youtubeStartAfterDeadline(start, generation, Math.max(deadlineMs, currentTime()));
       if (expired !== start) setStart(expired);
     }, Math.max(0, deadlineMs - currentTime()));
   }
@@ -256,7 +256,9 @@ export function createMusicYouTubeAdapter(
     generation: number,
     autoplay: boolean,
   ): Promise<void> {
-    setStart(beginYouTubeStart(generation, autoplay, currentTime()));
+    // A playlist first resolves its videos, so its start may wait out that resolution too.
+    const resolveMs = source.kind === "youtube-playlist" ? PLAYLIST_RESOLVE_TIMEOUT_MS : 0;
+    setStart(beginYouTubeStart(generation, autoplay, currentTime(), resolveMs));
     lastMetadataSignature = "";
     resolvingPlaylist = source.kind === "youtube-playlist"
       ? {

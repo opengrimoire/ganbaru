@@ -427,3 +427,70 @@ fn calendar_retarget_cannot_extend_already_expired_execution() {
         tx.rollback().await.unwrap();
     });
 }
+
+#[test]
+fn a_calendar_event_removed_outside_focus_stops_its_open_run_on_the_next_focus_command() {
+    block_on(async {
+        let pool = pool().await;
+        let initial = start(&pool).await;
+        // Removing the event outside Focus clears the open run's live
+        // reference through its foreign key, without a Focus command.
+        sqlx::query("DELETE FROM calendar_events WHERE id = 'focus-event'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut gone = context(START + 30_125);
+        gone.commitment = None;
+        let result = execute(
+            &pool,
+            &command("pause", initial.revision, FocusIntent::Pause),
+            &gone,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.mode, FocusMode::Stopped);
+        let run = result.run.as_ref().unwrap();
+        assert_eq!(run.ended_at_ms, Some(gone.now_ms));
+        let (event_id, original): (Option<String>, String) =
+            sqlx::query_as("SELECT event_id, original_event_id FROM pomodoro_runs WHERE id = ?")
+                .bind(&run.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!((event_id, original.as_str()), (None, "focus-event"));
+        let later = observe(&pool, FocusObservation::Heartbeat, &gone).await;
+        assert_eq!(later.mode, FocusMode::Stopped);
+        assert_eq!(later.revision, result.revision);
+    });
+}
+
+#[test]
+fn a_run_closed_outside_focus_is_reported_as_invalid_state_without_partial_writes() {
+    // No production writer closes an open run outside Focus: Calendar removal
+    // refuses open runs or stops them through a Focus command, open runs never
+    // publish, and device handoff stops Focus first. Guarded writes fail closed.
+    block_on(async {
+        for closed in [
+            "UPDATE pomodoro_runs SET ended_at = started_at, end_reason = 'interrupted'",
+            "UPDATE pomodoro_segments SET status = 'interrupted', actual_end = actual_start, end_reason = 'stopped'",
+        ] {
+            let pool = pool().await;
+            let initial = start(&pool).await;
+            sqlx::query(closed).execute(&pool).await.unwrap();
+            let error = execute(
+                &pool,
+                &command("pause", initial.revision, FocusIntent::Pause),
+                &context(START + 30_125),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.code, FocusErrorCode::InvalidState, "{closed}");
+            let revision: i64 =
+                sqlx::query_scalar("SELECT revision FROM pomodoro_execution_state")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(revision, initial.revision, "{closed}");
+        }
+    });
+}

@@ -213,6 +213,8 @@ export const dataFolderError = {
     "This phone is linked to other devices. Unlink this phone first, then restore.",
   anchorRollback:
     "This computer anchors your linked devices and this copy would undo changes they already follow. Hand the anchor over or remove those devices, then restore.",
+  lostDatabase:
+    "This folder's data is missing, so it wasn't opened to avoid starting over empty. Choose another folder or import a copy.",
 } as const;
 
 export const language = {

@@ -48,6 +48,9 @@ const LINKED_ANDROID_RESTORE_MESSAGE = "unlink it before restoring another vault
 /** Lowercase text of the native error raised when a rollback would rewind a live anchor. */
 const ANCHOR_ROLLBACK_MESSAGE = "the rollback copy is behind its authorization head";
 
+/** Lowercase text of the native error raised when a vault that held data opens without its database. */
+const LOST_DATABASE_MESSAGE = "held data but its database is missing or empty";
+
 /**
  * Validates the native vault lock status.
  *
@@ -187,6 +190,10 @@ export function formatVaultError(
 
   if (lower.includes(ANCHOR_ROLLBACK_MESSAGE)) {
     return t("dataFolderError.anchorRollback");
+  }
+
+  if (lower.includes(LOST_DATABASE_MESSAGE)) {
+    return t("dataFolderError.lostDatabase");
   }
 
   if (

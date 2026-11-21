@@ -97,6 +97,17 @@ describe("vault state api", () => {
     ).toBe(expected);
   });
 
+  it("explains a vault that held data but lost its database instead of generic database guidance", async () => {
+    const { formatVaultError } = await loadModule();
+    const native =
+      "this Ganbaru folder held data but its database is missing or empty, so it was not opened; restore a backup or a rollback copy into it";
+    const expected =
+      "This folder's data is missing, so it wasn't opened to avoid starting over empty. Choose another folder or import a copy.";
+
+    expect(formatVaultError(native, "startup")).toBe(expected);
+    expect(formatVaultError(new Error(`run database migrations: ${native}`), "change")).toBe(expected);
+  });
+
   it("reads the vault lock status and rejects unknown values", async () => {
     const { getVaultLockStatus, parseVaultLockStatus } = await loadModule();
 

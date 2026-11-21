@@ -221,6 +221,8 @@ export const dataFolderError = {
     "Este teléfono está vinculado a otros dispositivos. Desvincula primero este teléfono y luego restaura.",
   anchorRollback:
     "Esta computadora es el ancla de tus dispositivos vinculados y esta copia desharía cambios que ellos ya siguen. Traspasa el ancla o quita esos dispositivos y luego restaura.",
+  lostDatabase:
+    "Faltan los datos de esta carpeta, así que no se abrió para no empezar de cero. Elige otra carpeta o importa una copia.",
 } as const satisfies MessageShape<typeof enDataFolderError>;
 
 export const language = {

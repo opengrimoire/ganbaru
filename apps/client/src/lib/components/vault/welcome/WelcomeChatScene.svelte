@@ -612,9 +612,9 @@
 
   /* The phone thread sheet and its grabber, as the bottom sheet draws them. */
   .thread-sheet { position: absolute; inset-inline: 0; bottom: 0; display: flex; flex-direction: column; overflow: clip; background: var(--cal-bg); box-shadow: var(--floating-shadow); }
-  .sheet-handle { display: flex; flex: 0 0 auto; flex-direction: column; align-items: center; gap: 0.3rem; padding-block: 0.375rem 0.25rem; }
-  .sheet-grabber { width: 2.25rem; height: 0.25rem; border-radius: 9999px; background: color-mix(in srgb, var(--muted-foreground) 40%, var(--cal-bg)); }
-  .sheet-title { color: var(--muted-foreground); font-size: calc(0.75rem * var(--type-scale)); font-weight: 600; line-height: 1; }
+  .sheet-handle { display: flex; flex: 0 0 auto; flex-direction: column; align-items: center; gap: 0.4rem; padding-block: 0.5rem 0.375rem; }
+  .sheet-grabber { width: 2.25rem; height: 0.25rem; border-radius: 9999px; background: var(--foreground); }
+  .sheet-title { color: var(--foreground); font-size: calc(0.875rem * var(--type-scale)); font-weight: 600; line-height: 1; }
 
   /* Opus's turn in the thread, as the embedded execution timeline draws it. */
   .turn-row { display: grid; min-width: 0; grid-template-columns: 34px minmax(0, 1fr); align-items: start; gap: 0.65rem; padding: 0.45rem 1rem 0; }

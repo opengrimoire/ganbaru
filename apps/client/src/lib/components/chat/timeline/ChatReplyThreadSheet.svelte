@@ -68,8 +68,8 @@
   .thread-sheet[data-sheet-motion="settle"], .thread-sheet-backdrop[data-sheet-motion="settle"] { transition:height var(--thread-sheet-settle) cubic-bezier(0.2, 0.8, 0.2, 1), opacity var(--thread-sheet-settle) ease; }
   .thread-sheet-content { display:flex; flex-direction:column; }
   /* The grabber and the sheet name: the whole strip moves the sheet, and the name says what the sheet holds. */
-  .thread-sheet-handle { display:flex; flex:0 0 auto; flex-direction:column; align-items:center; gap:0.3rem; padding-block:0.375rem 0.25rem; background:var(--cal-bg); touch-action:none; user-select:none; }
-  .thread-sheet-grabber { width:2.25rem; height:0.25rem; border-radius:9999px; background:color-mix(in srgb, var(--muted-foreground) 40%, var(--cal-bg)); }
-  .thread-sheet-title { color:var(--muted-foreground); font-size:calc(0.75rem * var(--type-scale)); font-weight:600; line-height:1; }
+  .thread-sheet-handle { display:flex; flex:0 0 auto; flex-direction:column; align-items:center; gap:0.4rem; padding-block:0.5rem 0.375rem; background:var(--cal-bg); touch-action:none; user-select:none; }
+  .thread-sheet-grabber { width:2.25rem; height:0.25rem; border-radius:9999px; background:var(--foreground); }
+  .thread-sheet-title { color:var(--foreground); font-size:var(--chat-organizational-font-size,calc(0.875rem * var(--type-scale))); font-weight:600; line-height:1; }
   @media (prefers-reduced-motion: reduce) { .thread-sheet[data-sheet-motion="settle"], .thread-sheet-backdrop[data-sheet-motion="settle"] { transition:none; } }
 </style>

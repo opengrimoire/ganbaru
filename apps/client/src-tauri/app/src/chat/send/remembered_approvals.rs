@@ -24,10 +24,9 @@ use tauri::Manager;
 const LOCAL_PARTICIPANT_ID: &str = "participant:local-owner";
 /// Prefix of the command ids of answers Ganbaru gives for a remembered approval.
 const REMEMBERED_APPROVAL_COMMAND_PREFIX: &str = "remembered-approval:";
-/// How often the answer checks that the provider is waiting for the request.
-const WAITING_POLL_INTERVAL: Duration = Duration::from_millis(50);
-/// How many checks the answer makes before it leaves the request to the person.
-const WAITING_POLLS: u32 = 40;
+/// How long the answer waits for the provider to hold the request open before it leaves the
+/// request to the person.
+const OPEN_APPROVAL_WAIT: Duration = Duration::from_secs(2);
 /// How many times the answer tries again when the provider has not registered the request yet.
 const CONFLICT_RETRIES: u32 = 4;
 /// The wait before trying again after a conflict.
@@ -288,7 +287,7 @@ async fn resolve_remembered(
 
 /// Waits until the runtime of `thread_id` holds the approval `provider_request_id` open, which
 /// it does only after the event that opened the request is delivered. Returns false when the
-/// request does not open in time or the session stops running.
+/// request does not open in time or the thread has no runtime.
 async fn wait_for_open_approval(
     app: &tauri::AppHandle,
     thread_id: &ChatThreadId,
@@ -297,17 +296,13 @@ async fn wait_for_open_approval(
     let Ok(provider_request_id) = ProviderRequestId::new(provider_request_id.to_string()) else {
         return false;
     };
-    for _ in 0..WAITING_POLLS {
-        match app.state::<ChatRuntimeRegistry>().snapshot(thread_id) {
-            Ok(snapshot)
-                if snapshot.open_request(&provider_request_id)
-                    == Some(OpenRequestKind::Approval) =>
-            {
-                return true;
-            }
-            Ok(_) => tokio::time::sleep(WAITING_POLL_INTERVAL).await,
-            Err(_) => return false,
-        }
-    }
-    false
+    app.state::<ChatRuntimeRegistry>()
+        .wait_until(
+            thread_id,
+            |snapshot| {
+                snapshot.open_request(&provider_request_id) == Some(OpenRequestKind::Approval)
+            },
+            OPEN_APPROVAL_WAIT,
+        )
+        .await
 }

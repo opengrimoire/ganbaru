@@ -27,6 +27,7 @@ use tokio::task::JoinHandle;
 mod event_sink;
 mod helpers;
 pub mod phase;
+mod snapshot_cell;
 mod worker;
 
 #[cfg(test)]
@@ -35,6 +36,7 @@ use helpers::*;
 pub use phase::{
     OpenRequestKind, RuntimeInput, RuntimePhase, RuntimeRejection, RuntimeTurn, TurnProgress,
 };
+use snapshot_cell::SnapshotCell;
 use worker::run_thread_runtime;
 
 const DEFAULT_COMMAND_CAPACITY: usize = 32;
@@ -237,7 +239,7 @@ pub struct ThreadRuntimeOwner {
     thread_id: ChatThreadId,
     command_sender: mpsc::Sender<ThreadRuntimeCommand>,
     operation_lock: Arc<AsyncMutex<()>>,
-    snapshot: Arc<Mutex<ThreadRuntimeSnapshot>>,
+    snapshot: Arc<SnapshotCell>,
     worker_task: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -248,9 +250,18 @@ impl ThreadRuntimeOwner {
 
     pub fn snapshot(&self) -> ChatResult<ThreadRuntimeSnapshot> {
         self.snapshot
-            .lock()
-            .map(|snapshot| snapshot.clone())
-            .map_err(|_| runtime_state_error())
+            .read(ThreadRuntimeSnapshot::clone)
+            .ok_or_else(runtime_state_error)
+    }
+
+    /// Waits until `predicate` holds for the thread's runtime state, for at most `timeout`.
+    /// Returns false when it does not hold in time.
+    pub async fn wait_until(
+        &self,
+        predicate: impl Fn(&ThreadRuntimeSnapshot) -> bool,
+        timeout: Duration,
+    ) -> bool {
+        self.snapshot.wait_until(predicate, timeout).await
     }
 
     pub fn try_command(&self, command: ThreadRuntimeCommand) -> ChatResult<()> {
@@ -492,10 +503,8 @@ impl ThreadRuntimeOwner {
 
     fn stop_accepting(&self) -> ChatResult<()> {
         self.snapshot
-            .lock()
-            .map_err(|_| runtime_state_error())?
-            .accepting_commands = false;
-        Ok(())
+            .update(|snapshot| snapshot.accepting_commands = false)
+            .ok_or_else(runtime_state_error)
     }
 
     /// Reports whether the registry holds the only reference, no command is queued, and the
@@ -505,8 +514,8 @@ impl ThreadRuntimeOwner {
             && self.command_sender.capacity() == self.command_sender.max_capacity()
             && self
                 .snapshot
-                .lock()
-                .is_ok_and(|snapshot| snapshot.can_evict(now, idle_timeout))
+                .read(|snapshot| snapshot.can_evict(now, idle_timeout))
+                .unwrap_or(false)
     }
 
     fn abort_worker(&self) -> ChatResult<()> {
@@ -594,6 +603,20 @@ impl ChatRuntimeRegistry {
         }
     }
 
+    /// Waits until `predicate` holds for the runtime state of `thread_id`, for at most `timeout`.
+    /// Returns false when it does not hold in time or the thread has no runtime owner.
+    pub async fn wait_until(
+        &self,
+        thread_id: &ChatThreadId,
+        predicate: impl Fn(&ThreadRuntimeSnapshot) -> bool,
+        timeout: Duration,
+    ) -> bool {
+        match self.existing_owner(thread_id) {
+            Ok(Some(owner)) => owner.wait_until(predicate, timeout).await,
+            Ok(None) | Err(_) => false,
+        }
+    }
+
     fn owner_with_capacity(
         &self,
         thread_id: ChatThreadId,
@@ -616,7 +639,7 @@ impl ChatRuntimeRegistry {
         let idle_timeout = self.idle_timeout.get();
         owners.retain(|_, owner| !owner.can_evict(now, idle_timeout));
         let (sender, receiver) = mpsc::channel(capacity.max(1));
-        let snapshot = Arc::new(Mutex::new(ThreadRuntimeSnapshot::stopped()));
+        let snapshot = Arc::new(SnapshotCell::new(ThreadRuntimeSnapshot::stopped()));
         let worker_thread_id = thread_id.clone();
         let worker_snapshot = Arc::clone(&snapshot);
         let idle_timeout = self.idle_timeout.clone();
@@ -912,7 +935,7 @@ mod event_scope_tests {
         ] {
             state.apply(input).unwrap();
         }
-        let snapshot = Arc::new(Mutex::new(state));
+        let snapshot = Arc::new(SnapshotCell::new(state));
         let event = CanonicalRuntimeEvent {
             schema_version: CANONICAL_EVENT_SCHEMA_VERSION,
             event_id: ChatEventId::new("event-compaction".to_string()).unwrap(),

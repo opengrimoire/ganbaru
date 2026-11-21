@@ -7,7 +7,7 @@ use super::*;
 pub(super) struct GenerationEventSink {
     pub(super) thread_id: ChatThreadId,
     pub(super) generation: u64,
-    pub(super) snapshot: Arc<Mutex<ThreadRuntimeSnapshot>>,
+    pub(super) snapshot: Arc<SnapshotCell>,
     pub(super) inner: Arc<dyn ProviderEventSink>,
 }
 
@@ -23,11 +23,11 @@ impl ProviderEventSink for GenerationEventSink {
             self.inner.emit(event.clone()).await?;
             // The generation is checked again in the same critical section that applies the
             // event, so a session that ended while the event was persisted is never changed.
-            if let Ok(mut state) = self.snapshot.lock()
-                && state.generation == self.generation
-            {
-                apply_event(&mut state, &event);
-            }
+            self.snapshot.update(|state| {
+                if state.generation == self.generation {
+                    apply_event(state, &event);
+                }
+            });
             Ok(())
         })
     }
@@ -39,29 +39,30 @@ impl ProviderEventSink for GenerationEventSink {
 
 impl GenerationEventSink {
     fn late_reason(&self, event: &CanonicalRuntimeEvent) -> Option<&'static str> {
-        let Ok(state) = self.snapshot.lock() else {
-            return Some("inactive_session_generation");
-        };
-        if state.generation != self.generation {
-            Some("inactive_session_generation")
-        } else if event.thread_id != self.thread_id {
-            Some("mismatched_thread")
-        } else if !event_matches_turn(&state, event) {
-            Some("settled_or_mismatched_turn")
-        } else {
-            None
-        }
+        self.snapshot
+            .read(|state| {
+                if state.generation != self.generation {
+                    Some("inactive_session_generation")
+                } else if event.thread_id != self.thread_id {
+                    Some("mismatched_thread")
+                } else if !event_matches_turn(state, event) {
+                    Some("settled_or_mismatched_turn")
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(Some("inactive_session_generation"))
     }
 }
 
 #[cfg(test)]
 pub(super) fn event_matches_active_turn(
-    snapshot: &Arc<Mutex<ThreadRuntimeSnapshot>>,
+    snapshot: &Arc<SnapshotCell>,
     event: &CanonicalRuntimeEvent,
 ) -> bool {
     snapshot
-        .lock()
-        .is_ok_and(|state| event_matches_turn(&state, event))
+        .read(|state| event_matches_turn(state, event))
+        .unwrap_or(false)
 }
 
 fn event_matches_turn(state: &ThreadRuntimeSnapshot, event: &CanonicalRuntimeEvent) -> bool {

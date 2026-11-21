@@ -7,7 +7,7 @@ struct RuntimeWorker {
     driver: Option<Box<dyn ProviderDriver>>,
     event_sink: Option<Arc<dyn ProviderEventSink>>,
     session: Option<ProviderSessionSnapshot>,
-    snapshot: Arc<Mutex<ThreadRuntimeSnapshot>>,
+    snapshot: Arc<SnapshotCell>,
     interrupt_confirmation_timeout: Duration,
     /// How long the session must stay quiet before it restarts onto an updated CLI, when one was
     /// installed while it ran.
@@ -21,7 +21,7 @@ struct RuntimeWorker {
 impl RuntimeWorker {
     fn new(
         thread_id: ChatThreadId,
-        snapshot: Arc<Mutex<ThreadRuntimeSnapshot>>,
+        snapshot: Arc<SnapshotCell>,
         interrupt_confirmation_timeout: Duration,
     ) -> Self {
         Self {
@@ -440,7 +440,7 @@ impl RuntimeWorker {
     fn restart_deadline(&self) -> Option<Instant> {
         let quiet = self.restart_when_quiet?;
         self.driver.as_ref()?;
-        let last_activity = self.snapshot.lock().ok()?.last_activity;
+        let last_activity = self.snapshot.read(|state| state.last_activity)?;
         Some(last_activity + quiet)
     }
 
@@ -563,17 +563,14 @@ impl RuntimeWorker {
         self.driver.is_some()
             && self
                 .snapshot
-                .lock()
-                .map(|snapshot| snapshot.can_idle_stop(Instant::now(), idle_timeout))
+                .read(|snapshot| snapshot.can_idle_stop(Instant::now(), idle_timeout))
                 .unwrap_or(false)
     }
 
     fn idle_deadline(&self, idle_timeout: Duration) -> Option<Instant> {
         self.driver.as_ref()?;
         self.snapshot
-            .lock()
-            .ok()
-            .map(|snapshot| snapshot.last_activity + idle_timeout)
+            .read(|snapshot| snapshot.last_activity + idle_timeout)
     }
 
     /// Retires the previous session and opens the phase for a new one, unless a session still
@@ -582,14 +579,16 @@ impl RuntimeWorker {
         &mut self,
         event_sink: Arc<dyn ProviderEventSink>,
     ) -> Option<Arc<dyn ProviderEventSink>> {
-        let generation = {
-            let mut state = self.snapshot.lock().ok()?;
-            state.apply(RuntimeInput::SessionStarting).ok()?;
-            state.generation += 1;
-            state.session_id = None;
-            state.capabilities = crate::models::ProviderCapabilities::default();
-            state.generation
-        };
+        let generation = self
+            .snapshot
+            .update(|state| {
+                state.apply(RuntimeInput::SessionStarting).ok()?;
+                state.generation += 1;
+                state.session_id = None;
+                state.capabilities = crate::models::ProviderCapabilities::default();
+                Some(state.generation)
+            })
+            .flatten()?;
         self.driver.take();
         self.restart_when_quiet = None;
         self.clear_stop_checks();
@@ -663,19 +662,19 @@ impl RuntimeWorker {
     /// Applies `input` to the phase and reports whether the phase allowed it.
     fn apply(&self, input: RuntimeInput) -> bool {
         self.snapshot
-            .lock()
-            .is_ok_and(|mut snapshot| snapshot.apply(input).is_ok())
+            .update(|snapshot| snapshot.apply(input).is_ok())
+            .unwrap_or(false)
     }
 
     /// Reads the snapshot. A poisoned snapshot reads as a failed session.
     fn read<T>(&self, read: impl FnOnce(&ThreadRuntimeSnapshot) -> T) -> T {
-        match self.snapshot.lock() {
-            Ok(snapshot) => read(&snapshot),
-            Err(_) => read(&ThreadRuntimeSnapshot {
+        self.snapshot.read_or(
+            || ThreadRuntimeSnapshot {
                 phase: RuntimePhase::Failed { turn: None },
                 ..ThreadRuntimeSnapshot::stopped()
-            }),
-        }
+            },
+            read,
+        )
     }
 
     fn touch(&self) {
@@ -683,9 +682,7 @@ impl RuntimeWorker {
     }
 
     fn update(&self, update: impl FnOnce(&mut ThreadRuntimeSnapshot)) {
-        if let Ok(mut snapshot) = self.snapshot.lock() {
-            update(&mut snapshot);
-        }
+        self.snapshot.update(update);
     }
 }
 
@@ -705,7 +702,7 @@ fn session_running_error() -> ChatError {
 pub(super) async fn run_thread_runtime(
     thread_id: ChatThreadId,
     mut receiver: mpsc::Receiver<ThreadRuntimeCommand>,
-    snapshot: Arc<Mutex<ThreadRuntimeSnapshot>>,
+    snapshot: Arc<SnapshotCell>,
     idle_timeout: IdleTimeout,
     interrupt_confirmation_timeout: Duration,
 ) {

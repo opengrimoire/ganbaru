@@ -158,8 +158,11 @@ export type NotesEditorBanner =
   | { kind: "reload-failed"; error: string }
   | { kind: "changed-elsewhere" };
 
-/** A paused write queue outranks a failed reload, which outranks the changed-elsewhere notice. */
-export function notesEditorBanner(queue: NotesSaveQueueState, recovery: NotesEditorRecovery): NotesEditorBanner {
-  if (queue.phase === "failed") return { kind: "save-failed", error: queue.error };
+/**
+ * A paused write queue, reported by its error, outranks a failed reload, which outranks the changed-elsewhere
+ * notice.
+ */
+export function notesEditorBanner(saveError: string | null, recovery: NotesEditorRecovery): NotesEditorBanner {
+  if (saveError !== null) return { kind: "save-failed", error: saveError };
   return recovery;
 }

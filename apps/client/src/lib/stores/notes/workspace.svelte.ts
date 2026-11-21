@@ -1,6 +1,19 @@
 import { notesErrorDetail } from "$lib/notes/failure";
 import { loadNotesWorkspaceShell } from "$lib/api/notes";
 import type { NotesWorkspaceShell } from "$lib/notes/types";
+import {
+  IDLE_PAGE_LOAD,
+  notesShellApplied,
+  notesWorkspaceError,
+  notesWorkspaceLoading,
+  transitionPageLoad,
+  transitionShellLoad,
+  UNLOADED_SHELL,
+  type NotesPageLoad,
+  type NotesPageLoadEvent,
+  type NotesShellLoad,
+  type NotesShellLoadEvent,
+} from "./workspace-state";
 
 interface NotesWorkspaceShellRequestState {
   projectId: string | null;
@@ -26,11 +39,10 @@ interface NotesWorkspaceControllerContext {
   readSelectedPageId: () => string | null;
 }
 
-/** Own Notes workspace shell loading, pagination, and request identity. */
+/** Own Notes workspace shell loading, pagination, request identity, and the selected page's load state. */
 export function createNotesWorkspaceController(context: NotesWorkspaceControllerContext) {
-  let loaded = $state(false);
-  let loading = $state(false);
-  let error = $state<string | null>(null);
+  let shellLoad = $state<NotesShellLoad>(UNLOADED_SHELL);
+  let pageLoad = $state<NotesPageLoad>(IDLE_PAGE_LOAD);
   let windowLoading = $state(false);
   let nextPageCursor = $state<string | null>(null);
   let nextFolderCursor = $state<string | null>(null);
@@ -49,13 +61,20 @@ export function createNotesWorkspaceController(context: NotesWorkspaceController
     };
   }
 
+  function dispatchShell(event: NotesShellLoadEvent): void {
+    shellLoad = transitionShellLoad(shellLoad, event);
+  }
+
+  function dispatchPage(event: NotesPageLoadEvent): void {
+    pageLoad = transitionPageLoad(pageLoad, event);
+  }
+
   async function load(): Promise<void> {
     const currentRequestId = ++requestId;
     context.prepareLoad();
     const state = context.readRequestState();
     const requestedSelection = state.selectedPageId;
-    loading = true;
-    error = null;
+    dispatchShell({ type: "started" });
     try {
       const shell = await loadNotesWorkspaceShell(requestFromState(state));
       if (currentRequestId !== requestId) return;
@@ -64,26 +83,30 @@ export function createNotesWorkspaceController(context: NotesWorkspaceController
       totalPageCount = shell.total_page_count;
       totalFolderCount = shell.total_folder_count;
       const nextSelected = context.applyInitialShell(shell, requestedSelection, state.projectId);
-      loaded = true;
+      dispatchShell({ type: "applied" });
       if (nextSelected) {
-        await context.loadSelectedPage(nextSelected).catch((caught) => {
-          if (context.readSelectedPageId() === nextSelected) error = notesErrorDetail(caught);
+        dispatchPage({ type: "started", pageId: nextSelected });
+        await context.loadSelectedPage(nextSelected).then(() => {
+          dispatchPage({ type: "settled", pageId: nextSelected });
+        }, (caught: unknown) => {
+          if (context.readSelectedPageId() === nextSelected) {
+            dispatchPage({ type: "failed", pageId: nextSelected, error: notesErrorDetail(caught) });
+          }
         });
       } else {
         context.clearSelectedPageState();
+        dispatchPage({ type: "cleared" });
       }
     } catch (caught) {
       if (currentRequestId !== requestId) return;
-      error = notesErrorDetail(caught);
+      dispatchShell({ type: "failed", error: notesErrorDetail(caught) });
       throw caught;
-    } finally {
-      if (currentRequestId === requestId) loading = false;
     }
   }
 
   async function ensureLoaded(): Promise<void> {
     if (loadPromise) return loadPromise;
-    if (loaded) return;
+    if (notesShellApplied(shellLoad)) return;
     loadPromise = load().finally(() => {
       loadPromise = null;
     });
@@ -154,7 +177,7 @@ export function createNotesWorkspaceController(context: NotesWorkspaceController
   /** Replace project-scoped pagination and refresh metadata without resetting the editor. */
   async function refreshProjectNavigation(): Promise<void> {
     requestId += 1;
-    loading = false;
+    dispatchShell({ type: "superseded" });
     windowLoading = false;
     nextPageCursor = null;
     nextFolderCursor = null;
@@ -162,9 +185,11 @@ export function createNotesWorkspaceController(context: NotesWorkspaceController
   }
 
   return {
-    get loaded(): boolean { return loaded; },
-    get loading(): boolean { return loading; },
-    get error(): string | null { return error; },
+    /** Whether a shell has been applied, even if a later reload failed. */
+    get loaded(): boolean { return notesShellApplied(shellLoad); },
+    get loading(): boolean { return notesWorkspaceLoading(shellLoad, pageLoad); },
+    /** A failed shell load, or else a failure of the selected page. */
+    get error(): string | null { return notesWorkspaceError(shellLoad, pageLoad, context.readSelectedPageId()); },
     get windowLoading(): boolean { return windowLoading; },
     get totalPageCount(): number { return totalPageCount; },
     get totalFolderCount(): number { return totalFolderCount; },
@@ -173,7 +198,7 @@ export function createNotesWorkspaceController(context: NotesWorkspaceController
     loadMoreWorkspaceWindow,
     reloadPages,
     refreshProjectNavigation,
-    setLoading(value: boolean): void { loading = value; },
-    setError(value: string | null): void { error = value; },
+    /** Moves the selected page's load state; failures of its outlines, history, and undo are page failures too. */
+    dispatchPageLoad: dispatchPage,
   };
 }

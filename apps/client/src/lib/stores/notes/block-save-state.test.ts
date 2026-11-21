@@ -176,15 +176,14 @@ describe("editor recovery transitions", () => {
 
 describe("editor banner", () => {
   it("shows a paused write queue before any recovery notice", () => {
-    const failed = { phase: "failed", generation: 0, error: "Disk full" } as const;
-    expect(notesEditorBanner(failed, { kind: "reload-failed", error: "Offline" })).toEqual({
+    expect(notesEditorBanner("Disk full", { kind: "reload-failed", error: "Offline" })).toEqual({
       kind: "save-failed",
       error: "Disk full",
     });
   });
 
   it("shows the recovery notice while the queue runs", () => {
-    expect(notesEditorBanner(INITIAL_SAVE_QUEUE, { kind: "changed-elsewhere" })).toEqual({ kind: "changed-elsewhere" });
-    expect(notesEditorBanner(INITIAL_SAVE_QUEUE, NO_EDITOR_RECOVERY)).toEqual({ kind: "none" });
+    expect(notesEditorBanner(null, { kind: "changed-elsewhere" })).toEqual({ kind: "changed-elsewhere" });
+    expect(notesEditorBanner(null, NO_EDITOR_RECOVERY)).toEqual({ kind: "none" });
   });
 });

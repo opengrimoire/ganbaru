@@ -598,7 +598,7 @@ describe("Notes preview ownership", () => {
     expect(await notes.openDatabase(blockId)).toBe(false);
     expect(notes.selectedDatabaseBlockId).toBeNull();
     expect(blockPlainText(notes.blockById(draftId)!)).toBe("Retained body");
-    expect(notes.editorSaveError).toBe("Save failed");
+    expect(notes.editorBanner).toEqual({ kind: "save-failed", error: "Save failed" });
     backend.saveBlock.mockImplementation(saveBlock);
     await notes.retryEditorMutations();
   });
@@ -967,7 +967,7 @@ describe("Notes preview ownership", () => {
     expect(blockPlainText(preview.store.blockById("child-body")!)).toBe("Unsaved child");
     await main.updateBlockText("parent-body", "Main remains editable");
     await main.flushPendingWrites();
-    expect(main.editorSaveError).toBeNull();
+    expect(main.editorBanner.kind).toBe("none");
     await preview.store.retryEditorMutations();
     await notes.closeContextualPage();
     expect(notes.previewPane).toBeNull();

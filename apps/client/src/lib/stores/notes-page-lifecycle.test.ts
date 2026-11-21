@@ -73,6 +73,10 @@ vi.mock("$lib/api/notes", async (importOriginal) => {
     updateNotesBlock: (_blockId: string, _update: NotesBlockUpdate): Promise<NotesBlock> => (
       new Promise((resolve, reject) => backend.pendingBlockSaves.push({ resolve, reject }))
     ),
+    hydrateNotesBlocks: async ({ page_id }: { page_id: string }): Promise<NotesBlock[]> => {
+      const pageValue = backend.pages.get(page_id);
+      return pageValue ? openResponse(pageValue).blocks.results : [];
+    },
     saveNotesUndoState: async () => undefined,
     isNotesPageActive: async (pageId: string) => backend.pages.has(pageId),
     trashNotesPage: (_pageId: string, _inTrash: boolean): Promise<NotesPage> => (
@@ -228,7 +232,7 @@ describe("Notes page lifecycle", () => {
 
     expect(notes.selectedPageId).not.toBe(rootId);
     expect(backend.pendingCreates).toHaveLength(1);
-    expect(notes.editorSaveError).toBeNull();
+    expect(notes.editorBanner.kind).toBe("none");
   });
 
   it("retains an edited main note while a preview is open and reads it again after leaving the document", async () => {
@@ -341,7 +345,7 @@ describe("Notes page lifecycle", () => {
     expect(notes.navigationPages.some((item) => item.id === newId)).toBe(false);
     expect(notes.selectedPageId).not.toBe(newId);
     expect(notes.trashActionError).toBeNull();
-    expect(notes.editorSaveError).toBeNull();
+    expect(notes.editorBanner.kind).toBe("none");
   });
 
   it("restores navigation when the Trash operation fails", async () => {
@@ -372,7 +376,7 @@ describe("Notes page lifecycle", () => {
     expect(notes.navigationPages.map((item) => item.id)).toEqual([otherId]);
     expect(notes.selectedPageId).toBe(otherId);
     expect(notes.trashActionError).toBeNull();
-    expect(notes.editorSaveError).toBeNull();
+    expect(notes.editorBanner.kind).toBe("none");
     await notes.selectPage(null);
     await notes.selectPage(otherId);
     expect(notes.selectedPageId).toBe(otherId);
@@ -396,7 +400,7 @@ describe("Notes page lifecycle", () => {
     expect(notes.navigationPages.map((item) => item.id)).toEqual([otherId]);
     expect(notes.selectedPageId).toBe(otherId);
     expect(notes.trashActionError).toBeNull();
-    expect(notes.editorSaveError).toBeNull();
+    expect(notes.editorBanner.kind).toBe("none");
     await notes.selectPage(null);
     await notes.selectPage(otherId);
     expect(notes.selectedPageId).toBe(otherId);
@@ -447,6 +451,30 @@ describe("Notes page lifecycle", () => {
     expect(notes.selectedPageId).toBe(otherId);
   });
 
+
+  it("keeps a failed reload after a refused write on the banner until Retry reloads the note", async () => {
+    const { getNotes } = await import("./notes.svelte");
+    const notes = getNotes();
+    await notes.load();
+    await notes.selectPage(rootId);
+    const refused = () => new Error(`Notes edit conflict: block block-${rootId} changed; reload before retrying`);
+    await notes.updateBlockText(`block-${rootId}`, "Changed");
+    void notes.retryEditorMutations().catch(() => undefined);
+    await vi.waitFor(() => expect(backend.pendingBlockSaves).toHaveLength(1));
+    backend.deferredOpenPageId = rootId;
+    backend.pendingBlockSaves[0]?.reject(refused());
+    await vi.waitFor(() => expect(backend.pendingBlockSaves).toHaveLength(2));
+    backend.pendingBlockSaves[1]?.reject(refused());
+    await vi.waitFor(() => expect(backend.pendingOpens).toHaveLength(1));
+    backend.pendingOpens[0]?.reject(new Error("Vault offline"));
+    await vi.waitFor(() => expect(notes.editorBanner).toEqual({ kind: "reload-failed", error: "Vault offline" }));
+    notes.dismissEditorBanner();
+    expect(notes.editorBanner.kind).toBe("reload-failed");
+
+    backend.deferredOpenPageId = null;
+    await notes.retryEditorMutations();
+    expect(notes.editorBanner.kind).toBe("none");
+  });
   it("closes an open descendant whose parent is a block in the deleted note", async () => {
     backend.pages.set(childId, page(childId, { type: "block_id", block_id: "parent-block" }));
     const { getNotes } = await import("./notes.svelte");

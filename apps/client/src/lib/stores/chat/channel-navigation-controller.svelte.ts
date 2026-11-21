@@ -131,7 +131,7 @@ export class ChatChannelNavigationController {
     this.archivedProjectId = null;
     this.abandonArchivedLoad();
     this.archivedChannelsError = null;
-    if (this.archiveOpen) void this.loadArchived(projectId).catch(() => undefined);
+    if (this.archiveOpen && this.options.currentProjectId() === projectId) void this.loadArchived(projectId).catch(() => undefined);
     try {
       const cached = this.channelsForProject(projectId);
       const active = cached.length > 0
@@ -165,7 +165,7 @@ export class ChatChannelNavigationController {
       }
       throw error;
     } finally {
-      if (this.isCurrentArchivedRequest(request, projectId)) this.archivedChannelsLoading = false;
+      if (request === this.archivedRequest) this.archivedChannelsLoading = false;
     }
   }
 

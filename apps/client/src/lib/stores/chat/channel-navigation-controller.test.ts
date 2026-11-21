@@ -149,3 +149,26 @@ describe("ChatChannelNavigationController open archive", () => {
     expect(controller.archivedChannelsLoading).toBe(false);
   });
 });
+
+describe("ChatChannelNavigationController archive loading for another project", () => {
+  it("ends archive loading when the listed project is no longer shown", async () => {
+    let currentProjectId = "project-a";
+    let resolve: (channels: ChatChannelRead[]) => void = () => undefined;
+    api.listChatChannels.mockReset();
+    api.listChatChannels.mockReturnValueOnce(new Promise<ChatChannelRead[]>((settle) => { resolve = settle; }));
+    const controller = new ChatChannelNavigationController({
+      currentProjectId: () => currentProjectId,
+      selectedChannelId: () => null,
+      selectChannel: () => Promise.resolve(),
+      onChanged: () => undefined,
+    });
+
+    const loading = controller.loadArchived("project-a");
+    currentProjectId = "project-b";
+    resolve([]);
+    await loading;
+
+    expect(controller.archivedChannelsLoading).toBe(false);
+    expect(controller.archivedChannels).toEqual([]);
+  });
+});

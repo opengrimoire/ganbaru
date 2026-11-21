@@ -363,7 +363,7 @@ pub(crate) fn recover(vault: &Path) -> Result<Recovery, String> {
     match RestoreRecord::load(vault) {
         None => Ok(Recovery::Settled),
         Some(Err(error)) => Ok(Recovery::Pending(error)),
-        Some(Ok(record)) => record.resume(Utc::now()),
+        Some(Ok(record)) => record.resume(crate::vault::now_utc()),
     }
 }
 

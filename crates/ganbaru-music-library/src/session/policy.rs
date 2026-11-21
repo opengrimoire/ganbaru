@@ -647,6 +647,9 @@ impl SessionPolicy {
                 self.status = SessionStatus::Idle;
                 self.position_ms = 0;
                 self.current = None;
+                self.autoplay_requested = false;
+                self.issue = None;
+                self.error = None;
                 transition.effects.push(SessionEffect::Stop {
                     generation: self.generation,
                 });

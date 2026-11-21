@@ -29,7 +29,7 @@ Calendar edits may retarget a run through separate current-reference columns (`c
 
 Recurrence protection uses original home-zone occurrence identities, not the run's device-local planning date. The two can differ around midnight and must not be substituted for each other.
 
-Triggers that skip sync apply permit at most one open run, one active segment across open runs, and one open pause per segment on a device; partial unique indexes cannot replicate. Multiple runs may refer to the same event and are never merged by title, time range, or event identity. A cross-block transition or reconfiguration closes the current run and starts a new one.
+Triggers that skip sync apply permit at most one open run, one active segment across open runs, and one open pause per segment on a device, and require that a segment has an actual end and an end reason exactly when it is completed or interrupted and that a pause reason is manual, idle, or suspend; partial unique indexes cannot replicate. Multiple runs may refer to the same event and are never merged by title, time range, or event identity. A cross-block transition or reconfiguration closes the current run and starts a new one.
 
 ## Segments and pauses
 

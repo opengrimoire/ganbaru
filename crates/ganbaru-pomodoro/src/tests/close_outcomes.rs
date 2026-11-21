@@ -550,7 +550,12 @@ fn status_update_to_active_counts_only_open_runs() {
         .unwrap();
 
         let activate = |id: &'static str| {
-            sqlx::query("UPDATE pomodoro_segments SET status = 'active' WHERE id = ?").bind(id)
+            sqlx::query(
+                "UPDATE pomodoro_segments
+                 SET status = 'active', actual_end = NULL, end_reason = NULL
+                 WHERE id = ?",
+            )
+            .bind(id)
         };
 
         activate("segment-1").execute(&pool).await.unwrap();
@@ -565,10 +570,15 @@ fn status_update_to_active_counts_only_open_runs() {
             "unexpected refusal: {second_open_active}"
         );
 
-        sqlx::query("UPDATE pomodoro_segments SET status = 'completed' WHERE id = 'segment-1'")
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "UPDATE pomodoro_segments
+             SET status = 'completed', actual_end = '2026-05-29T10:40:00Z',
+                 end_reason = 'completed'
+             WHERE id = 'segment-1'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         activate("segment-2").execute(&pool).await.unwrap();
 
         let statuses: Vec<(String, String)> =

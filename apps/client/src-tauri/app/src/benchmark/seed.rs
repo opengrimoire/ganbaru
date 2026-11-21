@@ -314,8 +314,8 @@ async fn insert_segment(
     sqlx::query(
         "INSERT OR REPLACE INTO pomodoro_segments
             (id, event_id, event_date, run_id, rhythm_position, phase,
-             planned_start, planned_end, actual_start, actual_end, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             planned_start, planned_end, actual_start, actual_end, status, end_reason)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&segment.id)
     .bind(&segment.event_id)
@@ -328,6 +328,7 @@ async fn insert_segment(
     .bind(&segment.actual_start)
     .bind(&segment.actual_end)
     .bind(&segment.status)
+    .bind(segment_end_reason(&segment.status))
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("seed benchmark pomodoro segment: {e}"))?;
@@ -364,6 +365,12 @@ fn validate_payload(payload: &BenchmarkPomodoroHistoryPayload) -> Result<(), Str
         require_non_empty(&segment.planned_start, "planned_start")?;
         require_non_empty(&segment.planned_end, "planned_end")?;
         validate_status(&segment.status)?;
+        if segment.actual_end.is_some() != segment_end_reason(&segment.status).is_some() {
+            return Err(format!(
+                "pomodoro segment {} end does not match its status",
+                segment.id
+            ));
+        }
         for pause in &segment.pauses {
             require_non_empty(&pause.started_at, "pause.started_at")?;
             if !matches!(pause.reason.as_str(), "idle" | "manual" | "suspend") {
@@ -455,6 +462,16 @@ fn validate_break_phase(phase: &str) -> Result<(), String> {
     match phase {
         "short_break" | "long_break" => Ok(()),
         _ => Err(format!("invalid pomodoro break phase: {phase}")),
+    }
+}
+
+/// The end reason a seeded segment records for its status, since a closed segment always
+/// says why it ended and an active one never does.
+fn segment_end_reason(status: &str) -> Option<&'static str> {
+    match status {
+        "completed" => Some("completed"),
+        "interrupted" => Some("stopped"),
+        _ => None,
     }
 }
 

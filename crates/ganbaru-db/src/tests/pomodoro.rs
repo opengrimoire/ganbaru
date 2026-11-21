@@ -162,6 +162,171 @@ fn schema_allows_only_one_active_pomodoro_segment() {
     });
 }
 
+const SEGMENT_END_REFUSAL: &str = "A Focus segment end must agree with its status";
+
+/// Every status paired with each presence of an actual end and an end reason.
+fn segment_end_cases() -> Vec<(
+    &'static str,
+    Option<&'static str>,
+    Option<&'static str>,
+    bool,
+)> {
+    let mut cases = Vec::new();
+    for status in ["active", "completed", "interrupted"] {
+        for actual_end in [None, Some("2026-05-23T09:40:00Z")] {
+            for end_reason in [None, Some("completed")] {
+                let closed = status != "active";
+                let agrees = actual_end.is_some() == closed && end_reason.is_some() == closed;
+                cases.push((status, actual_end, end_reason, agrees));
+            }
+        }
+    }
+    cases
+}
+
+#[test]
+fn schema_ties_a_pomodoro_segment_end_to_its_status_on_insert() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_event(&pool).await;
+
+        for (index, (status, actual_end, end_reason, agrees)) in
+            segment_end_cases().into_iter().enumerate()
+        {
+            let run_id = format!("run-{index}");
+            insert_open_run(&pool, &run_id).await.unwrap();
+            let inserted = sqlx::query(
+                "INSERT INTO pomodoro_segments
+                    (id, event_id, event_date, run_id, rhythm_position, phase,
+                     planned_start, planned_end, actual_start, actual_end, status, end_reason)
+                 VALUES (?, 'event-1', '2026-05-23', ?, 1, 'focus',
+                         '2026-05-23T09:00:00Z', '2026-05-23T09:40:00Z',
+                         '2026-05-23T09:00:00Z', ?, ?, ?)",
+            )
+            .bind(format!("segment-{index}"))
+            .bind(&run_id)
+            .bind(actual_end)
+            .bind(status)
+            .bind(end_reason)
+            .execute(&pool)
+            .await;
+            let case = format!("{status} {actual_end:?} {end_reason:?}");
+            match inserted {
+                Ok(_) => assert!(agrees, "{case} was accepted"),
+                Err(error) => {
+                    assert!(!agrees, "{case} was refused: {error}");
+                    assert!(error.to_string().contains(SEGMENT_END_REFUSAL), "{error}");
+                }
+            }
+            sqlx::query(
+                "UPDATE pomodoro_runs
+                 SET ended_at = '2026-05-23T09:40:00Z', end_reason = 'stopped'
+                 WHERE id = ?",
+            )
+            .bind(&run_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    });
+}
+
+#[test]
+fn schema_ties_a_pomodoro_segment_end_to_its_status_on_update() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_event(&pool).await;
+        insert_open_run(&pool, "run-1").await.unwrap();
+        sqlx::query(
+            "INSERT INTO pomodoro_segments
+                (id, event_id, event_date, run_id, rhythm_position, phase,
+                 planned_start, planned_end, actual_start, status)
+             VALUES ('segment-1', 'event-1', '2026-05-23', 'run-1', 1, 'focus',
+                     '2026-05-23T09:00:00Z', '2026-05-23T09:40:00Z',
+                     '2026-05-23T09:00:00Z', 'active')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for (status, actual_end, end_reason, agrees) in segment_end_cases() {
+            let updated = sqlx::query(
+                "UPDATE pomodoro_segments SET status = ?, actual_end = ?, end_reason = ?
+                 WHERE id = 'segment-1'",
+            )
+            .bind(status)
+            .bind(actual_end)
+            .bind(end_reason)
+            .execute(&pool)
+            .await;
+            let case = format!("{status} {actual_end:?} {end_reason:?}");
+            match updated {
+                Ok(_) => assert!(agrees, "{case} was accepted"),
+                Err(error) => {
+                    assert!(!agrees, "{case} was refused: {error}");
+                    assert!(error.to_string().contains(SEGMENT_END_REFUSAL), "{error}");
+                }
+            }
+        }
+
+        sqlx::query(
+            "UPDATE pomodoro_segments SET status = 'active', actual_end = NULL, end_reason = NULL
+             WHERE id = 'segment-1'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let closing_without_a_reason = sqlx::query(
+            "UPDATE pomodoro_segments SET status = 'completed', actual_end = '2026-05-23T09:40:00Z'
+             WHERE id = 'segment-1'",
+        )
+        .execute(&pool)
+        .await;
+        assert!(closing_without_a_reason.is_err());
+    });
+}
+
+#[test]
+fn schema_accepts_only_recorded_pomodoro_pause_reasons() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_event(&pool).await;
+        insert_open_run(&pool, "run-1").await.unwrap();
+        sqlx::query(
+            "INSERT INTO pomodoro_segments
+                (id, event_id, event_date, run_id, rhythm_position, phase,
+                 planned_start, planned_end, actual_start, status)
+             VALUES ('segment-1', 'event-1', '2026-05-23', 'run-1', 1, 'focus',
+                     '2026-05-23T09:00:00Z', '2026-05-23T09:40:00Z',
+                     '2026-05-23T09:00:00Z', 'active')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let pause = |ordinal: i64, reason: &'static str| {
+            sqlx::query(
+                "INSERT INTO pomodoro_pauses (segment_id, ordinal, started_at, ended_at, reason)
+                 VALUES ('segment-1', ?, '2026-05-23T09:05:00Z', '2026-05-23T09:06:00Z', ?)",
+            )
+            .bind(ordinal)
+            .bind(reason)
+        };
+        for (ordinal, reason) in ["manual", "idle", "suspend"].into_iter().enumerate() {
+            pause(ordinal as i64, reason).execute(&pool).await.unwrap();
+        }
+        assert!(pause(3, "break").execute(&pool).await.is_err());
+        assert!(pause(3, "").execute(&pool).await.is_err());
+
+        let renamed = sqlx::query(
+            "UPDATE pomodoro_pauses SET reason = 'away' WHERE segment_id = 'segment-1' AND ordinal = 0",
+        )
+        .execute(&pool)
+        .await;
+        assert!(renamed.is_err());
+    });
+}
+
 #[test]
 fn schema_accepts_focus_failed_pomodoro_history() {
     super::block_on(async {

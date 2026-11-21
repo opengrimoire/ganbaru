@@ -288,6 +288,31 @@ describe("ProjectSidebarSection", () => {
     expect(store.removeProject).toHaveBeenCalledExactlyOnceWith("project-a");
   });
 
+  it("keeps one project menu open at a time and reopens the actions menu with the group list folded", () => {
+    render({ actions: { ...actions, canMoveToGroup: true } });
+    const menus = () => [...document.body.querySelectorAll<HTMLElement>('[role="menu"]')].map((menu) => menu.getAttribute("aria-label"));
+
+    button("Project actions: Launch").click();
+    flushSync();
+    expect(menus()).toEqual(["Project actions: Launch"]);
+    button("Move to group").click();
+    flushSync();
+    expect(button("Move to group").getAttribute("aria-expanded")).toBe("true");
+
+    button("Add a view to Launch").click();
+    flushSync();
+    expect(menus()).toEqual(["Add a view to Launch"]);
+
+    button("Project actions: Launch").click();
+    flushSync();
+    expect(menus()).toEqual(["Project actions: Launch"]);
+    expect(button("Move to group").getAttribute("aria-expanded")).toBe("false");
+
+    button("Project actions: Launch").click();
+    flushSync();
+    expect(menus()).toEqual([]);
+  });
+
   it("leaves delete out of the menu for a project that cannot be deleted", () => {
     render({ actions: { ...actions, identityLocked: true, canRename: false, canDelete: false } });
     button("Project actions: Launch").click();

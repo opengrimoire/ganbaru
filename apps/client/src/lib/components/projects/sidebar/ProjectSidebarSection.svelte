@@ -43,6 +43,14 @@
   import ProjectViewRow from "./ProjectViewRow.svelte";
   import { PROJECT_VIEW_TYPE_ICONS, projectViewLabel, projectViewTypeLabel } from "./project-view-presentation";
   import { createProjectViewDragController } from "./view-drag-controller.svelte";
+  import {
+    NO_PROJECT_SECTION_CONFIRMATION,
+    NO_PROJECT_SECTION_MENU,
+    transitionProjectSectionMenu,
+    type ProjectSectionConfirmation,
+    type ProjectSectionMenu,
+    type ProjectSectionMenuEvent,
+  } from "./section-overlay-state";
 
   /**
    * One project in the Projects sidebar, shown like a Chat section: its heading collapses the section, adds views from
@@ -106,14 +114,16 @@
   const { t } = getLocalization();
   const modifierLabel = shortcutModifierLabel();
 
-  let menuOpen = $state(false);
-  let moveOpen = $state(false);
-  let addMenuOpen = $state(false);
+  let menu = $state.raw<ProjectSectionMenu>(NO_PROJECT_SECTION_MENU);
+  const menuOpen = $derived(menu.kind === "actions");
+  const moveOpen = $derived(menu.kind === "actions" && menu.moveOpen);
+  const addMenuOpen = $derived(menu.kind === "add");
   let editing = $state(false);
   let nameDraft = $state("");
   let pendingName = $state<string | null>(null);
-  let removeCandidate = $state<ProjectView | null>(null);
-  let confirmingDelete = $state(false);
+  let confirmation = $state.raw<ProjectSectionConfirmation>(NO_PROJECT_SECTION_CONFIRMATION);
+  const removeCandidate = $derived(confirmation.kind === "removeView" ? confirmation.view : null);
+  const confirmingDelete = $derived(confirmation.kind === "deleteProject");
   let actionButton = $state<HTMLButtonElement | null>(null);
   let addButton = $state<HTMLButtonElement | null>(null);
   let menuElement = $state<HTMLDivElement | null>(null);
@@ -153,15 +163,16 @@
 
   function openMenu(): void {
     if (editing) return;
-    addMenuOpen = false;
-    menuOpen = true;
-    moveOpen = false;
+    dispatchMenu({ type: "openActions" });
     void tick().then(() => menuElement?.querySelector<HTMLButtonElement>("button")?.focus());
   }
 
+  function dispatchMenu(event: ProjectSectionMenuEvent): void {
+    menu = transitionProjectSectionMenu(menu, event);
+  }
+
   function closeMenu(): void {
-    menuOpen = false;
-    moveOpen = false;
+    dispatchMenu({ type: "closeActions" });
   }
 
   function openContextMenu(event: MouseEvent): void {
@@ -170,12 +181,8 @@
   }
 
   function toggleAddMenu(): void {
-    if (addMenuOpen) {
-      addMenuOpen = false;
-      return;
-    }
-    closeMenu();
-    addMenuOpen = true;
+    dispatchMenu({ type: "toggleAdd" });
+    if (menu.kind !== "add") return;
     void tick().then(() => addMenuElement?.querySelector<HTMLButtonElement>("button:not([aria-disabled])")?.focus());
   }
 
@@ -249,7 +256,7 @@
 
   /** Adds a view of the chosen type with its type label as name, then opens it. */
   async function addView(viewType: ProjectViewType): Promise<void> {
-    addMenuOpen = false;
+    dispatchMenu({ type: "closeAdd" });
     try {
       const viewId = await projects.addView(project.id, viewType);
       const view = projects.viewsForProject(project.id).find((entry) => entry.id === viewId);
@@ -272,7 +279,7 @@
 
   function confirmRemove(): void {
     const view = removeCandidate;
-    removeCandidate = null;
+    confirmation = NO_PROJECT_SECTION_CONFIRMATION;
     if (!view) return;
     void projects.removeView(view.id).catch((error: unknown) => {
       console.error("Failed to remove a project view from the Projects sidebar", error);
@@ -280,7 +287,7 @@
   }
 
   function confirmDelete(): void {
-    confirmingDelete = false;
+    confirmation = NO_PROJECT_SECTION_CONFIRMATION;
     if (!actions.canDelete) return;
     void projects.removeProject(project.id).catch((error: unknown) => {
       console.error("Failed to delete a project from the Projects sidebar", error);
@@ -391,7 +398,7 @@
         onRename={(name) => projects.renameView(view.id, name)}
         onMove={(step) => reorder(projectViewIdsMovedByStep(projects.views, views, view.id, step))}
         onRemove={() => {
-          removeCandidate = view;
+          confirmation = { kind: "removeView", view };
         }}
         shift={viewDrag.shiftFor(view.id)}
         shiftAnimated={viewDrag.shiftAnimated}
@@ -419,7 +426,7 @@
   <div
     bind:this={addMenuElement}
     use:portal
-    use:anchoredPopover={{ anchor: addButton ?? undefined, onOutside: () => (addMenuOpen = false) }}
+    use:anchoredPopover={{ anchor: addButton ?? undefined, onOutside: () => dispatchMenu({ type: "closeAdd" }) }}
     class="surface-floating fixed z-90 flex w-floating-sm flex-col overflow-hidden"
     role="menu"
     tabindex="-1"
@@ -428,7 +435,7 @@
     onkeydown={(event) => {
       if (event.key !== "Escape") return;
       event.stopPropagation();
-      addMenuOpen = false;
+      dispatchMenu({ type: "closeAdd" });
       addButton?.focus();
     }}
   >
@@ -491,7 +498,7 @@
         aria-expanded={actions.canMoveToGroup ? moveOpen : undefined}
         data-app-tooltip={moveUnavailableReason}
         onclick={() => {
-          if (actions.canMoveToGroup) moveOpen = !moveOpen;
+          if (actions.canMoveToGroup) dispatchMenu({ type: "toggleMove" });
         }}
       >
         <FolderInput />
@@ -596,7 +603,7 @@
           class="menu-item menu-item-destructive"
           onclick={() => {
             closeMenu();
-            confirmingDelete = true;
+            confirmation = { kind: "deleteProject" };
           }}
         >
           <Trash2 />
@@ -617,7 +624,7 @@
     cancelLabel={t("common.cancel")}
     onConfirm={confirmRemove}
     onCancel={() => {
-      removeCandidate = null;
+      confirmation = NO_PROJECT_SECTION_CONFIRMATION;
     }}
   />
 {/if}
@@ -630,7 +637,7 @@
     cancelLabel={t("common.cancel")}
     onConfirm={confirmDelete}
     onCancel={() => {
-      confirmingDelete = false;
+      confirmation = NO_PROJECT_SECTION_CONFIRMATION;
     }}
   />
 {/if}

@@ -2407,6 +2407,64 @@ fn a_lifted_exclusion_settles_versions_that_saw_a_fast_clock_like_causal_order()
     });
 }
 
+/// A lifted exclusion classifies its operations again from their envelopes, so the signed header
+/// fields a hold left out of the log row, as a hold for a newer manifest does until an update
+/// can read the operation, are written the way a replica storing them fresh writes them.
+#[test]
+fn a_lifted_exclusion_writes_the_header_fields_of_a_fresh_store() {
+    block_on(async {
+        let mut space = superseded(231).await;
+        edit(&mut space.member, &note(HELD_NOTE, "Late", 1)).await;
+        space
+            .hub
+            .sequence(remove_entry(&space.member.device_id))
+            .await
+            .unwrap()
+            .unwrap();
+        let member_ops = space.member.own_ops().await;
+        let chain = space.contender.own_ops().await;
+
+        let mut fresh = Replica::new(3, 231).await;
+        fresh.pull(&mut space.hub).await;
+        take(&mut fresh, &chain).await;
+        take(&mut fresh, &member_ops).await;
+
+        let mut lifted = Replica::new(3, 231).await;
+        lifted.pull(&mut space.hub).await;
+        take(&mut lifted, &member_ops).await;
+        let writer = space.member.writer();
+        let excluded = lifted
+            .count(&format!(
+                "SELECT count(*) FROM sync_ops
+                 WHERE writer_id = x'{}' AND excluded_revision IS NOT NULL",
+                writer.to_hex()
+            ))
+            .await;
+        assert!(excluded > 0, "the removal excludes the late operations");
+        lifted
+            .exec(&format!(
+                "UPDATE sync_ops SET authorization_revision = 0, group_continues = 0
+                 WHERE writer_id = x'{}' AND excluded_revision IS NOT NULL",
+                writer.to_hex()
+            ))
+            .await;
+        take(&mut lifted, &chain).await;
+
+        assert_eq!(
+            lifted
+                .count(&format!(
+                    "SELECT count(*) FROM sync_ops
+                     WHERE writer_id = x'{}' AND excluded_revision IS NOT NULL",
+                    writer.to_hex()
+                ))
+                .await,
+            0,
+            "the reselected chain lifts the exclusion"
+        );
+        assert_eq!(fresh.dump().await, lifted.dump().await);
+    });
+}
+
 #[test]
 fn context_past_a_surplus_genesis_becomes_ready() {
     block_on(async {

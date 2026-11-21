@@ -523,8 +523,9 @@ pub(crate) async fn drop_orphan_rows(
     Ok(())
 }
 
-/// Classifies again every excluded operation no selected removal excludes any more. Returns
-/// whether there was one.
+/// Classifies again every excluded operation no selected removal excludes any more, writing the
+/// state and the signed header fields a fresh store of the operation writes, since the hold it
+/// was stored with may have left them out. Returns whether there was one.
 async fn release(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -544,22 +545,39 @@ async fn release(
     .bind(local)
     .fetch_all(&mut *conn)
     .await?;
-    for (writer, seq, envelope, device) in &rows {
-        let hold = match Envelope::decode(envelope) {
-            Ok(envelope) => store::classify(engine, &envelope, device).hold(),
-            Err(_) => Some(store::HoldReason::Invalid),
+    for (writer_bytes, seq, envelope, device) in &rows {
+        let writer = log::writer_id(writer_bytes)?;
+        let classified = match Envelope::decode(envelope) {
+            Ok(envelope) => store::classify(engine, &envelope, device),
+            Err(_) => store::Classified::Malformed,
         };
+        let hold = match &classified {
+            store::Classified::Malformed => Some(store::HoldReason::Invalid),
+            classified => classified.hold(),
+        };
+        let context = store::derive_context(
+            conn,
+            ctx,
+            writer,
+            stored_u64(*seq, "sequence")?,
+            classified.header().map(|(_, dependencies)| dependencies),
+        )
+        .await?;
         let attempted = OpMove::Release(hold);
         let (state, hold_reason) = OpState::stored(hold, None).columns();
         let affected = sqlx::query(sqlx::AssertSqlSafe(format!(
-            "UPDATE sync_ops SET excluded_revision = NULL, state = ?, hold_reason = ?
+            "UPDATE sync_ops SET excluded_revision = NULL, state = ?, hold_reason = ?,
+                context = ?, authorization_revision = ?, group_continues = ?
              WHERE space_id = ? AND writer_id = ? AND seq = ? AND {}",
             attempted.source()
         )))
         .bind(state)
         .bind(hold_reason)
+        .bind(log::encode_context(context.as_ref()))
+        .bind(seq_i64(classified.revision())?)
+        .bind(classified.continues())
         .bind(ctx.space.as_bytes().as_slice())
-        .bind(writer.as_slice())
+        .bind(writer_bytes.as_slice())
         .bind(seq)
         .execute(&mut *conn)
         .await?

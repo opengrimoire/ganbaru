@@ -73,6 +73,8 @@ export class ChatComposerRuntimeController {
 
   private attachmentRequest = 0;
   private interactionRequest = 0;
+  /** The thread whose interaction was last read, so another thread's read never shows it. */
+  private interactionThreadId: ChatThreadId | null = null;
   private attachmentKey = "";
   private failedSendOptions: ChatComposerSendOptions | null = null;
   private readonly queuedDispatches = new Set<string>();
@@ -167,11 +169,17 @@ export class ChatComposerRuntimeController {
   }
 
   async refreshInteraction(threadId = this.options.selectedThreadId()): Promise<void> {
+    // A thread out of view has no interaction to show, so its read must not supersede the selected thread's.
+    if (threadId && threadId !== this.options.selectedThreadId()) return;
     const request = ++this.interactionRequest;
     if (!threadId) {
       this.interaction = null;
+      this.interactionThreadId = null;
+      this.interactionLoading = false;
       return;
     }
+    if (this.interactionThreadId !== threadId) this.interaction = null;
+    this.interactionThreadId = threadId;
     this.interactionLoading = true;
     try {
       const interaction = await chatApi.readChatInteractionState(threadId);

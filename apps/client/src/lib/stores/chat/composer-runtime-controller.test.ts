@@ -157,6 +157,82 @@ describe("ChatComposerRuntimeController interactions", () => {
   });
 });
 
+describe("ChatComposerRuntimeController interaction refresh", () => {
+  beforeEach(() => {
+    api.readInteraction.mockReset();
+  });
+
+  function selectable(initial: string | null) {
+    let selected = initial;
+    const options = { ...controllerOptions(), selectedThreadId: () => selected };
+    return { options, select: (threadId: string | null) => { selected = threadId; } };
+  }
+
+  it("stops loading when the selection clears while a refresh is in flight", async () => {
+    const { options, select } = selectable("thread-1");
+    const controller = new ChatComposerRuntimeController(options);
+    const read = deferred<ChatInteractionStateRead>();
+    api.readInteraction.mockReturnValueOnce(read.promise);
+
+    const pending = controller.refreshInteraction();
+    expect(controller.interactionLoading).toBe(true);
+    select(null);
+    await controller.refreshInteraction();
+    read.resolve(interaction("approval"));
+    await pending;
+
+    expect(controller.interactionLoading).toBe(false);
+    expect(controller.interaction).toBeNull();
+  });
+
+  it("keeps the selected thread's refresh when a thread out of view is refreshed meanwhile", async () => {
+    const { options } = selectable("thread-1");
+    const controller = new ChatComposerRuntimeController(options);
+    const read = deferred<ChatInteractionStateRead>();
+    api.readInteraction.mockReturnValueOnce(read.promise).mockResolvedValueOnce(interaction("user_input"));
+
+    const selected = controller.refreshInteraction("thread-1");
+    await controller.refreshInteraction("thread-2");
+    read.resolve(interaction("approval"));
+    await selected;
+
+    expect(controller.interaction).toEqual(interaction("approval"));
+    expect(controller.interactionLoading).toBe(false);
+  });
+
+  it("drops the previous thread's interaction when the next thread's read fails", async () => {
+    const { options, select } = selectable("thread-1");
+    const controller = new ChatComposerRuntimeController(options);
+    api.readInteraction.mockResolvedValueOnce(interaction("approval")).mockRejectedValueOnce(new Error("offline"));
+    await controller.refreshInteraction();
+
+    select("thread-2");
+    await expect(controller.refreshInteraction()).rejects.toThrow("offline");
+
+    expect(controller.interaction).toBeNull();
+    expect(controller.interactionLoading).toBe(false);
+  });
+
+  it("keeps a thread's interaction while its own reread fails", async () => {
+    const { options } = selectable("thread-1");
+    const controller = new ChatComposerRuntimeController(options);
+    api.readInteraction.mockResolvedValueOnce(interaction("approval")).mockRejectedValueOnce(new Error("offline"));
+    await controller.refreshInteraction();
+
+    await expect(controller.refreshInteraction()).rejects.toThrow("offline");
+
+    expect(controller.interaction).toEqual(interaction("approval"));
+  });
+});
+
+/** Creates a request the test settles by hand. */
+function deferred<T>() {
+  let resolve: (value: T) => void = () => undefined;
+  let reject: (error: unknown) => void = () => undefined;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
 function pendingRequest(requestKind: "approval" | "user_input", suffix = "1"): ChatPendingRequestRead {
   return {
     id: `request-${suffix}`,

@@ -201,7 +201,12 @@ export function createNotesPageHistoryController(
       apply(current());
       dispatchAction({ type: "finished", token });
     } catch (error) {
-      if (!current()) return;
+      if (!isCurrentPageHistoryAction(action, token)) return;
+      // A failure for a page no longer open ends the action without showing it over the open page.
+      if (context.readSelectedPageId() !== pageId) {
+        dispatchAction({ type: "finished", token });
+        return;
+      }
       const message = notesErrorDetail(error);
       dispatchAction({ type: "failed", token, error: message });
       context.setLoadError(message);

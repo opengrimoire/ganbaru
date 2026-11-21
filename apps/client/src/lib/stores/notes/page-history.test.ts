@@ -133,4 +133,22 @@ describe("page history actions", () => {
     expect(h.setLoadError).toHaveBeenCalledWith("Copy failed");
     expect(h.controller.actionLoading).toBe(false);
   });
+
+  it("ends an action that fails after the selection changed without a reset", async () => {
+    let selected: string | null = "page-a";
+    const { createNotesPageHistoryController } = await import("./page-history.svelte");
+    const setLoadError = vi.fn();
+    const controller = createNotesPageHistoryController({
+      readSelectedPageId: () => selected, applyPostMutation: vi.fn(), requestPageLoadFocus: vi.fn(),
+      flushPendingBlockSaves: async () => undefined, setLoadError,
+    });
+    const restoring = controller.restoreVersion("snapshot");
+    await settle();
+    selected = "page-b";
+    backend.restores[0]?.reject(new Error("Restore failed"));
+    await restoring;
+    expect(controller.actionLoading).toBe(false);
+    expect(controller.actionError).toBeNull();
+    expect(setLoadError).not.toHaveBeenCalled();
+  });
 });

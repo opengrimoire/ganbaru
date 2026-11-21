@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  openThemeEditorSession,
   themeEditorSessionHasChanges,
+  transitionThemeEditorSession,
+  type ThemeEditorSession,
+  type ThemeEditorSessionEvent,
   type ThemeEditorSessionState,
 } from "./editor-session";
 
@@ -39,5 +43,45 @@ describe("themeEditorSessionHasChanges", () => {
       '{"id":"dark"}',
     )).toBe(false);
     expect(themeEditorSessionHasChanges(undefined, undefined)).toBe(false);
+  });
+});
+
+describe("transitionThemeEditorSession", () => {
+  const editing = openThemeEditorSession(session());
+  const committing: ThemeEditorSession = { ...editing, phase: "committing" };
+
+  it("opens sessions in the editing phase", () => {
+    expect(editing).toEqual({ ...session(), phase: "editing" });
+  });
+
+  it("starts one save at a time", () => {
+    expect(transitionThemeEditorSession(editing, { type: "commitStarted" })).toEqual(committing);
+    expect(transitionThemeEditorSession(committing, { type: "commitStarted" })).toBe(committing);
+  });
+
+  it("closes the session when the save lands", () => {
+    expect(transitionThemeEditorSession(committing, { type: "committed" })).toBeUndefined();
+  });
+
+  it("reopens editing when the save stops at a conflict or fails", () => {
+    expect(transitionThemeEditorSession(committing, { type: "commitStopped" })).toEqual(editing);
+  });
+
+  it("cancels only while editing", () => {
+    expect(transitionThemeEditorSession(editing, { type: "cancelled" })).toBeUndefined();
+    expect(transitionThemeEditorSession(committing, { type: "cancelled" })).toBe(committing);
+  });
+
+  it.each<ThemeEditorSessionEvent>([{ type: "committed" }, { type: "commitStopped" }])(
+    "ignores $type without a save in flight",
+    (event) => {
+      expect(transitionThemeEditorSession(editing, event)).toBe(editing);
+    },
+  );
+
+  it.each<ThemeEditorSessionEvent>([
+    { type: "commitStarted" }, { type: "committed" }, { type: "commitStopped" }, { type: "cancelled" },
+  ])("ignores $type without a session", (event) => {
+    expect(transitionThemeEditorSession(undefined, event)).toBeUndefined();
   });
 });

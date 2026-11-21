@@ -1,15 +1,47 @@
 use super::*;
 
-#[test]
-fn accepts_supported_phases() {
-    for phase in ["inactive", "focus", "short_break", "long_break"] {
-        assert!(validate_state(&state(phase)).is_ok());
-    }
+fn write_state(path: &Path, state: &DistractionsRuntimeState) {
+    std::fs::write(path, serde_json::to_vec(state).unwrap()).unwrap();
 }
 
 #[test]
-fn rejects_unknown_phase() {
-    assert!(validate_state(&state("planning")).is_err());
+fn malformed_runtime_files_read_as_no_authority() {
+    let dir = std::env::temp_dir().join(format!("ganbaru-phase-malformed-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("distractions-state.json");
+    let checked_at = "2026-05-26T00:00:10Z".parse::<DateTime<Utc>>().unwrap();
+    write_state(&path, &focus_state());
+    assert!(read_fresh_runtime_state(&path, checked_at).is_some());
+    let malformed = [
+        serde_json::json!({
+            "active": true, "paused": false, "pauseReason": null, "phase": "focus",
+            "activeRunId": "run-1", "activeOccurrenceId": null, "remainingSeconds": 30,
+            "updatedAt": "2026-05-26T00:00:00.000Z", "validUntilMs": i64::MAX
+        }),
+        serde_json::json!({
+            "authority": {"status": "active", "phase": "focus", "pauseReason": "network",
+                "runId": "run-1", "occurrenceId": null, "remainingSeconds": 30},
+            "updatedAt": "2026-05-26T00:00:00.000Z", "validUntilMs": i64::MAX
+        }),
+        serde_json::json!({
+            "authority": {"status": "active", "phase": "planning", "pauseReason": null,
+                "runId": "run-1", "occurrenceId": null, "remainingSeconds": 30},
+            "updatedAt": "2026-05-26T00:00:00.000Z", "validUntilMs": i64::MAX
+        }),
+        serde_json::json!({
+            "authority": {"status": "active", "phase": "focus", "pauseReason": null,
+                "runId": "run-1", "occurrenceId": null, "remainingSeconds": -1},
+            "updatedAt": "2026-05-26T00:00:00.000Z", "validUntilMs": i64::MAX
+        }),
+    ];
+    for contents in malformed {
+        std::fs::write(&path, contents.to_string()).unwrap();
+        assert!(
+            read_fresh_runtime_state(&path, checked_at).is_none(),
+            "{contents} must not authorize"
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -18,26 +50,26 @@ fn accepted_focus_validity_expires_at_the_deadline_even_with_a_fresh_heartbeat()
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("distractions-state.json");
     let updated = "2026-05-26T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
-    let mut phase = state("focus");
-    phase.valid_until_ms = Some(updated.timestamp_millis() + 500);
-    std::fs::write(&path, serde_json::to_vec(&phase).unwrap()).unwrap();
+    let mut phase = focus_state();
+    phase.valid_until_ms = updated.timestamp_millis() + 500;
+    write_state(&path, &phase);
     assert!(
         read_fresh_runtime_state(&path, updated + chrono::Duration::milliseconds(499)).is_some()
     );
     assert!(
         read_fresh_runtime_state(&path, updated + chrono::Duration::milliseconds(500)).is_none()
     );
-    phase.paused = true;
-    phase.pause_reason = Some("manual".into());
-    std::fs::write(&path, serde_json::to_vec(&phase).unwrap()).unwrap();
+    let mut paused = state(BlockingPhase::Focus, Some(PauseReason::Manual));
+    paused.valid_until_ms = phase.valid_until_ms;
+    write_state(&path, &paused);
     assert!(
         read_fresh_runtime_state(&path, updated + chrono::Duration::milliseconds(500)).is_none()
     );
-    phase.valid_until_ms = None;
-    phase.paused = false;
-    phase.pause_reason = None;
-    phase.remaining_seconds = Some(1);
-    std::fs::write(&path, serde_json::to_vec(&phase).unwrap()).unwrap();
+    let mut short = focus_state();
+    if let RuntimeAuthority::Active(active) = &mut short.authority {
+        active.remaining_seconds = 1;
+    }
+    write_state(&path, &short);
     assert!(
         read_fresh_runtime_state(&path, updated + chrono::Duration::milliseconds(999)).is_some()
     );
@@ -64,21 +96,38 @@ fn native_phase_rules_are_bounded_by_accepted_phase_event_and_owner_validity() {
         remaining_ms: 500,
         valid_until_ms: 16000,
     };
-    let running = crate::distractions::state_files::committed_focus_state(&effect, 1000).unwrap();
-    assert!(running.active);
-    assert_eq!(running.valid_until_ms, Some(1500));
-    assert!(
-        !crate::distractions::state_files::committed_focus_state(&effect, 1500)
-            .unwrap()
-            .active
+    let committed = |effect: &CommittedFocusEffect, now_ms: i64| {
+        crate::distractions::state_files::committed_focus_state(effect, now_ms).unwrap()
+    };
+    let running = committed(&effect, 1000);
+    assert_eq!(
+        running.authority,
+        RuntimeAuthority::Active(ActivePhase {
+            phase: BlockingPhase::Focus,
+            pause_reason: None,
+            run_id: "run".into(),
+            occurrence_id: Some("event::date".into()),
+            remaining_seconds: 1,
+        })
     );
-    effect.mode = FocusMode::ManualPause;
-    effect.remaining_ms = 42_000;
-    let paused = crate::distractions::state_files::committed_focus_state(&effect, 1000).unwrap();
-    assert!(paused.active && paused.paused);
-    assert_eq!(paused.pause_reason.as_deref(), Some("manual"));
-    assert_eq!(paused.remaining_seconds, Some(42));
-    assert_eq!(paused.valid_until_ms, Some(2000));
+    assert_eq!(running.valid_until_ms, 1500);
+    assert_eq!(
+        committed(&effect, 1500).authority,
+        RuntimeAuthority::Inactive {}
+    );
+    for (mode, reason) in [
+        (FocusMode::ManualPause, PauseReason::Manual),
+        (FocusMode::IdlePause, PauseReason::Idle),
+        (FocusMode::Suspended, PauseReason::Suspend),
+    ] {
+        effect.mode = mode;
+        effect.remaining_ms = 42_000;
+        let paused = committed(&effect, 1000);
+        let active = paused.authority.active_phase().unwrap();
+        assert_eq!(active.pause_reason, Some(reason));
+        assert_eq!(active.remaining_seconds, 42);
+        assert_eq!(paused.valid_until_ms, 2000);
+    }
     for mode in [
         FocusMode::IdleFailed,
         FocusMode::ReturnWait,
@@ -86,42 +135,23 @@ fn native_phase_rules_are_bounded_by_accepted_phase_event_and_owner_validity() {
         FocusMode::Stopped,
     ] {
         effect.mode = mode;
-        let rules = crate::distractions::state_files::committed_focus_state(&effect, 1000).unwrap();
-        assert!(!rules.active);
-        assert_eq!(rules.phase, "inactive");
+        assert_eq!(
+            committed(&effect, 1000).authority,
+            RuntimeAuthority::Inactive {}
+        );
     }
     effect.mode = FocusMode::Running;
-    effect.valid_until_ms = 0;
-    assert!(
-        !crate::distractions::state_files::committed_focus_state(&effect, 1000)
-            .unwrap()
-            .active
+    effect.run_id = None;
+    assert_eq!(
+        committed(&effect, 1000).authority,
+        RuntimeAuthority::Inactive {}
     );
-}
-
-#[test]
-fn rejects_negative_remaining_seconds() {
-    let mut state = state("focus");
-    state.remaining_seconds = Some(-1);
-    assert!(validate_state(&state).is_err());
-}
-
-#[test]
-fn accepts_supported_pause_reasons() {
-    for pause_reason in [None, Some("manual"), Some("idle"), Some("suspend")] {
-        let mut state = state("focus");
-        state.paused = pause_reason.is_some();
-        state.pause_reason = pause_reason.map(ToOwned::to_owned);
-        assert!(validate_state(&state).is_ok());
-    }
-}
-
-#[test]
-fn rejects_unknown_pause_reason() {
-    let mut state = state("focus");
-    state.paused = true;
-    state.pause_reason = Some("network".to_string());
-    assert!(validate_state(&state).is_err());
+    effect.run_id = Some("run".into());
+    effect.valid_until_ms = 0;
+    assert_eq!(
+        committed(&effect, 1000).authority,
+        RuntimeAuthority::Inactive {}
+    );
 }
 
 #[test]
@@ -158,7 +188,7 @@ fn future_runtime_and_budget_snapshots_cannot_authorize_execution() {
     let runtime_path = dir.join("distractions-state.json");
     let limit_path = dir.join("distractions-limit-state.json");
     let database_path = dir.join("ganbaru.sqlite");
-    std::fs::write(&runtime_path, serde_json::to_vec(&state("focus")).unwrap()).unwrap();
+    std::fs::write(&runtime_path, serde_json::to_vec(&focus_state()).unwrap()).unwrap();
     let value = serde_json::json!({"localDate": "2026-05-26", "weekStartLocalDate": "2026-05-25",
         "updatedAt": "2026-05-26T00:00:00.000Z", "databasePath": database_path, "limits": []});
     std::fs::write(&limit_path, serde_json::to_vec(&value).unwrap()).unwrap();

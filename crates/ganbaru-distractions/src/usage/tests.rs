@@ -1,18 +1,19 @@
 use super::*;
+use crate::contracts::{ActivePhase, BlockingPhase};
 use ganbaru_sync_contracts::bounds::MAX_ROW_KEY_BYTES;
 use sqlx::Row;
 
-fn state(phase: &str) -> DistractionsRuntimeState {
+fn state(phase: BlockingPhase) -> DistractionsRuntimeState {
     DistractionsRuntimeState {
-        active: phase != "inactive",
-        paused: false,
-        pause_reason: None,
-        phase: phase.to_string(),
-        active_run_id: None,
-        active_occurrence_id: None,
-        remaining_seconds: Some(30),
+        authority: RuntimeAuthority::Active(ActivePhase {
+            phase,
+            pause_reason: None,
+            run_id: "run-1".to_string(),
+            occurrence_id: None,
+            remaining_seconds: 30,
+        }),
         updated_at: "2026-05-26T00:00:00.000Z".to_string(),
-        valid_until_ms: None,
+        valid_until_ms: 0,
     }
 }
 
@@ -103,8 +104,7 @@ fn records_desktop_block_event_to_sqlite_without_process_id() {
             .execute(&pool)
             .await
             .unwrap();
-        let mut runtime = state("focus");
-        runtime.active_run_id = Some("run-1".to_string());
+        let runtime = state(BlockingPhase::Focus);
         let event =
             super::normalize_desktop_block_event(super::DistractionsDesktopBlockEventInput {
                 app_name: "Steam".to_string(),

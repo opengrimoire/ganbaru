@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { PomodoroPhase } from "$lib/pomodoro/rhythm";
 import {
   parseDistractionsConfig,
   parseDistractionsRulesEditOutcome,
@@ -101,17 +100,6 @@ export function saveDistractionsUsageLimit(
 /** Restore every default rule. */
 export function resetDistractionsRules(): Promise<DistractionsRulesEditOutcome> {
   return editRules("distractions_rules_reset");
-}
-
-export interface DistractionsRuntimeState {
-  active: boolean;
-  paused: boolean;
-  pauseReason: "manual" | "idle" | "suspend" | null;
-  phase: PomodoroPhase | "inactive";
-  activeRunId: string | null;
-  activeOccurrenceId: string | null;
-  remainingSeconds: number | null;
-  updatedAt: string;
 }
 
 export interface DistractionsExtensionStatus {

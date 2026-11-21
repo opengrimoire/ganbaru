@@ -111,6 +111,7 @@ crates/
   ganbaru-projects/: Tauri-free Projects persistence, structure, tasks, history, custom fields, dependency cascades, reordering, Calendar scheduling rows, and validation
   ganbaru-calendar/: Tauri-free Calendar persistence, iCalendar import and export, native reads, scoped edits, deletion and Undo, and recurrence expansion
   ganbaru-distractions/: Tauri-free distraction blocker contracts, rule persistence, application rules, usage limits, usage normalization, elapsed accounting, daily usage totals, and block history
+  ganbaru-distractions-authority/: Tauri-free distraction phase snapshot state and the shared phase blocking rule used by desktop close authorization and the native messaging host
   ganbaru-notes/: Notes domain, persistence, transfers, history, assets, and bounded filesystem operations
   ganbaru-chat-contracts/: provider-neutral Chat IDs, commands, events, DTOs, errors, model line and recommendation rules, and protected workspace path rules
   ganbaru-chat-providers/: provider processes, transports, drivers, cancellation, and registry
@@ -204,7 +205,7 @@ Read `docs/testing/README.md` when changing tests, validation scripts, task orde
 - `pnpm -w run editor-check`: editor diagnostics, including Tailwind canonical class checks.
 - `pnpm -w run test`: Rust tests followed by sequential Vitest shards.
 - `pnpm --dir apps/client exec vitest run path/to/file.test.ts --maxWorkers=1`: focused frontend test file.
-- `cargo test -p ganbaru-chat --lib -j 4 test_name -- --test-threads=4`: focused core crate test (substitute `ganbaru-notes`, `ganbaru-atomic-files`, `ganbaru-db`, `ganbaru-civil-time`, `ganbaru-distractions`, `ganbaru-chat-contracts`, `ganbaru-chat-providers`, `ganbaru-pomodoro`, `ganbaru-quick-notes`, `ganbaru-music`, `ganbaru-music-library`, `ganbaru-music-player`, `ganbaru-projects`, `ganbaru-calendar`, `ganbaru-working-folders`, `ganbaru-contacts`, `ganbaru-handoff`, `ganbaru-sync-contracts`, `ganbaru-sync`, `ganbaru-sync-replica`, `ganbaru-sandbox`, or `ganbaru-themes`).
+- `cargo test -p ganbaru-chat --lib -j 4 test_name -- --test-threads=4`: focused core crate test (substitute `ganbaru-notes`, `ganbaru-atomic-files`, `ganbaru-db`, `ganbaru-civil-time`, `ganbaru-distractions`, `ganbaru-distractions-authority`, `ganbaru-chat-contracts`, `ganbaru-chat-providers`, `ganbaru-pomodoro`, `ganbaru-quick-notes`, `ganbaru-music`, `ganbaru-music-library`, `ganbaru-music-player`, `ganbaru-projects`, `ganbaru-calendar`, `ganbaru-working-folders`, `ganbaru-contacts`, `ganbaru-handoff`, `ganbaru-sync-contracts`, `ganbaru-sync`, `ganbaru-sync-replica`, `ganbaru-sandbox`, or `ganbaru-themes`).
 - `cargo test -p ganbaru-tauri-app --lib -j 4 test_name -- --test-threads=4`: focused Tauri composition or command-adapter test.
 - `cargo test -p ganbaru-native-messaging --bin ganbaru-native-messaging -j 4 test_name -- --test-threads=4`: focused native messaging host test. Use `-p ganbaru-linking-firewall --bin ganbaru-linking-firewall` for the firewall helper.
 - `cargo check -p ganbaru --bin ganbaru -j 4`: focused desktop composition check.

@@ -271,10 +271,10 @@ pub(super) fn rules_fingerprint(
     feed_fingerprint(&mut hash, BUILT_IN_CATEGORIES_JSON);
     feed_fingerprint(&mut hash, config.mode.as_str());
     feed_fingerprint_bool(&mut hash, config.enabled);
-    feed_fingerprint_bool(&mut hash, config.block_during_focus);
-    feed_fingerprint_bool(&mut hash, config.block_during_short_breaks);
-    feed_fingerprint_bool(&mut hash, config.block_during_long_breaks);
-    feed_fingerprint_bool(&mut hash, config.pause_during_focus_pause);
+    feed_fingerprint_bool(&mut hash, config.blocking.block_during_focus);
+    feed_fingerprint_bool(&mut hash, config.blocking.block_during_short_breaks);
+    feed_fingerprint_bool(&mut hash, config.blocking.block_during_long_breaks);
+    feed_fingerprint_bool(&mut hash, config.blocking.pause_during_focus_pause);
     feed_fingerprint_list(&mut hash, "category", &config.blocked_category_ids);
     feed_fingerprint(&mut hash, "custom_stack");
     for stack in &config.custom_category_stacks {

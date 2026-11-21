@@ -4,7 +4,7 @@ pub mod totals;
 
 use crate::contracts::{
     DistractionsDesktopBlockEventInput, DistractionsRuntimeState, DistractionsUsageSampleInput,
-    DistractionsUsageSampleRow, NormalizedDesktopBlockEvent,
+    DistractionsUsageSampleRow, NormalizedDesktopBlockEvent, RuntimeAuthority,
 };
 use crate::limits::{is_valid_local_date, normalize_usage_host};
 use crate::rules::{is_protected_desktop_app_name, normalize_app_candidate_name};
@@ -60,28 +60,6 @@ fn now_epoch_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
         .unwrap_or(0)
-}
-
-/// Map the active runtime state to the phase recorded on a block event, or none when inactive.
-pub fn block_event_phase_from_runtime(
-    runtime: Option<&DistractionsRuntimeState>,
-) -> Option<String> {
-    let runtime = runtime?;
-    if !runtime.active {
-        return None;
-    }
-    if runtime.paused {
-        return match runtime.pause_reason.as_deref() {
-            Some("idle") => Some("idle_pause".to_string()),
-            Some("suspend") => Some("suspend_pause".to_string()),
-            Some("manual") | None => Some("manual_pause".to_string()),
-            Some(_) => None,
-        };
-    }
-    match runtime.phase.as_str() {
-        "focus" | "short_break" | "long_break" => Some(runtime.phase.clone()),
-        _ => None,
-    }
 }
 
 fn normalize_usage_source_key(source_type: &str, source_key: &str) -> Option<String> {
@@ -175,11 +153,11 @@ pub async fn insert_desktop_block_event(
     runtime: Option<&DistractionsRuntimeState>,
     occurred_at: &str,
 ) -> Result<(), String> {
-    let phase = block_event_phase_from_runtime(runtime);
-    let run_id = phase
-        .as_deref()
-        .and(runtime)
-        .and_then(|state| state.active_run_id.clone());
+    let authority = runtime.map(|state| &state.authority);
+    let phase = authority.and_then(RuntimeAuthority::block_event_phase);
+    let run_id = authority
+        .and_then(RuntimeAuthority::active_phase)
+        .map(|active| active.run_id.as_str());
     let event_id = format!(
         "desktop-block-{}-{}-{}",
         now_epoch_ms(),
@@ -198,11 +176,11 @@ pub async fn insert_desktop_block_event(
          VALUES (?, ?, NULL, ?, 'desktop_app', ?, ?, ?, 'blocked', NULL, NULL)",
     )
     .bind(&event_id)
-    .bind(&run_id)
+    .bind(run_id)
     .bind(occurred_at)
     .bind(&event.source_key)
     .bind(&event.display_name)
-    .bind(&phase)
+    .bind(phase)
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("record desktop block event: {e}"))?;

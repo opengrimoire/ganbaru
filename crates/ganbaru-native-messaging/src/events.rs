@@ -5,7 +5,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use crate::config::normalize_host_rule;
 use crate::now_utc;
 use crate::rules::HostDecision;
-use crate::snapshot::{RuntimeState, StateSnapshot, runtime_status_at};
+use crate::snapshot::{StateSnapshot, runtime_status_at};
 use crate::spool::{BlockEvent, record_block_event};
 
 /// Spools a block for the app. Browsing history is kept nowhere else, and only the redacted host
@@ -48,36 +48,14 @@ pub(super) fn spool_block_event(
     )
 }
 
-/// The phase and run a block event records at `checked_at`. Only runtime state that is current
+/// The phase and run a block event records at `checked_at`. Only runtime authority that is current
 /// for enforcement contributes, so a stale or expired file never stamps an old run on the event.
 pub(super) fn block_event_context(
     snapshot: &StateSnapshot,
     checked_at: DateTime<Utc>,
 ) -> (Option<String>, Option<String>) {
-    let runtime = snapshot
-        .runtime
-        .as_ref()
-        .filter(|_| runtime_status_at(snapshot, checked_at).0);
-    let phase = block_event_phase(runtime);
-    let run_id = phase
-        .as_deref()
-        .and(runtime)
-        .and_then(|runtime| runtime.active_run_id.clone());
+    let status = runtime_status_at(snapshot, checked_at);
+    let phase = status.authority.block_event_phase().map(str::to_string);
+    let run_id = status.active_phase().map(|active| active.run_id.clone());
     (phase, run_id)
-}
-
-pub(super) fn block_event_phase(runtime: Option<&RuntimeState>) -> Option<String> {
-    let runtime = runtime?;
-    if runtime.paused {
-        return match runtime.pause_reason.as_deref() {
-            Some("idle") => Some("idle_pause".to_string()),
-            Some("suspend") => Some("suspend_pause".to_string()),
-            Some("manual") | None => Some("manual_pause".to_string()),
-            Some(_) => None,
-        };
-    }
-    match runtime.phase.as_str() {
-        "focus" | "short_break" | "long_break" => Some(runtime.phase.clone()),
-        _ => None,
-    }
 }

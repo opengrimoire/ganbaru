@@ -1,5 +1,6 @@
 //! Validated Distractions configuration and embedded category definitions.
 
+use ganbaru_distractions_authority::PhaseBlockingSettings;
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -101,10 +102,7 @@ pub(super) struct UsageLimitsConfig {
 pub(super) struct DistractionsConfig {
     pub(super) mode: DistractionsMode,
     pub(super) enabled: bool,
-    pub(super) block_during_focus: bool,
-    pub(super) block_during_short_breaks: bool,
-    pub(super) block_during_long_breaks: bool,
-    pub(super) pause_during_focus_pause: bool,
+    pub(super) blocking: PhaseBlockingSettings,
     pub(super) blocked_category_ids: Vec<String>,
     pub(super) custom_category_stacks: Vec<CustomCategoryStack>,
     pub(super) blocked_hosts: Vec<String>,
@@ -144,22 +142,7 @@ pub(super) fn parse_rules(value: &Value) -> Option<DistractionsConfig> {
             .get("enabled")
             .and_then(Value::as_bool)
             .unwrap_or(true),
-        block_during_focus: distractions
-            .get("blockDuringFocus")
-            .and_then(Value::as_bool)
-            .unwrap_or(true),
-        block_during_short_breaks: distractions
-            .get("blockDuringShortBreaks")
-            .and_then(Value::as_bool)
-            .unwrap_or(true),
-        block_during_long_breaks: distractions
-            .get("blockDuringLongBreaks")
-            .and_then(Value::as_bool)
-            .unwrap_or(true),
-        pause_during_focus_pause: distractions
-            .get("pauseDuringFocusPause")
-            .and_then(Value::as_bool)
-            .unwrap_or(true),
+        blocking: PhaseBlockingSettings::from_rules(distractions),
         blocked_category_ids: read_category_array(distractions.get("blockedCategories")),
         custom_category_stacks: read_custom_category_stacks(
             distractions.get("customCategoryStacks"),
@@ -523,10 +506,7 @@ pub(super) fn default_config() -> DistractionsConfig {
     DistractionsConfig {
         mode: DistractionsMode::Blacklist,
         enabled: true,
-        block_during_focus: true,
-        block_during_short_breaks: true,
-        block_during_long_breaks: true,
-        pause_during_focus_pause: true,
+        blocking: PhaseBlockingSettings::default(),
         blocked_category_ids: default_built_in_category_ids(),
         custom_category_stacks: Vec::new(),
         blocked_hosts: Vec::new(),

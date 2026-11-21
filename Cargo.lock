@@ -1918,6 +1918,7 @@ dependencies = [
  "chrono",
  "ganbaru-civil-time",
  "ganbaru-db",
+ "ganbaru-distractions-authority",
  "ganbaru-sync",
  "ganbaru-sync-contracts",
  "jiff",
@@ -1926,6 +1927,14 @@ dependencies = [
  "sha2 0.10.9",
  "sqlx",
  "tokio",
+]
+
+[[package]]
+name = "ganbaru-distractions-authority"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2051,6 +2060,7 @@ name = "ganbaru-native-messaging"
 version = "0.1.5"
 dependencies = [
  "chrono",
+ "ganbaru-distractions-authority",
  "jiff",
  "serde",
  "serde_json",

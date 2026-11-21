@@ -1,4 +1,5 @@
 use super::*;
+use ganbaru_distractions::contracts::{ActivePhase, BlockingPhase, PauseReason, RuntimeAuthority};
 use std::io::{Read, Write};
 
 static STATE_WRITE_GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -94,39 +95,15 @@ pub fn clear_distractions_enforcement_state<R: Runtime>(
     runtime::stop_and_clear(app)
 }
 
-pub(super) fn validate_state(state: &DistractionsRuntimeState) -> Result<(), String> {
-    match state.phase.as_str() {
-        "inactive" | "focus" | "short_break" | "long_break" => {}
-        other => return Err(format!("unsupported distraction phase '{other}'")),
-    }
-    if state
-        .remaining_seconds
-        .is_some_and(|remaining_seconds| remaining_seconds < 0)
-    {
-        return Err("remaining_seconds must be non-negative".to_string());
-    }
-    if state.updated_at.trim().is_empty() {
-        return Err("updated_at is required".to_string());
-    }
-    if state.valid_until_ms.is_some_and(|deadline| deadline < 0) {
-        return Err("valid_until_ms must be non-negative".into());
-    }
-    match state.pause_reason.as_deref() {
-        None | Some("manual" | "idle" | "suspend") => {}
-        Some(other) => return Err(format!("unsupported distraction pause reason '{other}'")),
-    }
-    Ok(())
-}
-
+/// Reads the runtime authority at `path` when it is well formed, written no more than
+/// `ACTIVE_STATE_STALE_SECONDS` before `checked_at`, and its accepted phase is still valid.
+/// Anything else reads as no authority, which denies close authorization.
 pub(super) fn read_fresh_runtime_state(
     path: &Path,
     checked_at: DateTime<Utc>,
 ) -> Option<DistractionsRuntimeState> {
     let contents = read_bounded_state(path)?;
-    let state = serde_json::from_str::<DistractionsRuntimeState>(&contents).ok()?;
-    if validate_state(&state).is_err() {
-        return None;
-    }
+    let state = DistractionsRuntimeState::parse(&contents).ok()?;
     let updated_at = DateTime::parse_from_rfc3339(&state.updated_at)
         .ok()?
         .with_timezone(&Utc);
@@ -135,21 +112,45 @@ pub(super) fn read_fresh_runtime_state(
     {
         return None;
     }
-    if state
-        .valid_until_ms
-        .is_some_and(|deadline| checked_at.timestamp_millis() >= deadline)
-        || (state.active
-            && !state.paused
-            && state.remaining_seconds.is_some_and(|remaining| {
-                checked_at.timestamp_millis()
-                    >= updated_at
-                        .timestamp_millis()
-                        .saturating_add(remaining.saturating_mul(1000))
-            }))
-    {
+    if state.validity_expired(updated_at.timestamp_millis(), checked_at.timestamp_millis()) {
         return None;
     }
     Some(state)
+}
+
+/// The phase a committed effect authorizes: a running or paused mode with its run, segment, and
+/// phase, before `valid_until`.
+fn accepted_phase(
+    effect: &ganbaru_pomodoro::CommittedFocusEffect,
+    valid_until: i64,
+    now_ms: i64,
+) -> Option<ActivePhase> {
+    use ganbaru_pomodoro::{FocusMode, FocusPhase};
+    let pause_reason = match effect.mode {
+        FocusMode::Running => None,
+        FocusMode::ManualPause => Some(PauseReason::Manual),
+        FocusMode::IdlePause => Some(PauseReason::Idle),
+        FocusMode::Suspended => Some(PauseReason::Suspend),
+        FocusMode::Stopped | FocusMode::IdleFailed | FocusMode::ReturnWait | FocusMode::Expired => {
+            return None;
+        }
+    };
+    effect.segment_id.as_ref()?;
+    if valid_until <= now_ms {
+        return None;
+    }
+    let phase = match effect.phase? {
+        FocusPhase::Focus => BlockingPhase::Focus,
+        FocusPhase::ShortBreak => BlockingPhase::ShortBreak,
+        FocusPhase::LongBreak => BlockingPhase::LongBreak,
+    };
+    Some(ActivePhase {
+        phase,
+        pause_reason,
+        run_id: effect.run_id.clone()?,
+        occurrence_id: effect.occurrence_id.clone(),
+        remaining_seconds: effect.remaining_ms.max(0).saturating_add(999) / 1000,
+    })
 }
 
 /// Build phase-dependent rules only from accepted native execution. Waiting,
@@ -158,51 +159,18 @@ pub(crate) fn committed_focus_state(
     effect: &ganbaru_pomodoro::CommittedFocusEffect,
     now_ms: i64,
 ) -> Result<DistractionsRuntimeState, String> {
-    use ganbaru_pomodoro::{FocusMode, FocusPhase};
-    let paused = matches!(
-        effect.mode,
-        FocusMode::ManualPause | FocusMode::IdlePause | FocusMode::Suspended
-    );
     let valid_until = effect.effective_valid_until_ms();
-    let active = matches!(
-        effect.mode,
-        FocusMode::Running | FocusMode::ManualPause | FocusMode::IdlePause | FocusMode::Suspended
-    ) && effect.run_id.is_some()
-        && effect.segment_id.is_some()
-        && effect.phase.is_some()
-        && valid_until > now_ms;
-    let phase = if active {
-        match effect.phase {
-            Some(FocusPhase::Focus) => "focus",
-            Some(FocusPhase::ShortBreak) => "short_break",
-            Some(FocusPhase::LongBreak) => "long_break",
-            None => "inactive",
-        }
-    } else {
-        "inactive"
+    let authority = match accepted_phase(effect, valid_until, now_ms) {
+        Some(active) => RuntimeAuthority::Active(active),
+        None => RuntimeAuthority::Inactive {},
     };
     let updated_at = DateTime::<Utc>::from_timestamp_millis(now_ms)
         .ok_or("Native Focus clock is outside the supported range")?
         .to_rfc3339_opts(SecondsFormat::Millis, true);
     Ok(DistractionsRuntimeState {
-        active,
-        paused: active && paused,
-        pause_reason: if active {
-            match effect.mode {
-                FocusMode::ManualPause => Some("manual".into()),
-                FocusMode::IdlePause => Some("idle".into()),
-                FocusMode::Suspended => Some("suspend".into()),
-                _ => None,
-            }
-        } else {
-            None
-        },
-        phase: phase.into(),
-        active_run_id: effect.run_id.clone(),
-        active_occurrence_id: effect.occurrence_id.clone(),
-        remaining_seconds: active.then(|| effect.remaining_ms.max(0).saturating_add(999) / 1000),
+        authority,
         updated_at,
-        valid_until_ms: Some(valid_until.max(0)),
+        valid_until_ms: valid_until.max(0),
     })
 }
 
@@ -215,6 +183,7 @@ pub(crate) fn publish_committed_focus(
     now_ms: i64,
 ) -> Result<(), String> {
     let state = committed_focus_state(effect, now_ms)?;
+    state.validate()?;
     let path = state_path(app)?;
     let json = serde_json::to_string(&state)
         .map_err(|error| format!("Encode native Focus rules: {error}"))?;

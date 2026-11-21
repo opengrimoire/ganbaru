@@ -246,16 +246,10 @@ pub(crate) async fn record(
     .bind(clamp_ms(now_ms))
     .execute(&mut *conn)
     .await?;
-    sqlx::query(
-        "UPDATE sync_writers SET state = 'forked',
-            cutoff_seq = CASE WHEN state = 'revoked' THEN ?1 ELSE min(coalesce(cutoff_seq, ?1), ?1) END
-         WHERE space_id = ?2 AND writer_id = ?3",
-    )
-    .bind(seq_i64(seq - 1)?)
-    .bind(space.as_bytes().as_slice())
-    .bind(writer.as_bytes().as_slice())
-    .execute(&mut *conn)
-    .await?;
+    if let Some(row) = log::writer(conn, space, writer).await? {
+        let removal_cutoff = row.removal_cutoff;
+        log::settle_state(conn, space, &row, removal_cutoff).await?;
+    }
     Ok(EvidenceOutcome::Stored)
 }
 

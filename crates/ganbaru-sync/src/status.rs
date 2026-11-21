@@ -19,14 +19,12 @@ pub struct WriterSummary {
     pub writer: WriterId,
     /// Device the writer belongs to.
     pub device_id: String,
-    /// Lifecycle state.
+    /// Lifecycle state, with the last operation that stays when revoked or forked.
     pub state: WriterState,
     /// Highest stored sequence.
     pub stored: Seq,
     /// Highest applied sequence.
     pub applied: Seq,
-    /// Last operation that stays, when revoked, forked, or re-sealed.
-    pub cutoff: Option<Seq>,
 }
 
 /// Held operations by reason.
@@ -135,7 +133,6 @@ impl Engine {
                 state: writer.state,
                 stored: writer.stored,
                 applied: writer.applied,
-                cutoff: writer.cutoff,
             })
             .collect();
         let mut status = SyncStatus {

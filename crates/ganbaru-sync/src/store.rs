@@ -407,6 +407,9 @@ async fn store_genesis(
             return Ok(StoreOutcome::Refused(StoreRefusal::WriterLimit));
         }
     }
+    let removal_cutoff = removal.map(|(_, cutoff)| cutoff);
+    let fork_cutoff = log::fork_cutoff(conn, ctx.space, envelope.writer).await?;
+    let (state, cutoff) = WriterState::derive(fork_cutoff, removal_cutoff).columns()?;
     sqlx::query(
         "INSERT INTO sync_writers
             (space_id, writer_id, public_key, device_id, certificate, state, predecessor,
@@ -419,20 +422,16 @@ async fn store_genesis(
     .bind(cert.writer_key.as_bytes().as_slice())
     .bind(cert.device_id.as_str())
     .bind(certificate.encode())
-    .bind(if removal.is_some() {
-        "revoked"
-    } else {
-        "active"
-    })
+    .bind(state)
     .bind(
         cert.predecessor
             .map(|predecessor| predecessor.as_bytes().to_vec()),
     )
-    .bind(removal.map(|(_, cutoff)| seq_i64(cutoff)).transpose()?)
+    .bind(cutoff)
     .bind(envelope.hash().as_slice())
     .bind(clamp_ms(clock.as_u64()))
     .bind(cert.created_at_ms.max(0))
-    .bind(removal.map(|(_, cutoff)| seq_i64(cutoff)).transpose()?)
+    .bind(removal_cutoff.map(seq_i64).transpose()?)
     .execute(&mut *conn)
     .await?;
     // The genesis is past only a cutoff of 0, and the removed device never excludes its own.
@@ -554,8 +553,9 @@ async fn store_next(
         envelope.seq > limit
             && (envelope.kind != OperationKind::Authorization.as_u8() || envelope.seq > entry_limit)
     });
-    let beyond_cutoff = writer.state != WriterState::Revoked
-        && writer.cutoff.is_some_and(|cutoff| envelope.seq > cutoff);
+    // A removal cutoff excludes later operations instead, through the bounds above.
+    let beyond_cutoff =
+        matches!(writer.state, WriterState::Forked { cutoff } if envelope.seq > cutoff);
     if beyond_removal || beyond_cutoff {
         return Ok(StoreOutcome::Refused(StoreRefusal::Revoked));
     }

@@ -181,11 +181,12 @@ fn a_device_without_a_link_time_needs_a_new_link_and_never_holds_stability() {
 #[test]
 fn stability_never_counts_inactive_writers_or_unknown_contexts() {
     block_on(async {
-        for state in ["retired", "revoked", "forked"] {
+        for state in ["revoked", "forked"] {
             let (mut hub, a, _b) = linked().await;
             let since = hub.now_ms;
             hub.exec(&format!(
-                "UPDATE sync_writers SET state = '{state}', cutoff_seq = 2
+                "UPDATE sync_writers SET state = '{state}', cutoff_seq = 2,
+                    removal_cutoff_seq = CASE '{state}' WHEN 'revoked' THEN 2 END
                  WHERE writer_id = x'{}'",
                 hex(a.writer().as_bytes())
             ))

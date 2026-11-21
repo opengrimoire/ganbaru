@@ -216,8 +216,8 @@ async fn lanes(
             .min(writer.applied)
             .min(writer.stored.saturating_sub(1));
         // Bodies past a recorded fork stay until its exclusion has settled.
-        if writer.state == WriterState::Forked {
-            through = through.min(writer.cutoff.unwrap_or(0));
+        if let WriterState::Forked { cutoff } = writer.state {
+            through = through.min(cutoff);
         }
         if through > writer.compacted {
             lanes.push(Lane {

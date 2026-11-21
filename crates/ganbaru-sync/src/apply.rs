@@ -18,7 +18,7 @@ use sqlx::{Connection, Row, SqliteConnection};
 use crate::error::{SyncError, SyncResult, corrupt, failpoint};
 use crate::exclusion::{Excluding, Retention};
 use crate::hooks::ChangeNotice;
-use crate::log::{self, WriterState, seq_i64, stored_u64};
+use crate::log::{self, seq_i64, stored_u64};
 use crate::materialize::{Execution, Materialized};
 use crate::merge::{self, Batch};
 use crate::op_state::{self, OpMove, OpState};
@@ -417,7 +417,8 @@ async fn scan_group(
     let cutoff = log::writer(conn, ctx.space, first.writer)
         .await?
         .ok_or_else(|| corrupt("operation of an unknown writer reached apply"))?
-        .cutoff;
+        .state
+        .cutoff();
     let rows = chain_rows(conn, ctx, first.writer, first.seq, room).await?;
     let Some(extent) = chain_extent(&rows, first.seq, room, cutoff)? else {
         return Ok(GroupScan::Waiting { on_others: false });
@@ -915,7 +916,7 @@ async fn apply_authorization(
     if let Some(local) = slot.local_id() {
         let inactive = log::writer(conn, ctx.space, local)
             .await?
-            .is_some_and(|writer| writer.state != WriterState::Active);
+            .is_some_and(|writer| !writer.state.is_active());
         if inactive {
             slot.freeze();
             report.local_writer_frozen = true;
@@ -1394,7 +1395,7 @@ impl Engine {
         if let Some(local) = slot.local_id()
             && log::writer(&mut tx, ctx.space, local)
                 .await?
-                .is_some_and(|writer| writer.state == WriterState::Forked)
+                .is_some_and(|writer| writer.state.is_forked())
         {
             slot.freeze();
             report.local_writer_frozen = true;

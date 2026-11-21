@@ -23,7 +23,7 @@ use crate::authorization::{self, Enrollment};
 use crate::error::{SyncResult, corrupt, failpoint};
 use crate::exclusion::{self, Excluding};
 use crate::hooks::ChangeNotice;
-use crate::log::{self, WriterState, clamp_ms, seq_i64};
+use crate::log::{self, clamp_ms, seq_i64};
 use crate::manifest::{GroupSpec, TableSpec};
 use crate::materialize::Materialized;
 use crate::merge::{self, Batch};
@@ -274,7 +274,7 @@ impl Sealer {
         let Some(row) = existing else {
             return Self::genesis(engine, conn, ctx, batch, writer, clock, revision, now_ms).await;
         };
-        if row.state != WriterState::Active {
+        if !row.state.is_active() {
             return Err(SyncError::WriterInactive(id));
         }
         if row.stored != row.applied {
@@ -960,7 +960,7 @@ impl<'a, 'k> SealSlot<'a, 'k> {
         let cert = &writer.certificate.certificate;
         Ok(
             match log::writer(conn, ctx.space, cert.writer_id()).await? {
-                Some(row) => row.state == WriterState::Active,
+                Some(row) => row.state.is_active(),
                 None => matches!(
                     authorization::enrollment(conn, ctx.space, &cert.device_id, &cert.device_key)
                         .await?,

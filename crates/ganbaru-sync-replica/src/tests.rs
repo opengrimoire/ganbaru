@@ -208,7 +208,7 @@ fn record_matches_only_the_recorded_chain() {
             record(3, 256),
             LocalWriterHead::Genuine {
                 stored: 3,
-                state: WriterState::Retired,
+                state: WriterState::Revoked { cutoff: 3 },
             },
             false,
         ),

@@ -16,39 +16,116 @@ use sqlx::{AssertSqlSafe, Row, SqliteConnection};
 use crate::error::{SyncResult, corrupt};
 use crate::{Engine, SpaceContext, SyncError};
 
-/// Lifecycle state of a writer in a space.
+/// Lifecycle state of a writer in a space, derived by [`Self::derive`] from replicated facts only,
+/// so every replica holding the same facts holds the same state. Replacing a writer on its own
+/// device is installation-local and leaves the state as it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WriterState {
     /// The writer may seal.
     Active,
-    /// The installation replaced the writer after re-sealing its operations above the cutoff,
-    /// which are refused from then on.
-    Retired,
-    /// Operations above the cutoff are refused because the device was unlinked.
-    Revoked,
-    /// Operations above the cutoff are refused because the chain forked.
-    Forked,
+    /// The selected chain removed the writer's device; operations above `cutoff`, the removal
+    /// cutoff, are excluded.
+    Revoked {
+        /// The removal cutoff of the writer.
+        cutoff: Seq,
+    },
+    /// The writer forked; operations above `cutoff`, the last sequence both branches share, are
+    /// refused, whether or not its device was also removed.
+    Forked {
+        /// The last sequence before the earliest known fork.
+        cutoff: Seq,
+    },
+}
+
+/// A writer state change [`WriterState::transition`] refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IllegalWriterMove {
+    /// Fork evidence is never dropped, so a forked writer stays forked.
+    LeavesForked,
+    /// Evidence of an earlier fork replaces a later one, so the fork cutoff only falls.
+    RaisesForkCutoff,
 }
 
 impl WriterState {
+    /// The state of a writer whose earliest known fork leaves `fork_cutoff` as the last shared
+    /// sequence and whose device the selected chain removed with `removal_cutoff`. A fork wins
+    /// over a removal, whose cutoff stays apart in the removal cutoff column.
+    pub const fn derive(fork_cutoff: Option<Seq>, removal_cutoff: Option<Seq>) -> Self {
+        match (fork_cutoff, removal_cutoff) {
+            (Some(cutoff), _) => Self::Forked { cutoff },
+            (None, Some(cutoff)) => Self::Revoked { cutoff },
+            (None, None) => Self::Active,
+        }
+    }
+
+    /// Checks that a stored writer may move from `self` to `next`, returning `next`.
+    pub(crate) fn transition(self, next: Self) -> Result<Self, IllegalWriterMove> {
+        match (self, next) {
+            (Self::Forked { cutoff: from }, Self::Forked { cutoff: to }) if to > from => {
+                Err(IllegalWriterMove::RaisesForkCutoff)
+            }
+            (Self::Forked { .. }, Self::Active | Self::Revoked { .. }) => {
+                Err(IllegalWriterMove::LeavesForked)
+            }
+            _ => Ok(next),
+        }
+    }
+
+    /// Sequences above this one never apply, for a revoked or forked writer.
+    pub const fn cutoff(self) -> Option<Seq> {
+        match self {
+            Self::Active => None,
+            Self::Revoked { cutoff } | Self::Forked { cutoff } => Some(cutoff),
+        }
+    }
+
+    /// Whether the writer may seal.
+    pub const fn is_active(self) -> bool {
+        matches!(self, Self::Active)
+    }
+
+    /// Whether the writer forked.
+    pub const fn is_forked(self) -> bool {
+        matches!(self, Self::Forked { .. })
+    }
+
     /// Stored name.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Active => "active",
-            Self::Retired => "retired",
-            Self::Revoked => "revoked",
-            Self::Forked => "forked",
+            Self::Revoked { .. } => "revoked",
+            Self::Forked { .. } => "forked",
         }
     }
 
-    pub(crate) fn parse(text: &str) -> SyncResult<Self> {
-        match text {
-            "active" => Ok(Self::Active),
-            "retired" => Ok(Self::Retired),
-            "revoked" => Ok(Self::Revoked),
-            "forked" => Ok(Self::Forked),
-            _ => Err(corrupt(format!("unknown writer state {text}"))),
+    /// The `state` and `cutoff_seq` columns.
+    pub(crate) fn columns(self) -> SyncResult<(&'static str, Option<i64>)> {
+        Ok((self.as_str(), self.cutoff().map(seq_i64).transpose()?))
+    }
+
+    /// Reads the `state`, `cutoff_seq`, and `removal_cutoff_seq` columns, which must agree.
+    pub(crate) fn from_columns(
+        state: &str,
+        cutoff: Option<Seq>,
+        removal_cutoff: Option<Seq>,
+    ) -> SyncResult<Self> {
+        let read = match (state, cutoff) {
+            ("active", None) => Self::Active,
+            ("revoked", Some(cutoff)) => Self::Revoked { cutoff },
+            ("forked", Some(cutoff)) => Self::Forked { cutoff },
+            _ => return Err(corrupt(format!("writer state {state} with cutoff {cutoff:?}"))),
+        };
+        let agrees = match read {
+            Self::Active => removal_cutoff.is_none(),
+            Self::Revoked { cutoff } => removal_cutoff == Some(cutoff),
+            Self::Forked { .. } => true,
+        };
+        if !agrees {
+            return Err(corrupt(format!(
+                "writer state {state} with removal cutoff {removal_cutoff:?}"
+            )));
         }
+        Ok(read)
     }
 }
 
@@ -59,7 +136,6 @@ pub(crate) struct WriterRow {
     pub(crate) public_key: WriterPublicKey,
     pub(crate) device_id: String,
     pub(crate) state: WriterState,
-    pub(crate) cutoff: Option<Seq>,
     pub(crate) stored: Seq,
     pub(crate) applied: Seq,
     pub(crate) head_hash: Digest32,
@@ -164,24 +240,27 @@ fn writer_row(row: &sqlx::sqlite::SqliteRow) -> SyncResult<WriterRow> {
     let id: Vec<u8> = row.try_get(0)?;
     let public_key: Vec<u8> = row.try_get(1)?;
     let state: String = row.try_get(3)?;
-    let cutoff: Option<i64> = row.try_get(4)?;
+    let cutoff = row
+        .try_get::<Option<i64>, _>(4)?
+        .map(|seq| stored_u64(seq, "cutoff"))
+        .transpose()?;
+    let removal_cutoff = row
+        .try_get::<Option<i64>, _>(10)?
+        .map(|seq| stored_u64(seq, "removal cutoff"))
+        .transpose()?;
     let head_hash: Vec<u8> = row.try_get(7)?;
     Ok(WriterRow {
         id: writer_id(&id)?,
         public_key: WriterPublicKey::from_slice(&public_key)
             .map_err(|_| corrupt("writer public key"))?,
         device_id: row.try_get(2)?,
-        state: WriterState::parse(&state)?,
-        cutoff: cutoff.map(|seq| stored_u64(seq, "cutoff")).transpose()?,
+        state: WriterState::from_columns(&state, cutoff, removal_cutoff)?,
         stored: stored_u64(row.try_get(5)?, "stored sequence")?,
         applied: stored_u64(row.try_get(6)?, "applied sequence")?,
         head_hash: digest(&head_hash)?,
         head_clock: stored_u64(row.try_get(8)?, "head clock")?,
         compacted: stored_u64(row.try_get(9)?, "compacted sequence")?,
-        removal_cutoff: row
-            .try_get::<Option<i64>, _>(10)?
-            .map(|seq| stored_u64(seq, "removal cutoff"))
-            .transpose()?,
+        removal_cutoff,
     })
 }
 
@@ -211,6 +290,63 @@ pub(crate) async fn writers(
         .fetch_all(&mut *conn)
         .await?;
     rows.iter().map(writer_row).collect()
+}
+
+/// The last sequence before the earliest fork of `writer` that stored evidence proves. Evidence
+/// outlives a forgotten writer row, so a writer stored again is forked from the start.
+pub(crate) async fn fork_cutoff(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    writer: WriterId,
+) -> SyncResult<Option<Seq>> {
+    let seq: Option<i64> = sqlx::query_scalar(
+        "SELECT seq FROM sync_fork_evidence WHERE space_id = ? AND writer_id = ?",
+    )
+    .bind(space.as_bytes().as_slice())
+    .bind(writer.as_bytes().as_slice())
+    .fetch_optional(&mut *conn)
+    .await?;
+    seq.map(|seq| Ok(stored_u64(seq, "fork sequence")?.saturating_sub(1)))
+        .transpose()
+}
+
+/// Writes the state the fork evidence of `writer` and `removal_cutoff` derive, see
+/// [`WriterState::derive`], with the removal cutoff, in one update guarded on the state read.
+/// This is the only change of a stored writer's state. Returns the state.
+pub(crate) async fn settle_state(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    writer: &WriterRow,
+    removal_cutoff: Option<Seq>,
+) -> SyncResult<WriterState> {
+    let fork = fork_cutoff(conn, space, writer.id).await?;
+    let next = writer
+        .state
+        .transition(WriterState::derive(fork, removal_cutoff))
+        .map_err(|illegal| corrupt(format!("writer state change refused: {illegal:?}")))?;
+    if next == writer.state && removal_cutoff == writer.removal_cutoff {
+        return Ok(next);
+    }
+    let (state, cutoff) = next.columns()?;
+    let (from_state, from_cutoff) = writer.state.columns()?;
+    let affected = sqlx::query(
+        "UPDATE sync_writers SET state = ?, cutoff_seq = ?, removal_cutoff_seq = ?
+         WHERE space_id = ? AND writer_id = ? AND state = ? AND cutoff_seq IS ?",
+    )
+    .bind(state)
+    .bind(cutoff)
+    .bind(removal_cutoff.map(seq_i64).transpose()?)
+    .bind(space.as_bytes().as_slice())
+    .bind(writer.id.as_bytes().as_slice())
+    .bind(from_state)
+    .bind(from_cutoff)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected();
+    if affected != 1 {
+        return Err(corrupt("writer state changed while it was derived"));
+    }
+    Ok(next)
 }
 
 /// Stored context of an operation: outer `None` when the operation is not stored, inner `None`

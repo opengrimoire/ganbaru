@@ -711,7 +711,7 @@ fn the_recovery_kit_keys_are_replaced_whole_and_copied_with_snapshots() {
 #[test]
 fn rotating_after_an_inactive_writer_seals_every_pending_capture() {
     block_on(async {
-        for state in ["retired", "revoked", "forked"] {
+        for state in ["revoked", "forked"] {
             let mut replica = Replica::anchor(0, 31).await;
             add_note(&mut replica, "note-1", "One").await;
             replica.seal().await.unwrap();
@@ -723,7 +723,8 @@ fn rotating_after_an_inactive_writer_seals_every_pending_capture() {
             let hex: String = old.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
             replica
                 .exec(&format!(
-                    "UPDATE sync_writers SET state = '{state}', cutoff_seq = 2
+                    "UPDATE sync_writers SET state = '{state}', cutoff_seq = 2,
+                    removal_cutoff_seq = CASE '{state}' WHEN 'revoked' THEN 2 END
                      WHERE writer_id = x'{hex}'"
                 ))
                 .await;

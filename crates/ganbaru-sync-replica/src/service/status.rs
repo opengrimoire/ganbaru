@@ -409,7 +409,6 @@ mod tests {
             state: WriterState::Active,
             stored: 1,
             applied: 1,
-            cutoff: None,
         }
     }
 

@@ -647,12 +647,11 @@ pub(super) async fn chat_writers(
 }
 
 /// The devices with an active sync writer in the vault of `pool` that the authorization log
-/// has not removed. An unlinked device's writer is revoked or carries a removal cutoff, so it
-/// is not listed.
+/// has not removed. A removed or forked device's writer is not active, so it is not listed.
 pub(super) async fn active_writer_devices(pool: &sqlx::SqlitePool) -> ChatResult<Vec<String>> {
     sqlx::query_scalar(
         "SELECT DISTINCT writer.device_id FROM sync_writers writer
-         WHERE writer.state = 'active' AND writer.removal_cutoff_seq IS NULL
+         WHERE writer.state = 'active'
            AND NOT EXISTS (
              SELECT 1 FROM sync_devices device
              WHERE device.space_id = writer.space_id AND device.device_id = writer.device_id

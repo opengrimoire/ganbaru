@@ -44,6 +44,7 @@ mod staged_copy;
 mod trees;
 mod trigger_policies;
 mod values;
+mod writer_state;
 
 use sqlx::{AssertSqlSafe, SqlitePool};
 

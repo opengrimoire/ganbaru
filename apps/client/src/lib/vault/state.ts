@@ -307,39 +307,63 @@ export interface DatabaseRollback {
   dismissed: boolean;
 }
 
+/** A kept copy whose retention record cannot be read, so it is never restored or removed. */
+export interface UnreadableDatabaseRollback {
+  id: string;
+  createdAt: string;
+  sizeBytes: number;
+}
+
+/** Every kept copy of the active vault, newest first, split by whether it can be read. */
+export interface DatabaseRollbackListing {
+  restorable: DatabaseRollback[];
+  unreadable: UnreadableDatabaseRollback[];
+}
+
 function readRollbackOrigin(value: unknown): DatabaseRollbackOrigin | null {
   return value === "reset" || value === "replacement" ? value : null;
+}
+
+function readUnreadableRollback(entry: unknown): UnreadableDatabaseRollback {
+  if (!isRecord(entry)) throw new Error("database rollback entry is not an object");
+  const id = readString(entry.id);
+  const createdAt = readString(entry.createdAt);
+  const sizeBytes = readNonNegativeInteger(entry.sizeBytes);
+  if (!id || !createdAt || Number.isNaN(Date.parse(createdAt)) || sizeBytes === null) {
+    throw new Error("database rollback entry is incomplete");
+  }
+  return { id, createdAt, sizeBytes };
+}
+
+function readRestorableRollback(entry: unknown): DatabaseRollback {
+  if (!isRecord(entry)) throw new Error("database rollback entry is not an object");
+  const { id, createdAt, sizeBytes } = readUnreadableRollback(entry);
+  const origin = readRollbackOrigin(entry.origin);
+  const flagged = readBoolean(entry.flagged);
+  const dismissed = readBoolean(entry.dismissed);
+  if (origin === null || flagged === null || dismissed === null) {
+    throw new Error("database rollback entry is incomplete");
+  }
+  return { id, createdAt, sizeBytes, origin, flagged, dismissed };
+}
+
+function readRollbackList<T>(value: unknown, read: (entry: unknown) => T): T[] {
+  if (!Array.isArray(value)) throw new Error("database rollback response is not a list");
+  return value.map(read);
 }
 
 /**
  * Validates the native rollback listing.
  *
  * @param value - Untrusted `vault_database_rollbacks` response.
- * @returns Rollbacks newest first, as Rust ordered them.
+ * @returns Restorable and unreadable copies, each newest first, as Rust ordered them.
  */
-export function parseDatabaseRollbacks(value: unknown): DatabaseRollback[] {
-  if (!Array.isArray(value)) throw new Error("database rollback response is not a list");
-  return value.map((entry: unknown) => {
-    if (!isRecord(entry)) throw new Error("database rollback entry is not an object");
-    const id = readString(entry.id);
-    const createdAt = readString(entry.createdAt);
-    const sizeBytes = readNonNegativeInteger(entry.sizeBytes);
-    const origin = readRollbackOrigin(entry.origin);
-    const flagged = readBoolean(entry.flagged);
-    const dismissed = readBoolean(entry.dismissed);
-    if (
-      !id ||
-      !createdAt ||
-      Number.isNaN(Date.parse(createdAt)) ||
-      sizeBytes === null ||
-      origin === null ||
-      flagged === null ||
-      dismissed === null
-    ) {
-      throw new Error("database rollback entry is incomplete");
-    }
-    return { id, createdAt, sizeBytes, origin, flagged, dismissed };
-  });
+export function parseDatabaseRollbacks(value: unknown): DatabaseRollbackListing {
+  if (!isRecord(value)) throw new Error("database rollback response is not an object");
+  return {
+    restorable: readRollbackList(value.restorable, readRestorableRollback),
+    unreadable: readRollbackList(value.unreadable, readUnreadableRollback),
+  };
 }
 
 /** Reports flagged rollbacks whose notice the user has not dismissed, newest first. */
@@ -353,7 +377,7 @@ export async function dismissDatabaseRollback(id: string): Promise<void> {
 }
 
 /** Lists device-local copies kept by data resets, restores, and handoff replacements. */
-export async function listDatabaseRollbacks(): Promise<DatabaseRollback[]> {
+export async function listDatabaseRollbacks(): Promise<DatabaseRollbackListing> {
   return parseDatabaseRollbacks(await invoke<unknown>("vault_database_rollbacks"));
 }
 

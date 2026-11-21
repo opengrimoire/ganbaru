@@ -405,17 +405,38 @@ fn write_retention(directory: &Path, retention: &Retention) -> Result<(), String
     .map_err(|error| format!("write database rollback retention: {error}"))
 }
 
-/// Lists rollback directories, newest first, ignoring entries that are not rollback IDs,
-/// that hold no regular database file, or whose retention record does not decode. An
-/// ignored copy is never shown, restored, or pruned, so it stays on disk untouched.
-pub(crate) fn list_rollbacks(vault: &Path) -> Result<Vec<DatabaseRollback>, String> {
+/// A copy named by a rollback ID that holds a regular database file but whose retention record
+/// does not decode. It is shown so the user knows it is there, and never restored, dismissed,
+/// or pruned, so it stays on disk untouched.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnreadableRollback {
+    pub id: String,
+    pub created_at: String,
+    pub size_bytes: u64,
+}
+
+/// Every copy in a rollback folder, newest first, split by whether its retention decoded.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RollbackListing {
+    pub restorable: Vec<DatabaseRollback>,
+    pub unreadable: Vec<UnreadableRollback>,
+}
+
+/// Lists rollback directories, newest first, ignoring entries that are not rollback IDs or
+/// that hold no regular database file, and setting apart copies whose retention record does
+/// not decode.
+pub(crate) fn scan_rollbacks(vault: &Path) -> Result<RollbackListing, String> {
     let root = rollback_root(vault);
     let entries = match fs::read_dir(&root) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(RollbackListing::default());
+        }
         Err(error) => return Err(format!("read database rollbacks: {error}")),
     };
-    let mut rollbacks = Vec::new();
+    let mut listing = RollbackListing::default();
     for entry in entries {
         let entry = entry.map_err(|error| format!("read database rollbacks: {error}"))?;
         let Some(id) = entry.file_name().to_str().map(str::to_string) else {
@@ -433,28 +454,47 @@ pub(crate) fn list_rollbacks(vault: &Path) -> Result<Vec<DatabaseRollback>, Stri
         if !metadata.is_file() {
             continue;
         }
-        let Ok(retention) = read_retention(&entry.path()) else {
-            continue;
-        };
-        rollbacks.push(DatabaseRollback {
-            id,
-            created_at: created.to_rfc3339_opts(SecondsFormat::Millis, true),
-            size_bytes: metadata.len(),
-            retention,
-        });
+        let created_at = created.to_rfc3339_opts(SecondsFormat::Millis, true);
+        let size_bytes = metadata.len();
+        match read_retention(&entry.path()) {
+            Ok(retention) => listing.restorable.push(DatabaseRollback {
+                id,
+                created_at,
+                size_bytes,
+                retention,
+            }),
+            Err(_) => listing.unreadable.push(UnreadableRollback {
+                id,
+                created_at,
+                size_bytes,
+            }),
+        }
     }
-    rollbacks.sort_by(|left, right| right.id.cmp(&left.id));
-    Ok(rollbacks)
+    listing.restorable.sort_by(|left, right| right.id.cmp(&left.id));
+    listing.unreadable.sort_by(|left, right| right.id.cmp(&left.id));
+    Ok(listing)
+}
+
+/// The copies in `vault` whose retention decoded, newest first. A copy whose retention does
+/// not decode is never shown as restorable, restored, or pruned.
+pub(crate) fn list_rollbacks(vault: &Path) -> Result<Vec<DatabaseRollback>, String> {
+    Ok(scan_rollbacks(vault)?.restorable)
 }
 
 /// The rollbacks of the vault in the folder `vault`, newest first, leaving out the copies of
-/// a vault that another one replaced there.
-pub(crate) fn visible_rollbacks(vault: &Path) -> Result<Vec<DatabaseRollback>, String> {
+/// a vault that another one replaced there. Unreadable copies are all listed, as their
+/// retention cannot say which vault they belong to.
+pub(crate) fn visible_rollbacks(vault: &Path) -> Result<RollbackListing, String> {
     let vault_id = vault_id_at(vault)?;
-    Ok(list_rollbacks(vault)?
-        .into_iter()
-        .filter(|rollback| rollback.shows_for(Some(&vault_id)))
-        .collect())
+    let listing = scan_rollbacks(vault)?;
+    Ok(RollbackListing {
+        restorable: listing
+            .restorable
+            .into_iter()
+            .filter(|rollback| rollback.shows_for(Some(&vault_id)))
+            .collect(),
+        unreadable: listing.unreadable,
+    })
 }
 
 /// Records `vault_id` on every copy in `vault` that is not a whole other vault and names no
@@ -793,11 +833,11 @@ pub(crate) fn dismiss_rollback(vault: &Path, id: &str) -> Result<(), String> {
     write_retention(&directory, &retention.dismissed_notice())
 }
 
-/// Lists the active vault's database rollbacks, newest first.
+/// Lists the active vault's database rollbacks, newest first, with the copies that cannot be read.
 #[tauri::command]
 pub async fn vault_database_rollbacks(
     app: tauri::AppHandle,
-) -> Result<Vec<DatabaseRollback>, String> {
+) -> Result<RollbackListing, String> {
     let (vault, _) = super::active_vault(&app)?;
     visible_rollbacks(&vault)
 }
@@ -1192,6 +1232,22 @@ mod tests {
         let listed = ids(&list_rollbacks(&vault).unwrap());
         assert_eq!(listed.len(), MAX_DATABASE_ROLLBACKS);
         assert!(!listed.contains(&rollback_id(at(0))));
+        write_manifest(&vault, "vault-a");
+        let shown = visible_rollbacks(&vault).unwrap();
+        assert_eq!(ids(&shown.restorable), listed);
+        assert_eq!(
+            shown.unreadable,
+            vec![UnreadableRollback {
+                id: rollback_id(at(0)),
+                created_at: at(0).to_rfc3339_opts(SecondsFormat::Millis, true),
+                size_bytes: 1,
+            }],
+            "the unreadable copy shows apart from the restorable ones"
+        );
+        let view = serde_json::to_value(&shown).unwrap();
+        assert_eq!(view["unreadable"][0]["sizeBytes"], 1);
+        assert!(view["unreadable"][0].get("origin").is_none());
+        assert_eq!(view["restorable"][0]["origin"], "reset");
         assert!(read_retention(&oldest).is_err());
         assert!(dismiss_rollback(&vault, &rollback_id(at(0))).is_err());
         let refused = restore_rollback(&vault, &rollback_id(at(0)), at(50)).await;
@@ -1430,7 +1486,7 @@ mod tests {
         write_manifest(&vault, "vault-b");
         create_database(&vault, AFTER_RESET).await;
 
-        let shown = visible_rollbacks(&vault).unwrap();
+        let shown = visible_rollbacks(&vault).unwrap().restorable;
         assert_eq!(ids(&shown), vec![kept_a.clone()]);
         assert!(shown[0].retention.is_other_vault());
         assert!(
@@ -1443,7 +1499,7 @@ mod tests {
         assert_eq!(vault_id_at(&vault).unwrap(), "vault-a");
         assert_eq!(fs::read(vault.join("assets").join("a.png")).unwrap(), b"a");
         assert_eq!(marker(&vault).await, 1);
-        let shown = visible_rollbacks(&vault).unwrap();
+        let shown = visible_rollbacks(&vault).unwrap().restorable;
         assert_eq!(shown.len(), 2);
         assert!(shown[0].retention.is_other_vault());
         assert_eq!(shown[0].retention.vault(), Some("vault-b"));

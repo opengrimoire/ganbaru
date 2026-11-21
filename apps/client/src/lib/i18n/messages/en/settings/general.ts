@@ -291,6 +291,7 @@ export const general = {
     rollbacksDescription: "Resetting local data, restoring a copy, and receiving a vault from another device each keep a copy here. Restoring one replaces the current data and keeps it as another copy.",
     rollbackOriginReset: "Kept by a reset or restore",
     rollbackOriginReplacement: "Kept when another device replaced the vault",
+    rollbackUnreadable: "This copy can't be read, so it stays here untouched",
     rollbackFlagged: (copy: string) => `The vault received from another device holds much less data than the copy from ${copy}. Restore that copy if the data was removed by mistake.`,
     rollbackFlaggedToast: "A handoff removed most of this vault's data",
     rollbackReview: "Review",

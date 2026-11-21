@@ -14,7 +14,7 @@
 
   async function checkFlaggedRollbacks(): Promise<void> {
     try {
-      visible = pendingFlaggedRollbacks(await listDatabaseRollbacks()).length > 0;
+      visible = pendingFlaggedRollbacks((await listDatabaseRollbacks()).restorable).length > 0;
     } catch (cause: unknown) {
       console.error("Failed to list kept vault copies:", cause);
     }

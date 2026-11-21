@@ -254,7 +254,7 @@ impl Default for PomodoroOverlayState {
 /// refuses every later overlay.
 enum OverlayLifecycle {
     Closed,
-    Open(OverlaySession),
+    Open(Box<OverlaySession>),
     ShutDown,
 }
 
@@ -282,7 +282,7 @@ impl OverlayLifecycle {
             Self::Closed
         };
         match std::mem::replace(self, next) {
-            Self::Open(session) => Some(session),
+            Self::Open(session) => Some(*session),
             Self::Closed | Self::ShutDown => None,
         }
     }
@@ -380,7 +380,7 @@ impl PomodoroOverlayState {
             stop_session_enforcement(session);
             return Err("the application is shutting down".to_string());
         }
-        *state = OverlayLifecycle::Open(session);
+        *state = OverlayLifecycle::Open(Box::new(session));
         Ok(())
     }
 

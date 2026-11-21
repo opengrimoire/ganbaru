@@ -578,10 +578,7 @@ mod tests {
             let wire = serde_json::to_value(&view).expect("serialize status");
             let state = serde_json::to_value(phase.state()).expect("serialize state");
             assert_eq!(wire["state"], state, "{phase:?}");
-            let erring = matches!(
-                phase.state(),
-                SyncState::Offline | SyncState::Error
-            );
+            let erring = matches!(phase.state(), SyncState::Offline | SyncState::Error);
             assert_eq!(!wire["lastError"].is_null(), erring, "{phase:?}");
             assert_eq!(
                 !wire["lastErrorCode"].is_null(),
@@ -626,7 +623,9 @@ mod tests {
         // An anchor server that answers after the coordinator was found removed clears the
         // offline error but not the removal.
         let mut view = SyncStatusView::default();
-        view.set_phase(SyncPhase::offline("the selected log removed the coordinator"));
+        view.set_phase(SyncPhase::offline(
+            "the selected log removed the coordinator",
+        ));
         view.mark_coordinator_removed();
         view.set_phase(SyncPhase::Idle);
         assert_eq!(

@@ -51,11 +51,11 @@ use crate::quarantine::{PullSkips, Quarantine};
 use crate::records::{FreeSpace, RecordExchange};
 use crate::recovery::RecoveryChoice;
 use crate::reset;
-#[cfg(desktop)]
-use crate::writer::{RestorePhase, SequencedCheck, restore_phase};
 use crate::writer::{
     ActiveWriter, SyncFiles, SyncKeyStore, ensure_device_key as ensure_stored_device_key,
 };
+#[cfg(desktop)]
+use crate::writer::{RestorePhase, SequencedCheck, restore_phase};
 use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_handoff::pairing::PairingManager;
 #[cfg(desktop)]

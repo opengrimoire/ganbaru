@@ -426,8 +426,20 @@ fn chat_writers_list_linked_devices_with_an_active_writer_that_was_not_removed()
     tauri::async_runtime::block_on(async {
         let pool = migrated_pool().await;
         insert_sync_writer(&pool, 1, "device:replica", WriterState::Active).await;
-        insert_sync_writer(&pool, 2, "device:replica", WriterState::Forked { cutoff: 0 }).await;
-        insert_sync_writer(&pool, 3, "device:removed", WriterState::Revoked { cutoff: 0 }).await;
+        insert_sync_writer(
+            &pool,
+            2,
+            "device:replica",
+            WriterState::Forked { cutoff: 0 },
+        )
+        .await;
+        insert_sync_writer(
+            &pool,
+            3,
+            "device:removed",
+            WriterState::Revoked { cutoff: 0 },
+        )
+        .await;
         insert_sync_writer(&pool, 4, "device:forked", WriterState::Forked { cutoff: 0 }).await;
         assert_eq!(
             super::common::active_writer_devices(&pool).await.unwrap(),

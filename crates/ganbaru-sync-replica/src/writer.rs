@@ -783,7 +783,10 @@ pub async fn check_writer(
         .await
         .map_err(|error| format!("check sync writer: {error}"))?;
     if !record_matches(&record, head) {
-        return Ok(WriterCheck::Successor(SuccessorPlan::restored(&record, crate::now_ms()?)));
+        return Ok(WriterCheck::Successor(SuccessorPlan::restored(
+            &record,
+            crate::now_ms()?,
+        )));
     }
     // A database behind the anchor's authorization high-water lost entries members may hold
     // at this writer's later sequences, so the writer must not seal again even when its own
@@ -804,7 +807,10 @@ pub async fn check_writer(
             SequencedCheck::Restored { .. }
         )
     {
-        return Ok(WriterCheck::Successor(SuccessorPlan::restored(&record, crate::now_ms()?)));
+        return Ok(WriterCheck::Successor(SuccessorPlan::restored(
+            &record,
+            crate::now_ms()?,
+        )));
     }
     // A forked writer, or one of a device the selected chain removed, seals no more: the
     // device key certifies a successor that names it as predecessor.

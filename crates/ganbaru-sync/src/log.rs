@@ -113,7 +113,11 @@ impl WriterState {
             ("active", None) => Self::Active,
             ("revoked", Some(cutoff)) => Self::Revoked { cutoff },
             ("forked", Some(cutoff)) => Self::Forked { cutoff },
-            _ => return Err(corrupt(format!("writer state {state} with cutoff {cutoff:?}"))),
+            _ => {
+                return Err(corrupt(format!(
+                    "writer state {state} with cutoff {cutoff:?}"
+                )));
+            }
         };
         let agrees = match read {
             Self::Active => removal_cutoff.is_none(),

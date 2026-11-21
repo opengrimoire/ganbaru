@@ -156,10 +156,12 @@ fn authorization_log_constrains_entries_envelopes_and_devices() {
             [(1, 0), (2, 0)],
             "operations start before any authorization revision"
         );
-        sqlx::query("UPDATE sync_writers SET state = 'revoked', cutoff_seq = 0, removal_cutoff_seq = 0")
-            .execute(&pool)
-            .await
-            .expect("a removed writer the anchor never stored keeps nothing");
+        sqlx::query(
+            "UPDATE sync_writers SET state = 'revoked', cutoff_seq = 0, removal_cutoff_seq = 0",
+        )
+        .execute(&pool)
+        .await
+        .expect("a removed writer the anchor never stored keeps nothing");
 
         let selected = "INSERT INTO sync_auth_selected
                 (space_id, revision, epoch, entry_hash, proposal_hash, envelope_hash)

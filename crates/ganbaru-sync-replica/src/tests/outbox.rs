@@ -646,7 +646,10 @@ fn a_restored_anchor_sees_its_lost_entries_and_hands_over_to_itself() {
             .expect("read record")
             .expect("record");
         assert_eq!(
-            persisted.sequenced.as_ref().and_then(|entry| entry.restored_at_ms),
+            persisted
+                .sequenced
+                .as_ref()
+                .and_then(|entry| entry.restored_at_ms),
             Some(since)
         );
         let WriterCheck::Successor(after_restart) =
@@ -655,7 +658,9 @@ fn a_restored_anchor_sees_its_lost_entries_and_hands_over_to_itself() {
             panic!("a database behind the high-water keeps no writer after a restart");
         };
         assert_eq!(
-            after_restart.sequenced().and_then(|entry| entry.restored_at_ms),
+            after_restart
+                .sequenced()
+                .and_then(|entry| entry.restored_at_ms),
             Some(since)
         );
         assert_eq!(
@@ -667,11 +672,26 @@ fn a_restored_anchor_sees_its_lost_entries_and_hands_over_to_itself() {
         );
         let restored_check = SequencedCheck::Restored { recorded: 3 };
         assert_eq!(
-            restore_phase(restored_check, persisted.sequenced.as_ref(), since + WINDOW - 1, true, WINDOW),
-            RestorePhase::CatchingUp { recorded: 3, since_ms: since }
+            restore_phase(
+                restored_check,
+                persisted.sequenced.as_ref(),
+                since + WINDOW - 1,
+                true,
+                WINDOW
+            ),
+            RestorePhase::CatchingUp {
+                recorded: 3,
+                since_ms: since
+            }
         );
         assert_eq!(
-            restore_phase(restored_check, persisted.sequenced.as_ref(), since + WINDOW, true, WINDOW),
+            restore_phase(
+                restored_check,
+                persisted.sequenced.as_ref(),
+                since + WINDOW,
+                true,
+                WINDOW
+            ),
             RestorePhase::HandOver { recorded: 3 }
         );
         assert_eq!(
@@ -1110,18 +1130,33 @@ fn a_restored_anchor_rotates_once_then_catches_up_until_the_window_or_no_member_
     };
     let since = 5_000;
     let restored = SequencedCheck::Restored { recorded: 8 };
-    for check in [SequencedCheck::Current, SequencedCheck::RolledBack, restored] {
+    for check in [
+        SequencedCheck::Current,
+        SequencedCheck::RolledBack,
+        restored,
+    ] {
         for sequenced in [None, Some(entry(None)), Some(entry(Some(since)))] {
-            for now in [0, since - 1, since, since + WINDOW - 1, since + WINDOW, u64::MAX] {
+            for now in [
+                0,
+                since - 1,
+                since,
+                since + WINDOW - 1,
+                since + WINDOW,
+                u64::MAX,
+            ] {
                 for reachable in [false, true] {
-                    let expected = match (check, sequenced.as_ref().and_then(|e| e.restored_at_ms)) {
+                    let expected = match (check, sequenced.as_ref().and_then(|e| e.restored_at_ms))
+                    {
                         (SequencedCheck::Restored { recorded }, None) => {
                             RestorePhase::Rotate { recorded }
                         }
                         (SequencedCheck::Restored { recorded }, Some(start))
                             if reachable && now.saturating_sub(start) < WINDOW =>
                         {
-                            RestorePhase::CatchingUp { recorded, since_ms: start }
+                            RestorePhase::CatchingUp {
+                                recorded,
+                                since_ms: start,
+                            }
                         }
                         (SequencedCheck::Restored { recorded }, Some(_)) => {
                             RestorePhase::HandOver { recorded }
@@ -1141,7 +1176,10 @@ fn a_restored_anchor_rotates_once_then_catches_up_until_the_window_or_no_member_
     let started = Some(entry(Some(since)));
     assert_eq!(
         restore_phase(restored, started.as_ref(), since - 1, true, WINDOW),
-        RestorePhase::CatchingUp { recorded: 8, since_ms: since },
+        RestorePhase::CatchingUp {
+            recorded: 8,
+            since_ms: since
+        },
         "a clock set back before the start counts as no time passed"
     );
     assert_eq!(
@@ -1150,7 +1188,13 @@ fn a_restored_anchor_rotates_once_then_catches_up_until_the_window_or_no_member_
         "without members to return the log the anchor hands over at once"
     );
     assert_eq!(
-        restore_phase(SequencedCheck::Current, started.as_ref(), since, true, WINDOW),
+        restore_phase(
+            SequencedCheck::Current,
+            started.as_ref(),
+            since,
+            true,
+            WINDOW
+        ),
         RestorePhase::Ready,
         "a log that caught up is ready even while the record keeps the restore"
     );

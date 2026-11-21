@@ -143,11 +143,13 @@ async fn insert_writer(
 
 async fn space(conn: &mut SqliteConnection) -> SpaceId {
     let space = SpaceId::from_slice(&SPACE).expect("space id");
-    sqlx::query("INSERT INTO sync_spaces (space_id, vault_id, created_at_ms) VALUES (?, 'vault', 0)")
-        .bind(SPACE.as_slice())
-        .execute(&mut *conn)
-        .await
-        .expect("space");
+    sqlx::query(
+        "INSERT INTO sync_spaces (space_id, vault_id, created_at_ms) VALUES (?, 'vault', 0)",
+    )
+    .bind(SPACE.as_slice())
+    .execute(&mut *conn)
+    .await
+    .expect("space");
     log::ensure_space(conn, space).await.expect("space exists");
     space
 }
@@ -285,7 +287,11 @@ fn settling_refuses_to_leave_a_forked_state_fork_evidence_no_longer_backs() {
             .await
             .expect("writer");
         let row = stored(&mut conn, space, 1).await;
-        assert!(log::settle_state(&mut conn, space, &row, None).await.is_err());
+        assert!(
+            log::settle_state(&mut conn, space, &row, None)
+                .await
+                .is_err()
+        );
         assert_eq!(
             stored(&mut conn, space, 1).await.state,
             WriterState::Forked { cutoff: 3 }

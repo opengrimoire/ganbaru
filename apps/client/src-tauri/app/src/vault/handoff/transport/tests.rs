@@ -2,8 +2,8 @@ use super::*;
 use crate::contacts::requests::{PeerReply, RECIPIENT_BUSY_CODE};
 use crate::vault::handoff::contact_requests::{ContactJob, ContactOperation};
 use crate::vault::handoff::enrollment_approval::{
-    ENROLLMENT_DECLINED_MESSAGE, ENROLLMENT_UNANSWERED_MESSAGE, EnrollmentApprovals,
-    EnrollmentDecision, PendingEnrollmentView,
+    ENROLLMENT_DECLINED_MESSAGE, ENROLLMENT_NO_CHARTER_MESSAGE, ENROLLMENT_UNANSWERED_MESSAGE,
+    EnrollmentApprovals, EnrollmentDecision, PendingEnrollmentView,
 };
 use crate::vault::handoff::pairing::random_token;
 use crate::vault::handoff::protocol::{DeviceKind, MAX_ARCHIVE_BYTES, PROTOCOL_VERSION};
@@ -424,6 +424,89 @@ async fn enrollment_links_nothing_until_the_coordinator_approves_the_shown_code(
     assert_eq!(pair.desktop.linked_peers().expect("peers").len(), 1);
     assert!(pair.phone.coordinator_pin().expect("pin").is_some());
     assert!(pair.approvals.pending().expect("pending").is_none());
+}
+
+/// An enrollment sealer that cannot present the charter on its first `failures` calls, as a
+/// coordinator whose sync pass fails does, and then answers like [`test_enrollment_sealer`].
+fn sealer_failing_first(
+    failures: usize,
+) -> (
+    EnrollmentSealer,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = calls.clone();
+    let sealer: EnrollmentSealer = std::sync::Arc::new(move || {
+        let call = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async move {
+            if call < failures {
+                Err("sync pass failed".to_string())
+            } else {
+                Ok(Some(test_pinned_charter()))
+            }
+        })
+    });
+    (sealer, calls)
+}
+
+#[tokio::test]
+async fn an_enrollment_whose_charter_fails_completes_when_the_device_pairs_again() {
+    let (sealer, calls) = sealer_failing_first(1);
+    let pair = LocalPair::start_with_sealer(
+        None,
+        server::limits::ConnectionLimits::default(),
+        EnrollmentApprovals::default(),
+        LanAdmission::default(),
+        sealer,
+        None,
+        None,
+    )
+    .await;
+    let phone_enrollment = |invitation: PairingInvitation| async {
+        approving(&pair.approvals, spawn_phone_enrollment(&pair, invitation))
+            .await
+            .expect("enrollment task")
+    };
+
+    // The approved device stays linked on the coordinator, pending in the space until a sync
+    // pass seals it, while the phone pins nothing and is told to pair again.
+    let error = phone_enrollment(pair.invitation.clone())
+        .await
+        .expect_err("no charter");
+    assert!(error.contains(ENROLLMENT_NO_CHARTER_MESSAGE), "{error}");
+    let linked = pair.desktop.linked_peers().expect("peers");
+    assert_eq!(linked.len(), 1);
+    assert!(pair.phone.coordinator_pin().expect("pin").is_none());
+
+    // The spent invitation cannot be replayed without a new approval.
+    let replay = tokio::time::timeout(
+        APPROVAL_TEST_WAIT,
+        spawn_phone_enrollment(&pair, pair.invitation.clone()),
+    )
+    .await
+    .expect("refused without waiting for approval")
+    .expect("enrollment task")
+    .expect_err("replayed invitation");
+    assert!(replay.contains("already used"), "{replay}");
+
+    let invitation = pair
+        .desktop
+        .create_invitation(
+            pair.invitation.endpoint.parse().expect("endpoint"),
+            "vault-1".to_string(),
+            super::super::protocol::test_compatibility(),
+            unix_time_ms(),
+        )
+        .expect("new invitation");
+    phone_enrollment(invitation).await.expect("pair again");
+    let relinked = pair.desktop.linked_peers().expect("peers");
+    assert_eq!(relinked.len(), 1);
+    assert_eq!(
+        relinked[0].certificate_fingerprint,
+        linked[0].certificate_fingerprint
+    );
+    assert!(pair.phone.coordinator_pin().expect("pin").is_some());
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
 #[tokio::test]

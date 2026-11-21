@@ -47,8 +47,15 @@
   import NumberedStep, { stepCenteredBlockClass } from "$lib/components/ui/NumberedStep.svelte";
   import ConnectSteps, { type ConnectSource } from "./ConnectSteps.svelte";
   import SettingsPath from "$lib/components/settings/SettingsPath.svelte";
+  import {
+    handoffBusy,
+    handoffInviting,
+    initialHandoffActivity,
+    transitionHandoffActivity,
+    type HandoffAction,
+    type HandoffActivity,
+  } from "./handoff-flow";
 
-  type BusyAction = "status" | "invite" | "network" | "pair" | "approval" | "bootstrap" | "unlink" | "recover" | "linkFolder";
 
   /** How long onboarding waits for an approved device to appear before it shows a new code. */
   const APPROVED_ENROLLMENT_SETTLE_ATTEMPTS = 20;
@@ -100,7 +107,11 @@
   let onboardingServerBusy = $state(false);
   let onboardingSteps = $state<{ focusField: () => Promise<void> } | null>(null);
   let qrDialogVisible = $state(false);
-  let busy = $state<BusyAction | null>(untrack(() => status ? null : "status"));
+  let activity = $state<HandoffActivity>(untrack(() => initialHandoffActivity(status !== null)));
+  let activityRequest = 0;
+  const busy = $derived(handoffBusy(activity));
+  /** Whether a pairing invitation is being created, even while another action runs beside it. */
+  const inviting = $derived(handoffInviting(activity));
   let statusRefreshing = false;
   let notice = $state<string | null>(null);
   let error = $state<string | null>(null);
@@ -196,6 +207,28 @@
     error = formatHandoffError(cause, t);
   }
 
+  /** Marks `kind` as running and returns the request its end must name. */
+  function startHandoffAction(kind: HandoffAction): number {
+    const request = ++activityRequest;
+    activity = transitionHandoffActivity(activity, { type: "actionStarted", kind, request });
+    return request;
+  }
+
+  function finishHandoffAction(request: number): void {
+    activity = transitionHandoffActivity(activity, { type: "actionFinished", request });
+  }
+
+  /** Marks a pairing invitation as being created and returns the request its end must name. */
+  function startHandoffInvite(): number {
+    const request = ++activityRequest;
+    activity = transitionHandoffActivity(activity, { type: "inviteStarted", request });
+    return request;
+  }
+
+  function finishHandoffInvite(request: number): void {
+    activity = transitionHandoffActivity(activity, { type: "inviteFinished", request });
+  }
+
   function applyNetworkAccess(next: DesktopNetworkAccess): void {
     networkAccess = next;
     if (
@@ -214,7 +247,7 @@
     if (presentation === "settings" && platform === "desktop") {
       if (next.pendingEnrollment) {
         qrDialogVisible = true;
-      } else if (qrDialogVisible && !invitation && busy !== "invite" && !error) {
+      } else if (qrDialogVisible && !invitation && !inviting && !error) {
         // A dialog opened only for a request that ended without an answer has nothing left to show.
         qrDialogVisible = false;
       }
@@ -227,7 +260,7 @@
   async function respondToPendingEnrollment(approve: boolean): Promise<void> {
     const pending = status?.pendingEnrollment;
     if (!pending || busy !== null) return;
-    busy = "approval";
+    const started = startHandoffAction("approval");
     error = null;
     approvalError = null;
     notice = null;
@@ -238,7 +271,7 @@
     } catch (cause) {
       approvalError = formatHandoffError(cause, t);
     } finally {
-      busy = null;
+      finishHandoffAction(started);
     }
     if (answered && !approve) {
       invitation = null;
@@ -288,7 +321,7 @@
     if (statusRefreshing) return;
     statusRefreshing = true;
     const showLoadingState = status === null;
-    if (showLoadingState) busy = "status";
+    const started = showLoadingState ? startHandoffAction("status") : null;
     error = null;
     try {
       await loadStatus();
@@ -296,12 +329,12 @@
       fail(cause);
     } finally {
       statusRefreshing = false;
-      if (showLoadingState) busy = null;
+      if (started !== null) finishHandoffAction(started);
     }
   }
 
   async function showInvitation(): Promise<void> {
-    busy = "invite";
+    const started = startHandoffInvite();
     error = null;
     notice = null;
     approvalError = null;
@@ -315,7 +348,7 @@
     } catch (cause) {
       fail(cause);
     } finally {
-      busy = null;
+      finishHandoffInvite(started);
     }
   }
 
@@ -329,14 +362,14 @@
       return;
     }
     qrDialogVisible = true;
-    if (busy === "invite") return;
+    if (inviting) return;
     invitation = null;
     error = null;
     void showInvitation();
   }
 
   async function updateNetworkAccess(grant: boolean): Promise<void> {
-    busy = "network";
+    const started = startHandoffAction("network");
     error = null;
     networkError = null;
     notice = null;
@@ -350,7 +383,7 @@
     } catch (cause) {
       networkError = formatHandoffError(cause, t);
     } finally {
-      busy = null;
+      finishHandoffAction(started);
     }
   }
 
@@ -378,7 +411,7 @@
   }
 
   async function acceptInvitation(encoded: string): Promise<void> {
-    busy = "pair";
+    const started = startHandoffAction("pair");
     error = null;
     codeError = null;
     notice = null;
@@ -403,14 +436,14 @@
       codeError = formatPairingCodeError(cause, t);
     } finally {
       enrollmentCode = null;
-      busy = null;
+      finishHandoffAction(started);
     }
   }
 
   /** Copies the linked vault to this device for the first time. */
   async function copyFirst(): Promise<void> {
     confirmation = null;
-    busy = "bootstrap";
+    const started = startHandoffAction("bootstrap");
     error = null;
     notice = null;
     try {
@@ -425,13 +458,13 @@
     } catch (cause) {
       fail(cause);
     } finally {
-      busy = null;
+      finishHandoffAction(started);
     }
   }
 
   async function unlink(): Promise<void> {
     confirmation = null;
-    busy = "unlink";
+    const started = startHandoffAction("unlink");
     error = null;
     try {
       if (!unlinkDeviceId) throw new Error("Linked device identity is unavailable");
@@ -443,13 +476,13 @@
       fail(cause);
     } finally {
       unlinkDeviceId = null;
-      busy = null;
+      finishHandoffAction(started);
     }
   }
 
   async function recover(): Promise<void> {
     confirmation = null;
-    busy = "recover";
+    const started = startHandoffAction("recover");
     error = null;
     try {
       await recoverLocalVaultCopy();
@@ -459,7 +492,7 @@
     } catch (cause) {
       fail(cause);
     } finally {
-      busy = null;
+      finishHandoffAction(started);
     }
   }
 
@@ -482,7 +515,7 @@
 
   /** Lets the user choose an empty folder for the first copy of the linked vault on this computer. */
   async function chooseLinkFolder(): Promise<void> {
-    busy = "linkFolder";
+    const started = startHandoffAction("linkFolder");
     error = null;
     try {
       const chosen = await pickLinkFolder();
@@ -490,12 +523,12 @@
     } catch (cause) {
       fail(cause);
     } finally {
-      busy = null;
+      finishHandoffAction(started);
     }
   }
 
   async function useDefaultLinkFolder(): Promise<void> {
-    busy = "linkFolder";
+    const started = startHandoffAction("linkFolder");
     error = null;
     try {
       await resetLinkFolder();
@@ -503,7 +536,7 @@
     } catch (cause) {
       fail(cause);
     } finally {
-      busy = null;
+      finishHandoffAction(started);
     }
   }
 
@@ -1017,7 +1050,7 @@
     {@const PairingQrDialog = module.default}
     <PairingQrDialog
       {invitation}
-      invitationError={busy === "invite" ? null : error}
+      invitationError={inviting ? null : error}
       pendingEnrollment={status?.pendingEnrollment ?? null}
       approvalBusy={busy === "approval"}
       {approvalError}

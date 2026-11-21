@@ -9,8 +9,8 @@
 
 use super::delegation::MAX_REPORT_BODY_BYTES;
 use crate::ids::derived_id;
-use crate::models::{ChatError, ChatErrorCode, ChatResult};
-use crate::repository::state_writes::sources_sql;
+use crate::models::{ChatError, ChatErrorCode, ChatResult, ChatWorkAssignmentState};
+use crate::repository::state_writes::{narrowed_sources_sql, sources_sql};
 use crate::state::ChatDispatchJobState;
 use crate::timeline::{bounded_projected_revision, next_order_key};
 use ganbaru_sync_contracts::chat_channel_notes::MAX_CHANNEL_NOTE_CHARS;
@@ -202,17 +202,21 @@ pub(super) async fn record_question_update(
         return outcome;
     }
     let target = read_active_target(connection, call, &["working"]).await?;
-    sqlx::query(
+    let to = ChatWorkAssignmentState::WaitingForAnswer;
+    let ask = format!(
         "UPDATE chat_work_assignments
-         SET state = 'waiting_for_answer', state_reason = NULL,
+         SET state = '{}', state_reason = NULL,
              revision = revision + 1, updated_at = ?
-         WHERE id = ? AND state = 'working'",
-    )
-    .bind(now)
-    .bind(call.assignment_id)
-    .execute(&mut *connection)
-    .await
-    .map_err(persistence_error)?;
+         WHERE id = ? AND state IN ({})",
+        to.as_str(),
+        narrowed_sources_sql(to, |from| from == ChatWorkAssignmentState::Working)
+    );
+    sqlx::query(sqlx::AssertSqlSafe(ask.as_str()))
+        .bind(now)
+        .bind(call.assignment_id)
+        .execute(&mut *connection)
+        .await
+        .map_err(persistence_error)?;
     insert_agent_update(
         connection,
         &AgentUpdate {
@@ -370,10 +374,13 @@ pub async fn resume_answered_question(
     message_item_id: &str,
     now: &str,
 ) -> ChatResult<bool> {
+    let to = ChatWorkAssignmentState::Working;
+    let sources =
+        narrowed_sources_sql(to, |from| from == ChatWorkAssignmentState::WaitingForAnswer);
     let sql = format!(
         "UPDATE chat_work_assignments
-         SET state = 'working', state_reason = NULL, revision = revision + 1, updated_at = ?1
-         WHERE id = ?2 AND state = 'waiting_for_answer'
+         SET state = '{to}', state_reason = NULL, revision = revision + 1, updated_at = ?1
+         WHERE id = ?2 AND state IN ({sources})
            AND EXISTS(
              SELECT 1 FROM chat_agent_runs run
              WHERE run.assignment_id = ?2 AND run.state = 'working'
@@ -382,7 +389,8 @@ pub async fn resume_answered_question(
              SELECT 1 FROM chat_work_assignment_inputs input
              WHERE input.assignment_id = ?2 AND input.message_item_id = ?3
                AND {PERSON_INPUT_SQL}
-           )"
+           )",
+        to = to.as_str(),
     );
     let updated = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(now)
@@ -457,22 +465,26 @@ pub async fn requeue_answered_assignment(
     if !answered_question_awaiting_dispatch(connection, assignment_id).await? {
         return Ok(false);
     }
-    let queued = sqlx::query(
+    let to = ChatWorkAssignmentState::Queued;
+    let requeue_assignment = format!(
         "UPDATE chat_work_assignments
-         SET state = 'queued', state_reason = NULL, revision = revision + 1, updated_at = ?1
-         WHERE id = ?2 AND state = 'waiting_for_answer'
+         SET state = '{}', state_reason = NULL, revision = revision + 1, updated_at = ?1
+         WHERE id = ?2 AND state IN ({})
            AND coalesce(executing_device_id, ?3) = ?3
            AND EXISTS(
              SELECT 1 FROM chat_assignment_dispatch_jobs job
              WHERE job.assignment_id = ?2 AND job.state = 'completed'
            )",
-    )
-    .bind(now)
-    .bind(assignment_id)
-    .bind(device_id)
-    .execute(&mut *connection)
-    .await
-    .map_err(persistence_error)?;
+        to.as_str(),
+        narrowed_sources_sql(to, |from| from == ChatWorkAssignmentState::WaitingForAnswer)
+    );
+    let queued = sqlx::query(sqlx::AssertSqlSafe(requeue_assignment.as_str()))
+        .bind(now)
+        .bind(assignment_id)
+        .bind(device_id)
+        .execute(&mut *connection)
+        .await
+        .map_err(persistence_error)?;
     if queued.rows_affected() != 1 {
         return Ok(false);
     }

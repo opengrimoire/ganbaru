@@ -17,7 +17,7 @@ use super::{
     LOCAL_PARTICIPANT_ID, ReviewedWork, i64_value, identifier_error, persistence_error, u64_value,
 };
 use ganbaru_chat::coordination::contracts::*;
-use ganbaru_chat::repository::state_writes::sources_sql;
+use ganbaru_chat::repository::state_writes::{narrowed_sources_sql, sources_sql};
 use ganbaru_chat::state::{ChatDispatchJobState, transition_assignment};
 use ganbaru_chat_contracts::models::*;
 pub(super) use messages::{
@@ -1146,20 +1146,24 @@ pub(super) async fn complete_reviewed_assignment(
     now: &UtcTimestamp,
 ) -> ChatResult<bool> {
     let expected_revision = expected_revision.map(i64_value).transpose()?;
-    let settled = sqlx::query(
+    let to = ChatWorkAssignmentState::Completed;
+    let complete = format!(
         "UPDATE chat_work_assignments
-         SET state = 'completed', settled_at = ?1, review_outcome = ?2, reviewed_at = ?1,
+         SET state = '{}', settled_at = ?1, review_outcome = ?2, reviewed_at = ?1,
              reviewed_by_participant_id = ?3, revision = revision + 1, updated_at = ?1
-         WHERE id = ?4 AND state = 'ready_for_review' AND (?5 IS NULL OR revision = ?5)",
-    )
-    .bind(now.as_str())
-    .bind(wire_review_outcome(outcome))
-    .bind(reviewer_participant_id)
-    .bind(assignment_id.as_str())
-    .bind(expected_revision)
-    .execute(connection)
-    .await
-    .map_err(persistence_error)?;
+         WHERE id = ?4 AND state IN ({}) AND (?5 IS NULL OR revision = ?5)",
+        to.as_str(),
+        narrowed_sources_sql(to, |from| from == ChatWorkAssignmentState::ReadyForReview)
+    );
+    let settled = sqlx::query(sqlx::AssertSqlSafe(complete.as_str()))
+        .bind(now.as_str())
+        .bind(wire_review_outcome(outcome))
+        .bind(reviewer_participant_id)
+        .bind(assignment_id.as_str())
+        .bind(expected_revision)
+        .execute(connection)
+        .await
+        .map_err(persistence_error)?;
     Ok(settled.rows_affected() == 1)
 }
 

@@ -23,6 +23,7 @@ use ganbaru_chat::coordination::contracts::*;
 use ganbaru_chat::coordination::reductions::approval_rank;
 use ganbaru_chat::coordination::revocation::PARENT_AUTHORITY_REVOKED_REASON;
 use ganbaru_chat::ids::derived_id;
+use ganbaru_chat::repository::state_writes::narrowed_sources_sql;
 use ganbaru_chat_contracts::models::*;
 use serde_json::{Value, json};
 use sqlx::{Row, SqliteConnection, SqlitePool};
@@ -862,19 +863,23 @@ pub(super) async fn cancel_for_revoked_parent(
     assignment_id: &str,
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
-    sqlx::query(
+    let to = ChatWorkAssignmentState::Cancelled;
+    let cancel = format!(
         "UPDATE chat_work_assignments
-         SET state = 'cancelled', state_reason = ?, settled_at = ?,
+         SET state = '{}', state_reason = ?, settled_at = ?,
              revision = revision + 1, updated_at = ?
-         WHERE id = ? AND state NOT IN ('completed', 'failed', 'cancelled')",
-    )
-    .bind(PARENT_AUTHORITY_REVOKED_REASON)
-    .bind(now.as_str())
-    .bind(now.as_str())
-    .bind(assignment_id)
-    .execute(&mut *connection)
-    .await
-    .map_err(persistence_error)?;
+         WHERE id = ? AND state IN ({})",
+        to.as_str(),
+        narrowed_sources_sql(to, ChatWorkAssignmentState::is_active)
+    );
+    sqlx::query(sqlx::AssertSqlSafe(cancel.as_str()))
+        .bind(PARENT_AUTHORITY_REVOKED_REASON)
+        .bind(now.as_str())
+        .bind(now.as_str())
+        .bind(assignment_id)
+        .execute(&mut *connection)
+        .await
+        .map_err(persistence_error)?;
     ganbaru_chat::coordination::delegation::post_delegation_outcome(
         connection,
         assignment_id,

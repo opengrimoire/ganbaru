@@ -19,6 +19,7 @@ use ganbaru_chat::agent_runs::{
 use ganbaru_chat::coordination::access::{access_ceiling, effective_access_level_sql};
 use ganbaru_chat::coordination::reports::{AnsweredQuestion, read_answered_question};
 use ganbaru_chat::coordination::revocation::PARENT_AUTHORITY_REVOKED_REASON;
+use ganbaru_chat::repository::state_writes::narrowed_sources_sql;
 use ganbaru_chat_contracts::model_recommendation::newest_model_of_line;
 use ganbaru_chat_contracts::models::*;
 use sqlx::{Row, SqlitePool};
@@ -1199,6 +1200,21 @@ pub(super) async fn settle_dispatch_error(
     Ok(DispatchSettlement::Failed)
 }
 
+/// Returns the statement that fails a still queued assignment, binding the reason, the settle
+/// time, the update time, and the assignment id. Work that already left the queue keeps its
+/// state, and the transition table bounds the source.
+pub(super) fn queued_assignment_failure_sql() -> String {
+    let to = ChatWorkAssignmentState::Failed;
+    format!(
+        "UPDATE chat_work_assignments
+         SET state = '{}', state_reason = ?, settled_at = ?,
+             revision = revision + 1, updated_at = ?
+         WHERE id = ? AND state IN ({})",
+        to.as_str(),
+        narrowed_sources_sql(to, |from| from == ChatWorkAssignmentState::Queued)
+    )
+}
+
 /// Fails the claim `claim_token` of `assignment_id` and its still queued assignment with
 /// `error`, posting one failure message for the claim.
 ///
@@ -1229,20 +1245,16 @@ async fn fail_assignment_dispatch(
     if !job_failed {
         return transaction.commit().await.map_err(persistence_error);
     }
-    let failed = sqlx::query(
-        "UPDATE chat_work_assignments
-         SET state = 'failed', state_reason = ?, settled_at = ?,
-             revision = revision + 1, updated_at = ?
-         WHERE id = ? AND state = 'queued'",
-    )
-    .bind(&error.message)
-    .bind(now.as_str())
-    .bind(now.as_str())
-    .bind(assignment_id.as_str())
-    .execute(&mut *transaction)
-    .await
-    .map_err(persistence_error)?
-    .rows_affected()
+    let fail = queued_assignment_failure_sql();
+    let failed = sqlx::query(sqlx::AssertSqlSafe(fail.as_str()))
+        .bind(&error.message)
+        .bind(now.as_str())
+        .bind(now.as_str())
+        .bind(assignment_id.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(persistence_error)?
+        .rows_affected()
         > 0;
     // An assignment that already left the queue, for example through a cancel applied from
     // another device, keeps its state and gets no failure message.

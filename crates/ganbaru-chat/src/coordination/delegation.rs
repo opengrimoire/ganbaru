@@ -9,6 +9,7 @@ use crate::ids::{ASSIGNMENT_INPUT_ID_PREFIX, derived_id};
 use crate::models::{
     ChatError, ChatErrorCode, ChatResult, ChatWorkAssignmentId, ChatWorkAssignmentState,
 };
+use crate::repository::state_writes::narrowed_sources_sql;
 use crate::timeline::{bounded_projected_revision, next_order_key, truncate_at_char_boundary};
 use serde_json::json;
 use sqlx::{Row, SqliteConnection};
@@ -269,20 +270,24 @@ async fn cancel_open_descendants(
     .fetch_all(&mut *connection)
     .await
     .map_err(persistence_error)?;
+    let to = ChatWorkAssignmentState::Cancelled;
+    let cancel = format!(
+        "UPDATE chat_work_assignments
+         SET state = '{}', state_reason = ?, settled_at = ?,
+             revision = revision + 1, updated_at = ?
+         WHERE id = ? AND state IN ({})",
+        to.as_str(),
+        narrowed_sources_sql(to, ChatWorkAssignmentState::accepts_continuation)
+    );
     for descendant_id in &open {
-        sqlx::query(
-            "UPDATE chat_work_assignments
-             SET state = 'cancelled', state_reason = ?, settled_at = ?,
-                 revision = revision + 1, updated_at = ?
-             WHERE id = ? AND state NOT IN ('completed', 'ready_for_review', 'failed', 'cancelled')",
-        )
-        .bind(reason)
-        .bind(now)
-        .bind(now)
-        .bind(descendant_id)
-        .execute(&mut *connection)
-        .await
-        .map_err(persistence_error)?;
+        sqlx::query(sqlx::AssertSqlSafe(cancel.as_str()))
+            .bind(reason)
+            .bind(now)
+            .bind(now)
+            .bind(descendant_id)
+            .execute(&mut *connection)
+            .await
+            .map_err(persistence_error)?;
     }
     super::revocation::revoke_delegated_authorizations(connection, assignment_id, now).await?;
     for descendant_id in &open {

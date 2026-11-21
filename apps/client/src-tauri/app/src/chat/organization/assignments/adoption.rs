@@ -2,6 +2,7 @@
 //! run here, and the dispatch of synced queued work this device executes.
 
 use super::super::context::{GrantedAccess, read_granted_access};
+use super::super::dispatch::queued_assignment_failure_sql;
 use super::super::provider_agents::DeviceProviders;
 use super::super::workflow::{PostingDevice, parse_model_selection};
 use super::super::{identifier_error, now_timestamp, persistence_error};
@@ -305,19 +306,15 @@ pub(in crate::chat::organization) async fn adopt_synced_assignment(
                 assignment_id.as_str()
             );
             let mut transaction = pool.begin().await.map_err(persistence_error)?;
-            sqlx::query(
-                "UPDATE chat_work_assignments
-                 SET state = 'failed', state_reason = ?, settled_at = ?,
-                     revision = revision + 1, updated_at = ?
-                 WHERE id = ? AND state = 'queued'",
-            )
-            .bind(ADOPTION_FAILED_REASON)
-            .bind(now.as_str())
-            .bind(now.as_str())
-            .bind(assignment_id.as_str())
-            .execute(&mut *transaction)
-            .await
-            .map_err(persistence_error)?;
+            let fail = queued_assignment_failure_sql();
+            sqlx::query(sqlx::AssertSqlSafe(fail.as_str()))
+                .bind(ADOPTION_FAILED_REASON)
+                .bind(now.as_str())
+                .bind(now.as_str())
+                .bind(assignment_id.as_str())
+                .execute(&mut *transaction)
+                .await
+                .map_err(persistence_error)?;
             post_delegation_outcome(&mut transaction, assignment_id.as_str(), now.as_str()).await?;
             transaction.commit().await.map_err(persistence_error)?;
             Ok(false)

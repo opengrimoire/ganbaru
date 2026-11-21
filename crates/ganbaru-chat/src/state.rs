@@ -217,7 +217,7 @@ pub fn thread_sources(to: ChatThreadState) -> impl Iterator<Item = ChatThreadSta
 /// of the same progress are legal because providers report it again. Only an answered question
 /// returns work to `Queued`. Ready-for-review work only ends, since a review that asks for changes
 /// continues in a follow-up assignment. A person may cancel ended work, and a retry queues failed
-/// or cancelled work again. Completed work never reopens.
+/// or cancelled work again. Completed work moves only to `Cancelled`.
 ///
 /// The table governs local writers. A remote apply instead merges concurrent states by the sync
 /// priority, where the most restrictive ending wins, so a replicated row may hold any state.

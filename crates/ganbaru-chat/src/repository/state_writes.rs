@@ -187,6 +187,19 @@ pub fn sources_sql<S: StoredState>(to: S) -> String {
     )
 }
 
+/// Returns the quoted SQL list of the states `admits` accepts among those the transition table
+/// of `S` allows to move to `to`. A writer whose guard is narrower than the table names its
+/// sources here, so the table still bounds the write: a state the table forbids is never listed.
+pub fn narrowed_sources_sql<S: StoredState>(to: S, admits: impl Fn(S) -> bool) -> String {
+    sql_list(
+        S::STATES
+            .iter()
+            .copied()
+            .filter(|from| S::can_move(*from, to) && admits(*from))
+            .map(S::stored),
+    )
+}
+
 /// Returns the quoted SQL list of turn states legal as sources for a move to `to`.
 pub fn turn_sources_sql(to: ChatTurnState) -> String {
     sources_sql(to)
@@ -365,4 +378,65 @@ fn corrupt_state_error() -> ChatError {
         "Stored Chat state is invalid",
         false,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ChatWorkAssignmentState::{
+        Cancelled, Completed, Failed, Queued, ReadyForReview, WaitingForAnswer, WaitingForApproval,
+        Working,
+    };
+
+    #[test]
+    fn narrowed_sources_keep_each_writer_guard_unchanged() {
+        let narrowed =
+            |to, admits: fn(ChatWorkAssignmentState) -> bool| narrowed_sources_sql(to, admits);
+        assert_eq!(narrowed(WaitingForAnswer, |s| s == Working), "'working'");
+        assert_eq!(
+            narrowed(Working, |s| s == WaitingForAnswer),
+            "'waiting_for_answer'"
+        );
+        assert_eq!(
+            narrowed(Queued, |s| s == WaitingForAnswer),
+            "'waiting_for_answer'"
+        );
+        assert_eq!(narrowed(Failed, |s| s == Queued), "'queued'");
+        assert_eq!(
+            narrowed(Completed, |s| s == ReadyForReview),
+            "'ready_for_review'"
+        );
+        assert_eq!(
+            narrowed(Cancelled, ChatWorkAssignmentState::is_active),
+            "'queued', 'working', 'waiting_for_answer', 'waiting_for_approval', 'ready_for_review'"
+        );
+        for to in [Failed, Cancelled] {
+            assert_eq!(
+                narrowed(to, ChatWorkAssignmentState::accepts_continuation),
+                "'queued', 'working', 'waiting_for_answer', 'waiting_for_approval'"
+            );
+        }
+    }
+
+    #[test]
+    fn narrowed_sources_never_admit_a_move_the_table_forbids() {
+        for to in ChatWorkAssignmentState::ALL {
+            let narrowed = narrowed_sources_sql(to, |_| true);
+            assert_eq!(narrowed, sources_sql(to));
+            for from in ChatWorkAssignmentState::ALL {
+                let listed = narrowed_sources_sql(to, |state| state == from);
+                if can_transition_assignment(from, to) {
+                    assert_eq!(listed, format!("'{}'", from.as_str()));
+                } else {
+                    assert_eq!(listed, "NULL", "{from:?} to {to:?} must stay rejected");
+                }
+            }
+        }
+        assert_eq!(narrowed_sources_sql(Working, |s| s == Completed), "NULL");
+        assert_eq!(
+            narrowed_sources_sql(Queued, |s| s == WaitingForApproval),
+            "NULL"
+        );
+        assert_eq!(narrowed_sources_sql(Completed, |s| s == Cancelled), "NULL");
+    }
 }

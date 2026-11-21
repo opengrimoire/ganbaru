@@ -9,6 +9,7 @@ use super::reads::{
     ACTIVITY_DETAIL_PREVIEW_BYTES, TAIL_PREVIEW_ACTIVITY_KINDS, activity_detail_preview,
     read_timeline_clock, read_timeline_turns_in,
 };
+use crate::agent_runs::SETTLED_RUN_STATES;
 use crate::models::{
     ChatActivityId, ChatAgentRunId, ChatError, ChatErrorCode, ChatLiveExecutionRead, ChatResult,
     ChatThreadId, ChatTimelineItemRead, ChatTurnId, ModelId, ProviderFamilyId, VersionedJson,
@@ -46,8 +47,6 @@ const RUNNING_ASSIGNMENT_STATES: [&str; 4] = [
     "waiting_for_answer",
     "waiting_for_approval",
 ];
-/// Run states after which the run writes nothing more.
-const SETTLED_RUN_STATES: [&str; 3] = ["completed", "failed", "cancelled"];
 /// Activity metadata keys whose short text a live read keeps.
 const LIVE_METADATA_TEXT_KEYS: [&str; 4] = ["toolKind", "tool", "toolName", "name"];
 /// Byte limit of a web search query or page URL a live read keeps.

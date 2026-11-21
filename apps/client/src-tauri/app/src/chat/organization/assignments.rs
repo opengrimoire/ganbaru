@@ -27,7 +27,7 @@ pub(super) use adoption::{
 use ganbaru_chat::coordination::contracts::PostChatMessageCommand;
 use ganbaru_chat::coordination::delegation::{outcome_item_id, post_delegation_outcome};
 use ganbaru_chat::coordination::reports::requeue_answered_assignment;
-use ganbaru_chat::repository::state_writes::sources_sql;
+use ganbaru_chat::repository::state_writes::{narrowed_sources_sql, sources_sql};
 use ganbaru_chat::state::ChatDispatchJobState;
 use ganbaru_chat_contracts::models::*;
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
@@ -319,21 +319,22 @@ async fn settle_stranded_assignment(
     reason: &str,
     now: &UtcTimestamp,
 ) -> ChatResult<bool> {
-    let settled = sqlx::query(
+    let settle = format!(
         "UPDATE chat_work_assignments
          SET state = ?, state_reason = ?, settled_at = ?, revision = revision + 1, updated_at = ?
-         WHERE id = ? AND revision = ? AND state IN
-                 ('queued', 'working', 'waiting_for_answer', 'waiting_for_approval')",
-    )
-    .bind(wire_work_state(state))
-    .bind(reason)
-    .bind(now.as_str())
-    .bind(now.as_str())
-    .bind(assignment.id.as_str())
-    .bind(i64_value(assignment.revision)?)
-    .execute(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
+         WHERE id = ? AND revision = ? AND state IN ({})",
+        narrowed_sources_sql(state, ChatWorkAssignmentState::accepts_continuation)
+    );
+    let settled = sqlx::query(sqlx::AssertSqlSafe(settle.as_str()))
+        .bind(wire_work_state(state))
+        .bind(reason)
+        .bind(now.as_str())
+        .bind(now.as_str())
+        .bind(assignment.id.as_str())
+        .bind(i64_value(assignment.revision)?)
+        .execute(&mut **transaction)
+        .await
+        .map_err(persistence_error)?;
     if settled.rows_affected() != 1 {
         return Ok(false);
     }

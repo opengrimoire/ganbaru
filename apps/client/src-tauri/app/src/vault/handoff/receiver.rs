@@ -6,7 +6,7 @@ use super::protocol::BundleMetadata;
 use super::transport::{BundleSource, FetchedBundle, TransferCancellation};
 use crate::vault::backup::ReplacedVault;
 use serde::Serialize;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::Duration;
 use tauri::Manager;
 
@@ -147,10 +147,36 @@ pub(crate) fn vault_link_status(app: tauri::AppHandle) -> Result<VaultLinkStatus
     })
 }
 
+/// Whether this device is receiving a vault copy. At most one receive runs at a time, and its
+/// cancellation lives in the phase, so a cancel never misses a receive that has started.
+#[derive(Default)]
+enum ReceiverPhase {
+    #[default]
+    Idle,
+    Receiving {
+        cancellation: TransferCancellation,
+    },
+}
+
+/// Holds the receiving phase for one receive and returns the receiver to idle when dropped, so
+/// an error, a panic, or a dropped command future cannot leave it running.
+struct ReceiveGuard<'a> {
+    lifecycle: &'a ReceiverLifecycle,
+    cancellation: TransferCancellation,
+}
+
+impl Drop for ReceiveGuard<'_> {
+    fn drop(&mut self) {
+        match self.lifecycle.phase.lock() {
+            Ok(mut phase) => *phase = ReceiverPhase::Idle,
+            Err(poisoned) => *poisoned.into_inner() = ReceiverPhase::Idle,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct ReceiverLifecycle {
-    operation: Arc<tokio::sync::Mutex<()>>,
-    cancellation: Mutex<Option<TransferCancellation>>,
+    phase: Mutex<ReceiverPhase>,
     /// Folder the user chose for the first link on a computer. The webview never names it; it
     /// only asks for the native folder picker.
     #[cfg_attr(not(desktop), allow(dead_code))]
@@ -160,7 +186,10 @@ pub(crate) struct ReceiverLifecycle {
 impl ReceiverLifecycle {
     /// Whether a vault copy is being received.
     fn is_running(&self) -> bool {
-        self.operation.try_lock().is_err()
+        self.phase
+            .lock()
+            .map(|phase| matches!(*phase, ReceiverPhase::Receiving { .. }))
+            .unwrap_or(true)
     }
 
     #[cfg_attr(not(desktop), allow(dead_code))]
@@ -212,31 +241,44 @@ pub(crate) fn handoff_reset_link_folder(app: tauri::AppHandle) -> Result<(), Str
 }
 
 impl ReceiverLifecycle {
-    fn begin(&self) -> Result<TransferCancellation, String> {
-        let cancellation = TransferCancellation::default();
-        *self
-            .cancellation
+    /// Starts a receive, or returns `None` while another receive runs.
+    fn try_begin(&self) -> Result<Option<ReceiveGuard<'_>>, String> {
+        let mut phase = self
+            .phase
             .lock()
-            .map_err(|_| "receiver cancellation lock is unavailable".to_string())? =
-            Some(cancellation.clone());
-        Ok(cancellation)
-    }
-
-    fn finish(&self) {
-        if let Ok(mut current) = self.cancellation.lock() {
-            current.take();
+            .map_err(|_| "receiver state is unavailable".to_string())?;
+        if matches!(*phase, ReceiverPhase::Receiving { .. }) {
+            return Ok(None);
         }
+        let cancellation = TransferCancellation::default();
+        *phase = ReceiverPhase::Receiving {
+            cancellation: cancellation.clone(),
+        };
+        Ok(Some(ReceiveGuard {
+            lifecycle: self,
+            cancellation,
+        }))
     }
 
+    /// Cancels the running receive. Does nothing while idle.
     fn cancel(&self) -> Result<(), String> {
-        let current = self
-            .cancellation
+        let phase = self
+            .phase
             .lock()
-            .map_err(|_| "receiver cancellation lock is unavailable".to_string())?;
-        if let Some(cancellation) = current.as_ref() {
+            .map_err(|_| "receiver state is unavailable".to_string())?;
+        if let ReceiverPhase::Receiving { cancellation } = &*phase {
             cancellation.cancel();
         }
         Ok(())
+    }
+}
+
+/// The answer to a receive request while another receive runs.
+fn receive_in_progress() -> ReceiveOutcome {
+    ReceiveOutcome {
+        transfer_id: None,
+        activated: false,
+        in_progress: true,
     }
 }
 
@@ -256,17 +298,10 @@ pub(crate) fn handoff_cancel_receive(app: tauri::AppHandle) -> Result<(), String
 
 async fn receive_if_idle(app: tauri::AppHandle) -> Result<ReceiveOutcome, String> {
     let lifecycle = app.state::<ReceiverLifecycle>();
-    let Ok(_operation) = lifecycle.operation.try_lock() else {
-        return Ok(ReceiveOutcome {
-            transfer_id: None,
-            activated: false,
-            in_progress: true,
-        });
+    let Some(guard) = lifecycle.try_begin()? else {
+        return Ok(receive_in_progress());
     };
-    let cancellation = lifecycle.begin()?;
-    let result = receive(&app, &cancellation).await;
-    lifecycle.finish();
-    result
+    receive(&app, &guard.cancellation).await
 }
 
 async fn receive(
@@ -431,18 +466,11 @@ pub(crate) async fn receive_recovered(
     binding: crate::sync::RecoveryBinding,
 ) -> Result<ReceiveOutcome, String> {
     let lifecycle = app.state::<ReceiverLifecycle>();
-    let Ok(_operation) = lifecycle.operation.try_lock() else {
-        return Ok(ReceiveOutcome {
-            transfer_id: None,
-            activated: false,
-            in_progress: true,
-        });
+    let Some(guard) = lifecycle.try_begin()? else {
+        return Ok(receive_in_progress());
     };
-    let cancellation = lifecycle.begin()?;
     let source = BundleSource::Recovery { target, vault_id };
-    let result = receive_recovered_copy(&app, source, &binding, &cancellation).await;
-    lifecycle.finish();
-    result
+    receive_recovered_copy(&app, source, &binding, &guard.cancellation).await
 }
 
 async fn receive_recovered_copy(
@@ -951,12 +979,38 @@ mod tests {
     }
 
     #[test]
-    fn receiver_reports_running_only_while_the_operation_is_held() {
+    fn receiver_runs_one_receive_at_a_time_and_returns_to_idle_when_it_ends() {
         let lifecycle = ReceiverLifecycle::default();
         assert!(!lifecycle.is_running());
-        let held = lifecycle.operation.try_lock().expect("operation is free");
+        lifecycle.cancel().expect("cancel while idle does nothing");
+        let guard = lifecycle.try_begin().expect("state").expect("idle");
         assert!(lifecycle.is_running());
-        drop(held);
+        assert!(lifecycle.try_begin().expect("state").is_none());
+        drop(guard);
+        assert!(!lifecycle.is_running());
+        let again = lifecycle.try_begin().expect("state").expect("idle again");
+        assert!(!again.cancellation.is_cancelled());
+    }
+
+    #[test]
+    fn cancel_reaches_the_running_receive_only() {
+        let lifecycle = ReceiverLifecycle::default();
+        let first = lifecycle.try_begin().expect("state").expect("idle");
+        lifecycle.cancel().expect("cancel");
+        assert!(first.cancellation.is_cancelled());
+        drop(first);
+        let second = lifecycle.try_begin().expect("state").expect("idle");
+        assert!(!second.cancellation.is_cancelled());
+    }
+
+    #[test]
+    fn a_panicking_receive_returns_the_receiver_to_idle() {
+        let lifecycle = ReceiverLifecycle::default();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = lifecycle.try_begin().expect("state").expect("idle");
+            panic!("receive failed");
+        }));
+        assert!(outcome.is_err());
         assert!(!lifecycle.is_running());
     }
 }

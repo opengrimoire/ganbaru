@@ -26,10 +26,13 @@ describe("remoteWorkStatus", () => {
 });
 
 describe("remoteWorkStatusIcon", () => {
-  it("spins only while the work starts or runs", () => {
-    expect(remoteWorkStatusIcon("starting")).toBe("progress");
+  it("spins only while the work runs", () => {
     expect(remoteWorkStatusIcon("working")).toBe("progress");
-    expect(remoteWorkStatusIcon("queued")).toBe("queued");
+  });
+
+  it("shows work about to run as text alone, like a thinking step", () => {
+    expect(remoteWorkStatusIcon("starting")).toBe("none");
+    expect(remoteWorkStatusIcon("queued")).toBe("none");
   });
 
   it("names what waiting work waits for and leaves finished work without an icon", () => {

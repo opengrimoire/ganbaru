@@ -3,8 +3,11 @@ import type { ChatWorkAssignmentState } from "$lib/chat/contracts";
 /** The state a work row shows: a replicated work state, or starting while a linked desktop is about to claim it. */
 export type RemoteWorkStatus = ChatWorkAssignmentState | "starting";
 
-/** The icon that stands for a status in the step icon column. */
-export type RemoteWorkStatusIcon = "queued" | "progress" | "question" | "approval" | "none";
+/**
+ * The icon that stands for a status in the step icon column, or `none` for a status that reads like a thinking step:
+ * text alone, starting where the icons start.
+ */
+export type RemoteWorkStatusIcon = "progress" | "question" | "approval" | "none";
 
 /** What a phone knows of the run a linked desktop executes for the work. */
 export interface RemoteWorkLiveView {
@@ -27,14 +30,17 @@ export function remoteWorkStatus(state: ChatWorkAssignmentState, live: RemoteWor
   return state;
 }
 
-/** Returns the icon of a work status: progress while it runs, the reason while it waits, and none once it is done. */
+/**
+ * Returns the icon of a work status: progress while it runs and the reason while it waits for a person. Work about to
+ * run has none, like a thinking step, and so does finished work.
+ */
 export function remoteWorkStatusIcon(status: RemoteWorkStatus): RemoteWorkStatusIcon {
   switch (status) {
-    case "queued": return "queued";
-    case "starting":
     case "working": return "progress";
     case "waiting_for_answer": return "question";
     case "waiting_for_approval": return "approval";
+    case "queued":
+    case "starting":
     case "ready_for_review":
     case "completed":
     case "failed":

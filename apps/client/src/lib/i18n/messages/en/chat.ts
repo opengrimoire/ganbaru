@@ -501,7 +501,8 @@ export const chat = {
     expectedResult: "Expected result",
     openParentThread: "Open the thread it came from",
     openChildThread: (name: string) => `Open ${name}'s thread`,
-    starting: "Starting",
+    starting: "Starting…",
+    queued: "Queued…",
     states: {
       queued: "Queued",
       working: "Working",

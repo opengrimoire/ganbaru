@@ -318,7 +318,10 @@ fn pool_registry_refuses_to_create_a_database_beside_its_orphaned_journal() {
             let registry = crate::DatabasePoolRegistry::default();
             let error = registry.connect_path(&path).await.unwrap_err();
             assert!(error.contains("journal"), "{journal}: {error}");
-            assert!(!path.exists(), "{journal}: no empty database may be created");
+            assert!(
+                !path.exists(),
+                "{journal}: no empty database may be created"
+            );
             assert_eq!(std::fs::read(&orphan).unwrap(), b"committed pages");
             assert!(registry.access(&path).await.is_none());
             std::fs::remove_dir_all(directory).unwrap();

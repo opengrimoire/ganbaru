@@ -237,7 +237,7 @@ describe("MusicReviewAuditionController failures", () => {
     await audition.preview(detail(), bindings, true);
     expect(audition.errorFor("review-item")).not.toBeNull();
     let finishLoad!: () => void;
-    player.loadReviewItem.mockImplementationOnce(() => new Promise<void>((resolve) => { finishLoad = resolve; }));
+    player.loadReviewItem.mockImplementationOnce(() => new Promise<undefined>((resolve) => { finishLoad = () => resolve(undefined); }));
     const retrying = audition.preview(detail(), bindings, true);
     await vi.waitFor(() => expect(player.loadReviewItem).toHaveBeenCalledTimes(3));
     expect(audition.errorFor("review-item")).not.toBeNull();

@@ -368,7 +368,5 @@ export interface DragState {
   pointerStartY: number;
   pointerStartX: number;
   scrollTopAtStart: number; // scroll container scrollTop when drag began
-  columnWidth: number;
-  startColumnIndex: number;
 }
 import type { PomodoroConfig } from "$lib/pomodoro/rhythm";

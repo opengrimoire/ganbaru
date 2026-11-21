@@ -15,7 +15,6 @@
   import type {
     ChatScratchCleanupPreviewRead,
     ChatScratchDirectoryEntryRead,
-    ChatScratchDirectoryPageRead,
     ChatScratchGenerationRead,
     ChatScratchScopeRead,
     ChatChannelAgentSettingsRead,
@@ -31,6 +30,12 @@
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import {
+    IDLE_SCRATCH_DIRECTORY,
+    transitionScratchDirectory,
+    visibleScratchDirectory,
+    type ScratchDirectoryState,
+  } from "./scratch-directory-state";
 
   let {
     initialReplyThreadId,
@@ -54,8 +59,8 @@
   let search = $state("");
   let selectedScopeId = $state<string | null>(null);
   let selectedGenerationId = $state<string | null>(null);
-  let directory = $state<ChatScratchDirectoryPageRead | null>(null);
-  let directoryLoading = $state(false);
+  let directoryState = $state<ScratchDirectoryState>(IDLE_SCRATCH_DIRECTORY);
+  let directoryRequest = 0;
   let directoryError = $state<string | null>(null);
   const chat = getChat();
   /** Agent settings of the selected scope's channel, which decide whether its agent may write to the project's folders. */
@@ -92,6 +97,9 @@
   const selectedGeneration = $derived(
     selectedScope?.generations.find((generation) => generation.id === selectedGenerationId) ?? null,
   );
+  /** The listing of the selected generation; a listing of another generation is never shown or promoted from. */
+  const directory = $derived(visibleScratchDirectory(directoryState, selectedGenerationId));
+  const directoryLoading = $derived(directoryState.load.phase === "loading");
   /** Working folders of the scope's project that its agent may edit under the channel access. */
   const editableFolders = $derived.by(() => {
     const scope = selectedScope;
@@ -160,7 +168,7 @@
         ?? selected?.generations[0]
         ?? null;
       selectedGenerationId = generation?.id ?? null;
-      directory = null;
+      directoryState = transitionScratchDirectory(directoryState, { type: "cleared" });
       if (selected) void loadAccess(selected);
     } catch (cause: unknown) {
       error = chatErrorMessage(cause, t("settings.agents.scratchManager.loadFailed"));
@@ -178,7 +186,7 @@
   async function selectScope(scope: ChatScratchScopeRead): Promise<void> {
     selectedScopeId = scope.id;
     selectedGenerationId = scope.generations[0]?.id ?? null;
-    directory = null;
+    directoryState = transitionScratchDirectory(directoryState, { type: "cleared" });
     directoryError = null;
     promotionEntry = null;
     notice = null;
@@ -209,27 +217,30 @@
   }
 
   async function loadDirectory(relativePath: string, cursor: string | null = null): Promise<void> {
-    if (!selectedGeneration) return;
-    directoryLoading = true;
+    const generation = selectedGeneration;
+    if (!generation) return;
+    const request = ++directoryRequest;
+    directoryState = transitionScratchDirectory(directoryState, {
+      type: "requested", request, generationId: generation.id, relativePath, cursor,
+    });
     directoryError = null;
     try {
       const page = await chatApi.browseChatScratchGeneration({
-        scratchGenerationId: selectedGeneration.id,
+        scratchGenerationId: generation.id,
         relativePath,
         cursor,
         limit: 20,
-        allowRestrictedInspection: selectedGeneration.lifecycleState !== "active",
+        allowRestrictedInspection: generation.lifecycleState !== "active",
       });
-      directory = cursor && directory?.relativePath === relativePath
-        ? { ...page, entries: [...directory.entries, ...page.entries] }
-        : page;
+      directoryState = transitionScratchDirectory(directoryState, { type: "loaded", request, page });
     } catch (cause: unknown) {
+      const next = transitionScratchDirectory(directoryState, { type: "failed", request });
+      if (next === directoryState) return;
+      directoryState = next;
       directoryError = chatErrorMessage(
         cause,
         t("settings.agents.scratchManager.browseFailed"),
       );
-    } finally {
-      directoryLoading = false;
     }
   }
 

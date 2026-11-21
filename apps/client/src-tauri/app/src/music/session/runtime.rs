@@ -786,18 +786,9 @@ impl Owner {
                     "Music quiescence was superseded",
                 ));
             }
-            if self.pool.is_some() {
-                let mut next = self.state.clone();
-                let transition = next.apply(SessionIntent::Pause, now_ms());
-                self.commit(next, transition, None, true).await?;
-                self.apply_effect(SessionEffect::Stop {
-                    generation: self.state.generation + 1,
-                })
-                .await
-                .map_err(|error| MusicLibraryError::runtime("stop handoff music", error))?;
-            }
-            #[cfg(desktop)]
-            self.stop_context_soundscape().await?;
+            // Quiescence fails closed: the owner drops its pool and refuses work even when a
+            // stop step fails, and the vault coordinator's resume reopens it.
+            let stopped = self.stop_for_freeze().await;
             self.pool = None;
             self.frozen = true;
             #[cfg(desktop)]
@@ -805,6 +796,7 @@ impl Owner {
                 self.completion_duck = None;
             }
             self.subscriptions.invalidate_context();
+            stopped?;
             return Ok(self.state.projection(true, now_ms()));
         }
         if self.frozen || self.lifecycle.is_revoked() {
@@ -1207,6 +1199,29 @@ impl Owner {
             || next.status != prior_status
             || now_ms() - self.checkpoint_at >= CHECKPOINT_INTERVAL_MS;
         self.commit(next, transition, None, durable).await
+    }
+
+    /// Pauses and stops playback and background output before vault quiescence. Every step
+    /// runs even when an earlier one fails, and the first failure is returned.
+    async fn stop_for_freeze(&mut self) -> MusicLibraryResult<()> {
+        let mut result = Ok(());
+        if self.pool.is_some() {
+            let mut next = self.state.clone();
+            let transition = next.apply(SessionIntent::Pause, now_ms());
+            result = self.commit(next, transition, None, true).await;
+            let stopped = self
+                .apply_effect(SessionEffect::Stop {
+                    generation: self.state.generation + 1,
+                })
+                .await
+                .map_err(|error| MusicLibraryError::runtime("stop handoff music", error));
+            result = result.and(stopped);
+        }
+        #[cfg(desktop)]
+        {
+            result = result.and(self.stop_context_soundscape().await);
+        }
+        result
     }
 
     async fn commit(

@@ -1,9 +1,11 @@
 //! Whole-vault snapshots and activation.
 
+#[cfg(any(test, desktop))]
+use super::VAULT_MANIFEST_FILE;
 #[cfg(target_os = "android")]
 use super::default_vault_path;
 use super::select_quiesced_vault;
-use super::{APP_SQLITE_FILE, VAULT_MANIFEST_FILE, VaultInfo, database_path, vault_info_from_path};
+use super::{APP_SQLITE_FILE, VaultInfo, database_path, vault_info_from_path};
 #[cfg(any(desktop, test))]
 use ganbaru_sync_replica::backup::ArchiveGate;
 use ganbaru_sync_replica::backup::{

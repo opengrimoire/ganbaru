@@ -83,7 +83,12 @@
    * then slides the composer down on its own, so this keeps the sheet solid there instead of showing the channel.
    */
   .thread-sheet-skirt { position:absolute; top:100%; right:0; left:0; height:calc(var(--visual-viewport-full-height) - var(--keyboard-surface-height)); background:var(--cal-bg); pointer-events:none; }
-  .thread-sheet { position:absolute; right:0; bottom:0; left:0; max-height:100%; overflow:clip; background:var(--cal-bg); box-shadow:var(--floating-shadow); pointer-events:auto; }
+  /*
+   * The sheet keeps its own compositor layer: without it, Android WebView drops the sheet's paint for a frame when a
+   * settle ends over a scrollable thread, showing the channel through it. Opacity, unlike a transform, keeps fixed
+   * popovers inside the thread placed against the viewport.
+   */
+  .thread-sheet { position:absolute; right:0; bottom:0; left:0; max-height:100%; overflow:clip; background:var(--cal-bg); box-shadow:var(--floating-shadow); pointer-events:auto; will-change:opacity; }
   .thread-sheet[data-sheet-motion="settle"], .thread-sheet-backdrop[data-sheet-motion="settle"] { transition:height var(--thread-sheet-settle) cubic-bezier(0.2, 0.8, 0.2, 1), opacity var(--thread-sheet-settle) ease; }
   /* The thread lays out at the sheet's height but never below the peek, so sliding in or out moves it with the top edge. */
   .thread-sheet-content { display:flex; flex-direction:column; height:100%; min-height:var(--thread-sheet-peek); }

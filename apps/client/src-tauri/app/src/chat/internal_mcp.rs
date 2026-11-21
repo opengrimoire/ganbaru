@@ -125,6 +125,56 @@ enum EndpointAccessState {
     OrganizationalRevoked,
 }
 
+/// A change requested of an endpoint's access. [`EndpointAccessState::after`] is the one owner
+/// that decides whether it applies.
+#[derive(Clone, Debug)]
+enum EndpointAccessMove {
+    /// A direct session dispatches `turn`.
+    BeginDirectTurn(ChatTurnId),
+    /// A direct session's turn settles, or every turn ends when it is `None`.
+    EndDirectTurn(Option<ChatTurnId>),
+    /// An organizational run takes its authorized scope.
+    ActivateRun(Box<InternalMcpRunScope>),
+    /// Organizational authority ends.
+    Revoke,
+}
+
+impl EndpointAccessState {
+    /// The state `change` leads to, or `None` when it does not apply. Direct and organizational
+    /// endpoints never cross into each other, a run scope is granted only to an endpoint that is
+    /// still waiting for its first one, and revocation applies from any state and is final, so no
+    /// move widens access beyond what the endpoint was created for.
+    fn after(&self, change: EndpointAccessMove) -> Option<Self> {
+        match (self, change) {
+            (
+                Self::DirectIdle | Self::DirectActive(_),
+                EndpointAccessMove::BeginDirectTurn(turn),
+            ) => Some(Self::DirectActive(turn)),
+            (Self::DirectActive(active), EndpointAccessMove::EndDirectTurn(settled))
+                if settled.as_ref().is_none_or(|settled| settled == active) =>
+            {
+                Some(Self::DirectIdle)
+            }
+            (Self::OrganizationalPending, EndpointAccessMove::ActivateRun(scope)) => {
+                Some(Self::OrganizationalActive(scope))
+            }
+            (_, EndpointAccessMove::Revoke) => Some(Self::OrganizationalRevoked),
+            _ => None,
+        }
+    }
+
+    /// Applies `change` when [`Self::after`] allows it, reporting whether it applied.
+    fn apply(&mut self, change: EndpointAccessMove) -> bool {
+        match self.after(change) {
+            Some(next) => {
+                *self = next;
+                true
+            }
+            None => false,
+        }
+    }
+}
+
 impl EndpointState {
     fn new(organizational_pending: bool) -> Self {
         Self {
@@ -187,23 +237,39 @@ impl EndpointState {
 
     /// Opens direct-session tools for `turn_id`; organizational endpoints are unchanged.
     async fn begin_direct_turn(&self, turn_id: &ChatTurnId) {
-        let mut access = self.access.write().await;
-        if matches!(
-            *access,
-            EndpointAccessState::DirectIdle | EndpointAccessState::DirectActive(_)
-        ) {
-            *access = EndpointAccessState::DirectActive(turn_id.clone());
-        }
+        self.access
+            .write()
+            .await
+            .apply(EndpointAccessMove::BeginDirectTurn(turn_id.clone()));
     }
 
     /// Closes direct-session tools when `turn_id` settles, or for any turn when it is `None`.
     async fn end_direct_turn(&self, turn_id: Option<&ChatTurnId>) {
-        let mut access = self.access.write().await;
-        if let EndpointAccessState::DirectActive(active) = &*access
-            && turn_id.is_none_or(|settled| settled == active)
+        self.access
+            .write()
+            .await
+            .apply(EndpointAccessMove::EndDirectTurn(turn_id.cloned()));
+    }
+
+    /// Grants an organizational run its scope, refusing an endpoint that is not waiting for one.
+    async fn activate_run(&self, scope: InternalMcpRunScope) -> ChatResult<()> {
+        if self
+            .access
+            .write()
+            .await
+            .apply(EndpointAccessMove::ActivateRun(Box::new(scope)))
         {
-            *access = EndpointAccessState::DirectIdle;
+            Ok(())
+        } else {
+            Err(ChatError::invalid_transition(
+                "Only a pending organizational endpoint can take a run scope",
+            ))
         }
+    }
+
+    /// Ends every access the endpoint grants, for good.
+    async fn revoke(&self) {
+        self.access.write().await.apply(EndpointAccessMove::Revoke);
     }
 
     /// Admits a direct-session tool call or resource read only while a turn runs, and names
@@ -362,6 +428,8 @@ impl InternalMcpRegistry {
         })
     }
 
+    /// Grants the thread's pending organizational endpoint the scope of the run it serves. An
+    /// endpoint created for a direct session, or one that already served or lost a run, refuses.
     pub async fn activate_run_scope(
         &self,
         thread_id: &ChatThreadId,
@@ -380,8 +448,8 @@ impl InternalMcpRegistry {
                     true,
                 )
             })?;
+        state.activate_run(scope).await?;
         state.tools.reset_cursors().await;
-        *state.access.write().await = EndpointAccessState::OrganizationalActive(Box::new(scope));
         Ok(())
     }
 
@@ -404,7 +472,7 @@ impl InternalMcpRegistry {
 
     pub async fn revoke_run_scope(&self, thread_id: &ChatThreadId) {
         if let Some(endpoint) = self.endpoints.lock().await.remove(thread_id) {
-            *endpoint.state.access.write().await = EndpointAccessState::OrganizationalRevoked;
+            endpoint.state.revoke().await;
             let _ = endpoint.shutdown.send(());
         }
     }
@@ -434,7 +502,7 @@ impl InternalMcpRegistry {
             return false;
         };
         drop(endpoints);
-        *endpoint.state.access.write().await = EndpointAccessState::OrganizationalRevoked;
+        endpoint.state.revoke().await;
         let _ = endpoint.shutdown.send(());
         true
     }

@@ -376,3 +376,127 @@ async fn revoked_organizational_endpoint_never_falls_back_to_direct_access() {
     *state.access.write().await = EndpointAccessState::OrganizationalRevoked;
     assert!(state.active_scope().await.is_err());
 }
+
+fn run_scope(run: &str) -> InternalMcpRunScope {
+    InternalMcpRunScope {
+        run_id: ChatAgentRunId::new(run).unwrap(),
+        provider_turn_id: ChatTurnId::new("turn-1").unwrap(),
+        assignment_id: ChatWorkAssignmentId::new("assignment-1").unwrap(),
+        authorization_revision_id: ChatAuthorizationRevisionId::new("authorization-1").unwrap(),
+        destination_conversation_id: ChatConversationId::new("conversation-1").unwrap(),
+        authorization_scope_digest: "a".repeat(64),
+        execution_environment_id: Some("environment-1".to_string()),
+        scratch_generation_id: None,
+        runtime_approval_policy: ChatRuntimeApprovalPolicy::Ask,
+        channel_sources: Vec::new(),
+        folder_sources: Vec::new(),
+        delegation_depth: 0,
+        delegation_target_available: false,
+    }
+}
+
+/// A short name for `state`, naming the turn or run it holds.
+fn access_label(state: &EndpointAccessState) -> String {
+    match state {
+        EndpointAccessState::DirectIdle => "direct idle".to_string(),
+        EndpointAccessState::DirectActive(turn) => format!("direct {}", turn.as_str()),
+        EndpointAccessState::OrganizationalPending => "pending".to_string(),
+        EndpointAccessState::OrganizationalActive(scope) => {
+            format!("active {}", scope.run_id.as_str())
+        }
+        EndpointAccessState::OrganizationalRevoked => "revoked".to_string(),
+    }
+}
+
+#[test]
+fn endpoint_access_moves_follow_one_table_that_never_widens_access() {
+    let turn = |id: &str| ChatTurnId::new(id).unwrap();
+    let states = [
+        EndpointAccessState::DirectIdle,
+        EndpointAccessState::DirectActive(turn("turn-1")),
+        EndpointAccessState::OrganizationalPending,
+        EndpointAccessState::OrganizationalActive(Box::new(run_scope("run-1"))),
+        EndpointAccessState::OrganizationalRevoked,
+    ];
+    let moves = [
+        (
+            "begin turn-2",
+            EndpointAccessMove::BeginDirectTurn(turn("turn-2")),
+        ),
+        (
+            "end turn-1",
+            EndpointAccessMove::EndDirectTurn(Some(turn("turn-1"))),
+        ),
+        (
+            "end turn-2",
+            EndpointAccessMove::EndDirectTurn(Some(turn("turn-2"))),
+        ),
+        ("end any", EndpointAccessMove::EndDirectTurn(None)),
+        (
+            "activate run-2",
+            EndpointAccessMove::ActivateRun(Box::new(run_scope("run-2"))),
+        ),
+        ("revoke", EndpointAccessMove::Revoke),
+    ];
+    // Every pair not listed leaves the state unchanged.
+    let applied = [
+        ("direct idle", "begin turn-2", "direct turn-2"),
+        ("direct idle", "revoke", "revoked"),
+        ("direct turn-1", "begin turn-2", "direct turn-2"),
+        ("direct turn-1", "end turn-1", "direct idle"),
+        ("direct turn-1", "end any", "direct idle"),
+        ("direct turn-1", "revoke", "revoked"),
+        ("pending", "activate run-2", "active run-2"),
+        ("pending", "revoke", "revoked"),
+        ("active run-1", "revoke", "revoked"),
+        ("revoked", "revoke", "revoked"),
+    ];
+    for state in &states {
+        for (name, change) in &moves {
+            let from = access_label(state);
+            let expected = applied
+                .iter()
+                .find(|(source, applied_move, _)| *source == from && applied_move == name)
+                .map(|(_, _, target)| target.to_string());
+            let after = state.after(change.clone()).map(|next| access_label(&next));
+            assert_eq!(after, expected, "{from} then {name}");
+
+            let mut applied_state = state.clone();
+            assert_eq!(applied_state.apply(change.clone()), expected.is_some());
+            assert_eq!(
+                access_label(&applied_state),
+                expected.unwrap_or(from.clone()),
+                "{from} then {name}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_run_scope_reaches_only_a_pending_organizational_endpoint() {
+    let direct = EndpointState::new(false);
+    let error = direct.activate_run(run_scope("run-1")).await.unwrap_err();
+    assert_eq!(error.code, ChatErrorCode::InvalidStateTransition);
+    assert!(direct.active_scope().await.unwrap().is_none());
+
+    let organizational = EndpointState::new(true);
+    organizational
+        .activate_run(run_scope("run-1"))
+        .await
+        .unwrap();
+    assert!(
+        organizational
+            .activate_run(run_scope("run-2"))
+            .await
+            .is_err()
+    );
+    organizational.revoke().await;
+    assert!(
+        organizational
+            .activate_run(run_scope("run-3"))
+            .await
+            .is_err()
+    );
+    assert!(organizational.active_scope().await.is_err());
+    assert!(organizational.require_direct_turn().await.is_err());
+}

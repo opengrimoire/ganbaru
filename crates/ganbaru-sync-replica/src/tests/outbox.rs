@@ -652,17 +652,38 @@ fn a_restored_anchor_sees_its_lost_entries_and_hands_over_to_itself() {
                 .and_then(|entry| entry.restored_at_ms),
             Some(since)
         );
-        let WriterCheck::Successor(after_restart) =
-            check(&engine, &mut conn, &ctx, &directory).await
+        let WriterCheck::Ready(after_restart) = check(&engine, &mut conn, &ctx, &directory).await
         else {
-            panic!("a database behind the high-water keeps no writer after a restart");
+            panic!("the restore's successor is kept across a restart");
         };
+        assert_eq!(after_restart.id(), writer.id());
         assert_eq!(
             after_restart
+                .record()
+                .sequenced
+                .as_ref()
+                .and_then(|entry| entry.restored_at_ms),
+            Some(since)
+        );
+        drop(after_restart);
+        // Restored again after the successor committed operations, its own chain is gone too,
+        // so it is retired, still counting from the first restore.
+        let mut lost = persisted.clone();
+        lost.last_committed_seq = 3;
+        lost.reserved_through = 3;
+        crate::writer::write_record(&files.record_path(), &lost).expect("write record");
+        let WriterCheck::Successor(after_second) =
+            check(&engine, &mut conn, &ctx, &directory).await
+        else {
+            panic!("a successor that lost its chain is replaced");
+        };
+        assert_eq!(
+            after_second
                 .sequenced()
                 .and_then(|entry| entry.restored_at_ms),
             Some(since)
         );
+        crate::writer::write_record(&files.record_path(), &persisted).expect("write record");
         assert_eq!(
             SuccessorPlan::after_restore(&writer, since + 10)
                 .sequenced()

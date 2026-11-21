@@ -790,11 +790,18 @@ pub async fn check_writer(
     }
     // A database behind the anchor's authorization high-water lost entries members may hold
     // at this writer's later sequences, so the writer must not seal again even when its own
-    // committed head survived, for instance when its commit was never recorded.
-    if let Some(view) = engine
-        .authorization(conn, ctx)
-        .await
-        .map_err(|error| format!("read sync authorization: {error}"))?
+    // committed head survived, for instance when its commit was never recorded. A record whose
+    // high-water is already marked restored belongs to the restore's successor, which reserved
+    // no entry since (reserving clears the mark) and whose own chain the database holds, so a
+    // restart keeps it through the catch-up instead of retiring it again.
+    if !record
+        .sequenced
+        .as_ref()
+        .is_some_and(SequencedEntry::restored)
+        && let Some(view) = engine
+            .authorization(conn, ctx)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?
         && matches!(
             sequenced_check(
                 record.sequenced.as_ref(),

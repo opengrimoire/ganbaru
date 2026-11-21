@@ -818,7 +818,11 @@ async fn reconcile_link(app: &tauri::AppHandle) {
     let pairing = app.state::<PairingManager>().inner().clone();
     // Settling holds the receive guard, so it never judges the folders of a running receive.
     let lifecycle = app.state::<ReceiverLifecycle>();
-    if let Ok(Some(_guard)) = lifecycle.try_begin() {
+    if pairing
+        .pending_activation()
+        .is_ok_and(|pending| pending.is_some())
+        && let Ok(Some(_guard)) = lifecycle.try_begin()
+    {
         match finish_interrupted_activation(app, &pairing).await {
             Ok(Some(_)) => {
                 if let Err(error) = reload_application_shell(app) {

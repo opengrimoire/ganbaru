@@ -1523,10 +1523,7 @@ mod tests {
 
     #[tokio::test]
     async fn restore_reopens_a_vault_whose_database_is_gone_and_keeps_what_was_left() {
-        for (name, leftover) in [
-            ("lost-database-wal", "-wal"),
-            ("lost-database-empty", ""),
-        ] {
+        for (name, leftover) in [("lost-database-wal", "-wal"), ("lost-database-empty", "")] {
             let vault = test_vault(name);
             create_database(&vault, BEFORE_RESET).await;
             let before = move_database_to_rollback(&vault, at(1)).unwrap().unwrap();

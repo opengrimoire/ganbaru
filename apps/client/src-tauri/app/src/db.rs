@@ -39,15 +39,28 @@ async fn settle_migrated_vault(pool: sqlx::SqlitePool) -> Result<(), String> {
         .await
         .map_err(|error| format!("convert music row keys: {error}"))?;
     drop(connection);
+    settle_music_refreshes(&pool).await
+}
+
+/// Settles Music refreshes a previous process left queued or running. Local refreshes run
+/// only on desktop.
+#[cfg(desktop)]
+async fn settle_music_refreshes(pool: &sqlx::SqlitePool) -> Result<(), String> {
     let settled_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|error| format!("read the clock to settle music refreshes: {error}"))?
         .as_millis();
     let settled_at = i64::try_from(settled_at)
         .map_err(|error| format!("read the clock to settle music refreshes: {error}"))?;
-    ganbaru_music_library::local_refresh::settle_interrupted(&pool, settled_at)
+    ganbaru_music_library::local_refresh::settle_interrupted(pool, settled_at)
         .await
         .map_err(|error| format!("settle interrupted music refreshes: {error}"))
+}
+
+/// Local Music refreshes do not run on mobile, so there is nothing to settle.
+#[cfg(mobile)]
+async fn settle_music_refreshes(_pool: &sqlx::SqlitePool) -> Result<(), String> {
+    Ok(())
 }
 
 /// The process pool registry. Its connection hook, which signals commits, and its

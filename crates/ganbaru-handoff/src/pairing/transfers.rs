@@ -6,8 +6,8 @@ use super::storage::{
     validate_activation_record, validate_stored_outgoing, write_private_file_atomically,
 };
 use super::{
-    PairingManager, PendingAcknowledgement, StoredOutgoingTransfer, initialized_state,
-    initialized_state_mut, persist_initialized_state,
+    LinkEvent, PairingManager, PendingAcknowledgement, StoredOutgoingTransfer, initialized_state,
+    update_state,
 };
 #[cfg(desktop)]
 use crate::protocol;
@@ -18,18 +18,20 @@ use std::path::{Path, PathBuf};
 impl PairingManager {
     pub fn has_pending_transfer(&self) -> Result<bool, String> {
         let inner = self.lock()?;
-        let state = initialized_state(&inner)?;
-        Ok(state.pending_acknowledgement.is_some() || state.outgoing_transfer.is_some())
+        Ok(initialized_state(&inner)?.role.has_active_handoff())
     }
 
     pub fn replica_ready(&self) -> Result<bool, String> {
         let inner = self.lock()?;
-        Ok(initialized_state(&inner)?.replica_ready)
+        Ok(initialized_state(&inner)?.role.copy_ready())
     }
 
     pub fn pending_acknowledgement(&self) -> Result<Option<PendingAcknowledgement>, String> {
         let inner = self.lock()?;
-        Ok(initialized_state(&inner)?.pending_acknowledgement.clone())
+        Ok(initialized_state(&inner)?
+            .role
+            .pending_acknowledgement()
+            .cloned())
     }
 
     pub fn record_activation(&self, acknowledgement: PendingAcknowledgement) -> Result<(), String> {
@@ -37,51 +39,52 @@ impl PairingManager {
         validate_identifier("device id", &acknowledgement.device_id)?;
         validate_identifier("transfer id", &acknowledgement.transfer_id)?;
         let mut inner = self.lock()?;
-        let state = initialized_state_mut(&mut inner)?;
-        state.replica_ready = true;
-        state.pending_acknowledgement = Some(acknowledgement);
-        persist_initialized_state(&inner)
+        update_state(&mut inner, |state| {
+            state.apply(LinkEvent::CopyActivated { acknowledgement })
+        })
     }
 
     pub fn clear_pending_acknowledgement(&self, transfer_id: &str) -> Result<(), String> {
         validate_identifier("transfer id", transfer_id)?;
         let mut inner = self.lock()?;
-        let state = initialized_state_mut(&mut inner)?;
-        match state.pending_acknowledgement.as_ref() {
-            Some(pending) if pending.transfer_id == transfer_id => {
-                state.pending_acknowledgement = None;
-                persist_initialized_state(&inner)
-            }
-            None => Ok(()),
-            Some(_) => Err("pending activation acknowledgement does not match".to_string()),
+        if initialized_state(&inner)?
+            .role
+            .pending_acknowledgement()
+            .is_none()
+        {
+            return Ok(());
         }
+        update_state(&mut inner, |state| {
+            state.apply(LinkEvent::CopyAcknowledged {
+                transfer_id: transfer_id.to_string(),
+            })
+        })
     }
 
     pub fn store_outgoing_transfer(&self, transfer: StoredOutgoingTransfer) -> Result<(), String> {
         validate_stored_outgoing(&transfer)?;
         let mut inner = self.lock()?;
-        let state = initialized_state_mut(&mut inner)?;
-        state.outgoing_transfer = Some(transfer);
-        persist_initialized_state(&inner)
+        update_state(&mut inner, |state| {
+            state.apply(LinkEvent::OutgoingPrepared { transfer })
+        })
     }
 
     pub fn outgoing_transfer(&self) -> Result<Option<StoredOutgoingTransfer>, String> {
         let inner = self.lock()?;
-        Ok(initialized_state(&inner)?.outgoing_transfer.clone())
+        Ok(initialized_state(&inner)?.role.outgoing().cloned())
     }
 
     pub fn clear_outgoing_transfer(&self, transfer_id: &str) -> Result<(), String> {
         validate_identifier("transfer id", transfer_id)?;
         let mut inner = self.lock()?;
-        let state = initialized_state_mut(&mut inner)?;
-        match state.outgoing_transfer.as_ref() {
-            Some(transfer) if transfer.metadata.transfer_id == transfer_id => {
-                state.outgoing_transfer = None;
-                persist_initialized_state(&inner)
-            }
-            None => Ok(()),
-            Some(_) => Err("outgoing transfer identity does not match".to_string()),
+        if initialized_state(&inner)?.role.outgoing().is_none() {
+            return Ok(());
         }
+        update_state(&mut inner, |state| {
+            state.apply(LinkEvent::OutgoingReleased {
+                transfer_id: transfer_id.to_string(),
+            })
+        })
     }
 
     pub fn complete_outgoing_activation(
@@ -90,23 +93,15 @@ impl PairingManager {
     ) -> Result<(), String> {
         validate_activation_record(&completed)?;
         let mut inner = self.lock()?;
-        let state = initialized_state_mut(&mut inner)?;
-        if state
-            .outgoing_transfer
-            .as_ref()
-            .is_some_and(|transfer| transfer.metadata.transfer_id != completed.transfer_id)
-        {
-            return Err("completed activation does not match outgoing transfer".to_string());
-        }
-        state.outgoing_transfer = None;
-        state.completed_activation = Some(completed);
-        persist_initialized_state(&inner)
+        update_state(&mut inner, |state| {
+            state.apply(LinkEvent::OutgoingActivated { completed })
+        })
     }
 
     #[cfg(desktop)]
     pub fn completed_activation(&self) -> Result<Option<PendingAcknowledgement>, String> {
         let inner = self.lock()?;
-        Ok(initialized_state(&inner)?.completed_activation.clone())
+        Ok(initialized_state(&inner)?.role.completed().cloned())
     }
 
     #[cfg(desktop)]

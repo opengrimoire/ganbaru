@@ -1,12 +1,15 @@
 //! Pairing-state validation and crash-recoverable private-file persistence.
 
+use super::role::{LinkRole, MemberCopy};
 use super::{
-    MAX_LINKED_PEERS, MAX_REVOKED_PEERS, PAIRING_STATE_SCHEMA_VERSION, PairingManagerInner,
-    PairingStateFile, PendingAcknowledgement, StoredOutgoingTransfer, certificate_fingerprint,
-    decode_certificate, decode_private_key, initialized_state, random_token,
-    validate_pinned_endpoint,
+    CoordinatorPin, LinkedPeer, MAX_LINKED_PEERS, MAX_REVOKED_PEERS, PAIRING_STATE_SCHEMA_VERSION,
+    PairingManagerInner, PairingState, PendingAcknowledgement, RevokedPeer, StoredIdentity,
+    StoredOutgoingTransfer, UnlinkReason, certificate_fingerprint, decode_certificate,
+    decode_private_key, initialized_state, random_token, validate_pinned_endpoint,
 };
 use crate::protocol::{self, validate_device_label, validate_identifier};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -48,7 +51,7 @@ pub(super) fn validate_activation_record(record: &PendingAcknowledgement) -> Res
 /// forgotten. Labels are local display data, never signed, so rewriting them is safe.
 ///
 /// Returns whether anything changed.
-pub(super) fn quarantine_invalid_labels(state: &mut PairingStateFile) -> bool {
+pub(super) fn quarantine_invalid_labels(state: &mut PairingState) -> bool {
     let mut changed = false;
     for peer in state.linked_peers.values_mut() {
         if validate_device_label("linked device label", &peer.device_label).is_ok() {
@@ -62,7 +65,7 @@ pub(super) fn quarantine_invalid_labels(state: &mut PairingStateFile) -> bool {
         };
         changed = true;
     }
-    if let Some(coordinator) = state.coordinator.as_mut()
+    if let Some(coordinator) = state.role.coordinator_mut()
         && coordinator
             .device_label
             .as_deref()
@@ -90,10 +93,7 @@ fn displayable_label(label: &str) -> String {
     cleaned
 }
 
-pub(super) fn validate_state(
-    state: &PairingStateFile,
-    expected_device_id: &str,
-) -> Result<(), String> {
+pub(super) fn validate_state(state: &PairingState, expected_device_id: &str) -> Result<(), String> {
     if state.schema_version != PAIRING_STATE_SCHEMA_VERSION {
         return Err("pairing state schema version is unsupported".to_string());
     }
@@ -111,11 +111,8 @@ pub(super) fn validate_state(
     if state.revoked_peers.len() > MAX_REVOKED_PEERS {
         return Err("too many revoked devices are stored".to_string());
     }
-    if state.coordinator.is_some() && !state.linked_peers.is_empty() {
-        return Err("a coordinator client cannot store its own linked devices".to_string());
-    }
-    if state.coordinator.is_some() && state.revoked_by_coordinator {
-        return Err("a linked coordinator cannot also be recorded as revoked".to_string());
+    if matches!(state.role, LinkRole::Coordinator { .. }) == state.linked_peers.is_empty() {
+        return Err("linked devices are stored only by a coordinator".to_string());
     }
     let mut certificate_fingerprints = std::collections::BTreeSet::new();
     for (device_id, peer) in &state.linked_peers {
@@ -153,7 +150,7 @@ pub(super) fn validate_state(
             return Err("linked and revoked devices reuse a certificate identity".to_string());
         }
     }
-    if let Some(coordinator) = state.coordinator.as_ref() {
+    if let Some(coordinator) = state.role.coordinator() {
         validate_identifier("coordinator device id", &coordinator.device_id)?;
         validate_identifier("coordinator vault id", &coordinator.vault_id)?;
         coordinator
@@ -172,28 +169,169 @@ pub(super) fn validate_state(
         }
         protocol::validate_coordinator_endpoints(&coordinator.reported_endpoints)?;
     }
-    if let Some(pending) = state.pending_acknowledgement.as_ref() {
+    if let Some(pending) = state.role.pending_acknowledgement() {
         validate_pending_acknowledgement(pending, expected_device_id)?;
-        if !state.replica_ready {
-            return Err("pending activation acknowledgement is inconsistent".to_string());
-        }
     }
-    if let Some(transfer) = state.outgoing_transfer.as_ref() {
+    if let Some(transfer) = state.role.outgoing() {
         validate_stored_outgoing(transfer)?;
     }
-    if let Some(completed) = state.completed_activation.as_ref() {
+    if let Some(completed) = state.role.completed() {
         validate_activation_record(completed)?;
     }
     Ok(())
 }
 
-pub(super) fn read_state(path: &Path) -> Result<PairingStateFile, String> {
-    let bytes = fs::read(path).map_err(|error| format!("read pairing state: {error}"))?;
-    serde_json::from_slice(&bytes).map_err(|error| format!("decode pairing state: {error}"))
+/// The pairing state as `vault-handoff.json` stores it. The flat fields are decoded into one
+/// [`LinkRole`] and any combination no role can hold is refused.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredPairingState {
+    schema_version: u32,
+    identity: StoredIdentity,
+    #[serde(default)]
+    linked_peers: BTreeMap<String, LinkedPeer>,
+    #[serde(default)]
+    revoked_peers: BTreeMap<String, RevokedPeer>,
+    coordinator: Option<CoordinatorPin>,
+    #[serde(default)]
+    revoked_by_coordinator: bool,
+    /// Set when this device unlinked itself; cleared by the next link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unlink_reason: Option<UnlinkReason>,
+    #[serde(default)]
+    replica_ready: bool,
+    #[serde(default)]
+    pending_acknowledgement: Option<PendingAcknowledgement>,
+    #[serde(default)]
+    outgoing_transfer: Option<StoredOutgoingTransfer>,
+    #[serde(default)]
+    completed_activation: Option<PendingAcknowledgement>,
 }
 
-pub(super) fn persist_state(path: &Path, state: &PairingStateFile) -> Result<(), String> {
-    let bytes = serde_json::to_vec_pretty(state)
+impl TryFrom<StoredPairingState> for PairingState {
+    type Error = String;
+
+    fn try_from(stored: StoredPairingState) -> Result<Self, String> {
+        let role = decode_role(
+            !stored.linked_peers.is_empty(),
+            stored.coordinator,
+            stored.revoked_by_coordinator,
+            stored.unlink_reason,
+            stored.replica_ready,
+            stored.pending_acknowledgement,
+            stored.outgoing_transfer,
+            stored.completed_activation,
+        )?;
+        Ok(Self {
+            schema_version: stored.schema_version,
+            identity: stored.identity,
+            linked_peers: stored.linked_peers,
+            revoked_peers: stored.revoked_peers,
+            role,
+        })
+    }
+}
+
+impl From<&PairingState> for StoredPairingState {
+    fn from(state: &PairingState) -> Self {
+        let role = &state.role;
+        Self {
+            schema_version: state.schema_version,
+            identity: state.identity.clone(),
+            linked_peers: state.linked_peers.clone(),
+            revoked_peers: state.revoked_peers.clone(),
+            coordinator: role.coordinator().cloned(),
+            revoked_by_coordinator: matches!(role, LinkRole::Revoked),
+            unlink_reason: match role {
+                LinkRole::Unlinked { reason } => *reason,
+                _ => None,
+            },
+            replica_ready: role.copy_ready(),
+            pending_acknowledgement: role.pending_acknowledgement().cloned(),
+            outgoing_transfer: role.outgoing().cloned(),
+            completed_activation: role.completed().cloned(),
+        }
+    }
+}
+
+fn inconsistent(detail: &str) -> String {
+    format!("pairing state is inconsistent: {detail}")
+}
+
+/// Decodes the stored role fields, refusing every combination that no [`LinkRole`] holds.
+#[allow(clippy::too_many_arguments)]
+fn decode_role(
+    has_peers: bool,
+    coordinator: Option<CoordinatorPin>,
+    revoked: bool,
+    reason: Option<UnlinkReason>,
+    copy_ready: bool,
+    pending: Option<PendingAcknowledgement>,
+    outgoing: Option<StoredOutgoingTransfer>,
+    completed: Option<PendingAcknowledgement>,
+) -> Result<LinkRole, String> {
+    let serves_copies = outgoing.is_some() || completed.is_some();
+    let Some(coordinator) = coordinator else {
+        if copy_ready || pending.is_some() {
+            return Err(inconsistent(
+                "a vault copy is recorded without a coordinator",
+            ));
+        }
+        return match (has_peers, revoked, reason) {
+            (true, true, _) => Err(inconsistent("a revoked device stores linked devices")),
+            (true, false, Some(_)) | (false, true, Some(_)) => Err(inconsistent(
+                "an unlink reason is recorded for a linked device",
+            )),
+            (true, false, None) => Ok(LinkRole::Coordinator {
+                outgoing,
+                completed,
+            }),
+            (false, _, _) if serves_copies => {
+                Err(inconsistent("a copy is served without linked devices"))
+            }
+            (false, true, None) => Ok(LinkRole::Revoked),
+            (false, false, reason) => Ok(LinkRole::Unlinked { reason }),
+        };
+    };
+    if has_peers {
+        return Err(inconsistent("a member stores linked devices of its own"));
+    }
+    if revoked {
+        return Err(inconsistent(
+            "a pinned coordinator is also recorded as revoked",
+        ));
+    }
+    if reason.is_some() {
+        return Err(inconsistent(
+            "an unlink reason is recorded for a linked device",
+        ));
+    }
+    if serves_copies {
+        return Err(inconsistent("a member serves a coordinator copy"));
+    }
+    let copy = match (copy_ready, pending) {
+        (false, Some(_)) => {
+            return Err(inconsistent(
+                "an activation awaits acknowledgement without a vault copy",
+            ));
+        }
+        (false, None) => MemberCopy::Required,
+        (true, pending_acknowledgement) => MemberCopy::Ready {
+            pending_acknowledgement,
+        },
+    };
+    Ok(LinkRole::Member { coordinator, copy })
+}
+
+pub(super) fn read_state(path: &Path) -> Result<PairingState, String> {
+    let bytes = fs::read(path).map_err(|error| format!("read pairing state: {error}"))?;
+    let stored: StoredPairingState =
+        serde_json::from_slice(&bytes).map_err(|error| format!("decode pairing state: {error}"))?;
+    PairingState::try_from(stored)
+}
+
+pub(super) fn persist_state(path: &Path, state: &PairingState) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(&StoredPairingState::from(state))
         .map_err(|error| format!("encode pairing state: {error}"))?;
     write_private_file_atomically(path, &bytes)
 }

@@ -3,10 +3,13 @@
 //! Membership and transfer operations share one mutex and one durable schema.
 //! Child modules organize implementation without introducing separate state owners.
 
+mod role;
 mod storage;
 #[cfg(all(test, desktop))]
 mod tests;
 mod transfers;
+
+use role::{LinkEvent, LinkRole, transition};
 
 pub use storage::write_private_file_atomically;
 use storage::{
@@ -111,7 +114,7 @@ pub struct LinkedPeer {
     pub linked_at_ms: i64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CoordinatorPin {
     pub device_id: String,
@@ -233,29 +236,22 @@ struct RevokedPeer {
     revoked_at_ms: i64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PairingStateFile {
+#[derive(Clone, Debug)]
+struct PairingState {
     schema_version: u32,
     identity: StoredIdentity,
-    #[serde(default)]
     linked_peers: BTreeMap<String, LinkedPeer>,
-    #[serde(default)]
     revoked_peers: BTreeMap<String, RevokedPeer>,
-    coordinator: Option<CoordinatorPin>,
-    #[serde(default)]
-    revoked_by_coordinator: bool,
-    /// Set when this device unlinked itself; cleared by the next link.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    unlink_reason: Option<UnlinkReason>,
-    #[serde(default)]
-    replica_ready: bool,
-    #[serde(default)]
-    pending_acknowledgement: Option<PendingAcknowledgement>,
-    #[serde(default)]
-    outgoing_transfer: Option<StoredOutgoingTransfer>,
-    #[serde(default)]
-    completed_activation: Option<PendingAcknowledgement>,
+    role: LinkRole,
+}
+
+impl PairingState {
+    /// Moves the link role through [`transition`], leaving it unchanged when the move is
+    /// refused.
+    fn apply(&mut self, event: LinkEvent) -> Result<(), String> {
+        self.role = transition(&self.role, event)?;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -327,7 +323,7 @@ pub struct Enrollment<'a> {
 struct PairingManagerInner {
     state_path: Option<PathBuf>,
     staging_root: Option<PathBuf>,
-    state: Option<PairingStateFile>,
+    state: Option<PairingState>,
     /// Why startup disabled linking; pairing operations report it instead of running.
     disabled_reason: Option<String>,
     /// Where the TLS key moves out of the state file; without one it stays in the file.
@@ -370,18 +366,12 @@ impl PairingManager {
             }
             state
         } else {
-            let state = PairingStateFile {
+            let state = PairingState {
                 schema_version: PAIRING_STATE_SCHEMA_VERSION,
                 identity: create_identity(device_id.clone())?,
                 linked_peers: BTreeMap::new(),
                 revoked_peers: BTreeMap::new(),
-                coordinator: None,
-                revoked_by_coordinator: false,
-                unlink_reason: None,
-                replica_ready: false,
-                pending_acknowledgement: None,
-                outgoing_transfer: None,
-                completed_activation: None,
+                role: LinkRole::Unlinked { reason: None },
             };
             persist_state(&state_path, &state)?;
             state
@@ -560,7 +550,7 @@ impl PairingManager {
                 drop(inner);
                 return self.identity();
             }
-            if !state.linked_peers.is_empty() || state.coordinator.is_some() {
+            if !state.linked_peers.is_empty() || state.role.coordinator().is_some() {
                 return Err(DEVICE_KEY_MISSING_ERROR.to_string());
             }
             // The old file can never be opened, and removing it clears the key store's record
@@ -615,19 +605,16 @@ impl PairingManager {
 
     pub fn coordinator_pin(&self) -> Result<Option<CoordinatorPin>, String> {
         let inner = self.lock()?;
-        Ok(initialized_state(&inner)?.coordinator.clone())
+        Ok(initialized_state(&inner)?.role.coordinator().cloned())
     }
 
     /// Whether this device shares `vault_id` with a linked peer or a pinned coordinator.
     pub fn is_linked_for(&self, vault_id: &str) -> Result<bool, String> {
         let inner = self.lock()?;
         let state = initialized_state(&inner)?;
-        if state.revoked_by_coordinator {
-            return Ok(false);
-        }
         Ok(state
-            .coordinator
-            .as_ref()
+            .role
+            .coordinator()
             .is_some_and(|coordinator| coordinator.vault_id == vault_id)
             || state
                 .linked_peers
@@ -637,7 +624,7 @@ impl PairingManager {
 
     pub fn revoked_by_coordinator(&self) -> Result<bool, String> {
         let inner = self.lock()?;
-        Ok(initialized_state(&inner)?.revoked_by_coordinator)
+        Ok(matches!(initialized_state(&inner)?.role, LinkRole::Revoked))
     }
 
     /// Devices this coordinator unlinked from `vault_id`, whose sync writers it revokes.
@@ -694,7 +681,7 @@ impl PairingManager {
 
     pub fn ensure_can_unlink(&self) -> Result<(), String> {
         if self.has_pending_transfer()? {
-            return Err("finish or retry the active handoff before unlinking".to_string());
+            return Err(role::ACTIVE_HANDOFF_ERROR.to_string());
         }
         Ok(())
     }
@@ -713,14 +700,17 @@ impl PairingManager {
     /// Why this device last unlinked itself, until it links again.
     pub fn unlink_reason(&self) -> Result<Option<UnlinkReason>, String> {
         let inner = self.lock()?;
-        Ok(initialized_state(&inner)?.unlink_reason)
+        Ok(match initialized_state(&inner)?.role {
+            LinkRole::Unlinked { reason } => reason,
+            _ => None,
+        })
     }
 
     /// Whether this device pins a coordinator or has linked peers.
     pub fn has_links(&self) -> Result<bool, String> {
         let inner = self.lock()?;
         let state = initialized_state(&inner)?;
-        Ok(state.coordinator.is_some() || !state.linked_peers.is_empty())
+        Ok(state.role.coordinator().is_some() || !state.linked_peers.is_empty())
     }
 
     /// Clears the cached TLS key, so the next [`Self::identity`] reads the key store again.
@@ -731,24 +721,14 @@ impl PairingManager {
 
     fn unlink_with(&self, reason: Option<UnlinkReason>) -> Result<(), String> {
         let mut inner = self.lock()?;
-        let previous = initialized_state(&inner)?.clone();
-        if previous.pending_acknowledgement.is_some() || previous.outgoing_transfer.is_some() {
-            return Err("finish or retry the active handoff before unlinking".to_string());
-        }
-        let state = initialized_state_mut(&mut inner)?;
-        let removed_peers = std::mem::take(&mut state.linked_peers);
-        for peer in removed_peers.into_values() {
-            remember_revoked_peer(state, peer, super::protocol::unix_time_ms());
-        }
-        state.coordinator = None;
-        state.revoked_by_coordinator = false;
-        state.unlink_reason = reason;
-        state.replica_ready = false;
-        state.completed_activation = None;
-        if let Err(error) = persist_initialized_state(&inner) {
-            inner.state = Some(previous);
-            return Err(error);
-        }
+        update_state(&mut inner, |state| {
+            state.apply(LinkEvent::UnlinkAll { reason })?;
+            let removed_peers = std::mem::take(&mut state.linked_peers);
+            for peer in removed_peers.into_values() {
+                remember_revoked_peer(state, peer, super::protocol::unix_time_ms());
+            }
+            Ok(())
+        })?;
         #[cfg(desktop)]
         {
             inner.invitations.clear();
@@ -760,63 +740,44 @@ impl PairingManager {
     pub fn unlink_device(&self, device_id: &str) -> Result<(), String> {
         validate_identifier("peer device id", device_id)?;
         let mut inner = self.lock()?;
-        let previous = initialized_state(&inner)?.clone();
-        if previous.pending_acknowledgement.is_some() || previous.outgoing_transfer.is_some() {
-            return Err("finish or retry the active handoff before unlinking".to_string());
-        }
-        let state = initialized_state_mut(&mut inner)?;
-        let removed_peer = state.linked_peers.remove(device_id);
-        let removed_peer_exists = removed_peer.is_some();
-        if let Some(peer) = removed_peer {
+        let removed_peer = update_state(&mut inner, |state| {
+            if state.role.has_active_handoff() {
+                return Err(role::ACTIVE_HANDOFF_ERROR.to_string());
+            }
+            let Some(peer) = state.linked_peers.remove(device_id) else {
+                state.apply(LinkEvent::CoordinatorRemoved {
+                    device_id: device_id.to_string(),
+                })?;
+                return Ok(false);
+            };
             remember_revoked_peer(state, peer, super::protocol::unix_time_ms());
-        }
-        let removed_coordinator = state
-            .coordinator
-            .as_ref()
-            .is_some_and(|coordinator| coordinator.device_id == device_id);
-        if removed_coordinator {
-            state.coordinator = None;
-            state.revoked_by_coordinator = false;
-            state.replica_ready = false;
-            state.completed_activation = None;
-        }
-        if !removed_peer_exists && !removed_coordinator {
-            return Err("linked device was not found".to_string());
-        }
-        if let Err(error) = persist_initialized_state(&inner) {
-            inner.state = Some(previous);
-            return Err(error);
-        }
+            if state.linked_peers.is_empty() {
+                state.apply(LinkEvent::PeersEmptied)?;
+            }
+            Ok(true)
+        })?;
         #[cfg(desktop)]
-        if removed_peer_exists {
+        if removed_peer {
             inner.invitations.clear();
         }
+        #[cfg(not(desktop))]
+        let _ = removed_peer;
         Ok(())
     }
 
     pub fn accept_coordinator_revocation(&self, expected: &CoordinatorPin) -> Result<(), String> {
         let mut inner = self.lock()?;
-        let previous = initialized_state(&inner)?.clone();
-        let state = initialized_state_mut(&mut inner)?;
-        let matches = state.coordinator.as_ref().is_some_and(|coordinator| {
-            coordinator.device_id == expected.device_id
-                && coordinator.vault_id == expected.vault_id
-                && coordinator.certificate_fingerprint == expected.certificate_fingerprint
-        });
-        if !matches {
-            return Err("coordinator changed before revocation could be applied".to_string());
-        }
-        state.coordinator = None;
-        state.revoked_by_coordinator = true;
-        state.replica_ready = false;
-        state.pending_acknowledgement = None;
-        state.outgoing_transfer = None;
-        state.completed_activation = None;
-        if let Err(error) = persist_initialized_state(&inner) {
-            inner.state = Some(previous);
-            return Err(error);
-        }
-        Ok(())
+        update_state(&mut inner, |state| {
+            let matches = state.role.coordinator().is_some_and(|coordinator| {
+                coordinator.device_id == expected.device_id
+                    && coordinator.vault_id == expected.vault_id
+                    && coordinator.certificate_fingerprint == expected.certificate_fingerprint
+            });
+            if !matches {
+                return Err("coordinator changed before revocation could be applied".to_string());
+            }
+            state.apply(LinkEvent::CoordinatorRevoked)
+        })
     }
 
     #[cfg(desktop)]
@@ -893,25 +854,20 @@ impl PairingManager {
     ) -> Result<LinkedPeer, String> {
         let mut inner = self.lock()?;
         let (peer, evicted_device_id) = admit_enrollment(&inner, &enrollment, now_ms)?;
-        let previous = initialized_state(&inner)?.clone();
-        let state = initialized_state_mut(&mut inner)?;
-        if let Some(evicted) = evicted_device_id.and_then(|id| state.linked_peers.remove(&id)) {
-            remember_revoked_peer(state, evicted, now_ms);
-        }
-        state
-            .linked_peers
-            .insert(peer.device_id.clone(), peer.clone());
-        state.revoked_peers.remove(&peer.device_id);
-        state
-            .revoked_peers
-            .retain(|_, revoked| revoked.certificate_fingerprint != peer.certificate_fingerprint);
-        // Linking a device is a new link, so an earlier self unlink or revocation no longer applies.
-        state.revoked_by_coordinator = false;
-        state.unlink_reason = None;
-        if let Err(error) = persist_initialized_state(&inner) {
-            inner.state = Some(previous);
-            return Err(error);
-        }
+        update_state(&mut inner, |state| {
+            state.apply(LinkEvent::PeerLinked)?;
+            if let Some(evicted) = evicted_device_id.and_then(|id| state.linked_peers.remove(&id)) {
+                remember_revoked_peer(state, evicted, now_ms);
+            }
+            state
+                .linked_peers
+                .insert(peer.device_id.clone(), peer.clone());
+            state.revoked_peers.remove(&peer.device_id);
+            state.revoked_peers.retain(|_, revoked| {
+                revoked.certificate_fingerprint != peer.certificate_fingerprint
+            });
+            Ok(())
+        })?;
         inner.invitations.remove(enrollment.invitation_id);
         Ok(peer)
     }
@@ -950,36 +906,21 @@ impl PairingManager {
             charter.verify(&invitation.vault_id)?;
         }
         let mut inner = self.lock()?;
-        let previous = initialized_state(&inner)?.clone();
-        let state = initialized_state_mut(&mut inner)?;
-        ensure_enrollment_target(state, invitation)?;
-        // Relinking to the same coordinator and vault keeps what its exchanges reported.
-        let reported_endpoints = match state.coordinator.take() {
-            Some(pin)
-                if pin.certificate_fingerprint == fingerprint
-                    && pin.vault_id == invitation.vault_id =>
-            {
-                pin.reported_endpoints
-            }
-            _ => Vec::new(),
-        };
-        state.coordinator = Some(CoordinatorPin {
-            device_id: invitation.coordinator_device_id.clone(),
-            device_label: coordinator_device_label,
-            endpoint: invitation.endpoint.clone(),
-            vault_id: invitation.vault_id.clone(),
-            certificate_fingerprint: fingerprint,
-            last_endpoint: Some(invitation.endpoint.clone()),
-            reported_endpoints,
-            charter,
-        });
-        state.revoked_by_coordinator = false;
-        state.unlink_reason = None;
-        if let Err(error) = persist_initialized_state(&inner) {
-            inner.state = Some(previous);
-            return Err(error);
-        }
-        Ok(())
+        update_state(&mut inner, |state| {
+            ensure_enrollment_target(state, invitation)?;
+            state.apply(LinkEvent::CoordinatorPinned {
+                pin: CoordinatorPin {
+                    device_id: invitation.coordinator_device_id.clone(),
+                    device_label: coordinator_device_label,
+                    endpoint: invitation.endpoint.clone(),
+                    vault_id: invitation.vault_id.clone(),
+                    certificate_fingerprint: fingerprint,
+                    last_endpoint: Some(invitation.endpoint.clone()),
+                    reported_endpoints: Vec::new(),
+                    charter,
+                },
+            })
+        })
     }
 
     /// Records coordinator addresses learned from an authenticated exchange with the coordinator
@@ -998,7 +939,7 @@ impl PairingManager {
         let mut inner = self.lock()?;
         let previous = initialized_state(&inner)?.clone();
         let state = initialized_state_mut(&mut inner)?;
-        let Some(pin) = state.coordinator.as_mut().filter(|pin| {
+        let Some(pin) = state.role.coordinator_mut().filter(|pin| {
             pin.vault_id == vault_id && pin.certificate_fingerprint == certificate_fingerprint
         }) else {
             return Ok(false);
@@ -1071,14 +1012,14 @@ fn uninitialized_error(inner: &PairingManagerInner) -> String {
     }
 }
 
-fn initialized_state(inner: &PairingManagerInner) -> Result<&PairingStateFile, String> {
+fn initialized_state(inner: &PairingManagerInner) -> Result<&PairingState, String> {
     inner
         .state
         .as_ref()
         .ok_or_else(|| uninitialized_error(inner))
 }
 
-fn initialized_state_mut(inner: &mut PairingManagerInner) -> Result<&mut PairingStateFile, String> {
+fn initialized_state_mut(inner: &mut PairingManagerInner) -> Result<&mut PairingState, String> {
     if inner.state.is_none() {
         return Err(uninitialized_error(inner));
     }
@@ -1088,11 +1029,33 @@ fn initialized_state_mut(inner: &mut PairingManagerInner) -> Result<&mut Pairing
         .ok_or_else(|| "pairing state is not initialized".to_string())
 }
 
+/// Applies `change` to the loaded state and persists it, restoring the previous state when the
+/// change or the write fails, so memory never holds what the file does not.
+fn update_state<T>(
+    inner: &mut PairingManagerInner,
+    change: impl FnOnce(&mut PairingState) -> Result<T, String>,
+) -> Result<T, String> {
+    let previous = initialized_state(inner)?.clone();
+    let state = initialized_state_mut(inner)?;
+    let outcome = match change(state) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            inner.state = Some(previous);
+            return Err(error);
+        }
+    };
+    if let Err(error) = persist_initialized_state(inner) {
+        inner.state = Some(previous);
+        return Err(error);
+    }
+    Ok(outcome)
+}
+
 fn ensure_enrollment_target(
-    state: &PairingStateFile,
+    state: &PairingState,
     invitation: &PairingInvitation,
 ) -> Result<(), String> {
-    match &state.coordinator {
+    match state.role.coordinator() {
         Some(coordinator)
             if coordinator.device_id == invitation.coordinator_device_id
                 && coordinator.vault_id == invitation.vault_id
@@ -1241,7 +1204,7 @@ fn admit_enrollment(
         linked_at_ms: now_ms,
     };
     let state = initialized_state(inner)?;
-    if state.coordinator.is_some() {
+    if state.role.coordinator().is_some() {
         return Err("a device linked to a coordinator cannot link devices of its own".to_string());
     }
     if peer.device_id == state.identity.device_id {
@@ -1319,7 +1282,7 @@ fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
 
 /// The least recently enrolled device linked to a vault other than `vault_id`.
 #[cfg(desktop)]
-fn oldest_membership_outside(state: &PairingStateFile, vault_id: &str) -> Option<String> {
+fn oldest_membership_outside(state: &PairingState, vault_id: &str) -> Option<String> {
     state
         .linked_peers
         .values()
@@ -1328,7 +1291,7 @@ fn oldest_membership_outside(state: &PairingStateFile, vault_id: &str) -> Option
         .map(|peer| peer.device_id.clone())
 }
 
-fn remember_revoked_peer(state: &mut PairingStateFile, peer: LinkedPeer, revoked_at_ms: i64) {
+fn remember_revoked_peer(state: &mut PairingState, peer: LinkedPeer, revoked_at_ms: i64) {
     state.revoked_peers.insert(
         peer.device_id.clone(),
         RevokedPeer {

@@ -227,8 +227,46 @@ fn require_linked_for(peer: Option<&LinkedPeer>, vault_id: &str) -> Result<(), S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vault::handoff::pairing::{StoredOutgoingTransfer, random_token};
+    use crate::vault::handoff::pairing::{Enrollment, StoredOutgoingTransfer, random_token};
     use crate::vault::handoff::protocol::PROTOCOL_VERSION;
+    use base64::Engine;
+
+    /// Links a phone to the coordinator `manager` for `vault`, as an approved enrollment does.
+    fn link_phone(manager: &PairingManager, root: &std::path::Path) {
+        let phone = PairingManager::default();
+        phone
+            .initialize(root.join("phone"), "phone".to_string())
+            .unwrap();
+        let certificate =
+            base64::engine::general_purpose::STANDARD.encode(phone.certificate().unwrap().as_ref());
+        let invitation = manager
+            .create_invitation(
+                "127.0.0.1:9".parse().unwrap(),
+                "vault".to_string(),
+                crate::vault::handoff::protocol::test_compatibility(),
+                crate::vault::handoff::protocol::unix_time_ms(),
+            )
+            .unwrap();
+        let sync_device_key = crate::vault::handoff::transport::tests::test_sync_device_key();
+        manager
+            .enroll_peer(
+                Enrollment {
+                    invitation_id: &invitation.invitation_id,
+                    secret: &invitation.secret,
+                    vault_id: &invitation.vault_id,
+                    device_id: "phone",
+                    device_label: "Phone",
+                    device_kind: Default::default(),
+                    certificate_b64: &certificate,
+                    sync_device_key: &crate::vault::handoff::protocol::encode_sync_device_key(
+                        &sync_device_key,
+                    ),
+                    sync_admin_key: None,
+                },
+                crate::vault::handoff::protocol::unix_time_ms(),
+            )
+            .unwrap();
+    }
 
     fn peer_linked_for(vault_id: &str) -> LinkedPeer {
         LinkedPeer {
@@ -267,6 +305,7 @@ mod tests {
         manager
             .initialize(root.clone(), "desktop".to_string())
             .unwrap();
+        link_phone(&manager, &root);
         let transfer_id = "restart-transfer";
         let (_, archive_path) = manager.outgoing_snapshot_paths(transfer_id).unwrap();
         fs::write(&archive_path, b"durable prepared archive").unwrap();

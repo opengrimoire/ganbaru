@@ -999,11 +999,7 @@ fn unlink_clears_the_peer_but_refuses_active_transfer_state() {
 
 #[test]
 fn activation_acknowledgement_survives_restart() {
-    let temporary = TestDirectory::new("pending-ack");
-    let manager = PairingManager::default();
-    manager
-        .initialize(temporary.path().to_path_buf(), "device-phone".to_string())
-        .expect("initialize");
+    let (temporary, manager, _, _) = linked_phone("pending-ack");
     let pending = PendingAcknowledgement {
         vault_id: "vault-1".to_string(),
         device_id: "device-phone".to_string(),
@@ -1043,6 +1039,7 @@ fn outgoing_transfer_and_its_completion_survive_restart() {
     manager
         .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
         .expect("initialize");
+    enroll_device(&manager, "device-phone", "Phone", 100);
     let metadata = transfer_metadata("transfer-copy");
     let outgoing = StoredOutgoingTransfer {
         metadata: metadata.clone(),
@@ -1898,4 +1895,204 @@ fn a_device_linked_to_a_coordinator_cannot_link_devices_of_its_own() {
     restarted
         .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
         .expect("restart keeps a loadable state");
+}
+
+/// Rewrites the stored state of `root` with `edit`, then expects loading it to fail on
+/// `expected` and leave the file unchanged.
+fn assert_stored_state_refused(
+    root: &Path,
+    device_id: &str,
+    edit: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+    expected: &str,
+) {
+    let state_path = root.join(PAIRING_STATE_FILE);
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&fs::read(&state_path).expect("read pairing state"))
+            .expect("decode pairing state");
+    edit(value.as_object_mut().expect("pairing state object"));
+    let written = serde_json::to_vec_pretty(&value).expect("encode state");
+    fs::write(&state_path, &written).expect("write contradictory state");
+    let error = PairingManager::default()
+        .initialize(root.to_path_buf(), device_id.to_string())
+        .expect_err("refuse contradictory state");
+    assert!(error.contains(expected), "{error}");
+    assert_eq!(fs::read(&state_path).expect("unchanged state"), written);
+}
+
+/// A test label, an edit of the stored state, and the refusal it must cause.
+type StateCase = (
+    &'static str,
+    fn(&mut serde_json::Map<String, serde_json::Value>),
+    &'static str,
+);
+
+fn acknowledgement_json(transfer_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "vaultId": "vault-1",
+        "deviceId": "device-phone",
+        "transferId": transfer_id,
+    })
+}
+
+#[test]
+fn stored_member_states_that_no_role_holds_are_refused() {
+    let cases: [StateCase; 5] = [
+        (
+            "revoked-pin",
+            |state| {
+                state.insert("revokedByCoordinator".to_string(), true.into());
+            },
+            "also recorded as revoked",
+        ),
+        (
+            "reason-pin",
+            |state| {
+                state.insert("unlinkReason".to_string(), "keyProtectionLost".into());
+            },
+            "unlink reason",
+        ),
+        (
+            "ack-without-copy",
+            |state| {
+                state.insert(
+                    "pendingAcknowledgement".to_string(),
+                    acknowledgement_json("transfer-1"),
+                );
+            },
+            "without a vault copy",
+        ),
+        (
+            "member-serves",
+            |state| {
+                state.insert(
+                    "completedActivation".to_string(),
+                    acknowledgement_json("transfer-1"),
+                );
+            },
+            "member serves",
+        ),
+        (
+            "copy-without-pin",
+            |state| {
+                state.insert("coordinator".to_string(), serde_json::Value::Null);
+                state.insert("replicaReady".to_string(), true.into());
+            },
+            "without a coordinator",
+        ),
+    ];
+    for (label, edit, expected) in cases {
+        let (root, _, _, _) = linked_phone(label);
+        assert_stored_state_refused(root.path(), "device-phone", edit, expected);
+    }
+}
+
+#[test]
+fn stored_coordinator_states_that_no_role_holds_are_refused() {
+    let cases: [StateCase; 3] = [
+        (
+            "revoked-with-peers",
+            |state| {
+                state.insert("revokedByCoordinator".to_string(), true.into());
+            },
+            "revoked device stores linked devices",
+        ),
+        (
+            "reason-with-peers",
+            |state| {
+                state.insert("unlinkReason".to_string(), "keyProtectionLost".into());
+            },
+            "unlink reason",
+        ),
+        (
+            "served-without-peers",
+            |state| {
+                state.insert("linkedPeers".to_string(), serde_json::json!({}));
+                state.insert(
+                    "completedActivation".to_string(),
+                    acknowledgement_json("transfer-1"),
+                );
+            },
+            "without linked devices",
+        ),
+    ];
+    for (label, edit, expected) in cases {
+        let temporary = TestDirectory::new(label);
+        let manager = PairingManager::default();
+        manager
+            .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+            .expect("initialize");
+        enroll_device(&manager, "device-phone", "Phone", 100);
+        assert_stored_state_refused(temporary.path(), "device-desktop", edit, expected);
+    }
+}
+
+#[test]
+fn every_role_round_trips_through_the_stored_state() {
+    let (phone_root, phone, _, _) = linked_phone("round-trip");
+    let restart = |root: &Path, device_id: &str| {
+        let manager = PairingManager::default();
+        manager
+            .initialize(root.to_path_buf(), device_id.to_string())
+            .expect("restart");
+        manager
+    };
+    phone
+        .record_activation(PendingAcknowledgement {
+            vault_id: "vault-1".to_string(),
+            device_id: "device-phone".to_string(),
+            transfer_id: "transfer-1".to_string(),
+        })
+        .expect("activate");
+    let restarted = restart(phone_root.path(), "device-phone");
+    assert!(restarted.replica_ready().expect("ready"));
+    assert!(restarted.has_pending_transfer().expect("pending"));
+    restarted
+        .clear_pending_acknowledgement("transfer-1")
+        .expect("acknowledge");
+    restarted
+        .accept_coordinator_revocation(&pin_of(&restarted))
+        .expect("revoke");
+    let revoked = restart(phone_root.path(), "device-phone");
+    assert!(revoked.revoked_by_coordinator().expect("revoked"));
+    assert!(!revoked.has_links().expect("links"));
+    revoked
+        .unlink_for(UnlinkReason::KeyProtectionLost)
+        .expect("unlink");
+    let unlinked = restart(phone_root.path(), "device-phone");
+    assert!(!unlinked.revoked_by_coordinator().expect("revoked"));
+    assert_eq!(
+        unlinked.unlink_reason().expect("reason"),
+        Some(UnlinkReason::KeyProtectionLost)
+    );
+}
+
+#[test]
+fn unlinking_the_last_device_ends_the_coordinator_role() {
+    let temporary = TestDirectory::new("last-device");
+    let manager = PairingManager::default();
+    manager
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize");
+    enroll_device(&manager, "device-phone", "Phone", 100);
+    manager
+        .complete_outgoing_activation(PendingAcknowledgement {
+            vault_id: "vault-1".to_string(),
+            device_id: "device-phone".to_string(),
+            transfer_id: "transfer-1".to_string(),
+        })
+        .expect("complete");
+    manager.unlink_device("device-phone").expect("unlink");
+    assert_eq!(manager.completed_activation().expect("completed"), None);
+    assert!(!manager.has_links().expect("links"));
+    let restarted = PairingManager::default();
+    restarted
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("restart");
+    assert_eq!(
+        restarted
+            .revoked_device_ids("vault-1")
+            .expect("revoked")
+            .len(),
+        1
+    );
 }

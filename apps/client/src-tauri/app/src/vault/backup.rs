@@ -2,6 +2,7 @@
 
 #[cfg(any(test, desktop))]
 use super::VAULT_MANIFEST_FILE;
+use super::database_rollback;
 #[cfg(target_os = "android")]
 use super::default_vault_path;
 use super::select_quiesced_vault;
@@ -886,7 +887,28 @@ fn recover_startup_swap(target: &Path) -> Result<(), String> {
     if let swap_journal::Recovery::Pending(reason) = swap_journal::recover(target)? {
         eprintln!("Vault replacement recovery: {reason}");
     }
+    recover_startup_restore(target);
     Ok(())
+}
+
+/// Settles an interrupted rollback restore into `target` at startup, while holding its process
+/// vault lock so a restore another Ganbaru process is running is never undone. A restore left
+/// pending is logged, and the first database open refuses the vault until it is settled.
+fn recover_startup_restore(target: &Path) {
+    if !database_rollback::has_unfinished_restore(target) {
+        return;
+    }
+    if let Err(error) = super::vault_lock::process_vault_lock().acquire(target) {
+        eprintln!("Rollback restore recovery waits for the vault lock: {error}");
+        return;
+    }
+    match database_rollback::recover_restore(target) {
+        Ok(database_rollback::RestoreRecovery::Settled) => {}
+        Ok(database_rollback::RestoreRecovery::Pending(reason)) => {
+            eprintln!("Rollback restore recovery: {reason}");
+        }
+        Err(error) => eprintln!("Rollback restore recovery: {error}"),
+    }
 }
 
 /// Repairs an interrupted swap of the selected vault at startup. Reads the selected path

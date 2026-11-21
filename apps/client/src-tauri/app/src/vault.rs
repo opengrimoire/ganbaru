@@ -38,6 +38,7 @@ pub(crate) mod backup;
 pub(crate) mod database_rollback;
 pub(crate) mod encrypted_backup;
 pub(crate) mod handoff;
+mod journal_file;
 pub(crate) mod preferences;
 #[cfg(any(mobile, test))]
 pub(crate) mod process_managers;

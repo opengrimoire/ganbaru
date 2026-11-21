@@ -583,6 +583,8 @@ pub(crate) fn swap(staging: &Path, target: &Path, replacement: Replacement) -> R
         return Err("a vault swap needs its folders side by side".to_string());
     };
     recover_or_refuse(target)?;
+    // A swap carries the rollback directory along, so a restore into the target settles first.
+    database_rollback::recover_restore_or_refuse(target)?;
     if fs::symlink_metadata(&rollback).is_ok() {
         eprintln!(
             "Vault replacement refused: '{}' is taken by a folder no swap recorded",

@@ -23,6 +23,13 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+mod restore_journal;
+
+pub(crate) use restore_journal::{
+    Recovery as RestoreRecovery, is_pending as has_unfinished_restore, recover as recover_restore,
+    recover_or_refuse as recover_restore_or_refuse,
+};
+
 /// Vault-root directory that holds rollback copies. It is outside the bundle
 /// layout, so backups and handoff never carry it off this device.
 pub(crate) const DATABASE_ROLLBACK_DIRECTORY: &str = ".database-rollbacks";
@@ -603,8 +610,14 @@ fn stale_rollbacks(rollbacks: &[DatabaseRollback], now: DateTime<Utc>) -> Vec<St
     stale
 }
 
-/// Deletes the rollbacks retention no longer keeps.
+/// Deletes the rollbacks retention no longer keeps, refusing while a restore is unfinished.
 fn prune_rollbacks(vault: &Path, now: DateTime<Utc>) -> Result<(), String> {
+    restore_journal::refuse_pending(vault)?;
+    prune_unchecked(vault, now)
+}
+
+/// [`prune_rollbacks`] for the restore that holds the journal.
+fn prune_unchecked(vault: &Path, now: DateTime<Utc>) -> Result<(), String> {
     let root = rollback_root(vault);
     let current = vault_id_at(vault).ok();
     for stale in pruned_rollbacks(&list_rollbacks(vault)?, current.as_deref(), now) {
@@ -683,32 +696,19 @@ fn newest_rollback_time(root: &Path) -> Result<Option<DateTime<Utc>>, String> {
 
 /// Moves the vault data a copy keeps into a new rollback directory whose ID sorts
 /// after every existing copy, so a clock step backwards or a pruned ID never makes
-/// the new copy the oldest. Returns `None` when there is no database to move.
+/// the new copy the oldest. Returns `None` when there is no database to move. Refuses while a
+/// restore is unfinished, since that restore's recovery owns the copies.
 fn create_rollback(
     vault: &Path,
     at: DateTime<Utc>,
     retention: Retention,
 ) -> Result<Option<String>, String> {
+    restore_journal::refuse_pending(vault)?;
     if fs::symlink_metadata(database_file(vault, "")).is_err() {
         return Ok(None);
     }
+    let (directory, id) = create_rollback_directory(vault, at)?;
     let root = rollback_root(vault);
-    ganbaru_atomic_files::create_private_directories(&root)
-        .map_err(|error| format!("create database rollbacks: {error}"))?;
-    let mut created = at;
-    if let Some(newest) = newest_rollback_time(&root)? {
-        created = created.max(newest + TimeDelta::milliseconds(1));
-    }
-    let directory = loop {
-        let candidate = root.join(rollback_id(created));
-        match ganbaru_atomic_files::create_private_directory(&candidate) {
-            Ok(()) => break candidate,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                created += TimeDelta::milliseconds(1);
-            }
-            Err(error) => return Err(format!("create database rollback: {error}")),
-        }
-    };
     let names = moved_entry_names(retention.full());
     let kept = if retention == Retention::default() {
         Ok(())
@@ -728,7 +728,30 @@ fn create_rollback(
         .into_iter()
         .try_for_each(ganbaru_atomic_files::sync_directory_entries)
         .map_err(|error| format!("flush database rollback: {error}"))?;
-    Ok(Some(rollback_id(created)))
+    Ok(Some(id))
+}
+
+/// Creates an empty private rollback directory in `vault` whose ID sorts after every existing
+/// copy, and returns it with its ID.
+fn create_rollback_directory(vault: &Path, at: DateTime<Utc>) -> Result<(PathBuf, String), String> {
+    let root = rollback_root(vault);
+    ganbaru_atomic_files::create_private_directories(&root)
+        .map_err(|error| format!("create database rollbacks: {error}"))?;
+    let mut created = at;
+    if let Some(newest) = newest_rollback_time(&root)? {
+        created = created.max(newest + TimeDelta::milliseconds(1));
+    }
+    loop {
+        let id = rollback_id(created);
+        let candidate = root.join(&id);
+        match ganbaru_atomic_files::create_private_directory(&candidate) {
+            Ok(()) => return Ok((candidate, id)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                created += TimeDelta::milliseconds(1);
+            }
+            Err(error) => return Err(format!("create database rollback: {error}")),
+        }
+    }
 }
 
 /// Checks that a rollback copy is a Ganbaru database whose schema is a prefix of
@@ -793,11 +816,15 @@ async fn validate_rollback(vault: &Path, id: &str) -> Result<(PathBuf, Retention
 /// rollback first, so a restore is itself reversible. Restoring a whole other vault
 /// keeps the current vault as a whole other vault in turn. Returns whether the folder
 /// now holds another vault.
+///
+/// The restore is journaled: an error or a crash before the chosen copy is wholly in place
+/// moves everything back, so the vault never holds part of either copy.
 pub(crate) async fn restore_rollback(
     vault: &Path,
     id: &str,
     at: DateTime<Utc>,
 ) -> Result<bool, String> {
+    restore_journal::refuse_pending(vault)?;
     let (directory, retention) = validate_rollback(vault, id).await?;
     let names = moved_entry_names(retention.full());
     let replaced_retention = if retention.is_other_vault() {
@@ -810,16 +837,71 @@ pub(crate) async fn restore_rollback(
             owner: None,
         }
     };
-    let replaced = create_rollback(vault, at, replaced_retention)?;
-    if let Err(error) = move_entries(&directory, vault, &names) {
-        if let Some(replaced) = &replaced {
-            let _ = move_entries(&rollback_root(vault).join(replaced), vault, &names);
-        }
-        return Err(error);
+    let holds_database = fs::symlink_metadata(database_file(vault, "")).is_ok();
+    if !holds_database
+        && let Some(name) = names
+            .iter()
+            .find(|name| fs::symlink_metadata(vault.join(name)).is_ok())
+    {
+        return Err(format!("move vault entry: '{name}' already exists"));
     }
-    fs::remove_dir_all(&directory).map_err(|error| format!("remove restored rollback: {error}"))?;
-    prune_rollbacks(vault, at)?;
-    Ok(retention.is_other_vault())
+    let replaced = if holds_database {
+        Some(create_rollback_directory(vault, at)?)
+    } else {
+        None
+    };
+    let journal = restore_journal::Journal {
+        phase: if replaced.is_some() {
+            restore_journal::Phase::Replacing
+        } else {
+            restore_journal::Phase::Restoring
+        },
+        source: id.to_string(),
+        replaced: replaced.as_ref().map(|(_, id)| id.clone()),
+        full: retention.full(),
+    };
+    let mut record = match restore_journal::RestoreRecord::begin(vault, journal) {
+        Ok(record) => record,
+        Err(error) => {
+            if let Some((replaced, _)) = &replaced {
+                let _ = fs::remove_dir(replaced);
+            }
+            return Err(error);
+        }
+    };
+    let root = rollback_root(vault);
+    let moved = (|| {
+        if let Some((replaced, _)) = &replaced {
+            if replaced_retention != Retention::default() {
+                write_retention(replaced, &replaced_retention)?;
+            }
+            move_entries(vault, replaced, &names)?;
+            restore_journal::flush(&[replaced, &root, vault])?;
+            record.advance(restore_journal::Event::MovedOut)?;
+        }
+        move_entries(&directory, vault, &names)?;
+        restore_journal::flush(&[vault, &directory, &root])?;
+        record.advance(restore_journal::Event::MovedIn)
+    })();
+    let settled = record.resume(at);
+    match (moved, settled) {
+        (Ok(()), Ok(restore_journal::Recovery::Settled)) => Ok(retention.is_other_vault()),
+        // The chosen copy is durably in place, so the restore stands; the journal stays and the
+        // next open of the vault removes the emptied copy.
+        (Ok(()), Ok(restore_journal::Recovery::Pending(reason))) => {
+            eprintln!("Rollback restore cleanup: {reason}");
+            Ok(retention.is_other_vault())
+        }
+        (Ok(()), Err(error)) => {
+            eprintln!("Rollback restore cleanup: {error}");
+            Ok(retention.is_other_vault())
+        }
+        (Err(error), Ok(restore_journal::Recovery::Settled)) => Err(error),
+        (Err(error), Ok(restore_journal::Recovery::Pending(reason))) => {
+            Err(format!("{error}; undo the rollback restore: {reason}"))
+        }
+        (Err(error), Err(undo)) => Err(format!("{error}; undo the rollback restore: {undo}")),
+    }
 }
 
 /// Marks a flagged rollback as reviewed, so its notice no longer shows. The copy

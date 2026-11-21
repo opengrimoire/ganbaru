@@ -226,6 +226,7 @@ async fn connect_database<R: Runtime>(
     let registry = app.state::<DatabaseState>().inner().clone();
     if is_vault_database {
         hold_vault_lock(&path)?;
+        settle_vault_restore(&registry, &path).await?;
     }
     drop(app);
     drop(db_url);
@@ -285,7 +286,24 @@ pub(crate) async fn connect_vault_for_sync_in(
     let _connection_guard = VAULT_CONNECTION_GATE.read().await;
     let path = vault::active_database_path_in(config_dir)?;
     hold_vault_lock(&path)?;
+    settle_vault_restore(registry, &path).await?;
     connect_read_write(registry, path).await
+}
+
+/// Settles an interrupted rollback restore into the vault of `database_path` before its first
+/// pool opens, so SQLite never creates an empty database where the restore moved the data out.
+/// A restore left pending refuses the open. An open pool means the vault already settled.
+async fn settle_vault_restore(
+    registry: &DatabaseState,
+    database_path: &Path,
+) -> Result<(), String> {
+    if registry.access(database_path).await.is_some() {
+        return Ok(());
+    }
+    let root = database_path
+        .parent()
+        .ok_or_else(|| "Ganbaru database has no vault folder".to_string())?;
+    vault::database_rollback::recover_restore_or_refuse(root)
 }
 
 pub(crate) async fn close_all_sqlite_pools_for_restore<R: Runtime>(

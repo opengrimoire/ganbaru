@@ -656,11 +656,13 @@ fn startup_sweep_clears_transfers_and_restore_staging() {
     let vault = documents.join("Ganbaru");
     let sibling = documents.join("Other");
     let suffix = "0123456789abcdef".repeat(2);
-    let copy = documents.join(format!(".ganbaru.restore-copy.Ganbaru.{suffix}"));
+    const BUILD: &str = "org.example.ganbaru";
+    // A crashed copy restore into any new folder beside the vault is swept by the build that made it.
+    let copy = documents.join(format!(".ganbaru.restore-copy.{BUILD}.{suffix}"));
     // Another build's vault beside this one keeps its own staging.
     let other_build = documents.join(".ganbaru.restore.Ganbaru Dev");
-    let other_copy = documents.join(format!(".ganbaru.restore-copy.Ganbaru Dev.{suffix}"));
-    let not_random = documents.join(".ganbaru.restore-copy.Ganbaru.kept");
+    let other_copy = documents.join(format!(".ganbaru.restore-copy.{BUILD}.dev.{suffix}"));
+    let not_random = documents.join(format!(".ganbaru.restore-copy.{BUILD}.kept"));
     for folder in [
         transfers.join("restore-picked"),
         transfers.join("save-written"),
@@ -678,7 +680,7 @@ fn startup_sweep_clears_transfers_and_restore_staging() {
         fs::write(folder.join("data"), b"plaintext").unwrap();
     }
 
-    sweep_interrupted_backups_at(&transfers, Some(&vault)).unwrap();
+    sweep_interrupted_backups_at(&transfers, Some(&vault), BUILD).unwrap();
 
     for removed in [
         transfers.join("restore-picked"),
@@ -699,7 +701,7 @@ fn startup_sweep_clears_transfers_and_restore_staging() {
     ] {
         assert!(kept.join("data").exists(), "{} stays", kept.display());
     }
-    sweep_interrupted_backups_at(&root.join("missing"), None).unwrap();
+    sweep_interrupted_backups_at(&root.join("missing"), None, BUILD).unwrap();
     fs::remove_dir_all(root).unwrap();
 }
 

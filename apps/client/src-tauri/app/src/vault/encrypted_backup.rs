@@ -60,7 +60,8 @@ const RESTORED_ARCHIVE_FILE: &str = "archive.zip";
 /// development vault, never share or sweep each other's staging.
 const RESTORE_STAGING_PREFIX: &str = ".ganbaru.restore.";
 /// Prefix of the private folder an independent copy is restored in beside its new folder. The
-/// new folder's name, a dot, and a random lowercase hex suffix follow.
+/// identifier of the build that made it, a dot, and a random lowercase hex suffix follow, so a
+/// build sweeps every copy staging it left behind and never one another build is still using.
 const RESTORE_COPY_STAGING_PREFIX: &str = ".ganbaru.restore-copy.";
 /// Length of the random suffix of an independent copy's staging folder.
 const RESTORE_COPY_SUFFIX_CHARS: usize = 32;
@@ -493,7 +494,11 @@ fn remove_stale_transfers(root: &Path, prefix: &str) {
 /// the next restore into that parent sweeps it.
 pub(crate) fn sweep_interrupted_backups(app: &tauri::AppHandle) -> Result<(), String> {
     let _transition = quiescence::reserve_vault_transition()?;
-    sweep_interrupted_backups_at(&transfer_root(app)?, restore_target(app)?.as_deref())
+    sweep_interrupted_backups_at(
+        &transfer_root(app)?,
+        restore_target(app)?.as_deref(),
+        &app.config().identifier,
+    )
 }
 
 /// The vault folder an in-place restore replaces, beside which it stages: the selected vault
@@ -517,6 +522,7 @@ fn restore_target(app: &tauri::AppHandle) -> Result<Option<PathBuf>, String> {
 fn sweep_interrupted_backups_at(
     transfer_root: &Path,
     restore_target: Option<&Path>,
+    build: &str,
 ) -> Result<(), String> {
     remove_stale_transfers(transfer_root, RESTORE_TRANSFER_PREFIX);
     remove_stale_transfers(transfer_root, SAVE_TRANSFER_PREFIX);
@@ -525,7 +531,7 @@ fn sweep_interrupted_backups_at(
         failures.push(error.to_string());
     }
     if let Some(target) = restore_target
-        && let Err(error) = sweep_restore_staging(target)
+        && let Err(error) = sweep_restore_staging(target, build)
     {
         failures.push(error);
     }
@@ -536,13 +542,14 @@ fn sweep_interrupted_backups_at(
     }
 }
 
-/// Removes the in-place and independent-copy restore staging of `target` beside it, and nothing
-/// staged for another folder. A swap of `target` left pending may still need its staged vault,
-/// so the in-place staging stays until the swap settles.
-fn sweep_restore_staging(target: &Path) -> Result<(), String> {
+/// Removes the in-place restore staging of `target` and the independent-copy staging the build
+/// `build` left beside it, and nothing staged for another folder or by another build. A swap of
+/// `target` left pending may still need its staged vault, so the in-place staging stays until
+/// the swap settles.
+fn sweep_restore_staging(target: &Path, build: &str) -> Result<(), String> {
     let parent = staging_parent(target)?;
     let in_place = restore_staging_name(target)?;
-    let copy = restore_copy_staging_prefix(target)?;
+    let copy = restore_copy_staging_prefix(build);
     let keep_in_place = swap_journal::has_unfinished_swap(target);
     sweep_staging_entries(parent, |name| {
         (name == in_place && !keep_in_place) || is_restore_copy_staging(name, &copy)
@@ -573,12 +580,9 @@ fn restore_staging_name(target: &Path) -> Result<String, String> {
     ))
 }
 
-/// The prefix of the private folders an independent copy for `target` is staged in.
-fn restore_copy_staging_prefix(target: &Path) -> Result<String, String> {
-    Ok(format!(
-        "{RESTORE_COPY_STAGING_PREFIX}{}.",
-        staging_target_name(target)?
-    ))
+/// The prefix of the private folders the build `build` stages independent copies in.
+fn restore_copy_staging_prefix(build: &str) -> String {
+    format!("{RESTORE_COPY_STAGING_PREFIX}{build}.")
 }
 
 /// Whether `name` is a private staging folder made with `prefix` and a random suffix.
@@ -1377,10 +1381,11 @@ async fn restore_in_new_folder(
         .parent()
         .ok_or_else(|| "the chosen folder has no parent directory".to_string())?;
     let sweep_target = target.clone();
-    blocking(move || sweep_restore_staging(&sweep_target)).await??;
+    let build = app.config().identifier.clone();
+    blocking(move || sweep_restore_staging(&sweep_target, &build)).await??;
     let staging_parent = ganbaru_atomic_files::create_private_temporary_directory(
         parent,
-        &restore_copy_staging_prefix(&target)?,
+        &restore_copy_staging_prefix(&app.config().identifier),
     )
     .map_err(|error| format!("create restore staging: {error}"))?;
     let staged = StagedFolder::new(&staging_parent);

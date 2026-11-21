@@ -25,7 +25,7 @@ use tauri_plugin_opener::OpenerExt;
 
 const PERMANENT_DELETE_CLEANUP_GRACE: Duration = Duration::from_secs(24 * 60 * 60);
 const PROVIDER_LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(30);
-const THREAD_DELETE_STOP_TIMEOUT: Duration = Duration::from_secs(15);
+const THREAD_STOP_TIMEOUT: Duration = Duration::from_secs(15);
 /// Approval mode for a fork of an organizational thread, whose stored mode came from a
 /// agent authorization rather than from the forking user.
 const DIRECT_FORK_SAFETY_MODE: &str = "ask_for_approval";
@@ -543,7 +543,7 @@ pub async fn chat_delete_thread_permanently(
     let runtimes = app.state::<ganbaru_chat::runtime::ChatRuntimeRegistry>();
     let mutations = app.state::<super::workspace::mutation::ChatWorkspaceMutationRegistry>();
     runtimes
-        .shutdown_thread_and_remove(&thread_id, THREAD_DELETE_STOP_TIMEOUT, &mutations)
+        .shutdown_thread_and_remove(&thread_id, THREAD_STOP_TIMEOUT, &mutations)
         .await?;
     let now = SystemTime::now();
     let cleanup = now
@@ -592,6 +592,14 @@ async fn set_thread_archived(
     .await?;
     let shell = reads::read_thread_shell(&pool, &thread_id).await?;
     if archived {
+        let runtimes = app.state::<ganbaru_chat::runtime::ChatRuntimeRegistry>();
+        let mutations = app.state::<super::workspace::mutation::ChatWorkspaceMutationRegistry>();
+        runtimes
+            .shutdown_thread_and_remove(&thread_id, THREAD_STOP_TIMEOUT, &mutations)
+            .await?;
+        app.state::<super::internal_mcp::InternalMcpRegistry>()
+            .stop_thread_endpoint(&thread_id)
+            .await;
         synchronize_provider_lifecycle(
             &app,
             &pool,

@@ -18,13 +18,8 @@ const SIGNED_FILE_FIELD: &str = "file:";
 
 /// Update found by the last check. Rust keeps it so the webview never chooses the feed, target,
 /// headers, proxy, or downgrade policy.
+#[derive(Default)]
 pub struct PendingUpdate(UpdateSlot<Update>);
-
-impl Default for PendingUpdate {
-    fn default() -> Self {
-        Self(UpdateSlot::default())
-    }
-}
 
 /// Lifecycle of the offered update. A check in flight carries its request number so an earlier
 /// check that lands late cannot replace a newer one, and an install owns its update until it ends.

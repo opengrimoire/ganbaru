@@ -155,6 +155,8 @@ const departingTabIds = new Set<string>();
 const requestedTabIds = new Set<string>();
 /** The drag this window draws, its own drag source, and the tab it waits for, until each ends. */
 let dragState = $state.raw<TabDragState>(IDLE_TAB_DRAG);
+/** The drawn drag alone, so its readers wake only when it changes, not on every claim. */
+const liveDrag = $derived(dragState.live);
 let arrivalTimer: ReturnType<typeof setTimeout> | null = null;
 /** What this window does when a drag ends elsewhere. */
 let dragEndListener: ((end: TabDragEnd) => void) | null = null;
@@ -950,6 +952,7 @@ function resetDrag(): void {
   stopAwaitingArrival();
 }
 
+/** Apply a tab drag event to this window's drag state. */
 function dispatchDrag(event: TabDragEvent): void {
   dragState = transitionTabDrag(dragState, event);
 }
@@ -1093,7 +1096,7 @@ export function getWorkspaceTabs() {
     },
     /** The tab drag under way in this vault, from this window or another, for this strip to draw as it passes over. */
     get liveDrag(): LiveTabDrag | null {
-      return dragState.live;
+      return liveDrag;
     },
     /** Whether this window's strip has room for a tab from another window. */
     get canReceiveTab(): boolean {

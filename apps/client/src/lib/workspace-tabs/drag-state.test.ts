@@ -91,5 +91,7 @@ describe("transitionTabDrag", () => {
     expect(transitionTabDrag(IDLE_TAB_DRAG, { type: "sourceEnded", tabId: "x" })).toBe(IDLE_TAB_DRAG);
     expect(transitionTabDrag(IDLE_TAB_DRAG, { type: "arrived", tabId: "x" })).toBe(IDLE_TAB_DRAG);
     expect(transitionTabDrag(IDLE_TAB_DRAG, { type: "closed" })).toBe(IDLE_TAB_DRAG);
+    expect(transitionTabDrag(IDLE_TAB_DRAG, { type: "settled", tabId: "x" })).toBe(IDLE_TAB_DRAG);
+    expect(transitionTabDrag(IDLE_TAB_DRAG, { type: "reset" })).toBe(IDLE_TAB_DRAG);
   });
 });

@@ -289,6 +289,27 @@ describe("workspace tab drags", () => {
     expect(tabs.holds(first.id)).toBe(false);
   });
 
+  it("leaves readers of the drawn drag alone while a hovered tab is claimed", async () => {
+    const { tabs, windows } = await connect();
+    windows?.handlers.dragStarted({ sourceLabel: "tab-window-b", vaultId: VAULT_ID, tab: foreignTab("foreign", tabs.activeTab), ...GRAB });
+    let reads = 0;
+    cleanups.push($effect.root(() => {
+      $effect(() => {
+        void tabs.liveDrag;
+        reads += 1;
+      });
+    }));
+    flushSync();
+    const before = reads;
+
+    tabs.claim("foreign", null);
+    vi.advanceTimersByTime(200);
+    tabs.claim("foreign", null);
+    flushSync();
+
+    expect(reads).toBe(before);
+  });
+
   it("forgets a drag under way when the vault changes", async () => {
     const { tabs } = await connect();
     const [first] = openSecondTab(tabs);

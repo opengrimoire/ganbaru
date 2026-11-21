@@ -94,8 +94,16 @@ function endOwnDrag(own: OwnTabDrag, tabId: string): OwnTabDrag {
   return own.leftEmpty ? { phase: "closePending" } : NO_OWN_DRAG;
 }
 
+/** `state` with this window's own drag replaced, or `state` itself when it is unchanged. */
 function withOwn(state: TabDragState, own: OwnTabDrag): TabDragState {
   return own === state.own ? state : { ...state, own };
+}
+
+/** `state` itself when every part of `next` is the same, so events that change nothing keep its identity. */
+function sameOrNext(state: TabDragState, next: TabDragState): TabDragState {
+  const same = next.live === state.live && next.own === state.own && next.arrival === state.arrival
+    && next.lastClaim === state.lastClaim;
+  return same ? state : next;
 }
 
 /** Apply one tab drag event; events that do not apply return the same state object. */
@@ -121,12 +129,12 @@ export function transitionTabDrag(state: TabDragState, event: TabDragEvent): Tab
       return withOwn(state, endOwnDrag(state.own, event.tabId));
     case "settled": {
       const keepArrival = state.arrival.phase !== "hovering" || state.arrival.tabId !== event.tabId;
-      return {
+      return sameOrNext(state, {
         live: null,
         own: endOwnDrag(state.own, event.tabId),
         arrival: keepArrival ? state.arrival : NO_ARRIVAL,
         lastClaim: null,
-      };
+      });
     }
     case "claimed":
       return {
@@ -150,7 +158,7 @@ export function transitionTabDrag(state: TabDragState, event: TabDragEvent): Tab
     case "reset": {
       const own: OwnTabDrag = state.own.phase === "dragging" && state.own.leftEmpty ? { phase: "closePending" }
         : state.own.phase === "closePending" ? state.own : NO_OWN_DRAG;
-      return { live: null, own, arrival: NO_ARRIVAL, lastClaim: null };
+      return sameOrNext(state, { live: null, own, arrival: NO_ARRIVAL, lastClaim: null });
     }
     case "closed":
       return state.own.phase === "closePending" ? withOwn(state, NO_OWN_DRAG) : state;

@@ -53,6 +53,21 @@
   import { composerMeterRead, type ComposerStatusRead } from "$lib/chat/composer/composer-meter";
   import { CHAT_IMAGE_CONTENT_TYPES, CHAT_IMAGE_LIMIT, composerTokenTrigger, validateImageFiles } from "$lib/chat/composer/model";
   import { pendingInputRows, pendingInputStartsWork, type PendingInputRow } from "$lib/chat/composer/pending-inputs";
+  import {
+    ASSIGNMENT_PREVIEW_OFF,
+    previewTargets,
+    transitionAssignmentPreview,
+    type AssignmentPreviewState,
+  } from "$lib/chat/composer/assignment-preview-state";
+  import {
+    DRAFT_EDIT_TARGET,
+    composerSubmitPlan,
+    editedReply,
+    editedScheduled,
+    transitionComposerEditTarget,
+    type ComposerEditEvent,
+    type ComposerEditTarget,
+  } from "$lib/chat/composer/edit-target";
   import { formatShortcut, hasOnlyShortcutModifier } from "$lib/keyboard-shortcuts";
   import { latestStructuredPlanSteps, summarizePlanProgress } from "$lib/chat/composer/plan-progress";
   import { suggestAgentMention, type MentionSuggestion } from "$lib/chat/composer/mention-suggestion";
@@ -213,8 +228,9 @@
   const draftPlainText = $derived(chatComposerPlainText(editorDocument));
   /** Agents whose mention suggestion was dismissed for this draft. */
   let dismissedMentionSuggestions = $state<ChatParticipantId[]>([]);
-  let assignmentTargets = $state<ChatAssignmentTargetRead[]>([]);
-  let assignmentPreviewLoading = $state(false);
+  let assignmentPreview = $state.raw<AssignmentPreviewState>(ASSIGNMENT_PREVIEW_OFF);
+  const assignmentTargets = $derived(previewTargets(assignmentPreview));
+  const assignmentPreviewLoading = $derived(assignmentPreview.phase === "loading");
   let assignmentPreviewRequest = 0;
   /** The assignment preview read in flight, which a send waits for before checking its blockers. */
   let assignmentPreviewPending: Promise<void> | null = null;
@@ -234,14 +250,14 @@
   let routingNotice = $state<string | null>(null);
   let assignmentInputs = $state<ChatAssignmentInputRead[]>([]);
   let assignmentInputsRequest = 0;
-  /** The waiting reply the editor holds; the destination draft stays in the store until the edit ends. */
-  let editingInput = $state<ChatAssignmentInputRead | null>(null);
-  let inputBusyId = $state<string | null>(null);
   /**
-   * The scheduled message the editor holds, with the share choice of the draft it set aside; the
-   * destination draft, its time, and its repeat rule stay in the store until the edit ends.
+   * What the editor holds; the destination draft, its time, and its repeat rule stay in the store while a waiting
+   * reply or a scheduled message is edited.
    */
-  let editingScheduled = $state<{ message: ChatScheduledMessageRead; draftAlsoSendToChannel: boolean } | null>(null);
+  let editTarget = $state.raw<ComposerEditTarget>(DRAFT_EDIT_TARGET);
+  const editingInput = $derived(editedReply(editTarget));
+  const editingScheduled = $derived(editedScheduled(editTarget));
+  let inputBusyId = $state<string | null>(null);
   /** Why every tool beyond text is off: an edit replaces only the text of a waiting reply. */
   const editLockReason = $derived(editingInput ? t("chat.composer.pendingInputs.textOnly") : null);
 
@@ -383,8 +399,7 @@
     return () => {
       paneEvents.removeEventListener("ganbaru:chat-stop-requested", stop);
       // The destination draft stayed in the store while a waiting reply was edited, so the next mount restores it.
-      editingInput = null;
-      editingScheduled = null;
+      dispatchEdit({ type: "editEnded" });
       releaseReviewNote();
       editorController = null;
     };
@@ -476,14 +491,11 @@
     const replyThreadId = destinationReplyThreadId(destination);
     // Targets are device-local folders, so only a device that runs the work lists them.
     if (!agentId || !channelId || !localExecutionAvailable) {
-      assignmentPreviewRequest += 1;
-      assignmentTargets = [];
-      assignmentPreviewLoading = false;
+      untrack(() => { assignmentPreview = transitionAssignmentPreview(assignmentPreview, { type: "disabled" }); });
       assignmentPreviewPending = null;
       return;
     }
-    assignmentTargets = [];
-    assignmentPreviewPending = loadAssignmentPreview(agentId, channelId, replyThreadId);
+    assignmentPreviewPending = untrack(() => loadAssignmentPreview(agentId, channelId, replyThreadId));
   });
 
   $effect(() => {
@@ -517,7 +529,7 @@
   }
 
   function persist(): void {
-    if (editingInput || editingScheduled) return;
+    if (editTarget.phase !== "draft") return;
     const references = chatReferencesForMarkdown(editorDocument, editorReferences);
     const draft: ChatOrganizationalDraft = {
       normalizedMarkdown,
@@ -1049,20 +1061,24 @@
     editorController?.focus({ start: selectionStart, end: selectionEnd });
   }
 
+  function dispatchEdit(event: ComposerEditEvent): void {
+    editTarget = transitionComposerEditTarget(editTarget, event);
+  }
+
   function startInputEdit(row: PendingInputRow): void {
     const reply = replyForInput(row.input);
-    if (!reply || editingInput || editingScheduled) return;
+    if (!reply || editTarget.phase !== "draft") return;
     persist();
     closePicker();
     closePromptMenu();
     error = null;
-    editingInput = row.input;
+    dispatchEdit({ type: "replyEditStarted", input: row.input });
     // The saved revision carries no references, so the editor shows their text as plain text.
     loadEditorContent(parseChatComposerDocument(reply.richContent, reply.normalizedMarkdown), [], []);
   }
 
   function restoreDraftAfterEdit(): void {
-    editingInput = null;
+    dispatchEdit({ type: "editEnded" });
     const draft = chat.organizationalDraft(destination);
     loadEditorContent(parseChatComposerDocument(draft.richContent, draft.normalizedMarkdown), draft.references, draft.attachmentIds, {
       start: draft.selectionStart,
@@ -1081,12 +1097,12 @@
    * the time keeps its series where it is.
    */
   function startScheduledEdit(message: ChatScheduledMessageRead): void {
-    if (editingInput || editingScheduled || sending || message.state === "dispatching") return;
+    if (editTarget.phase !== "draft" || sending || message.state === "dispatching") return;
     persist();
     closePicker();
     closePromptMenu();
     error = null;
-    editingScheduled = { message, draftAlsoSendToChannel: alsoSendToChannel };
+    dispatchEdit({ type: "scheduledEditStarted", message, draftAlsoSendToChannel: alsoSendToChannel });
     const recurrence = message.recurrence;
     scheduledFor = recurrence ? recurrence.nextOccurrenceAt : message.scheduledFor;
     scheduledRecurrence = recurrence
@@ -1105,7 +1121,7 @@
   function restoreDraftAfterScheduledEdit(): void {
     const editing = editingScheduled;
     if (!editing) return;
-    editingScheduled = null;
+    dispatchEdit({ type: "editEnded" });
     const draft = chat.organizationalDraft(destination);
     scheduledFor = draft.scheduledFor;
     scheduledRecurrence = draft.recurrence;
@@ -1408,30 +1424,22 @@
     channelId: string,
     replyThreadId: string | null,
   ): Promise<void> {
-    const requestId = ++assignmentPreviewRequest;
-    assignmentPreviewLoading = true;
-    try {
-      const targets = await chatApi.listChatAssignmentTargets({ agentId, channelId, replyThreadId });
-      if (
-        requestId !== assignmentPreviewRequest
-        || mentionedAgentId !== agentId
-        || chat.selectedChannel?.id !== channelId
-        || destinationReplyThreadId(destination) !== replyThreadId
-      ) return;
-      assignmentTargets = targets;
-    } catch (cause: unknown) {
-      if (
-        requestId === assignmentPreviewRequest
-        && mentionedAgentId === agentId
+    const request = ++assignmentPreviewRequest;
+    assignmentPreview = transitionAssignmentPreview(assignmentPreview, { type: "requested", request });
+    // The effect reads again on any change of mention, channel, or thread, but a result can land before it runs.
+    const stillCurrent = () => (
+      mentionedAgentId === agentId
         && chat.selectedChannel?.id === channelId
         && destinationReplyThreadId(destination) === replyThreadId
-      ) {
-        assignmentTargets = [];
-        error = chatErrorMessage(cause);
-      }
-    } finally {
-      if (requestId === assignmentPreviewRequest) assignmentPreviewLoading = false;
+    );
+    let targets: ChatAssignmentTargetRead[] = [];
+    try {
+      const read = await chatApi.listChatAssignmentTargets({ agentId, channelId, replyThreadId });
+      if (stillCurrent()) targets = read;
+    } catch (cause: unknown) {
+      if (request === assignmentPreviewRequest && stillCurrent()) error = chatErrorMessage(cause);
     }
+    assignmentPreview = transitionAssignmentPreview(assignmentPreview, { type: "loaded", request, targets });
   }
 
   async function validateChannelDisclosures(): Promise<DisclosureBlocker | null> {
@@ -1541,7 +1549,7 @@
     alsoSendToChannel = false;
     scheduledFor = null;
     scheduledRecurrence = null;
-    assignmentTargets = [];
+    assignmentPreview = transitionAssignmentPreview(assignmentPreview, { type: "cleared" });
     disclosureBlocker = null;
     dismissedMentionSuggestions = [];
     editorController?.setDocument(editorDocument, []);
@@ -1549,20 +1557,21 @@
   }
 
   /**
-   * Sends the draft, or saves the reply being edited. A reply to work an agent is on carries `followupRouting`;
-   * other posts ignore it.
+   * Sends the draft, or saves the reply or scheduled message being edited. A reply to work an agent is on carries
+   * `followupRouting`; other posts ignore it.
    */
   async function post(followupRouting: ChatFollowupRouting = "queue"): Promise<void> {
-    if (editingInput) {
+    const plan = composerSubmitPlan(editTarget);
+    if (plan.action === "saveReply") {
       await saveInputEdit();
       return;
     }
-    if (editingScheduled) {
+    if (sending || !hasMessageContent) return;
+    if (plan.awaitsPreview) await waitForAssignmentPreview();
+    if (plan.action === "saveScheduled") {
       await saveScheduledEdit();
       return;
     }
-    if (sending || !hasMessageContent) return;
-    await waitForAssignmentPreview();
     if (!hasMessageContent) return;
     if (validation || providerBlockers.length > 0 || messageTooLarge) {
       await focusBlocker();
@@ -1626,7 +1635,7 @@
     if (!assignmentPreviewLoading || !assignmentPreviewPending) return;
     sending = true;
     try {
-      while (assignmentPreviewLoading && assignmentPreviewPending) await assignmentPreviewPending;
+      while (assignmentPreview.phase === "loading" && assignmentPreviewPending) await assignmentPreviewPending;
     } finally {
       sending = false;
     }

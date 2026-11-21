@@ -40,7 +40,9 @@
   onMount(() => (androidSystemBackAvailable ? mobileBackStack.activate({ handle: () => sheet.close() }) : undefined));
 </script>
 
-<div class="thread-sheet-frame" style:--thread-sheet-settle={`${REPLY_THREAD_SHEET_SETTLE_MS}ms`}>
+<!-- The track already ends above the keyboard, so an inline translate keeps a shifted keyboard surface from moving the
+     frame up a second time. -->
+<div class="thread-sheet-frame" style:--thread-sheet-settle={`${REPLY_THREAD_SHEET_SETTLE_MS}ms`} style:translate="none">
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div
     class="thread-sheet-backdrop surface-backdrop"

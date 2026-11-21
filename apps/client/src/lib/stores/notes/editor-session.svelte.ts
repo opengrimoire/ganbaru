@@ -1920,6 +1920,10 @@ export function createNotesEditorStore(
     get pageCreationPending(): boolean {
       return pageCreationController.isPending(pageSession.selectedPageId);
     },
+    /** Whether the selected new page was saved and only showing it failed. */
+    get pageCreationSaved(): boolean {
+      return pageCreationController.isSaved(pageSession.selectedPageId);
+    },
     get pageCreationError(): string | null {
       return pageCreationController.errorFor(pageSession.selectedPageId);
     },

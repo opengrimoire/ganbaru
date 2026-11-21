@@ -29,6 +29,7 @@ export const pageActions = {
   deleteFolderConfirm: "Eliminar carpeta",
   folderActionFailed: "No se pudo actualizar la carpeta.",
   pageCreationFailed: "No se pudo guardar esta nota nueva.",
+  pageCreationShowFailed: "Esta nota nueva se guardó, pero no se pudo mostrar.",
   archivePage: "Archivar",
   archiveConfirmTitle: (title: string) => `¿Archivar ${title}?`,
   archiveConfirmMessage:

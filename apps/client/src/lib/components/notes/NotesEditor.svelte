@@ -1613,7 +1613,7 @@
     {#if notes.pageCreationError}
       <Notice
         class="shrink-0 border-b border-border px-3 py-2 text-[0.8rem]"
-        message={t("notes.pageCreationFailed")}
+        message={t(notes.pageCreationSaved ? "notes.pageCreationShowFailed" : "notes.pageCreationFailed")}
         copy={notes.pageCreationError}
         onRetry={notes.retryPageCreation}
       />

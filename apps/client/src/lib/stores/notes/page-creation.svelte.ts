@@ -1,12 +1,15 @@
 import { notesErrorDetail } from "$lib/notes/failure";
 import { createNotesPage } from "$lib/api/notes";
 import type { NotesLoadedPage, NotesPageCreate } from "$lib/notes/types";
+import {
+  notesPageCreationError,
+  notesPageCreationSaved,
+  notesPageCreationStarted,
+  transitionPageCreation,
+  type NotesPageCreation,
+  type NotesPageCreationEvent,
+} from "./page-creation-state";
 
-interface PendingPageCreation {
-  request: NotesPageCreate;
-  status: "pending" | "failed";
-  error: string | null;
-}
 
 interface CreatedPagePreview {
   loaded: NotesLoadedPage;
@@ -22,7 +25,7 @@ interface NotesPageCreationContext {
 
 /** Coordinate optimistic page creation and gate mutations until persistence succeeds. */
 export function createNotesPageCreationController(context: NotesPageCreationContext) {
-  let pending = $state<Record<string, PendingPageCreation>>({});
+  let pending = $state<Record<string, NotesPageCreation>>({});
   const attempts = new Map<string, Promise<void>>();
   const previews = new Map<string, CreatedPagePreview>();
   const completions = new Map<string, {
@@ -42,48 +45,67 @@ export function createNotesPageCreationController(context: NotesPageCreationCont
     return completion;
   }
 
-  function persist(request: NotesPageCreate): Promise<void> {
-    let succeeded = false;
-    const completion = completionFor(request.id);
-    pending = {
-      ...pending,
-      [request.id]: { request, status: "pending", error: null },
-    };
-    const barrier = createNotesPage(request)
-      .then(async (loaded) => {
-        await context.reconcile(loaded);
-        const preview = previews.get(request.id);
-        if (preview?.clean) {
-          previews.delete(request.id);
-          previews.set(request.id, { loaded, clean: true });
-          for (const [id] of previews) {
-            if (previews.size <= MAX_CREATED_PAGE_PREVIEWS) break;
-            if (!pending[id] || id === request.id) previews.delete(id);
-          }
-        } else {
-          previews.delete(request.id);
-        }
-        const next = { ...pending };
-        delete next[request.id];
-        pending = next;
-        succeeded = true;
-        completion.resolve("ready");
-        completions.delete(request.id);
-      })
-      .catch((error: unknown) => {
-        pending = {
-          ...pending,
-          [request.id]: { request, status: "failed", error: notesErrorDetail(error) },
-        };
-      })
-      .finally(() => {
-        if (attempts.get(request.id) === barrier) attempts.delete(request.id);
-        if (succeeded) {
-          void context.afterPersisted?.(request.id).catch(() => undefined);
-        }
-      });
-    attempts.set(request.id, barrier);
+  function dispatch(pageId: string, event: NotesPageCreationEvent): void {
+    const current = pending[pageId];
+    if (!current) return;
+    const next = transitionPageCreation(current, event);
+    if (next !== current) pending = { ...pending, [pageId]: next };
+  }
+
+  function track(pageId: string, attempt: Promise<void>): Promise<void> {
+    const barrier = attempt.finally(() => {
+      if (attempts.get(pageId) === barrier) attempts.delete(pageId);
+    });
+    attempts.set(pageId, barrier);
     return barrier;
+  }
+
+  async function create(request: NotesPageCreate): Promise<void> {
+    let loaded: NotesLoadedPage;
+    try {
+      loaded = await createNotesPage(request);
+    } catch (error) {
+      dispatch(request.id, { type: "create-failed", error: notesErrorDetail(error) });
+      return;
+    }
+    dispatch(request.id, { type: "created", loaded });
+    await reconcile(request.id, loaded);
+  }
+
+  /** Project a created page into the open editors, then release the edits that waited for it. */
+  async function reconcile(pageId: string, loaded: NotesLoadedPage): Promise<void> {
+    try {
+      await context.reconcile(loaded);
+    } catch (error) {
+      // The page exists, so its provisional draft is stale; reopening it loads the saved page.
+      previews.delete(pageId);
+      dispatch(pageId, { type: "reconcile-failed", error: notesErrorDetail(error) });
+      return;
+    }
+    const preview = previews.get(pageId);
+    if (preview?.clean) {
+      previews.delete(pageId);
+      previews.set(pageId, { loaded, clean: true });
+      for (const [id] of previews) {
+        if (previews.size <= MAX_CREATED_PAGE_PREVIEWS) break;
+        if (!pending[id] || id === pageId) previews.delete(id);
+      }
+    } else {
+      previews.delete(pageId);
+    }
+    const next = { ...pending };
+    delete next[pageId];
+    pending = next;
+    const completion = completions.get(pageId);
+    completions.delete(pageId);
+    completion?.resolve("ready");
+    void context.afterPersisted?.(pageId).catch(() => undefined);
+  }
+
+  function persist(request: NotesPageCreate): Promise<void> {
+    completionFor(request.id);
+    pending = { ...pending, [request.id]: notesPageCreationStarted(request) };
+    return track(request.id, create(request));
   }
 
   function begin(request: NotesPageCreate, provisional: NotesLoadedPage): void {
@@ -118,15 +140,18 @@ export function createNotesPageCreationController(context: NotesPageCreationCont
     }
   }
 
-  /** Wait for a creation attempt to finish without waiting for a possible retry. */
+  /**
+   * Wait for a creation attempt to finish without waiting for a possible retry. Only a failed create request is
+   * `failed`; a created page whose reconcile failed exists and reports `ready`.
+   */
   async function awaitAttempt(pageId: string): Promise<"ready" | "failed"> {
     await attempts.get(pageId);
-    return pending[pageId]?.status === "failed" ? "failed" : "ready";
+    return pending[pageId]?.phase === "create-failed" ? "failed" : "ready";
   }
 
-  /** Release blocked edits after a failed draft is removed from Notes. */
+  /** Release blocked edits after a draft whose create request failed is removed from Notes. */
   function discardFailed(pageId: string): void {
-    if (pending[pageId]?.status !== "failed" || attempts.has(pageId)) return;
+    if (pending[pageId]?.phase !== "create-failed" || attempts.has(pageId)) return;
     const next = { ...pending };
     delete next[pageId];
     pending = next;
@@ -135,10 +160,17 @@ export function createNotesPageCreationController(context: NotesPageCreationCont
     completions.delete(pageId);
   }
 
+  /** Retry the failed step: the create request, or only the reconcile of a page that was already created. */
   function retry(pageId: string): void {
     const state = pending[pageId];
     if (!state || attempts.has(pageId)) return;
-    void persist(state.request);
+    if (state.phase === "create-failed") {
+      dispatch(pageId, { type: "create-started" });
+      void track(pageId, create(state.request));
+    } else if (state.phase === "reconcile-failed") {
+      dispatch(pageId, { type: "reconcile-started" });
+      void track(pageId, reconcile(pageId, state.loaded));
+    }
   }
 
   return {
@@ -152,8 +184,12 @@ export function createNotesPageCreationController(context: NotesPageCreationCont
     isPending(pageId: string | null): boolean {
       return Boolean(pageId && pending[pageId]);
     },
+    /** Whether the backend already holds this pending page, so only reconciling it remains. */
+    isSaved(pageId: string | null): boolean {
+      return pageId ? notesPageCreationSaved(pending[pageId]) : false;
+    },
     errorFor(pageId: string | null): string | null {
-      return pageId ? pending[pageId]?.error ?? null : null;
+      return pageId ? notesPageCreationError(pending[pageId]) : null;
     },
   };
 }

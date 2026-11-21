@@ -18,19 +18,121 @@ const SIGNED_FILE_FIELD: &str = "file:";
 
 /// Update found by the last check. Rust keeps it so the webview never chooses the feed, target,
 /// headers, proxy, or downgrade policy.
-#[derive(Default)]
-pub struct PendingUpdate(Mutex<Option<Update>>);
+pub struct PendingUpdate(UpdateSlot<Update>);
 
-impl PendingUpdate {
-    fn replace(&self, update: Option<Update>) {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = update;
+impl Default for PendingUpdate {
+    fn default() -> Self {
+        Self(UpdateSlot::default())
+    }
+}
+
+/// Lifecycle of the offered update. A check in flight carries its request number so an earlier
+/// check that lands late cannot replace a newer one, and an install owns its update until it ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum UpdatePhase<T> {
+    Idle,
+    Checking { request: u64 },
+    Offered(T),
+    Installing(T),
+}
+
+#[derive(Debug)]
+struct UpdateSlotState<T> {
+    phase: UpdatePhase<T>,
+    next_request: u64,
+}
+
+/// Mutex-guarded [`UpdatePhase`] with the only legal moves between its variants.
+#[derive(Debug)]
+struct UpdateSlot<T>(Mutex<UpdateSlotState<T>>);
+
+impl<T> Default for UpdateSlot<T> {
+    fn default() -> Self {
+        Self(Mutex::new(UpdateSlotState {
+            phase: UpdatePhase::Idle,
+            next_request: 0,
+        }))
+    }
+}
+
+impl<T: Clone> UpdateSlot<T> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, UpdateSlotState<T>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn current(&self) -> Option<Update> {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+    /// Starts a check, dropping any earlier offer. Refused while an install runs.
+    fn begin_check(&self) -> Result<u64, UpdateInstallError> {
+        let mut state = self.lock();
+        if matches!(state.phase, UpdatePhase::Installing(_)) {
+            return Err(UpdateInstallError::InstallInProgress);
+        }
+        state.next_request += 1;
+        let request = state.next_request;
+        state.phase = UpdatePhase::Checking { request };
+        Ok(request)
+    }
+
+    /// Records the result of check `request`; returns false when a newer check or an install took
+    /// the slot meanwhile.
+    fn finish_check(&self, request: u64, update: Option<T>) -> bool {
+        let mut state = self.lock();
+        if !matches!(state.phase, UpdatePhase::Checking { request: current } if current == request)
+        {
+            return false;
+        }
+        state.phase = update.map_or(UpdatePhase::Idle, UpdatePhase::Offered);
+        true
+    }
+
+    /// Claims the offered update for one install. The claim puts the offer back when it is dropped
+    /// without [`InstallClaim::complete`], so a failed or abandoned install can be retried.
+    fn begin_install(&self) -> Result<InstallClaim<'_, T>, UpdateInstallError> {
+        let mut state = self.lock();
+        let update = match &state.phase {
+            UpdatePhase::Offered(update) => update.clone(),
+            UpdatePhase::Installing(_) => return Err(UpdateInstallError::InstallInProgress),
+            UpdatePhase::Idle | UpdatePhase::Checking { .. } => {
+                return Err(UpdateInstallError::NoPendingUpdate);
+            }
+        };
+        state.phase = UpdatePhase::Installing(update.clone());
+        Ok(InstallClaim {
+            slot: self,
+            update,
+            completed: false,
+        })
+    }
+
+    #[cfg(test)]
+    fn phase(&self) -> UpdatePhase<T> {
+        self.lock().phase.clone()
+    }
+}
+
+/// One install's hold on the offered update.
+struct InstallClaim<'a, T: Clone> {
+    slot: &'a UpdateSlot<T>,
+    update: T,
+    completed: bool,
+}
+
+impl<T: Clone> InstallClaim<'_, T> {
+    /// Ends the install with the update applied, leaving nothing offered.
+    fn complete(mut self) {
+        self.completed = true;
+        self.slot.lock().phase = UpdatePhase::Idle;
+    }
+}
+
+impl<T: Clone> Drop for InstallClaim<'_, T> {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        let mut state = self.slot.lock();
+        if matches!(state.phase, UpdatePhase::Installing(_)) {
+            state.phase = UpdatePhase::Offered(self.update.clone());
+        }
     }
 }
 
@@ -67,6 +169,7 @@ pub enum UpdateDownloadEvent {
 enum UpdateInstallError {
     SelfUpdateUnavailable,
     NoPendingUpdate,
+    InstallInProgress,
     SignatureEncoding,
     MissingSignedFile,
     VersionNotSigned { version: String, file: String },
@@ -79,6 +182,7 @@ impl std::fmt::Display for UpdateInstallError {
                 formatter.write_str("this installation is updated by its package manager")
             }
             Self::NoPendingUpdate => formatter.write_str("no update is ready to install"),
+            Self::InstallInProgress => formatter.write_str("an update is already being installed"),
             Self::SignatureEncoding => formatter.write_str("the update signature is malformed"),
             Self::MissingSignedFile => {
                 formatter.write_str("the update signature does not name its file")
@@ -131,22 +235,33 @@ pub async fn updates_check(
     app: tauri::AppHandle,
     pending: tauri::State<'_, PendingUpdate>,
 ) -> Result<Option<AvailableUpdate>, String> {
-    pending.replace(None);
-    let update = app
-        .updater_builder()
-        .timeout(UPDATE_CHECK_TIMEOUT)
-        .build()
-        .map_err(|error| error.to_string())?
-        .check()
-        .await
-        .map_err(|error| error.to_string())?;
+    let request = pending.0.begin_check().map_err(|error| error.to_string())?;
+    let checked = async {
+        app.updater_builder()
+            .timeout(UPDATE_CHECK_TIMEOUT)
+            .build()?
+            .check()
+            .await
+    }
+    .await;
+    let update = match checked {
+        Ok(update) => update,
+        Err(error) => {
+            pending.0.finish_check(request, None);
+            return Err(error.to_string());
+        }
+    };
     let available = update.as_ref().map(AvailableUpdate::from);
-    pending.replace(update);
+    // A newer check owns the slot, so this result is not offered.
+    if !pending.0.finish_check(request, update) {
+        return Ok(None);
+    }
     Ok(available)
 }
 
 /// Download, verify, and install the update found by the last check. The plugin verifies the package
-/// signature, and the signed file name must carry the offered version.
+/// signature, and the signed file name must carry the offered version. A second install while one
+/// runs is refused, and a failed install leaves the update offered.
 #[tauri::command]
 pub async fn updates_install(
     pending: tauri::State<'_, PendingUpdate>,
@@ -155,9 +270,11 @@ pub async fn updates_install(
     if !updater_install_context().self_updater {
         return Err(UpdateInstallError::SelfUpdateUnavailable.to_string());
     }
-    let mut update = pending
-        .current()
-        .ok_or_else(|| UpdateInstallError::NoPendingUpdate.to_string())?;
+    let claim = pending
+        .0
+        .begin_install()
+        .map_err(|error| error.to_string())?;
+    let mut update = claim.update.clone();
     update.timeout = Some(UPDATE_DOWNLOAD_TIMEOUT);
 
     let mut started = false;
@@ -178,7 +295,7 @@ pub async fn updates_install(
         .map_err(|error| error.to_string())?;
     verify_signed_version(&update.signature, &update.version).map_err(|error| error.to_string())?;
     update.install(bytes).map_err(|error| error.to_string())?;
-    pending.replace(None);
+    claim.complete();
     Ok(())
 }
 
@@ -425,8 +542,9 @@ fn parse_os_release_value(raw: &str) -> String {
 mod tests {
     use super::{
         InstallDetectionInput, OsRelease, RuntimePlatform, UpdateDownloadEvent, UpdateInstallError,
-        UpdatePackageManager, copy_command_for_package_manager, detect_update_install_context,
-        linux_package_manager, parse_os_release, verify_signed_version,
+        UpdatePackageManager, UpdatePhase, UpdateSlot, copy_command_for_package_manager,
+        detect_update_install_context, linux_package_manager, parse_os_release,
+        verify_signed_version,
     };
     use base64::Engine as _;
 
@@ -601,5 +719,95 @@ mod tests {
                 id_like: vec!["ubuntu".to_string(), "debian".to_string()],
             },
         );
+    }
+
+    fn offered(version: &str) -> UpdateSlot<String> {
+        let slot = UpdateSlot::default();
+        let request = slot.begin_check().expect("check starts");
+        assert!(slot.finish_check(request, Some(version.to_owned())));
+        slot
+    }
+
+    #[test]
+    fn a_second_install_is_refused_while_one_runs() {
+        let slot = offered("0.3.0");
+        let claim = slot
+            .begin_install()
+            .expect("first install claims the offer");
+
+        assert_eq!(
+            slot.begin_install().err(),
+            Some(UpdateInstallError::InstallInProgress)
+        );
+        assert_eq!(claim.update, "0.3.0");
+        assert_eq!(slot.phase(), UpdatePhase::Installing("0.3.0".to_owned()));
+    }
+
+    #[test]
+    fn a_check_is_refused_while_an_install_runs() {
+        let slot = offered("0.3.0");
+        let _claim = slot.begin_install().expect("install claims the offer");
+
+        assert_eq!(
+            slot.begin_check(),
+            Err(UpdateInstallError::InstallInProgress)
+        );
+    }
+
+    #[test]
+    fn a_completed_install_leaves_nothing_offered() {
+        let slot = offered("0.3.0");
+        slot.begin_install()
+            .expect("install claims the offer")
+            .complete();
+
+        assert_eq!(slot.phase(), UpdatePhase::Idle);
+        assert_eq!(
+            slot.begin_install().err(),
+            Some(UpdateInstallError::NoPendingUpdate)
+        );
+    }
+
+    #[test]
+    fn a_failed_or_abandoned_install_offers_the_update_again() {
+        let slot = offered("0.3.0");
+        drop(slot.begin_install().expect("install claims the offer"));
+
+        assert_eq!(slot.phase(), UpdatePhase::Offered("0.3.0".to_owned()));
+        assert!(slot.begin_install().is_ok());
+    }
+
+    #[test]
+    fn nothing_installs_before_a_check_offers_an_update() {
+        let slot = UpdateSlot::<String>::default();
+        assert_eq!(
+            slot.begin_install().err(),
+            Some(UpdateInstallError::NoPendingUpdate)
+        );
+        slot.begin_check().expect("check starts");
+        assert_eq!(
+            slot.begin_install().err(),
+            Some(UpdateInstallError::NoPendingUpdate)
+        );
+    }
+
+    #[test]
+    fn an_earlier_check_landing_late_does_not_replace_a_newer_one() {
+        let slot = UpdateSlot::default();
+        let earlier = slot.begin_check().expect("earlier check starts");
+        let newer = slot.begin_check().expect("newer check starts");
+
+        assert!(slot.finish_check(newer, Some("0.3.1".to_owned())));
+        assert!(!slot.finish_check(earlier, Some("0.3.0".to_owned())));
+        assert_eq!(slot.phase(), UpdatePhase::Offered("0.3.1".to_owned()));
+    }
+
+    #[test]
+    fn a_new_check_drops_the_previous_offer() {
+        let slot = offered("0.3.0");
+        let request = slot.begin_check().expect("check starts");
+        assert_eq!(slot.phase(), UpdatePhase::Checking { request });
+        assert!(slot.finish_check(request, None));
+        assert_eq!(slot.phase(), UpdatePhase::Idle);
     }
 }

@@ -215,6 +215,8 @@ export const dataFolderError = {
     "This computer anchors your linked devices and this copy would undo changes they already follow. Hand the anchor over or remove those devices, then restore.",
   lostDatabase:
     "This folder's data is missing, so it wasn't opened to avoid starting over empty. Choose another folder or import a copy.",
+  lostDatabaseMobile:
+    "Ganbaru's data on this phone is missing, so it wasn't opened to avoid starting over empty; restore an earlier copy below if one is listed.",
 } as const;
 
 export const language = {

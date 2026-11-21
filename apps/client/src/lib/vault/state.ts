@@ -164,6 +164,17 @@ function fallbackForAction(
 }
 
 /**
+ * Whether a vault command refused a vault whose marker records data while its database is missing or empty.
+ *
+ * @param error - Thrown or rejected value from a vault command.
+ * @returns True for that refusal, which only restoring data into the vault can clear.
+ */
+export function isLostVaultDatabaseError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.toLowerCase().includes(LOST_DATABASE_MESSAGE);
+}
+
+/**
  * The localized message for a failed vault action. Native text is only matched, never shown.
  *
  * @param error - Thrown or rejected value from a vault command.
@@ -192,7 +203,7 @@ export function formatVaultError(
     return t("dataFolderError.anchorRollback");
   }
 
-  if (lower.includes(LOST_DATABASE_MESSAGE)) {
+  if (isLostVaultDatabaseError(error)) {
     return t("dataFolderError.lostDatabase");
   }
 

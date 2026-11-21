@@ -3,7 +3,12 @@ import { mount, unmount } from "svelte";
 import { ensureConfigLoaded, flushConfig, startConfigWindowSync } from "$lib/vault/config";
 import { listenSyncApplied } from "$lib/api/sync";
 import { startProfileImageFileSync } from "$lib/stores/profile-image-files.svelte";
-import { formatVaultError, getActiveVaultInfo, type VaultInfo } from "$lib/vault/state";
+import {
+  formatVaultError,
+  getActiveVaultInfo,
+  isLostVaultDatabaseError,
+  type VaultInfo,
+} from "$lib/vault/state";
 import {
   getLocalization,
   initializeLocalizationFromConfig,
@@ -50,14 +55,22 @@ async function applyPreVaultLanguagePreference(): Promise<void> {
   clearPreVaultLanguagePreference(storage);
 }
 
-async function mountMobileVaultError(message: string) {
+/**
+ * Mounts the startup error for a vault that could not open. Android keeps its one vault in private storage, so a
+ * vault whose database is gone recovers by restoring one of its rollback copies in place; nothing is removed.
+ */
+async function mountMobileVaultError(error: unknown) {
   const { default: MobileVaultErrorView } = await import(
     "$lib/components/mobile/MobileVaultErrorView.svelte"
   );
+  const lostDatabase = isLostVaultDatabaseError(error);
   return mount(MobileVaultErrorView, {
     target: document.getElementById("app")!,
     props: {
-      message,
+      message: lostDatabase
+        ? getLocalization().t("dataFolderError.lostDatabaseMobile")
+        : formatVaultError(error, "startup"),
+      offerRollbacks: lostDatabase,
       onRetry: () => window.location.reload(),
     },
   });
@@ -153,7 +166,7 @@ const appPromise = (async () => {
     }
   } catch (error) {
     console.error("Could not load the active vault:", error);
-    return mountMobileVaultError(formatVaultError(error, "startup"));
+    return mountMobileVaultError(error);
   }
 
   const { default: MobileApp } = await import("./MobileApp.svelte");

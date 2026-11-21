@@ -41,7 +41,7 @@ function snapshot(cardRevision: number): ContactsSnapshot {
 }
 
 function cardView(cardRevision: number): LocalContactCard {
-  return { identity: identity(cardRevision) };
+  return { identity: identity(cardRevision), card: null };
 }
 
 async function load() {

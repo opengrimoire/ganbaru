@@ -83,4 +83,17 @@ describe("sync status store", () => {
     expect(api.setSyncPaused).toHaveBeenCalledWith(true);
     expect(sync.status.paused).toBe(true);
   });
+
+  it("keeps a status event over a read that started before it", async () => {
+    let resolveRead: (value: SyncStatusView) => void = () => undefined;
+    api.getSyncStatus.mockReturnValueOnce(new Promise<SyncStatusView>((resolve) => { resolveRead = resolve; }));
+    const sync = getSync();
+    const stop = sync.subscribe();
+    await settle();
+    api.statusListener?.(status({ state: "syncing", role: "client" }));
+    resolveRead(status({ state: "idle", role: "client" }));
+    await settle();
+    expect(sync.status.state).toBe("syncing");
+    stop();
+  });
 });

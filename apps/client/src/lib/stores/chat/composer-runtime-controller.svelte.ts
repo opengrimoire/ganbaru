@@ -16,6 +16,7 @@ import type {
   ChatAttachmentRead,
   ChatDraftMention,
   ChatInteractionStateRead,
+  ChatPendingRequestRead,
   ChatQueuedFollowupRead,
   ChatSettingsRead,
   ChatThreadId,
@@ -454,10 +455,12 @@ export class ChatComposerRuntimeController {
     await this.refreshInteraction(threadId);
   }
 
-  async resolveApproval(decision: ApprovalDecision, remember = false): Promise<void> {
-    const pending = this.interaction?.pendingRequest;
+  /**
+   * Resolves the open approval `pending` with `decision`; `remember` also records its offered rule.
+   */
+  async resolveApproval(pending: ChatPendingRequestRead, decision: ApprovalDecision, remember = false): Promise<void> {
     const thread = this.options.selectedThread();
-    if (!pending || !thread) return;
+    if (!thread) return;
     await chatApi.resolveChatApproval({
       command: { clientCommandId: crypto.randomUUID(), expectedThreadRevision: null },
       threadId: thread.id,
@@ -469,10 +472,10 @@ export class ChatComposerRuntimeController {
     await this.refreshInteraction(thread.id);
   }
 
-  async resolveUserInput(answers: UserInputAnswer[]): Promise<void> {
-    const pending = this.interaction?.pendingRequest;
+  /** Answers the open user input request `pending` with `answers`. */
+  async resolveUserInput(pending: ChatPendingRequestRead, answers: UserInputAnswer[]): Promise<void> {
     const thread = this.options.selectedThread();
-    if (!pending || !thread) return;
+    if (!thread) return;
     await chatApi.resolveChatUserInput({
       command: { clientCommandId: crypto.randomUUID(), expectedThreadRevision: null },
       threadId: thread.id,

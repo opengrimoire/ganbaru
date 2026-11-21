@@ -1503,9 +1503,10 @@ export class ChatStore {
   cancelQueuedFollowup(): Promise<void> { return this.composerRuntimeController.cancelQueuedFollowup(); }
   editQueuedFollowup(): Promise<void> { return this.composerRuntimeController.editQueuedFollowup(); }
   stop(force = false): Promise<void> { return this.composerRuntimeController.stop(force); }
-  /** Resolves the open approval; `remember` also records its offered rule, so matching requests in the channel are allowed without asking. */
-  resolveApproval(decision: import("$lib/chat/contracts").ApprovalDecision, remember = false): Promise<void> { return this.composerRuntimeController.resolveApproval(decision, remember); }
-  resolveUserInput(answers: UserInputAnswer[]): Promise<void> { return this.composerRuntimeController.resolveUserInput(answers); }
+  /** Resolves the open approval `pending`; `remember` also records its offered rule, so matching requests in the channel are allowed without asking. */
+  resolveApproval(pending: import("$lib/chat/contracts").ChatPendingRequestRead, decision: import("$lib/chat/contracts").ApprovalDecision, remember = false): Promise<void> { return this.composerRuntimeController.resolveApproval(pending, decision, remember); }
+  /** Answers the open user input request `pending`. */
+  resolveUserInput(pending: import("$lib/chat/contracts").ChatPendingRequestRead, answers: UserInputAnswer[]): Promise<void> { return this.composerRuntimeController.resolveUserInput(pending, answers); }
   importComposerImages(files: File[]): Promise<void> { return this.composerRuntimeController.importImages(files); }
   pickComposerImages(title: string): Promise<void> { return this.composerRuntimeController.pickImages(title); }
   importComposerTextSnippet(text: string, displayName: string): Promise<void> { return this.composerRuntimeController.importTextSnippet(text, displayName); }

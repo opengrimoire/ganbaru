@@ -120,7 +120,7 @@ export function parseChatInteractionState(value: unknown): ChatInteractionStateR
     sessionState: readEnum(record.sessionState, PROVIDER_SESSION_STATES, "Chat interaction state.sessionState"),
     activeTurnId: readNullable(record.activeTurnId, "Chat interaction state.activeTurnId", readIdentifier),
     capabilities: parseProviderCapabilities(record.capabilities, "Chat interaction state.capabilities"),
-    pendingRequest: readNullable(record.pendingRequest, "Chat interaction state.pendingRequest", parsePendingRequest),
+    pendingRequests: readArray(record.pendingRequests, "Chat interaction state.pendingRequests", parsePendingRequest),
     queuedFollowup: readNullable(record.queuedFollowup, "Chat interaction state.queuedFollowup", parseQueuedFollowup),
     usage: readNullable(record.usage, "Chat interaction state.usage", parseThreadUsage),
     accountStatus: readNullable(record.accountStatus, "Chat interaction state.accountStatus", parseAccountStatus),

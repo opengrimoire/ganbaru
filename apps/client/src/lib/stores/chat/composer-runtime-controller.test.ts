@@ -3,6 +3,7 @@ import type {
   ChatAttachmentRead,
   ChatDraftRead,
   ChatInteractionStateRead,
+  ChatPendingRequestRead,
   ChatSettingsRead,
   ChatThreadShellRead,
   ResolveChatApprovalCommand,
@@ -105,8 +106,9 @@ describe("ChatComposerRuntimeController interactions", () => {
     });
     controller.interaction = interaction("approval");
     api.readInteraction.mockResolvedValue(interaction(null));
+    const [pending] = controller.interaction.pendingRequests;
 
-    await controller.resolveApproval({
+    await controller.resolveApproval(pending, {
       kind: "allow_once",
       providerOptionId: "accept",
       updatedToolInput: null,
@@ -120,7 +122,7 @@ describe("ChatComposerRuntimeController interactions", () => {
     }));
 
     controller.interaction = interaction("user_input");
-    await controller.resolveUserInput([{
+    await controller.resolveUserInput(controller.interaction.pendingRequests[0], [{
       questionId: "scope",
       selectedOptionIds: ["tests"],
       freeFormText: null,
@@ -133,7 +135,40 @@ describe("ChatComposerRuntimeController interactions", () => {
       providerRequestId: "provider-request-1",
     }));
   });
+
+  it("resolves each of several open approvals by its own request id", async () => {
+    const controller = new ChatComposerRuntimeController(controllerOptions());
+    const first = pendingRequest("approval", "1");
+    const second = pendingRequest("approval", "2");
+    controller.interaction = { ...interaction(null), pendingRequests: [first, second] };
+    api.readInteraction.mockResolvedValueOnce({ ...interaction(null), pendingRequests: [second] })
+      .mockResolvedValueOnce(interaction(null));
+    const decision = { kind: "allow_once" as const, providerOptionId: "accept", updatedToolInput: null };
+
+    await controller.resolveApproval(first, decision);
+    expect(controller.interaction?.pendingRequests).toEqual([second]);
+    await controller.resolveApproval(second, decision);
+
+    expect(api.resolveApproval.mock.calls.map(([command]) => [command.requestId, command.providerRequestId])).toEqual([
+      ["request-1", "provider-request-1"],
+      ["request-2", "provider-request-2"],
+    ]);
+    expect(controller.interaction?.pendingRequests).toEqual([]);
+  });
 });
+
+function pendingRequest(requestKind: "approval" | "user_input", suffix = "1"): ChatPendingRequestRead {
+  return {
+    id: `request-${suffix}`,
+    turnId: "turn-1",
+    providerRequestId: `provider-request-${suffix}`,
+    requestKind,
+    safeDisplay: { schemaVersion: 1, value: {} },
+    allowedDecisions: { schemaVersion: 1, value: [] },
+    openedAt: "2026-08-04T12:00:00.000Z",
+    rememberable: null,
+  };
+}
 
 function interaction(requestKind: "approval" | "user_input" | null): ChatInteractionStateRead {
   return {
@@ -143,16 +178,7 @@ function interaction(requestKind: "approval" | "user_input" | null): ChatInterac
       : "active",
     activeTurnId: "turn-1",
     capabilities: { entries: [] },
-    pendingRequest: requestKind ? {
-      id: "request-1",
-      turnId: "turn-1",
-      providerRequestId: "provider-request-1",
-      requestKind,
-      safeDisplay: { schemaVersion: 1, value: {} },
-      allowedDecisions: { schemaVersion: 1, value: [] },
-      openedAt: "2026-08-04T12:00:00.000Z",
-      rememberable: null,
-    } : null,
+    pendingRequests: requestKind ? [pendingRequest(requestKind)] : [],
     queuedFollowup: null,
     usage: null,
     accountStatus: null,

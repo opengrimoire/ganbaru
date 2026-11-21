@@ -535,7 +535,7 @@
   });
 
   $effect(() => {
-    const pending = chat.interaction?.pendingRequest ?? null;
+    const pending = chat.interaction?.pendingRequests.at(-1) ?? null;
     if (!pending) {
       announcedRequestId = null;
       assertiveAnnouncement = "";

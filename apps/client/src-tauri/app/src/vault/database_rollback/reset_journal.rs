@@ -8,7 +8,7 @@
 
 use super::restore_journal::{Recovery, flush, move_back};
 use super::{moved_entry_names, parse_rollback_id, prune_unchecked, rollback_root};
-use crate::vault::journal_file;
+use crate::vault::{VAULT_MANIFEST_FILE, journal_file};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -197,9 +197,11 @@ impl ResetRecord {
                     return Ok(Recovery::Pending(reason));
                 }
             }
-            // The reset copy is whole, so a retention failure is logged rather than keeping the
-            // vault closed.
+            // The marker stops recording data before the journal closes, so the next open starts
+            // the vault empty instead of refusing it. The reset copy is whole, so a retention
+            // failure is logged rather than keeping the vault closed.
             Step::Finish => {
+                clear_recorded_data(&self.vault)?;
                 if let Err(error) = prune_unchecked(&self.vault, now) {
                     eprintln!("Reset cleanup: {error}");
                 }
@@ -227,6 +229,15 @@ impl ResetRecord {
         }
         flush(&[&rollback_root(&self.vault)])?;
         Ok(None)
+    }
+}
+
+/// Records in the marker of `vault` that it holds no data. A folder without a marker records
+/// nothing, so there is nothing to clear.
+fn clear_recorded_data(vault: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(vault.join(VAULT_MANIFEST_FILE)) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        _ => crate::vault::record_vault_data(vault, false),
     }
 }
 

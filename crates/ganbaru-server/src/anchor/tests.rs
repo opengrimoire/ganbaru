@@ -99,7 +99,7 @@ impl Founder {
         std::fs::write(
             directory.path().join("vault.json"),
             format!(
-                "{{\"app\":\"ganbaru\",\"schemaVersion\":1,\"vaultId\":\"{VAULT_ID}\",\"displayName\":\"Test\",\"createdAt\":\"2026-01-01T00:00:00Z\"}}"
+                "{{\"app\":\"ganbaru\",\"schemaVersion\":2,\"vaultId\":\"{VAULT_ID}\",\"displayName\":\"Test\",\"createdAt\":\"2026-01-01T00:00:00Z\",\"hasData\":true}}"
             ),
         )
         .unwrap();

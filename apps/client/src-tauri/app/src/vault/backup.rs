@@ -1171,7 +1171,7 @@ mod tests {
     }
 
     fn test_manifest(vault_id: &str) -> Vec<u8> {
-        format!(r#"{{"app":"ganbaru","schemaVersion":1,"vaultId":"{vault_id}","displayName":"Vault","createdAt":"2026-10-20T00:00:00Z"}}"#).into_bytes()
+        format!(r#"{{"app":"ganbaru","schemaVersion":2,"vaultId":"{vault_id}","displayName":"Vault","createdAt":"2026-10-20T00:00:00Z","hasData":true}}"#).into_bytes()
     }
 
     #[test]

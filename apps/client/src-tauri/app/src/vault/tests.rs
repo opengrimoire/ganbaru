@@ -207,6 +207,7 @@ fn vault_markers_refuse_ids_that_could_name_other_key_files_or_accounts() {
             "vaultId": vault_id,
             "displayName": "Vault",
             "createdAt": "2026-10-20T00:00:00Z",
+            "hasData": false,
         })
         .to_string()
     };
@@ -272,6 +273,7 @@ fn folders_with_a_foreign_or_unsupported_marker_are_refused_before_any_write() {
                 "vaultId": "vault",
                 "displayName": "Vault",
                 "createdAt": "2026-10-20T00:00:00Z",
+                "hasData": false,
             }),
             "selected folder is not a Ganbaru folder".to_string(),
         ),
@@ -282,6 +284,7 @@ fn folders_with_a_foreign_or_unsupported_marker_are_refused_before_any_write() {
                 "vaultId": "vault",
                 "displayName": "Vault",
                 "createdAt": "2026-10-20T00:00:00Z",
+                "hasData": false,
             }),
             format!(
                 "unsupported Ganbaru folder schema version {}",
@@ -576,4 +579,101 @@ fn provider_probe_requires_current_authority_support_fields() {
 
     assert!(state.is_err());
     let _ = fs::remove_file(&path);
+}
+
+/// A test vault activated in a fresh config directory, removed on drop.
+struct OpenedVault {
+    config: PathBuf,
+    root: PathBuf,
+}
+
+impl OpenedVault {
+    fn new(name: &str) -> Self {
+        let config = unique_path(&format!("{name}-config"));
+        let database =
+            activate_test_vault(&config, &unique_path(name), "data-vault", "device-a").unwrap();
+        let root = database.parent().unwrap().to_path_buf();
+        Self { config, root }
+    }
+
+    async fn open(&self) -> Result<(), String> {
+        let registry = crate::db::DatabaseState::default();
+        let opened = crate::db::connect_vault_for_sync_in(&registry, &self.config).await;
+        registry.close_all().await.unwrap();
+        opened.map(|_| ())
+    }
+
+    fn has_data(&self) -> bool {
+        read_vault_manifest(&self.root).unwrap().has_data
+    }
+}
+
+impl Drop for OpenedVault {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+        let _ = fs::remove_dir_all(&self.config);
+    }
+}
+
+#[tokio::test]
+async fn the_first_open_records_that_the_vault_holds_data() {
+    let vault = OpenedVault::new("has-data-first-open");
+    assert!(!vault.has_data());
+    vault.open().await.unwrap();
+    assert!(vault.has_data());
+    vault.open().await.unwrap();
+    assert!(vault.has_data());
+}
+
+#[tokio::test]
+async fn a_vault_that_held_data_never_reopens_empty() {
+    for lost in ["missing", "empty"] {
+        let vault = OpenedVault::new("has-data-lost");
+        vault.open().await.unwrap();
+        let database = database_path(&vault.root);
+        fs::remove_file(&database).unwrap();
+        if lost == "empty" {
+            fs::write(&database, b"").unwrap();
+        }
+        let marker = fs::read(manifest_path(&vault.root)).unwrap();
+
+        assert_eq!(
+            vault.open().await,
+            Err(VAULT_DATABASE_MISSING.to_string()),
+            "{lost}"
+        );
+        assert_eq!(
+            fs::metadata(&database).map(|meta| meta.len()).ok(),
+            (lost == "empty").then_some(0),
+            "{lost}"
+        );
+        assert_eq!(
+            fs::read(manifest_path(&vault.root)).unwrap(),
+            marker,
+            "{lost}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_vault_reset_reopens_empty_and_holds_data_again() {
+    let vault = OpenedVault::new("has-data-reset");
+    vault.open().await.unwrap();
+    database_rollback::move_database_to_rollback(&vault.root, now_utc())
+        .unwrap()
+        .unwrap();
+    assert!(!vault.has_data());
+    vault.open().await.unwrap();
+    assert!(vault.has_data());
+}
+
+#[tokio::test]
+async fn a_marker_without_the_data_fact_is_refused() {
+    let vault = OpenedVault::new("has-data-old-marker");
+    let mut marker: serde_json::Value =
+        serde_json::from_slice(&fs::read(manifest_path(&vault.root)).unwrap()).unwrap();
+    marker.as_object_mut().unwrap().remove("hasData");
+    fs::write(manifest_path(&vault.root), marker.to_string()).unwrap();
+    assert!(vault.open().await.is_err());
+    assert!(read_vault_manifest(&vault.root).is_err());
 }

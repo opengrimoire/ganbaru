@@ -1553,7 +1553,7 @@ mod tests {
 
     fn write_manifest(vault: &Path, vault_id: &str) {
         let manifest = format!(
-            r#"{{"app":"ganbaru","schemaVersion":1,"vaultId":"{vault_id}","displayName":"Vault","createdAt":"2026-10-20T00:00:00Z"}}"#
+            r#"{{"app":"ganbaru","schemaVersion":2,"vaultId":"{vault_id}","displayName":"Vault","createdAt":"2026-10-20T00:00:00Z","hasData":true}}"#
         );
         fs::write(vault.join(VAULT_MANIFEST_FILE), manifest).unwrap();
     }

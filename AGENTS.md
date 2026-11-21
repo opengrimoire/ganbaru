@@ -140,7 +140,7 @@ Planned work without source directories yet includes the Firefox extension, the 
 
 ```
 Ganbaru/
-  vault.json: folder marker, id, display name, and schema version
+  vault.json: folder marker, id, display name, schema version, and whether the vault has held data
   vault.lock: device-local advisory lock that keeps a second Ganbaru process out of the vault; never archived
   ganbaru.sqlite: SQLite source of truth for structured data, portable preferences, Notes, and indexes
   .database-rollbacks/: device-local copies kept by Reset local data, rollback restores, and snapshot copy replacements, bounded and restorable from Settings > Data

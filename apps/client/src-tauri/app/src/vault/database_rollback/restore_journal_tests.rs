@@ -224,6 +224,7 @@ fn write_manifest(folder: &Path, vault_id: &str) {
         "vaultId": vault_id,
         "displayName": "Test",
         "createdAt": "2026-10-18T07:00:00.000Z",
+        "hasData": true,
     });
     fs::write(folder.join(VAULT_MANIFEST_FILE), manifest.to_string()).unwrap();
 }

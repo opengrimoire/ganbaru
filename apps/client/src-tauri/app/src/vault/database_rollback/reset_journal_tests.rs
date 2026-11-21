@@ -299,3 +299,29 @@ async fn opening_the_vault_after_a_crash_mid_reset_reopens_its_data() {
     let _ = fs::remove_dir_all(vault);
     let _ = fs::remove_dir_all(config);
 }
+
+#[test]
+fn a_crash_once_moved_stops_the_marker_recording_data() {
+    let fixture = Fixture::new("reset-moved-marker");
+    let marker = serde_json::json!({
+        "app": "ganbaru",
+        "schemaVersion": crate::vault::VAULT_SCHEMA_VERSION,
+        "vaultId": "live-vault",
+        "displayName": "Test",
+        "createdAt": "2026-10-18T07:00:00.000Z",
+        "hasData": true,
+    });
+    fs::write(fixture.vault.join(VAULT_MANIFEST_FILE), marker.to_string()).unwrap();
+    fixture.crash(Phase::Moved, moved_entry_names(false).len());
+    assert_eq!(
+        recover_restore(&fixture.vault).unwrap(),
+        RestoreRecovery::Settled
+    );
+    assert!(
+        !crate::vault::read_vault_manifest(&fixture.vault)
+            .unwrap()
+            .has_data
+    );
+    assert!(crate::vault::refuse_lost_database(&fixture.vault).is_ok());
+    assert!(!fixture.journal().exists());
+}

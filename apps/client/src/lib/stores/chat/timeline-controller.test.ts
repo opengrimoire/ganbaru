@@ -302,6 +302,20 @@ describe("ChatTimelineController live refresh", () => {
     expect(sequences(timeline.items)).toEqual(before);
     expect(sequences(timeline.items)).toContain(8);
   });
+
+  it("clears a refresh error once a later refresh lands", async () => {
+    const timeline = controller();
+    await timeline.load("thread-1");
+    api.readSince.mockRejectedValueOnce(new Error("offline"));
+    await expect(timeline.refreshLatest("thread-1")).rejects.toThrow("offline");
+    expect(timeline.error).not.toBeNull();
+
+    thread.append(11);
+    await timeline.refreshLatest("thread-1");
+
+    expect(sequences(timeline.items)).toContain(11);
+    expect(timeline.error).toBeNull();
+  });
 });
 
 describe("mergeTimelineDelta", () => {

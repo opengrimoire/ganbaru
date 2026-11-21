@@ -42,6 +42,16 @@ pub async fn cancel(
     persistence::cancel(pool, job_id, cancelled_at).await
 }
 
+/// Settles refreshes that a previous process left queued or running when it stopped.
+///
+/// Run it once when this process first opens the vault, before any refresh can start: no
+/// refresh of this process is active then, so every queued or running job and every source
+/// still marked as refreshing was interrupted. Jobs end as cancelled and keep the last known
+/// availability; sources return to idle.
+pub async fn settle_interrupted(pool: &SqlitePool, settled_at: i64) -> MusicLibraryResult<()> {
+    persistence::settle_interrupted(pool, settled_at).await
+}
+
 pub async fn run_prepared(
     pool: &SqlitePool,
     request: MusicLocalRefreshRequest,

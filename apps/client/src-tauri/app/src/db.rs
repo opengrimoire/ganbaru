@@ -23,25 +23,35 @@ static VAULT_POOLS: LazyLock<DatabaseState> = LazyLock::new(|| {
     registry.set_connection_hook(Some(ganbaru_sync_replica::access::vault_connection_hook(
         vault_commits().clone(),
     )));
-    registry.set_migrated_hook(Some(Arc::new(|pool| Box::pin(convert_migrated_keys(pool)))));
+    registry.set_migrated_hook(Some(Arc::new(|pool| Box::pin(settle_migrated_vault(pool)))));
     registry
 });
 
 /// Replaces the placeholder row keys the Music capture migration writes with their derived
-/// keys, before any writer or sync start can capture a placeholder.
-async fn convert_migrated_keys(pool: sqlx::SqlitePool) -> Result<(), String> {
+/// keys, before any writer or sync start can capture a placeholder, and settles Music refreshes
+/// a previous process left queued or running, before this process can start one.
+async fn settle_migrated_vault(pool: sqlx::SqlitePool) -> Result<(), String> {
     let mut connection = pool
         .acquire()
         .await
         .map_err(|error| format!("acquire key conversion connection: {error}"))?;
     ganbaru_music_library::identity::rekey_pending(&mut connection)
         .await
-        .map(|_| ())
-        .map_err(|error| format!("convert music row keys: {error}"))
+        .map_err(|error| format!("convert music row keys: {error}"))?;
+    drop(connection);
+    let settled_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| format!("read the clock to settle music refreshes: {error}"))?
+        .as_millis();
+    let settled_at = i64::try_from(settled_at)
+        .map_err(|error| format!("read the clock to settle music refreshes: {error}"))?;
+    ganbaru_music_library::local_refresh::settle_interrupted(&pool, settled_at)
+        .await
+        .map_err(|error| format!("settle interrupted music refreshes: {error}"))
 }
 
 /// The process pool registry. Its connection hook, which signals commits, and its
-/// post-migration key conversion are in place before the first pool opens.
+/// post-migration key conversion and refresh settling are in place before the first pool opens.
 pub(crate) fn vault_pools() -> &'static DatabaseState {
     &VAULT_POOLS
 }

@@ -360,4 +360,114 @@ describe("ChatComposerController", () => {
     expect(controller.snapshot()).toMatchObject({ text: "Still typing", dirty: true });
     vi.useRealTimers();
   });
+
+  it("stores a send queued behind a save that conflicts, so a failed send can restore it", async () => {
+    let rejectFirst: ((reason: unknown) => void) | undefined;
+    const api = fakeApi({
+      read: vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(draft({ text: "From the other window" })),
+      save: vi.fn()
+        .mockImplementationOnce(() => new Promise<ChatDraftRead>((_resolve, reject) => { rejectFirst = reject; }))
+        .mockImplementation(async (value) => draft({ ...value, updatedAt: "2026-07-21T12:00:06.000Z" })),
+    });
+    const controller = new ChatComposerController(api, 0, fakeSync().sync);
+    await controller.bind("workspace-1", null);
+
+    controller.setText("Typing");
+    const first = controller.flush();
+    controller.setText("Send this");
+    controller.markSent();
+    const sent = controller.flush();
+    await vi.waitFor(() => expect(api.save).toHaveBeenCalledTimes(1));
+    rejectFirst?.(staleDraft);
+    await Promise.all([first, sent]);
+
+    expect(api.save).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(api.save).mock.calls[1]?.[0]).toMatchObject({ text: "", base: { kind: "any" } });
+    expect(controller.snapshot()).toMatchObject({ text: "", dirty: false, saving: false });
+    expect(controller.restoreSentSnapshot()).toBe(true);
+    expect(controller.snapshot().text).toBe("Send this");
+  });
+
+  it("bases edits made during a send's save on the stored send", async () => {
+    let resolveSend: ((value: ChatDraftRead) => void) | undefined;
+    const api = fakeApi({
+      read: vi.fn(async () => draft()),
+      save: vi.fn()
+        .mockImplementationOnce(() => new Promise<ChatDraftRead>((resolve) => { resolveSend = resolve; }))
+        .mockImplementation(async (value) => draft({ ...value, updatedAt: "2026-07-21T12:00:08.000Z" })),
+    });
+    const controller = new ChatComposerController(api, 0, fakeSync().sync);
+    await controller.bind("workspace-1", null);
+
+    controller.markSent();
+    const sent = controller.flush();
+    await vi.waitFor(() => expect(api.save).toHaveBeenCalledTimes(1));
+    controller.setText("Next prompt");
+    resolveSend?.(draft({ text: "", updatedAt: "2026-07-21T12:00:07.000Z" }));
+    await sent;
+    await controller.flush();
+
+    expect(vi.mocked(api.save).mock.calls.map(([saved]) => saved.base)).toEqual([
+      { kind: "any" },
+      { kind: "saved", updatedAt: "2026-07-21T12:00:07.000Z" },
+    ]);
+  });
+
+  it("stores a rollback made while the send is still saving whatever another window saved", async () => {
+    let resolveSend: ((value: ChatDraftRead) => void) | undefined;
+    const api = fakeApi({
+      read: vi.fn(async () => draft()),
+      save: vi.fn()
+        .mockImplementationOnce(() => new Promise<ChatDraftRead>((resolve) => { resolveSend = resolve; }))
+        .mockImplementation(async (value) => draft({ ...value, updatedAt: "2026-07-21T12:00:08.000Z" })),
+    });
+    const controller = new ChatComposerController(api, 0, fakeSync().sync);
+    await controller.bind("workspace-1", null);
+
+    controller.markSent();
+    const sent = controller.flush();
+    await vi.waitFor(() => expect(api.save).toHaveBeenCalledTimes(1));
+    controller.restoreSentSnapshot();
+    resolveSend?.(draft({ text: "", updatedAt: "2026-07-21T12:00:07.000Z" }));
+    await sent;
+    await controller.flush();
+
+    expect(vi.mocked(api.save).mock.calls.map(([saved]) => [saved.text, saved.base])).toEqual([
+      ["", { kind: "any" }],
+      ["Saved prompt", { kind: "any" }],
+    ]);
+  });
+
+  it("never overwrites a stored draft it failed to read", async () => {
+    const api = fakeApi({ read: vi.fn().mockRejectedValueOnce(new Error("offline")) });
+    const controller = new ChatComposerController(api, 0, fakeSync().sync);
+    await expect(controller.bind("workspace-1", null)).rejects.toThrow("offline");
+
+    controller.setText("Typed after the failed load");
+    await controller.flush().catch(() => undefined);
+
+    for (const [saved] of vi.mocked(api.save).mock.calls) expect(saved.base).not.toEqual({ kind: "any" });
+  });
+
+  it("clears saving once edits made during a save are saved", async () => {
+    let resolveFirst: ((value: ChatDraftRead) => void) | undefined;
+    const api = fakeApi({
+      save: vi.fn()
+        .mockImplementationOnce(() => new Promise<ChatDraftRead>((resolve) => { resolveFirst = resolve; }))
+        .mockImplementation(async (value) => draft({ ...value, updatedAt: "2026-07-21T12:00:08.000Z" })),
+    });
+    const controller = new ChatComposerController(api, 0, fakeSync().sync);
+    await controller.bind("workspace-1", null);
+
+    controller.setText("First");
+    const first = controller.flush();
+    await vi.waitFor(() => expect(api.save).toHaveBeenCalledTimes(1));
+    controller.setText("Second");
+    resolveFirst?.(draft({ text: "First" }));
+    await first;
+    expect(controller.snapshot()).toMatchObject({ saving: true, dirty: true });
+    await controller.flush();
+
+    expect(controller.snapshot()).toMatchObject({ text: "Second", saving: false, dirty: false });
+  });
 });

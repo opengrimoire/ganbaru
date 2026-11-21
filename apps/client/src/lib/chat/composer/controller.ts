@@ -71,8 +71,11 @@ export class ChatComposerController {
   private saveChain: Promise<void> = Promise.resolve();
   /** The stored version of the bound draft that the next save expects to replace. */
   private base: { draftId: string; base: ChatDraftBase } | null = null;
-  /** Set by a send or its rollback, whose content must be stored whatever another window saved. */
-  private overwrite = false;
+  /**
+   * The revision of the latest send or rollback, whose content must be stored whatever another window saved. It
+   * clears once a save of that revision or a later one lands.
+   */
+  private overwriteRevision: number | null = null;
   /** Counts replacements of the bound draft by its stored version, which supersede saves queued before them. */
   private adoptions = 0;
   private listening: Promise<void> | null = null;
@@ -127,7 +130,7 @@ export class ChatComposerController {
       const stored = await this.api.read(draftId);
       if (generation !== this.generation) return;
       this.base = { draftId, base: draftBase(stored) };
-      this.overwrite = false;
+      this.overwriteRevision = null;
       if (stored === null) {
         this.state = { ...this.state, loading: false };
       } else {
@@ -192,7 +195,7 @@ export class ChatComposerController {
     await this.api.delete(draftId);
     this.windowSync.publish(draftId);
     this.base = { draftId, base: NO_BASE };
-    this.overwrite = false;
+    this.overwriteRevision = null;
     this.revision += 1;
     this.state = {
       ...emptySnapshot(),
@@ -209,7 +212,7 @@ export class ChatComposerController {
     this.generation += 1;
     this.revision = 0;
     this.base = null;
-    this.overwrite = false;
+    this.overwriteRevision = null;
     this.state = emptySnapshot();
     this.notify();
   }
@@ -234,7 +237,7 @@ export class ChatComposerController {
         mentions: this.state.mentions.map((mention) => ({ ...mention })),
       },
     };
-    if (this.change({ text: "", richContent: null, attachmentIds: [], mentions: [], sentSnapshot })) this.overwrite = true;
+    if (this.change({ text: "", richContent: null, attachmentIds: [], mentions: [], sentSnapshot })) this.overwriteRevision = this.revision;
   }
 
   public restoreSentSnapshot(): boolean {
@@ -246,7 +249,7 @@ export class ChatComposerController {
       attachmentIds: sent.attachmentIds,
       mentions: sent.mentions,
     });
-    if (changed) this.overwrite = true;
+    if (changed) this.overwriteRevision = this.revision;
     return true;
   }
 
@@ -259,7 +262,7 @@ export class ChatComposerController {
     const payload = this.payload();
     if (payload === null) return;
     const revision = this.revision;
-    const overwrite = this.overwrite;
+    const overwrite = this.overwriteRevision !== null;
     this.state = { ...this.state, saving: true, error: null };
     this.notify();
     const adoptions = this.adoptions;
@@ -271,8 +274,10 @@ export class ChatComposerController {
         const saved = await this.api.save({ ...payload, base: overwrite ? ANY_BASE : this.baseFor(payload.id) });
         if (this.base === null || this.base.draftId === saved.id) this.base = { draftId: saved.id, base: draftBase(saved) };
         this.windowSync.publish(saved.id);
+        if (this.state.draftId === payload.id && this.overwriteRevision !== null && revision >= this.overwriteRevision) {
+          this.overwriteRevision = null;
+        }
         if (this.state.draftId === payload.id && this.revision === revision) {
-          this.overwrite = false;
           this.state = { ...this.state, dirty: false, saving: false };
           this.notify();
         }
@@ -311,7 +316,8 @@ export class ChatComposerController {
   }
 
   private baseFor(draftId: string): ChatDraftBase {
-    return this.base?.draftId === draftId ? this.base.base : ANY_BASE;
+    // A draft this window never read must not replace a stored one, so its first save expects none.
+    return this.base?.draftId === draftId ? this.base.base : NO_BASE;
   }
 
   private listenForOtherWindows(): void {
@@ -349,9 +355,14 @@ export class ChatComposerController {
     }
     if (generation !== this.generation || this.state.draftId !== draftId) return;
     if (reason === "refresh" && this.state.dirty) return;
+    if (this.overwriteRevision !== null) {
+      // A send or its rollback is queued to replace whatever is stored, so the stored version only becomes its base.
+      this.base = { draftId, base: draftBase(stored) };
+      return;
+    }
     this.cancelTimer();
     this.revision += 1;
-    this.overwrite = false;
+    this.overwriteRevision = null;
     this.base = { draftId, base: draftBase(stored) };
     this.adoptions += 1;
     const { workingFolderId, threadId, providerInstanceId, modelSelection, safetyMode, interactionMode } = this.state;

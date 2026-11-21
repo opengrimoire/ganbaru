@@ -152,7 +152,8 @@
             props: {
               get participant() { return participantForReference(reference); },
               presentation: "mention",
-              triggerLabel: slot.text,
+              // A mention of yourself shows your current display name, whatever name it was posted with.
+              triggerLabel: reference.participantKind === "local_user" ? null : slot.text,
               get currentResponseSettings() { return currentResponseSettings; },
             },
           }));

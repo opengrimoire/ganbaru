@@ -19,6 +19,8 @@
   import { agentNeedsSetupHere } from "$lib/chat/agents/agent-setup";
   import { chatAgentDefaultModelId } from "$lib/chat/agents/channel-access";
   import { isActiveChannelMember } from "$lib/chat/agents/channel-members";
+  import { chatParticipantDisplayName } from "$lib/chat/agents/participant-display";
+  import { getPreferences } from "$lib/stores/preferences.svelte";
   import type {
     ChatAttachmentRead,
     ChatAssignmentInputRead,
@@ -134,6 +136,7 @@
   } = $props();
 
   const chat = useChat();
+  const preferences = getPreferences();
   const paneEvents = useChatPaneEvents();
   const projects = useProjects();
   const localization = getLocalization();
@@ -756,12 +759,13 @@
       const agent = chat.agents.find((candidate) => (
         candidate.participant.id === membership.participant.id
       )) ?? null;
-      if (!matchesQuery(normalized, membership.participant.displayName)) return [];
+      const label = chatParticipantDisplayName(membership.participant, preferences.profileDisplayName, t("chat.timeline.you"));
+      if (!matchesQuery(normalized, label, membership.participant.displayName)) return [];
       return [{
         key: `participant:${membership.participant.id}`,
         kind: "participant" as const,
         group: t("chat.organization.channelParticipants"),
-        label: membership.participant.displayName,
+        label,
         description: agent ? t("chat.organization.aiAgent") : t("chat.organization.humanMember"),
         participant: membership.participant,
         agent,

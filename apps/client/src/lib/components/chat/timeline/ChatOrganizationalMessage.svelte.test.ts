@@ -3,6 +3,7 @@
 import { mount, tick, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatMessageRead, ChatParticipantRead } from "$lib/chat/contracts";
+import { getPreferences } from "$lib/stores/preferences.svelte";
 import ChatOrganizationalMessage from "./ChatOrganizationalMessage.svelte";
 
 const localParticipant: ChatParticipantRead = {
@@ -103,6 +104,36 @@ describe("ChatOrganizationalMessage", () => {
     expect(copy?.querySelector("p code")?.textContent).toBe("@Atlas");
     expect(copy?.querySelector("li .mention-trigger")?.textContent).toBe("@Atlas");
     expect(copy?.querySelectorAll(".mention-trigger")).toHaveLength(1);
+  });
+
+  it("shows a mention of yourself with your current display name instead of the posted label", async () => {
+    const preferences = getPreferences();
+    const originalDisplayName = preferences.profileDisplayName;
+    preferences.setProfileDisplayName("Victor");
+    try {
+      target = document.createElement("div");
+      document.body.append(target);
+      component = mount(ChatOrganizationalMessage, {
+        target,
+        props: {
+          message: {
+            ...message,
+            normalizedMarkdown: "@You Test",
+            references: [{
+              kind: "participant",
+              metadata: { referenceId: "reference:me", labelSnapshot: "You", startOffset: 0, endOffset: 4, plainTextProjection: "@You" },
+              participantId: localParticipant.id,
+              participantKind: "local_user",
+            }],
+          },
+        },
+      });
+      await tick();
+
+      expect(target.querySelector(".message-copy .mention-trigger")?.textContent).toBe("@Victor");
+    } finally {
+      preferences.setProfileDisplayName(originalDisplayName);
+    }
   });
 
   it("keeps one control per reference when the message refreshes with the same text", async () => {

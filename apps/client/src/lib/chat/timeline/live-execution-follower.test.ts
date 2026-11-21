@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ChatLiveExecutionRead, ChatLiveFollowRead } from "$lib/chat/contracts";
-import { LiveExecutionFollower, type LiveExecutionView } from "./live-execution-follower";
+import { LiveExecutionFollower, type LiveExecutionFollowerOptions, type LiveExecutionView } from "./live-execution-follower";
 import {
+  applyLiveExecutionPage,
   LIVE_EXECUTION_MIN_WAIT_INTERVAL_MS,
   LIVE_EXECUTION_NOT_SERVED_BASE_MS,
   LIVE_EXECUTION_NOT_SERVED_MAX_MS,
@@ -9,6 +10,7 @@ import {
   LIVE_EXECUTION_RETRY_BASE_MS,
   LIVE_EXECUTION_RETRY_MAX_MS,
   LIVE_EXECUTION_SETTLED_ATTEMPTS,
+  type LiveExecutionState,
 } from "./live-execution";
 
 interface ReadCall {
@@ -20,7 +22,7 @@ interface ReadCall {
 }
 
 /** A follower over a controlled reader, clock, and timer queue. */
-function harness() {
+function harness(initial?: LiveExecutionFollowerOptions["initial"]) {
   const calls: ReadCall[] = [];
   const timers: Array<{ at: number; callback: () => void; cancelled: boolean }> = [];
   const views: LiveExecutionView[] = [];
@@ -36,6 +38,7 @@ function harness() {
       return () => { timer.cancelled = true; };
     },
     now: () => clock,
+    initial,
   });
   return {
     follower,
@@ -81,6 +84,14 @@ function page(overrides: Partial<ChatLiveExecutionRead> = {}): ChatLiveFollowRea
       ...overrides,
     },
   };
+}
+
+/** The state a follower holds after reading `answer`, as a run read earlier would leave it. */
+function heldState(answer: ChatLiveFollowRead): LiveExecutionState {
+  if (answer.kind !== "page") throw new Error("expected a page");
+  const state = applyLiveExecutionPage(null, answer.read).state;
+  if (!state) throw new Error("expected a held state");
+  return state;
 }
 
 async function settle(): Promise<void> {
@@ -289,6 +300,36 @@ describe("LiveExecutionFollower", () => {
     test.follower.pause();
     test.advance(LIVE_EXECUTION_MIN_WAIT_INTERVAL_MS * 5);
     expect(test.calls).toHaveLength(1);
+  });
+
+  it("starts from held rows without dropping them and settles once the desktop confirms the run", async () => {
+    const test = harness({ assignmentId: "assignment-1", state: heldState(page({ settled: true })) });
+    test.follower.follow("assignment-1", false);
+    expect(test.views).toHaveLength(0);
+    expect(test.calls[0]).toMatchObject({ assignmentId: "assignment-1", afterChange: 5, wait: false });
+
+    test.calls[0]?.answer(page({ items: [], settled: true }));
+    await settle();
+    expect(test.last()?.status).toBe("settled");
+    expect(test.last()?.state?.items.map((item) => item.activityId)).toEqual(["row-1"]);
+    test.advance(60_000);
+    expect(test.calls).toHaveLength(1);
+  });
+
+  it("reads the whole run again when held rows belong to an earlier turn of the work", async () => {
+    const test = harness({ assignmentId: "assignment-1", state: heldState(page({ settled: true })) });
+    test.follower.follow("assignment-1");
+    test.calls[0]?.answer(page({ turnId: "turn-2", items: [] }));
+    await settle();
+    expect(test.last()).toMatchObject({ state: null, status: "connecting" });
+    expect(test.calls[1]).toMatchObject({ afterChange: null, wait: false });
+  });
+
+  it("drops held rows of another assignment", () => {
+    const test = harness({ assignmentId: "assignment-1", state: heldState(page({ settled: true })) });
+    test.follower.follow("assignment-2");
+    expect(test.last()).toEqual({ state: null, status: "connecting", claimExpected: true });
+    expect(test.calls[0]).toMatchObject({ assignmentId: "assignment-2", afterChange: null });
   });
 
   it("starts over for another assignment", async () => {

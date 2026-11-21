@@ -25,6 +25,7 @@
     type CachedExactExecution,
     type ExactExecutionRead,
   } from "$lib/chat/timeline/reply-thread-model";
+  import { settledLiveExecutions } from "$lib/chat/timeline/live-execution-cache";
   import { formatDateTime } from "$lib/i18n/formatters";
   import { organizationalScrollFollowsEnd } from "$lib/chat/timeline/organizational-scroll";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
@@ -145,10 +146,13 @@
     : remoteReplyWork(page?.replies ?? [], assignment, REMOTE_REPLY_WORK_LIMIT));
   /** The run each remote work shows whole, by assignment id, as its live view reports it. Assignment ids are unique
    * across threads, so a view of another thread cannot stand for this one. */
-  let remoteRunsShown = $state<Record<string, string>>({});
+  let remoteRunsShown = $state<Record<string, string | null>>({});
   const remoteShown = $derived(new Map(remoteWork.flatMap((work) => {
-    const runId = remoteRunsShown[work.assignmentId];
-    if (runId === undefined) return [];
+    // Until its live view reports, a work shows the settled run held this session, so the thread opens with its turn.
+    const runId = work.assignmentId in remoteRunsShown
+      ? remoteRunsShown[work.assignmentId]
+      : settledLiveExecutions.shownRun(work.assignmentId);
+    if (runId === null || runId === undefined) return [];
     const active = workWithoutRun?.id === work.assignmentId;
     return [[work.assignmentId, { runId, active }] as const];
   })));
@@ -203,11 +207,8 @@
   function noteRemoteRunShown(assignmentId: string, runId: string | null): void {
     // Called from a live view's effect, which must not come to depend on every other view's run.
     const current = untrack(() => remoteRunsShown);
-    if ((current[assignmentId] ?? null) === runId) return;
-    const next = { ...current };
-    if (runId === null) delete next[assignmentId];
-    else next[assignmentId] = runId;
-    remoteRunsShown = next;
+    if (assignmentId in current && current[assignmentId] === runId) return;
+    remoteRunsShown = { ...current, [assignmentId]: runId };
   }
 
   function entryCreatedAt(entry: (typeof renderEntries)[number]): string {

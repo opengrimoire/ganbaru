@@ -39,6 +39,11 @@ export interface LiveExecutionFollowerOptions {
   onUpdate: (view: LiveExecutionView) => void;
   schedule?: LiveExecutionScheduler;
   now?: () => number;
+  /**
+   * Rows already held for an assignment, such as a run read earlier this session. Following that assignment starts
+   * from their cursor, so the rows show from the start and the first read only confirms them.
+   */
+  initial?: { assignmentId: ChatWorkAssignmentId; state: LiveExecutionState };
 }
 
 function timerScheduler(callback: () => void, delayMs: number): () => void {
@@ -75,6 +80,11 @@ export class LiveExecutionFollower {
     this.#onUpdate = options.onUpdate;
     this.#schedule = options.schedule ?? timerScheduler;
     this.#now = options.now ?? (() => Date.now());
+    if (options.initial) {
+      this.#assignmentId = options.initial.assignmentId;
+      this.#state = options.initial.state;
+      this.#status = "live";
+    }
   }
 
   /**

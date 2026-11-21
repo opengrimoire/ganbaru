@@ -1,8 +1,10 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { readChatLiveExecution } from "$lib/api/chat";
   import type { ChatParticipantRead, ChatWorkAssignmentId, ChatWorkAssignmentRead } from "$lib/chat/contracts";
   import { liveExecutionShowsWholeMessages, liveExecutionTimelinePage } from "$lib/chat/timeline/live-execution";
   import { LiveExecutionFollower, type LiveExecutionView } from "$lib/chat/timeline/live-execution-follower";
+  import { settledLiveExecutions } from "$lib/chat/timeline/live-execution-cache";
   import ChatExecutionTimeline from "./ChatExecutionTimeline.svelte";
   import ChatRemoteWorkRow from "./ChatRemoteWorkRow.svelte";
 
@@ -30,11 +32,21 @@
     onShown?: (runId: string | null) => void;
   } = $props();
 
-  let view = $state<LiveExecutionView>({ state: null, status: "connecting", claimExpected: true });
+  // Each entry is keyed by its work, so the assignment stays the same for the life of this view.
+  const followedAssignmentId = untrack(() => assignmentId);
+  /** The settled run read earlier this session, shown at once while the desktop confirms it. */
+  const held = settledLiveExecutions.get(followedAssignmentId);
+  let view = $state<LiveExecutionView>(held
+    ? { state: held, status: "live", claimExpected: false }
+    : { state: null, status: "connecting", claimExpected: true });
   let foreground = $state(typeof document === "undefined" || document.visibilityState === "visible");
   const follower = new LiveExecutionFollower({
     read: readChatLiveExecution,
-    onUpdate: (next) => { view = next; },
+    onUpdate: (next) => {
+      view = next;
+      settledLiveExecutions.remember(followedAssignmentId, next.state);
+    },
+    initial: held ? { assignmentId: followedAssignmentId, state: held } : undefined,
   });
   const timelinePage = $derived(liveExecutionTimelinePage(view.state));
   const active = $derived(work !== null);

@@ -56,15 +56,16 @@ export function editedScheduled(
 export type ComposerSubmitAction = "saveReply" | "saveScheduled" | "send";
 
 /**
- * What a submit does and whether it first waits for the mentioned agent's assignment preview. A send checks agent
- * blockers that stay hidden while the preview loads, so it waits.
+ * What a submit does and whether it first waits for the mentioned agent's assignment preview. A send and a
+ * scheduled message save both check agent blockers that stay hidden while the preview loads, so both wait; a
+ * waiting reply edit replaces only text and checks no agent blockers.
  */
 export function composerSubmitPlan(state: ComposerEditTarget): { action: ComposerSubmitAction; awaitsPreview: boolean } {
   switch (state.phase) {
     case "waitingReply":
       return { action: "saveReply", awaitsPreview: false };
     case "scheduled":
-      return { action: "saveScheduled", awaitsPreview: false };
+      return { action: "saveScheduled", awaitsPreview: true };
     case "draft":
       return { action: "send", awaitsPreview: true };
   }

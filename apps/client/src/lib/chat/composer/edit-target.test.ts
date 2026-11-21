@@ -58,7 +58,7 @@ describe("composerSubmitPlan", () => {
     expect(composerSubmitPlan(replyEdit)).toEqual({ action: "saveReply", awaitsPreview: false });
   });
 
-  it("saves a scheduled message", () => {
-    expect(composerSubmitPlan(scheduledEdit).action).toBe("saveScheduled");
+  it("saves a scheduled message only after the preview settles, since it checks the same agent blockers as a send", () => {
+    expect(composerSubmitPlan(scheduledEdit)).toEqual({ action: "saveScheduled", awaitsPreview: true });
   });
 });

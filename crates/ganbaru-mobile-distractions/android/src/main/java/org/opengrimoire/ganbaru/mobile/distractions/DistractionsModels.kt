@@ -66,11 +66,19 @@ internal data class DistractionsRulesSnapshot(
   val copy: DistractionsCopy,
 )
 
+/**
+ * The accepted Focus phase published by the native Focus owner.
+ *
+ * [manualPause] is true only for a pause the user started and can resume. Android has no
+ * input-idle source and never records suspend pauses today, but any other pause reason
+ * arrives with [manualPause] false and keeps blocking, as on desktop.
+ */
 internal data class PomodoroPhaseState(
   val active: Boolean,
   val runId: String?,
   val phase: String?,
   val running: Boolean,
+  val manualPause: Boolean,
   val validUntilEpochMs: Long,
 )
 
@@ -209,7 +217,8 @@ internal object DistractionsEvaluator {
     } ?: return false
     if (rule.packageName.isBlank() || phase == null || !phase.active) return false
     if (phase.validUntilEpochMs <= nowEpochMs) return false
-    if (!phase.running && schedule.pauseDuringFocusPause) return false
+    // Mirrors `RuntimeAuthority::enforces_blocking`: only a manual pause can lift blocking.
+    if (!phase.running && phase.manualPause && schedule.pauseDuringFocusPause) return false
     return when (phase.phase) {
       "focus" -> schedule.blockDuringFocus
       "short_break" -> schedule.blockDuringShortBreaks

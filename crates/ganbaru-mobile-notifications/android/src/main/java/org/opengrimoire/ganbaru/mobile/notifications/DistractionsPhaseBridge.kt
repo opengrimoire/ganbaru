@@ -23,6 +23,8 @@ internal object DistractionsPhaseBridge {
       putExtra("runId", projection.runId)
       putExtra("phase", phase.phase)
       putExtra("running", projection.isRunning)
+      // Only a manual pause is resumable; every other pause keeps blocking.
+      putExtra("manualPause", !projection.isRunning && projection.isResumable)
       putExtra(
         "validUntilEpochMs",
         if (projection.isRunning) phase.endsAtEpochMs else projection.eventEndsAtEpochMs,

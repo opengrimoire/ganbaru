@@ -30,6 +30,14 @@ import {
   type YouTubeHostPlaylistMessage,
   type YouTubeSource,
 } from "./youtube-host";
+import {
+  YOUTUBE_START_IDLE,
+  beginYouTubeStart,
+  isYouTubeStarting,
+  youtubeStartAfterDeadline,
+  youtubeStartAfterStatus,
+  type YouTubeStartState,
+} from "./youtube-start-state";
 
 const OPTIMISTIC_PAUSE_MS = 1_500;
 const PLAYLIST_RESOLVE_TIMEOUT_MS = 18_000;
@@ -46,7 +54,6 @@ export interface MusicYouTubeState {
   youtubeHostUrl: string | null;
   youtubeFrame: HTMLIFrameElement | null;
   youtubeHostToken: string | null;
-  youtubeHostReady: boolean;
 }
 
 interface MusicYouTubeAdapterContext {
@@ -102,6 +109,28 @@ export function createMusicYouTubeAdapter(
   let playlistTimeoutId: number | null = null;
   let optimisticPauseUntilMs = 0;
   let lastMetadataSignature = "";
+  let start: YouTubeStartState = YOUTUBE_START_IDLE;
+  let startTimeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  function clearStartTimeout(): void {
+    if (startTimeoutId === null) return;
+    clearTimeout(startTimeoutId);
+    startTimeoutId = null;
+  }
+
+  /** Moves the autoplay start to `next`, publishes it, and arms its deadline while starting. */
+  function setStart(next: YouTubeStartState): void {
+    start = next;
+    clearStartTimeout();
+    context.setPlaybackStarting(isYouTubeStarting(next));
+    if (next.phase !== "starting") return;
+    const { generation, deadlineMs } = next;
+    startTimeoutId = setTimeout(() => {
+      startTimeoutId = null;
+      const expired = youtubeStartAfterDeadline(start, generation, deadlineMs);
+      if (expired !== start) setStart(expired);
+    }, Math.max(0, deadlineMs - currentTime()));
+  }
 
   function reportPersistenceError(operation: string, error: unknown): void {
     console.error(`Unable to ${operation}.`, error);
@@ -218,7 +247,6 @@ export function createMusicYouTubeAdapter(
     state.youtubeHostUrl = url.toString();
     state.youtubeHostToken = url.searchParams.get("token");
     hostLoadId = url.searchParams.get("load");
-    state.youtubeHostReady = false;
     await tick();
   }
 
@@ -228,7 +256,7 @@ export function createMusicYouTubeAdapter(
     generation: number,
     autoplay: boolean,
   ): Promise<void> {
-    context.setPlaybackStarting(autoplay);
+    setStart(beginYouTubeStart(generation, autoplay, currentTime()));
     lastMetadataSignature = "";
     resolvingPlaylist = source.kind === "youtube-playlist"
       ? {
@@ -256,7 +284,7 @@ export function createMusicYouTubeAdapter(
       await ensureHostFrame(generation, source, positionMs, autoplay);
     } catch (error) {
       if (!context.loadRuntime.isCurrent(generation)) return;
-      context.setPlaybackStarting(false);
+      setStart(YOUTUBE_START_IDLE);
       clearPlaylistResolution();
       console.error("Unable to start the YouTube player.", error);
       failPlayback("youtube-player-failed");
@@ -338,12 +366,9 @@ export function createMusicYouTubeAdapter(
       || message.token !== state.youtubeHostToken
       || message.load !== hostLoadId
     ) return;
-    if (message.type === "ganbaru-youtube-ready") {
-      state.youtubeHostReady = true;
-      return;
-    }
+    if (message.type === "ganbaru-youtube-ready") return;
     if (message.type === "ganbaru-youtube-error") {
-      context.setPlaybackStarting(false);
+      setStart(YOUTUBE_START_IDLE);
       const failedPlaylist = resolvingPlaylist;
       clearPlaylistResolution();
       const resolutionState = message.code === 101 || message.code === 150
@@ -396,9 +421,8 @@ export function createMusicYouTubeAdapter(
       }
     }
     if (message.status === "playing" && currentTime() < optimisticPauseUntilMs) return;
-    if (message.status !== "ready" && message.status !== "loading") {
-      context.setPlaybackStarting(false);
-    }
+    const settled = youtubeStartAfterStatus(start, message.status);
+    if (settled !== start) setStart(settled);
     if (message.status !== "playing") optimisticPauseUntilMs = 0;
     const status = stableStatusDuringYouTubeBuffering(
       state.snapshot.status,
@@ -424,7 +448,7 @@ export function createMusicYouTubeAdapter(
   }
 
   function destroy(): void {
-    context.setPlaybackStarting(false);
+    setStart(YOUTUBE_START_IDLE);
     clearPlaylistResolution();
     if (state.currentSource && isYouTubeSource(state.currentSource)) {
       post({ action: "stop" });

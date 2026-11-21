@@ -97,7 +97,6 @@ class MusicPlayerStore {
   youtubeHostUrl = $state<string | null>(null);
   youtubeFrame = $state<HTMLIFrameElement | null>(null);
   youtubeHostToken = $state<string | null>(null);
-  youtubeHostReady = $state(false);
   youtubePlaybackStarting = $state(false);
   youtubeKnownDurations = $state<Record<string, number>>({});
   localMediaElement = $state<HTMLMediaElement | null>(null);
@@ -425,7 +424,7 @@ class MusicPlayerStore {
 
   private stopBrowser(): void {
     this.loadRuntime.begin(); this.youtubeAdapter.destroy(); this.webviewLocalAdapter.reset();
-    this.browserSessionId = null; this.youtubeHostUrl = null; this.youtubeHostReady = false; this.youtubeHostToken = null;
+    this.browserSessionId = null; this.youtubeHostUrl = null; this.youtubeHostToken = null;
     this.externalControls.updateBrowser();
   }
 

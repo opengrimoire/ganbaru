@@ -15,6 +15,7 @@
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import {
     beginLazyComponentLoad,
+    lazyLoadCanStart,
     rejectLazyComponentLoad,
     resolveLazyComponentLoad,
     type LazyComponentLoadState,
@@ -111,10 +112,15 @@
   let detailScrollbarInsetTop = $state(0);
   let detailScrollbarInsetBottom = $state(0);
   let settingsScrollEl: HTMLElement | undefined = $state();
-  let MobileThemeEditor = $state<MobileThemeEditorComponent | null>(null);
-  let mobileThemeEditorLoading = $state(false);
-  let mobileThemeEditorLoadError = $state("");
-  let mobileThemeEditorLoadGeneration = 0;
+  let mobileThemeEditorLoad = $state.raw<LazyComponentLoadState<"editor", MobileThemeEditorComponent> | null>(null);
+  const MobileThemeEditor = $derived(
+    mobileThemeEditorLoad?.status === "ready" ? mobileThemeEditorLoad.component : null,
+  );
+  const mobileThemeEditorLoadError = $derived(
+    mobileThemeEditorLoad?.status === "failed"
+      ? t("common.viewLoadFailed", t("settings.theme.editor.dialogLabel"))
+      : "",
+  );
   const useTopNav = $derived(!mobilePresentation && viewport.below("compact"));
   const useIconRail = $derived(!useTopNav && viewport.below("regular"));
   const settingsScrollbarInset = $derived(useTopNav ? 12 : useIconRail ? 16 : 24);
@@ -132,30 +138,26 @@
   $effect(() => {
     const shouldPrepare = mobilePresentation
       && ((mobileSectionOpen && activeSection === "appearance") || themeEditor.editingId);
-    if (!shouldPrepare || MobileThemeEditor || mobileThemeEditorLoading) return;
-    void prepareMobileThemeEditor();
+    if (!shouldPrepare || mobileThemeEditorLoad !== null) return;
+    void untrack(() => prepareMobileThemeEditor());
   });
 
+  /** Loads the mobile theme editor once on its own; after a failure, only `retry` loads it again. */
   async function prepareMobileThemeEditor(retry = false): Promise<void> {
-    if (MobileThemeEditor || mobileThemeEditorLoading) return;
-    const generation = ++mobileThemeEditorLoadGeneration;
-    mobileThemeEditorLoading = true;
-    mobileThemeEditorLoadError = "";
+    if (!lazyLoadCanStart(mobileThemeEditorLoad, retry)) return;
+    const loading = beginLazyComponentLoad(mobileThemeEditorLoad, "editor");
+    mobileThemeEditorLoad = loading;
     try {
       const component = await (retry
         ? retryMobileThemeEditor()
         : loadMobileThemeEditor());
-      if (generation === mobileThemeEditorLoadGeneration) {
-        MobileThemeEditor = component;
+      if (mobileThemeEditorLoad) {
+        mobileThemeEditorLoad = resolveLazyComponentLoad(mobileThemeEditorLoad, "editor", loading.requestId, component);
       }
     } catch (error) {
-      if (generation !== mobileThemeEditorLoadGeneration) return;
-      mobileThemeEditorLoadError = t("common.viewLoadFailed", t("settings.theme.editor.dialogLabel"));
+      if (mobileThemeEditorLoad?.requestId !== loading.requestId) return;
+      mobileThemeEditorLoad = rejectLazyComponentLoad(mobileThemeEditorLoad, "editor", loading.requestId, error);
       console.error("Failed to load the mobile theme editor", error);
-    } finally {
-      if (generation === mobileThemeEditorLoadGeneration) {
-        mobileThemeEditorLoading = false;
-      }
     }
   }
 
@@ -166,7 +168,7 @@
   }
 
   async function cancelUnloadedThemeEditor(): Promise<void> {
-    mobileThemeEditorLoadError = "";
+    if (mobileThemeEditorLoad?.status === "failed") mobileThemeEditorLoad = null;
     await themeEditor.cancel();
   }
 

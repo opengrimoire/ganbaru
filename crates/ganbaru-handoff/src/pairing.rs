@@ -905,6 +905,9 @@ impl PairingManager {
         state
             .revoked_peers
             .retain(|_, revoked| revoked.certificate_fingerprint != peer.certificate_fingerprint);
+        // Linking a device is a new link, so an earlier self unlink or revocation no longer applies.
+        state.revoked_by_coordinator = false;
+        state.unlink_reason = None;
         if let Err(error) = persist_initialized_state(&inner) {
             inner.state = Some(previous);
             return Err(error);
@@ -1238,6 +1241,9 @@ fn admit_enrollment(
         linked_at_ms: now_ms,
     };
     let state = initialized_state(inner)?;
+    if state.coordinator.is_some() {
+        return Err("a device linked to a coordinator cannot link devices of its own".to_string());
+    }
     if peer.device_id == state.identity.device_id {
         return Err("a device cannot enroll its coordinator identity".to_string());
     }

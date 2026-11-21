@@ -1859,3 +1859,43 @@ fn a_revoked_member_needs_a_new_copy_when_it_links_again() {
     assert!(!restarted.revoked_by_coordinator().expect("revoked"));
     assert!(!restarted.replica_ready().expect("copy readiness"));
 }
+
+#[test]
+fn linking_a_device_ends_an_earlier_unlink_or_revocation() {
+    let (phone_root, phone, _, _) = linked_phone("coordinator-after-revocation");
+    phone
+        .accept_coordinator_revocation(&pin_of(&phone))
+        .expect("revocation");
+    enroll_device(&phone, "device-tablet", "Tablet", 500);
+    assert!(!phone.revoked_by_coordinator().expect("revoked"));
+    assert!(phone.is_linked_for("vault-1").expect("linked"));
+    let restarted = PairingManager::default();
+    restarted
+        .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+        .expect("restart");
+    assert!(!restarted.revoked_by_coordinator().expect("revoked"));
+
+    let temporary = TestDirectory::new("coordinator-after-unlink");
+    let desktop = PairingManager::default();
+    desktop
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize");
+    desktop
+        .unlink_for(UnlinkReason::KeyProtectionLost)
+        .expect("unlink");
+    enroll_device(&desktop, "device-tablet", "Tablet", 500);
+    assert_eq!(desktop.unlink_reason().expect("reason"), None);
+}
+
+#[test]
+fn a_device_linked_to_a_coordinator_cannot_link_devices_of_its_own() {
+    let (phone_root, phone, _, _) = linked_phone("member-enrolls");
+    let tablet = create_identity("device-tablet".to_string()).expect("tablet identity");
+    let refused = enroll_identity(&phone, "vault-1", &tablet, "Tablet", 500).unwrap_err();
+    assert!(refused.contains("linked to a coordinator"), "{refused}");
+    assert!(phone.linked_peers().expect("peers").is_empty());
+    let restarted = PairingManager::default();
+    restarted
+        .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+        .expect("restart keeps a loadable state");
+}

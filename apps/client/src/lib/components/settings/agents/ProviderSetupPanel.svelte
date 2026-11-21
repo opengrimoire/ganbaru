@@ -30,6 +30,13 @@
   import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import SwitchField from "$lib/components/ui/SwitchField.svelte";
+  import {
+    NO_PROVIDER_TEST,
+    currentProviderTest,
+    providerTestSucceeded,
+    transitionProviderTest,
+    type ProviderTestState,
+  } from "./provider-test-state";
 
   let {
     target,
@@ -54,10 +61,9 @@
   let scrollElement: HTMLElement | undefined = $state();
   let initialized = $state(false);
   let saving = $state(false);
-  let testing = $state(false);
   let operationError = $state<string | null>(null);
-  let testResult = $state<ProviderSetupTestRead | null>(null);
-  let testSucceeded = $state(false);
+  let testState = $state<ProviderTestState<ProviderSetupTestRead>>(NO_PROVIDER_TEST);
+  const testing = $derived(testState.phase === "testing");
   let revealSecrets = $state<Record<string, boolean>>({});
   let pendingSecrets = $state<Record<string, string>>({});
   let touchedFields = $state<Record<string, boolean>>({});
@@ -75,6 +81,8 @@
     new Set(chat.settings?.providerInstances.map((entry) => entry.configuration.instanceId) ?? []),
   );
   const validation = $derived(validateProviderSetup(draft, existingIds, editingId));
+  /** The test result of the configuration the draft describes now; editing the draft after a test hides it. */
+  const shownTest = $derived(currentProviderTest(testState, JSON.stringify(configurationFromDraft())));
   const family = $derived(
     chat.settings?.providerFamilies.find((entry) => entry.familyId === draft.familyId) ?? null,
   );
@@ -181,8 +189,7 @@
     draft.providerConfig = defaultProviderConfig(familyId);
     draft.label = displayName;
     draft.instanceId = uniqueInstanceId(displayName);
-    testResult = null;
-    testSucceeded = false;
+    testState = transitionProviderTest(testState, { type: "reset" });
     operationError = null;
   }
 
@@ -318,21 +325,21 @@
 
   async function testSetup(): Promise<void> {
     operationError = null;
-    testResult = null;
-    testSucceeded = false;
-    if (!validation.valid) return;
-    testing = true;
+    if (!validation.valid) {
+      testState = transitionProviderTest(testState, { type: "reset" });
+      return;
+    }
+    const configuration = configurationFromDraft();
+    const configKey = JSON.stringify(configuration);
+    testState = transitionProviderTest(testState, { type: "started", configKey });
     try {
-      const configuration = configurationFromDraft();
       const result = await chat.testProvider(configuration);
-      if (!result) return;
-      testResult = result;
-      testSucceeded = result.probe.state === "healthy"
-        || testResult.probe.state === "authentication_required";
+      testState = transitionProviderTest(testState, result
+        ? { type: "finished", configKey, result, succeeded: providerTestSucceeded(result.probe.state) }
+        : { type: "ended", configKey });
     } catch (error: unknown) {
+      testState = transitionProviderTest(testState, { type: "ended", configKey });
       operationError = errorMessage(error);
-    } finally {
-      testing = false;
     }
   }
 
@@ -835,7 +842,9 @@
       <div class="footer-message" aria-live="polite">
         {#if operationError && family}
           <Notice message={operationError} />
-        {:else if testResult}
+        {:else if shownTest}
+          {@const testResult = shownTest.result}
+          {@const testSucceeded = shownTest.succeeded}
           {@const ResultIcon = testSucceeded ? CircleCheck : CircleAlert}
           {@const facts = [
             ...(!testSucceeded && testResult.probe.detail ? [testResult.probe.detail] : []),

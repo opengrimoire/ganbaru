@@ -168,14 +168,14 @@ pub(super) async fn insert_revision_copied_attachments(
     Ok(())
 }
 
+/// Returns whether a top-level post opens its reply thread at once: it mentions a person, an
+/// agent, or a channel, which invites a reply. Folder, file, and environment references only
+/// point at where work happens, so a post that has nothing else opens no thread.
 pub(super) fn has_thread_eligible_mention(request: &PostChatMessageCommand) -> bool {
     request.references.iter().any(|reference| {
         matches!(
             reference,
-            ChatMessageReference::Participant {
-                participant_kind: ChatParticipantKind::AiAgent,
-                ..
-            }
+            ChatMessageReference::Participant { .. } | ChatMessageReference::Channel { .. }
         )
     })
 }

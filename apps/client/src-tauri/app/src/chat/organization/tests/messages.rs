@@ -40,6 +40,37 @@ fn only_structured_participant_references_make_top_level_messages_thread_eligibl
 }
 
 #[test]
+fn mentioning_a_person_or_yourself_opens_a_thread_but_a_folder_alone_does_not() {
+    for kind in [ChatParticipantKind::LocalUser, ChatParticipantKind::Human] {
+        let mut request = message("@Me Remember this.");
+        request.references = vec![participant_reference(
+            "reference:me",
+            ChatParticipantId::new("participant:me").unwrap(),
+            kind,
+            "Me",
+            "@Me",
+            0,
+            3,
+        )];
+        assert!(has_thread_eligible_mention(&request));
+    }
+
+    let folder = ChatMessageReference::WorkingFolder {
+        metadata: ChatReferenceMetadata {
+            reference_id: ChatMessageReferenceId::new("reference:folder").unwrap(),
+            label_snapshot: "app".to_string(),
+            start_offset: 0,
+            end_offset: 4,
+            plain_text_projection: "#app".to_string(),
+        },
+        working_folder_id: ProjectWorkingFolderId::new("folder:app").unwrap(),
+    };
+    let mut request = message("#app builds again.");
+    request.references = vec![folder];
+    assert!(!has_thread_eligible_mention(&request));
+}
+
+#[test]
 fn active_continuations_reject_new_authority_bearing_references() {
     let participant = participant_reference(
         "reference:atlas",

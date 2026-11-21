@@ -7,16 +7,13 @@
 //! merged, or deleted.
 
 use super::{discard_replaced_folder, finish_replacement, holds_vault, kept_previous_path};
-use crate::vault::{database_rollback, vault_info_from_path};
-use ganbaru_atomic_files::{FileAccess, FinalSymlink};
+use crate::vault::{database_rollback, journal_file, vault_info_from_path};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 /// Name prefix of the journal and the rollback folder of a swap beside the target.
 const SWAP_PREFIX: &str = ".ganbaru.swap-";
-/// Largest journal read; the real file is a few hundred bytes.
-const MAX_JOURNAL_BYTES: u64 = 4 * 1024;
 
 /// Refusal of a swap while an earlier swap of the same target cannot be finished here.
 pub(crate) const SWAP_RECOVERY_PENDING: &str =
@@ -331,13 +328,9 @@ impl SwapRecord {
     /// cannot be read or decoded.
     fn load(target: &Path) -> Result<Option<Result<Self, String>>, String> {
         let path = journal_path(target)?;
-        let bytes = match ganbaru_atomic_files::read_regular_file_capped(
-            &path,
-            MAX_JOURNAL_BYTES,
-            FinalSymlink::Refuse,
-        ) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        let bytes = match journal_file::read(&path) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => return Ok(None),
             Err(error) => return Ok(Some(Err(format!("read the vault swap journal: {error}")))),
         };
         let journal = serde_json::from_slice::<StoredJournal>(&bytes)
@@ -356,7 +349,7 @@ impl SwapRecord {
     fn write(&self) -> Result<(), String> {
         let bytes = serde_json::to_vec(&StoredJournal::from(&self.journal))
             .map_err(|error| format!("encode the vault swap journal: {error}"))?;
-        ganbaru_atomic_files::write_file_atomically(&self.path, &bytes, FileAccess::OwnerOnly)
+        journal_file::write(&self.path, &bytes)
             .map_err(|error| format!("write the vault swap journal: {error}"))
     }
 
@@ -373,13 +366,8 @@ impl SwapRecord {
 
     /// Removes the journal once nothing is left to do.
     fn close(self) -> Result<(), String> {
-        match fs::remove_file(&self.path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("remove the vault swap journal: {error}")),
-        }
-        ganbaru_atomic_files::sync_directory_entries(&self.parent)
-            .map_err(|error| format!("flush the vault swap journal removal: {error}"))
+        journal_file::remove(&self.path)
+            .map_err(|error| format!("remove the vault swap journal: {error}"))
     }
 
     fn observe(&self) -> Observed {
@@ -547,7 +535,7 @@ pub(crate) fn recover(target: &Path) -> Result<Recovery, String> {
 
 /// Whether a swap of `target` left its journal, so it is still unfinished or pending.
 pub(crate) fn has_unfinished_swap(target: &Path) -> bool {
-    journal_path(target).is_ok_and(|path| fs::symlink_metadata(path).is_ok())
+    journal_path(target).is_ok_and(|path| journal_file::exists(&path))
 }
 
 /// Settles an unfinished swap of `target`, refusing with [`SWAP_RECOVERY_PENDING`] when it is

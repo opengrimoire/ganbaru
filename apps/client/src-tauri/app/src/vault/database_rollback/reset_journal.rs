@@ -28,6 +28,7 @@ pub(super) enum Phase {
 }
 
 /// What a reset records as it goes.
+#[cfg(any(test, desktop))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Event {
     /// The vault database reached the reset copy.
@@ -35,6 +36,7 @@ pub(super) enum Event {
 }
 
 /// The only phase change a reset makes.
+#[cfg(any(test, desktop))]
 pub(super) fn transition(phase: Phase, event: Event) -> Result<Phase, String> {
     match (phase, event) {
         (Phase::Moving, Event::MovedOut) => Ok(Phase::Moved),
@@ -165,6 +167,7 @@ impl ResetRecord {
         )
     }
 
+    #[cfg(any(test, desktop))]
     fn write(&self) -> Result<(), String> {
         let bytes = serde_json::to_vec(&StoredJournal::from(&self.journal))
             .map_err(|error| format!("encode the reset journal: {error}"))?;

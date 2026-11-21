@@ -38,6 +38,13 @@
   import { formatHandoffError } from "$lib/vault/handoff-workflow";
   import { getSyncAuthorityState } from "$lib/stores/sync-authority.svelte";
   import {
+    IDLE_SYNC_ACTIONS,
+    runSyncAction,
+    syncActionRunning,
+    type SyncActionAccess,
+    type SyncActionState,
+  } from "./sync-action-state";
+  import {
     canInstallSyncRecoveryKey,
     canManageSyncRecoveryKit,
     canRotateSyncRecoveryKit,
@@ -71,9 +78,12 @@
   const { t } = localization;
   const sync = getSync();
   let now = $state(Date.now());
-  let requesting = $state(false);
-  let pausing = $state(false);
-  let actionError = $state("");
+  /** The section actions, which run side by side and share one feedback line. */
+  type SyncSectionAction = "freshCopy" | "reset" | "resume" | "syncNow" | "pause";
+  let actions = $state<SyncActionState<SyncSectionAction>>(IDLE_SYNC_ACTIONS);
+  const actionAccess: SyncActionAccess<SyncSectionAction> = { read: () => actions, write: (next) => { actions = next; } };
+  const requesting = $derived(syncActionRunning(actions, "syncNow"));
+  const pausing = $derived(syncActionRunning(actions, "pause"));
 
   const status = $derived(sync.status);
   const held = $derived(syncHeldLines(t, status));
@@ -89,8 +99,7 @@
   const degradedRows = $derived(syncDegradedRows(t, status));
   const authorityState = getSyncAuthorityState();
   let resetConfirming = $state(false);
-  let resetting = $state(false);
-  let resetMessage = $state("");
+  const resetting = $derived(syncActionRunning(actions, "reset"));
   const anchorUnreachable = $derived(syncAnchorUnreachableLine(t, localization.locale, status, now));
   const authorityContext = $derived<SyncAuthorityContext | null>(
     authorityState.authority
@@ -114,42 +123,30 @@
   );
   const storageBackstop = $derived(contests?.storage.backstop ?? null);
   const storageAlerts = $derived(contests ? syncStorageAlertLines(t, localization.locale, contests.storage) : []);
-  let resuming = $state(false);
+  const resuming = $derived(syncActionRunning(actions, "resume"));
   const canReset = $derived(canResetSyncState(status.role, mobileLayout));
   let freshCopyConfirming = $state(false);
-  let copyingFresh = $state(false);
+  const copyingFresh = $derived(syncActionRunning(actions, "freshCopy"));
 
   async function getFreshCopy(): Promise<void> {
     freshCopyConfirming = false;
-    if (copyingFresh || !onFreshCopy) return;
-    copyingFresh = true;
-    actionError = "";
-    resetMessage = "";
-    try {
-      await onFreshCopy();
-      resetMessage = t("sync.bootstrapCopied");
-    } catch (cause: unknown) {
-      actionError = formatHandoffError(cause, t);
-    } finally {
-      copyingFresh = false;
-    }
+    const copy = onFreshCopy;
+    if (!copy) return;
+    await runSyncAction(actionAccess, "freshCopy", copy, {
+      success: () => t("sync.bootstrapCopied"),
+      failure: (cause) => formatHandoffError(cause, t),
+    });
   }
 
   async function resetSync(): Promise<void> {
     resetConfirming = false;
-    if (resetting) return;
-    resetting = true;
-    actionError = "";
-    resetMessage = "";
-    try {
-      await authorityState.resetSyncState();
-      resetMessage = t("sync.reset.done");
-    } catch (cause: unknown) {
-      console.warn("sync reset failed", cause);
-      actionError = t("sync.reset.failed");
-    } finally {
-      resetting = false;
-    }
+    await runSyncAction(actionAccess, "reset", () => authorityState.resetSyncState(), {
+      success: () => t("sync.reset.done"),
+      failure: (cause) => {
+        console.warn("sync reset failed", cause);
+        return t("sync.reset.failed");
+      },
+    });
   }
 
   /** Whether this section can run `action` here: battery settings open only on Android. */
@@ -167,45 +164,30 @@
 
   /** Resumes the record exchange the storage backstop stopped. */
   async function resumeRecords(): Promise<void> {
-    if (resuming) return;
-    resuming = true;
-    actionError = "";
-    try {
-      await authorityState.resumeRecords();
-    } catch (cause: unknown) {
-      console.warn("sync record exchange could not be resumed", cause);
-      actionError = t("sync.storage.resumeFailed");
-    } finally {
-      resuming = false;
-    }
+    await runSyncAction(actionAccess, "resume", () => authorityState.resumeRecords(), {
+      failure: (cause) => {
+        console.warn("sync record exchange could not be resumed", cause);
+        return t("sync.storage.resumeFailed");
+      },
+    });
   }
 
   async function requestSync(): Promise<void> {
-    if (requesting) return;
-    requesting = true;
-    actionError = "";
-    try {
-      await sync.requestSync();
-    } catch (cause: unknown) {
-      console.warn("sync request failed", cause);
-      actionError = t("sync.syncNowFailed");
-    } finally {
-      requesting = false;
-    }
+    await runSyncAction(actionAccess, "syncNow", () => sync.requestSync(), {
+      failure: (cause) => {
+        console.warn("sync request failed", cause);
+        return t("sync.syncNowFailed");
+      },
+    });
   }
 
   async function setPaused(paused: boolean): Promise<void> {
-    if (pausing) return;
-    pausing = true;
-    actionError = "";
-    try {
-      await sync.setPaused(paused);
-    } catch (cause: unknown) {
-      console.warn("sync pause change failed", cause);
-      actionError = t("sync.pauseFailed");
-    } finally {
-      pausing = false;
-    }
+    await runSyncAction(actionAccess, "pause", () => sync.setPaused(paused), {
+      failure: (cause) => {
+        console.warn("sync pause change failed", cause);
+        return t("sync.pauseFailed");
+      },
+    });
   }
 
   $effect(() => sync.subscribe());
@@ -361,10 +343,10 @@
         </button>
       {/if}
     </div>
-    {#if actionError}
-      <Notice class="px-1 text-[0.8rem] leading-5" message={actionError} />
-    {:else if resetMessage}
-      <p role="status" class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{resetMessage}</p>
+    {#if actions.feedback.kind === "failed"}
+      <Notice class="px-1 text-[0.8rem] leading-5" message={actions.feedback.message} />
+    {:else if actions.feedback.kind === "done"}
+      <p role="status" class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{actions.feedback.message}</p>
     {/if}
 
     {#if recoveryTotal > 0}

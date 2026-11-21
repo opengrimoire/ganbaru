@@ -1076,8 +1076,7 @@
         draft.statusId,
         relations.parentTaskId ?? undefined,
       );
-      if (!created) return;
-      if (projectTaskNewDetailDraftHasExtras(initialDraft, draft)) {
+      if (created && projectTaskNewDetailDraftHasExtras(initialDraft, draft)) {
         await projects.updateTask(created, patch);
       }
     } catch (error) {
@@ -1145,7 +1144,9 @@
     };
   }
 
+  /** Saves the selected task, or creates the draft task; a submit while a save runs is ignored. */
   async function saveTaskDetail(): Promise<void> {
+    if (detailSaving) return;
     const patch = projectTaskDetailDraftPatch(currentDetailDraft());
     if (!patch.ok) {
       if (patch.reason === "title-required") {

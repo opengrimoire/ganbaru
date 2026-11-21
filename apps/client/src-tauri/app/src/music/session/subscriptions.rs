@@ -10,6 +10,8 @@ const MAX_SUBSCRIBERS: usize = 8;
 pub(super) const MAX_PENDING_EFFECTS: usize = 32;
 const SUBSCRIPTION_LEASE_MS: i64 = 30_000;
 pub(super) const BROWSER_LEASE_MS: i64 = 5_000;
+/// How long a frame waits for acknowledgement before a lease renewal repeats its notice.
+const NOTICE_REPEAT_MS: i64 = 2_000;
 
 /// One ordered frame. The next frame waits for acknowledgement of this sequence.
 #[derive(Clone, Debug, Serialize)]
@@ -53,6 +55,8 @@ struct Subscriber {
 struct RetainedFrame {
     frame: SessionFrame,
     queue: Option<Arc<Vec<SessionQueueEntry>>>,
+    /// When the frame's notice was last sent.
+    notified_at: i64,
 }
 
 /// The configured primary window alone hosts browser decoders. Other windows read projections.
@@ -193,7 +197,22 @@ impl Subscriptions {
         available: bool,
         now: i64,
     ) -> MusicLibraryResult<bool> {
-        self.subscriber(window, id)?.expires_at = now + SUBSCRIPTION_LEASE_MS;
+        let subscriber = self.subscriber(window, id)?;
+        subscriber.expires_at = now + SUBSCRIPTION_LEASE_MS;
+        // A notice the WebView never handled would hold every later frame, so a renewal
+        // repeats the notice of a frame still unacknowledged after a while. The client reads
+        // it once and acknowledges a repeat without applying it again.
+        if let Some(retained) = subscriber.in_flight.as_mut()
+            && now - retained.notified_at >= NOTICE_REPEAT_MS
+        {
+            retained.notified_at = now;
+            if let Err(error) = subscriber.channel.send(SessionNotice::Update {
+                subscription_id: subscriber.id.clone(),
+                sequence: retained.frame.sequence,
+            }) {
+                eprintln!("repeat Music notice for {window}: {error}");
+            }
+        }
         if window == self.primary_window {
             self.browser_until = if available { now + BROWSER_LEASE_MS } else { 0 };
             if !available {
@@ -312,7 +331,11 @@ impl Subscriptions {
             };
             match subscriber.channel.send(notice) {
                 Ok(()) => {
-                    subscriber.in_flight = Some(RetainedFrame { frame, queue });
+                    subscriber.in_flight = Some(RetainedFrame {
+                        frame,
+                        queue,
+                        notified_at: now,
+                    });
                     subscriber.dirty = false;
                     subscriber.queue_key = Some(queue_key.clone());
                 }
@@ -721,5 +744,46 @@ mod tests {
         subscriptions.flush(100);
         assert!(!subscriptions.browser_available(100));
         assert!(subscriptions.subscribers.is_empty());
+    }
+
+    #[test]
+    fn native_music_stream_lease_renewal_repeats_the_notice_of_an_unread_frame() {
+        let (mut subscriptions, frames) = subscribed();
+        // The first notice reached no reader, so the client never reads or acknowledges it.
+        subscriptions.publish(snapshot(2));
+        subscriptions.flush(200);
+        assert_eq!(frames.lock().unwrap().len(), 1);
+
+        // A renewal soon after the notice waits for the client to handle it.
+        subscriptions
+            .renew_host("primary", "subscription", true, 1_000)
+            .unwrap();
+        assert_eq!(frames.lock().unwrap().len(), 1);
+        subscriptions
+            .renew_host("primary", "subscription", true, 2_100)
+            .unwrap();
+        {
+            let frames = frames.lock().unwrap();
+            assert_eq!(frames.len(), 2);
+            assert_eq!(frames[1], frames[0]);
+        }
+        subscriptions
+            .read("primary", "subscription", 1, 2_200)
+            .unwrap();
+        subscriptions
+            .acknowledge("primary", "subscription", 1, 2_200)
+            .unwrap();
+        subscriptions.flush(2_200);
+        assert_eq!(frames.lock().unwrap().len(), 3);
+        assert_eq!(frames.lock().unwrap()[2]["sequence"], 2);
+
+        // Renewal without an unacknowledged frame sends nothing.
+        subscriptions
+            .acknowledge("primary", "subscription", 2, 5_000)
+            .unwrap();
+        subscriptions
+            .renew_host("primary", "subscription", true, 5_000)
+            .unwrap();
+        assert_eq!(frames.lock().unwrap().len(), 3);
     }
 }

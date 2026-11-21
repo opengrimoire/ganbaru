@@ -447,7 +447,25 @@ impl EngineCore {
         if request.keep_playing_layers && self.snapshot.status == SoundscapeStatus::Playing {
             return self.change_layers(request);
         }
-        match ActiveOutput::open(&request, guard) {
+        self.replace_output(request, guard, ActiveOutput::open)
+    }
+
+    /// Replaces the output with a newly opened one for the request. When opening fails, the
+    /// earlier mix stops too, so an error is never reported over audible output, and the
+    /// request stays as the one a later recovery retries.
+    fn replace_output<O>(
+        &mut self,
+        request: SoundscapeStartRequest,
+        guard: Option<&OutputGuard>,
+        open: O,
+    ) -> Result<SoundscapeSnapshot, SoundscapeError>
+    where
+        O: FnOnce(
+            &SoundscapeStartRequest,
+            Option<&OutputGuard>,
+        ) -> Result<ActiveOutput, SoundscapeError>,
+    {
+        match open(&request, guard) {
             Ok(output) => {
                 check_output_guard(guard)?;
                 self.stop_output();
@@ -466,9 +484,13 @@ impl EngineCore {
                 Ok(self.snapshot.clone())
             }
             Err(error) => {
-                self.snapshot.status = SoundscapeStatus::Error;
-                self.snapshot.source_id = Some(request.source_id);
-                self.snapshot.error_code = Some(error.code.clone());
+                self.stop_output();
+                self.snapshot = SoundscapeSnapshot {
+                    status: SoundscapeStatus::Error,
+                    source_id: Some(request.source_id.clone()),
+                    error_code: Some(error.code.clone()),
+                };
+                self.last_request = Some(request);
                 Err(error)
             }
         }
@@ -1193,6 +1215,46 @@ mod tests {
         );
         assert_eq!(core.snapshot.status, SoundscapeStatus::Idle);
         assert!(core.output.is_none());
+    }
+
+    fn generated_request(source_id: &str, kind: GeneratedNoiseKind) -> SoundscapeStartRequest {
+        SoundscapeStartRequest {
+            source_id: source_id.into(),
+            generated_kind: Some(kind),
+            local_path: None,
+            level: 1.0,
+            extra_sources: Vec::new(),
+            preset_level: 0.5,
+            keep_playing_layers: false,
+        }
+    }
+
+    #[test]
+    fn a_failed_output_open_stops_the_earlier_mix_and_keeps_the_chosen_one_for_recovery() {
+        let mut core = EngineCore {
+            last_request: Some(generated_request("brown", GeneratedNoiseKind::Brown)),
+            snapshot: SoundscapeSnapshot {
+                status: SoundscapeStatus::Playing,
+                source_id: Some("brown".into()),
+                error_code: None,
+            },
+            master: 1.0,
+            ..EngineCore::default()
+        };
+        let chosen = generated_request("pink", GeneratedNoiseKind::Pink);
+        assert!(
+            core.replace_output(chosen, None, |_, _| Err(SoundscapeError::backend()))
+                .is_err()
+        );
+        assert_eq!(core.snapshot.status, SoundscapeStatus::Error);
+        assert_eq!(core.snapshot.source_id.as_deref(), Some("pink"));
+        assert!(core.output.is_none());
+        assert_eq!(
+            core.last_request
+                .as_ref()
+                .map(|request| request.source_id.as_str()),
+            Some("pink")
+        );
     }
 
     fn paused_by_music() -> EngineCore {

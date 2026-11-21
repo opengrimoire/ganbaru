@@ -101,3 +101,13 @@ fn quiet_focus_activity_counts_only_a_focus_phase_in_progress() {
     assert_eq!(focus_phase_activity_of(Some(&without_segment)), None);
     assert_eq!(focus_phase_activity_of(None), None);
 }
+
+#[test]
+fn vault_access_is_frozen_until_attached_and_only_resuming_carries_a_revision() {
+    assert!(!VaultAccess::Attached.is_frozen());
+    assert!(VaultAccess::Frozen.is_frozen());
+    assert!(VaultAccess::Resuming { revision: 7 }.is_frozen());
+    assert_eq!(VaultAccess::Attached.resume_revision(), None);
+    assert_eq!(VaultAccess::Frozen.resume_revision(), None);
+    assert_eq!(VaultAccess::Resuming { revision: 7 }.resume_revision(), Some(7));
+}

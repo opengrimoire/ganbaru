@@ -19,29 +19,73 @@ const MAX_PENDING_INTERVALS: usize = 4_000;
 const MAX_CLOSE_KEYS: usize = 4_096;
 const MAX_NOTIFICATION_TIMES: usize = 5;
 
-#[derive(Default)]
+/// Observation lifecycle of the owner. `Active` and `Frozen` alternate across vault handoffs;
+/// `Stopped` precedes process exit and is terminal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FrameState {
+    Active,
+    Frozen,
+    Stopped,
+}
+
+impl FrameState {
+    /// The state after a requested move; nothing leaves `Stopped`.
+    fn after(self, requested: FrameState) -> FrameState {
+        match self {
+            Self::Stopped => Self::Stopped,
+            Self::Active | Self::Frozen => requested,
+        }
+    }
+}
+
 struct Frame {
     generation: u64,
-    active: bool,
-    stopped: bool,
+    state: FrameState,
+}
+
+impl Frame {
+    fn new(generation: u64) -> Self {
+        Self {
+            generation,
+            state: FrameState::Active,
+        }
+    }
 }
 
 struct Control {
     frame: Mutex<Frame>,
+    /// Lock-free mirror of the frame generation, written only by [`Control::advance`].
     generation: AtomicU64,
     wake: Notify,
 }
 
 impl Control {
+    fn new(generation: u64) -> Self {
+        Self {
+            frame: Mutex::new(Frame::new(generation)),
+            generation: AtomicU64::new(generation),
+            wake: Notify::new(),
+        }
+    }
+
     fn current(&self, generation: u64) -> Result<std::sync::MutexGuard<'_, Frame>, String> {
         let frame = self
             .frame
             .lock()
             .map_err(|_| "Distractions runtime control is unavailable")?;
-        if !frame.active || frame.generation != generation {
+        if frame.state != FrameState::Active || frame.generation != generation {
             return Err("Distractions observation was invalidated".into());
         }
         Ok(frame)
+    }
+
+    /// Moves the locked frame toward `requested`, revokes every earlier generation, and
+    /// publishes the new generation to the mirror. Returns the new generation.
+    fn advance(&self, frame: &mut Frame, requested: FrameState) -> u64 {
+        frame.state = frame.state.after(requested);
+        frame.generation = frame.generation.wrapping_add(1);
+        self.generation.store(frame.generation, Ordering::Release);
+        frame.generation
     }
 }
 
@@ -105,15 +149,7 @@ pub(crate) fn setup(app: &tauri::AppHandle) {
     if app.try_state::<RuntimeState>().is_some() {
         return;
     }
-    let control = Arc::new(Control {
-        frame: Mutex::new(Frame {
-            generation: 1,
-            active: true,
-            stopped: false,
-        }),
-        generation: AtomicU64::new(1),
-        wake: Notify::new(),
-    });
+    let control = Arc::new(Control::new(1));
     let foreground = Arc::new(Mutex::new((
         Instant::now(),
         unavailable_foreground_desktop_app_status("native observation has not run"),
@@ -230,13 +266,12 @@ fn invalidate<R: Runtime>(app: &tauri::AppHandle<R>, stop: bool) -> Result<u64, 
         .frame
         .lock()
         .map_err(|_| "Distractions runtime control is unavailable")?;
-    frame.active = false;
-    frame.stopped |= stop;
-    frame.generation = frame.generation.wrapping_add(1);
-    runtime
-        .control
-        .generation
-        .store(frame.generation, Ordering::Release);
+    let requested = if stop {
+        FrameState::Stopped
+    } else {
+        FrameState::Frozen
+    };
+    let generation = runtime.control.advance(&mut frame, requested);
     state_files::clear_enforcement_state_files(&state_path(app)?, &limit_state_path(app)?)?;
     if let Ok(mut foreground) = runtime.foreground.lock() {
         *foreground = (
@@ -245,7 +280,7 @@ fn invalidate<R: Runtime>(app: &tauri::AppHandle<R>, stop: bool) -> Result<u64, 
         );
     }
     runtime.control.wake.notify_one();
-    Ok(frame.generation)
+    Ok(generation)
 }
 
 /// Cancel destructive work and file publication before an irreversible process exit.
@@ -290,15 +325,10 @@ pub(crate) fn resume_after_vault_handoff<R: Runtime>(
         .frame
         .lock()
         .map_err(|_| "Distractions runtime control is unavailable")?;
-    if frame.stopped {
+    if frame.state == FrameState::Stopped {
         return Ok(());
     }
-    frame.generation = frame.generation.wrapping_add(1);
-    frame.active = true;
-    runtime
-        .control
-        .generation
-        .store(frame.generation, Ordering::Release);
+    runtime.control.advance(&mut frame, FrameState::Active);
     state_files::clear_enforcement_state_files(&state_path(app)?, &limit_state_path(app)?)?;
     runtime.control.wake.notify_one();
     Ok(())
@@ -318,11 +348,8 @@ pub(crate) fn commit_configuration<R: Runtime>(
         .lock()
         .map_err(|_| "Distractions runtime control is unavailable")?;
     let result = write();
-    frame.generation = frame.generation.wrapping_add(1);
-    runtime
-        .control
-        .generation
-        .store(frame.generation, Ordering::Release);
+    let state = frame.state;
+    runtime.control.advance(&mut frame, state);
     runtime.control.wake.notify_one();
     result
 }
@@ -1000,29 +1027,53 @@ mod tests {
 
     #[test]
     fn revoked_generations_cannot_publish_or_close_after_resume() {
-        let control = Control {
-            frame: Mutex::new(Frame {
-                generation: 1,
-                active: true,
-                stopped: false,
-            }),
-            generation: AtomicU64::new(1),
-            wake: Notify::new(),
-        };
+        let control = Control::new(1);
         assert!(control.current(1).is_ok());
         {
             let mut frame = control.frame.lock().unwrap();
-            frame.active = false;
-            frame.generation = 2;
+            assert_eq!(control.advance(&mut frame, FrameState::Frozen), 2);
         }
+        assert_eq!(control.generation.load(Ordering::Acquire), 2);
         assert!(control.current(1).is_err());
         assert!(control.current(2).is_err());
         {
             let mut frame = control.frame.lock().unwrap();
-            frame.active = true;
-            frame.generation = 3;
+            assert_eq!(control.advance(&mut frame, FrameState::Active), 3);
         }
         assert!(control.current(1).is_err());
         assert!(control.current(3).is_ok());
+    }
+
+    #[test]
+    fn stopped_frames_never_reactivate() {
+        let control = Control::new(1);
+        let mut frame = control.frame.lock().unwrap();
+        assert_eq!(control.advance(&mut frame, FrameState::Stopped), 2);
+        assert_eq!(frame.state, FrameState::Stopped);
+        for requested in [FrameState::Active, FrameState::Frozen, FrameState::Stopped] {
+            let generation = control.advance(&mut frame, requested);
+            assert_eq!(frame.state, FrameState::Stopped);
+            assert_eq!(control.generation.load(Ordering::Acquire), generation);
+        }
+        drop(frame);
+        assert!(control.current(5).is_err());
+    }
+
+    #[test]
+    fn frame_moves_follow_the_lifecycle_table() {
+        use FrameState::{Active, Frozen, Stopped};
+        for (from, requested, expected) in [
+            (Active, Active, Active),
+            (Active, Frozen, Frozen),
+            (Active, Stopped, Stopped),
+            (Frozen, Active, Active),
+            (Frozen, Frozen, Frozen),
+            (Frozen, Stopped, Stopped),
+            (Stopped, Active, Stopped),
+            (Stopped, Frozen, Stopped),
+            (Stopped, Stopped, Stopped),
+        ] {
+            assert_eq!(from.after(requested), expected, "{from:?} -> {requested:?}");
+        }
     }
 }

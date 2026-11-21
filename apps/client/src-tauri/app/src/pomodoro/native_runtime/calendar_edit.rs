@@ -284,7 +284,7 @@ impl Owner {
                     && self.projection.vault_id.as_deref() == Some(slot.vault_id.as_str())
                     && receipt.undo_review_revision.as_deref()
                         == Some(slot.preimage.review_revision.as_str())
-                    && !self.frozen
+                    && !self.frozen()
                     && !self.freeze_requested()
             })
             .and_then(|slot| slot.remaining(Instant::now(), now_ms().ok()))
@@ -301,7 +301,7 @@ impl Owner {
             slot.remaining(Instant::now(), now_ms().ok()).is_none()
                 || self.projection.vault_id.as_deref() != Some(slot.vault_id.as_str())
                 || self.projection.vault_generation != slot.generation
-                || self.frozen
+                || self.frozen()
                 || self.freeze_requested()
         }) {
             self.calendar_undo = None;
@@ -329,7 +329,7 @@ impl Owner {
         request: CommitRequest,
         verified_uncommitted: &mut bool,
     ) -> Result<CommitReply, CommitFailure> {
-        if self.frozen || self.freeze_requested() {
+        if self.frozen() || self.freeze_requested() {
             return Err("Calendar saving is suspended while the vault changes".into());
         }
         self.ensure_context(false)

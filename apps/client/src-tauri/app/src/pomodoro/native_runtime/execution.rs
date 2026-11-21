@@ -147,7 +147,7 @@ impl Owner {
         observation: FocusObservation,
         now: i64,
     ) -> Result<(), FocusExecutionError> {
-        if self.frozen || self.pool.is_none() {
+        if self.frozen() || self.pool.is_none() {
             return Ok(());
         }
         self.verify_authority()?;

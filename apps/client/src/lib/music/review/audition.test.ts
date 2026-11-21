@@ -225,7 +225,7 @@ describe("MusicReviewAuditionController failures", () => {
     expect(audition.errorFor(null)).toBeNull();
   });
 
-  it("clears an earlier failure when the next preview starts and when it is dismissed", async () => {
+  it("keeps a failure while its retry runs and clears it once a preview succeeds or it is dismissed", async () => {
     player.loadReviewItem.mockRejectedValueOnce(new Error("missing file"));
     const audition = new MusicReviewAuditionController();
     await audition.preview(detail(), bindings, true);
@@ -236,6 +236,26 @@ describe("MusicReviewAuditionController failures", () => {
     player.loadReviewItem.mockRejectedValueOnce(new Error("missing file"));
     await audition.preview(detail(), bindings, true);
     expect(audition.errorFor("review-item")).not.toBeNull();
+    let finishLoad!: () => void;
+    player.loadReviewItem.mockImplementationOnce(() => new Promise<void>((resolve) => { finishLoad = resolve; }));
+    const retrying = audition.preview(detail(), bindings, true);
+    await vi.waitFor(() => expect(player.loadReviewItem).toHaveBeenCalledTimes(3));
+    expect(audition.errorFor("review-item")).not.toBeNull();
+    finishLoad();
+    expect(await retrying).toBe(true);
+    expect(audition.errorFor("review-item")).toBeNull();
+  });
+
+  it("clears a failure left by an item that already owns playback when it is previewed again", async () => {
+    const audition = new MusicReviewAuditionController();
+    await audition.preview(detail(), bindings, true);
+    player.snapshot.positionMs = 5_000;
+    audition.supersedeForBoundary("pomodoro");
+    player.seekToMs.mockRejectedValueOnce(new Error("seek failed"));
+    expect(await audition.preview(detail(), bindings, true)).toBe(false);
+    expect(audition.ownsPlayback).toBe(true);
+    expect(audition.errorFor("review-item")).not.toBeNull();
+
     expect(await audition.preview(detail(), bindings, true)).toBe(true);
     expect(audition.errorFor("review-item")).toBeNull();
   });

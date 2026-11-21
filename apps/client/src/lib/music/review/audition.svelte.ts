@@ -58,9 +58,11 @@ export class MusicReviewAuditionController {
     autoplay: boolean,
   ): Promise<boolean> {
     if (this.restoreTask) await this.restoreTask;
-    if (this.ownsPlayback && this.reviewItemId === detail.item.id) return true;
+    if (this.ownsPlayback && this.reviewItemId === detail.item.id) {
+      this.failure = null;
+      return true;
+    }
     const generation = ++this.operationGeneration;
-    this.failure = null;
     if (this.state.phase !== "auditioning") {
       this.dispatch({ type: "suspendStarted" });
       try {
@@ -86,6 +88,7 @@ export class MusicReviewAuditionController {
       this.dispatch({ type: "itemLoaded", itemId: detail.item.id });
       const retainedPosition = this.reviewPositions[detail.item.id] ?? 0;
       if (retainedPosition > 0) await this.player.seekToMs(retainedPosition);
+      this.failure = null;
       return true;
     } catch (error) {
       if (generation === this.operationGeneration) this.fail(detail.item.id, error, "music.errors.playbackFailed");

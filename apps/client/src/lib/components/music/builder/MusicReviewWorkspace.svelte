@@ -651,7 +651,7 @@
           </div>
         </div>
       </div>
-      {#if previewError}<Notice class="mt-2 text-xs" message={previewError} onRetry={startReviewPreview} onDismiss={() => audition.dismissError()} />{/if}
+      {#if previewError}<Notice class="mt-2 text-xs" message={previewError} copy={false} onRetry={startReviewPreview} onDismiss={() => audition.dismissError()} />{/if}
     {/if}
   </section>
 

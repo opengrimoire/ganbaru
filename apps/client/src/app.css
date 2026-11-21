@@ -227,6 +227,7 @@
   --keyboard-surface-height: 100vh;
   --visual-viewport-width: 100vw;
   --visual-viewport-height: 100vh;
+  --visual-viewport-full-height: 100vh;
   --visual-viewport-offset-top: 0px;
   --visual-viewport-offset-left: 0px;
   --mobile-topbar-h: 48px;

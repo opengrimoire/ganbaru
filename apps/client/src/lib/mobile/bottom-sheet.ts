@@ -49,9 +49,18 @@ export function bottomSheetDetentHeight(detent: BottomSheetDetent, heights: Bott
   return heights[detent];
 }
 
-/** Return the visible height while a finger that started at `startVisible` has moved `deltaY` (down is positive). */
-export function bottomSheetDragHeight(startVisible: number, deltaY: number, heights: BottomSheetHeights): number {
-  return clamp(startVisible - deltaY, 0, heights.full);
+/**
+ * Return the visible height while a finger that started at `startVisible` has moved `deltaY` (down is positive). When
+ * the sheet's area grew by `areaGrowth` since the drag began, as when the keyboard hides mid-drag, the height grows by
+ * as much, so the sheet's top edge stays under the finger instead of dropping with the area's bottom edge.
+ */
+export function bottomSheetDragHeight(
+  startVisible: number,
+  deltaY: number,
+  heights: BottomSheetHeights,
+  areaGrowth = 0,
+): number {
+  return clamp(startVisible + areaGrowth - deltaY, 0, heights.full);
 }
 
 /**

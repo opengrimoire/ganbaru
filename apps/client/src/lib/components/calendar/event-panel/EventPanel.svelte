@@ -626,6 +626,14 @@
   const activePanelStyle = $derived(mobileLayout ? sheet.style : panelStyle);
   /** The phone sheet sits in a still frame unless parked, which keeps its own off-screen position. */
   const sheetFramed = $derived(mobileLayout && !parked);
+  /** The panel edge and its soft drop shadow. */
+  const PANEL_SHADOW = "0 0 2px 0px var(--panel-edge), 0 1px 2px var(--panel-shadow)";
+  /**
+   * The sheet color continued under the keyboard, drawn as a solid shadow because the panel clips its own children.
+   * Android before 11 reports the keyboard only after it has gone, so this keeps the open sheet solid while it catches
+   * up instead of showing the calendar.
+   */
+  const SHEET_SKIRT_SHADOW = "0 calc(var(--visual-viewport-full-height) - var(--keyboard-surface-height)) 0 0 var(--panel-bg)";
   const panelPositionReady = $derived(geometry.positionReady && (!mobileLayout || sheet.ready));
 
 
@@ -978,7 +986,7 @@
     aria-hidden={parked || undefined}
     style:--sheet-room-duration="{SHEET_SECTION_SLIDE_MS}ms"
     style:--sheet-room-easing={SHEET_SECTION_SLIDE_CSS_EASING}
-    style="box-shadow: 0 0 2px 0px var(--panel-edge), 0 1px 2px var(--panel-shadow); {parked ? parkedPanelStyle : activePanelStyle} background-color: var(--panel-bg); visibility: {session.initialized && panelPositionReady && !parked ? 'visible' : 'hidden'};"
+    style="box-shadow: {sheetFramed ? `${PANEL_SHADOW}, ${SHEET_SKIRT_SHADOW}` : PANEL_SHADOW}; {parked ? parkedPanelStyle : activePanelStyle} background-color: var(--panel-bg); visibility: {session.initialized && panelPositionReady && !parked ? 'visible' : 'hidden'};"
     onclick={handlePanelClick}
     onkeydown={handlePanelArrowKeydown}
   >

@@ -63,10 +63,20 @@ export interface EventPanelSheetOptions {
 interface SheetGesture {
   startX: number;
   startY: number;
+  /** Rendered visible height when the touch began, which may sit partway through a settle. */
   startVisible: number;
+  /** Full height when the touch began, so a keyboard sliding away mid-drag leaves the top edge under the finger. */
+  startFull: number;
   target: Element | null;
   claimed: "sheet" | "none" | null;
   samples: BottomSheetSample[];
+}
+
+/** Where a drag that moves the sheet began and how far the finger has moved since, down being positive. */
+interface SheetDrag {
+  startVisible: number;
+  startFull: number;
+  deltaY: number;
 }
 
 /** Return whether `element` scrolls on its own in the direction a finger moving `deltaY` would scroll it. */
@@ -106,8 +116,8 @@ function scrollsGridBehind(target: EventTarget | null, panel: HTMLElement | unde
  */
 export class EventPanelSheetController {
   detent = $state<BottomSheetDetent>("peek");
-  dragHeight = $state<number | null>(null);
   entered = $state(false);
+  private drag = $state<SheetDrag | null>(null);
   /** Whether the sheet rests at its summary strip after a swipe down or a scroll of the grid behind it. */
   collapsed = $state(false);
   /** How the latest resting change animates; see {@link EventPanelSheetMotion}. */
@@ -154,7 +164,7 @@ export class EventPanelSheetController {
       this.detent = "peek";
       this.collapsed = false;
       this.restMotion = "settle";
-      this.dragHeight = null;
+      this.drag = null;
     });
 
     $effect(() => {
@@ -270,9 +280,17 @@ export class EventPanelSheetController {
     return this.fullHeight > 0;
   }
 
+  /** Height under the finger while a drag moves the sheet, in CSS pixels, or null at rest. */
+  get dragHeight(): number | null {
+    const drag = this.drag;
+    if (!drag) return null;
+    return bottomSheetDragHeight(drag.startVisible, drag.deltaY, this.heights, this.fullHeight - drag.startFull);
+  }
+
   /** Visible height of the sheet right now, in CSS pixels. */
   get visibleHeight(): number {
-    if (this.dragHeight !== null) return this.dragHeight;
+    const dragHeight = this.dragHeight;
+    if (dragHeight !== null) return dragHeight;
     if (!this.entered) return 0;
     return this.restingHeight;
   }
@@ -294,10 +312,12 @@ export class EventPanelSheetController {
   }
 
   /**
-   * Inline style of the frame that holds the sheet: the visible viewport down to the system navigation (or the
-   * keyboard), clipping the sheet's hidden part so it never draws over the navigation buttons. The frame never moves,
-   * so the clip stays still while the sheet's transform animates on the compositor; animating a clip alongside the
-   * transform runs on another thread and lets the sheet's bottom edge lag above the navigation for a few frames.
+   * Inline style of the frame that holds the sheet: the visible viewport down to the system navigation, keyboard or
+   * not, clipping the sheet's hidden part so it never draws over the navigation buttons. Reaching under the keyboard
+   * lets the sheet stay solid when the keyboard hides before the shell reports it, as on Android before 11. The frame
+   * never moves, so the clip stays still while the sheet's transform animates on the compositor; animating a clip
+   * alongside the transform runs on another thread and lets the sheet's bottom edge lag above the navigation for a few
+   * frames.
    */
   get frameStyle(): string {
     return [
@@ -306,7 +326,7 @@ export class EventPanelSheetController {
       "left:var(--visual-viewport-offset-left)",
       "top:var(--visual-viewport-offset-top)",
       "width:var(--visual-viewport-width)",
-      "height:calc(var(--visual-viewport-height) - var(--safe-area-bottom))",
+      "height:calc(var(--visual-viewport-full-height) - var(--safe-area-bottom))",
       "overflow:clip",
       "pointer-events:none",
       "",
@@ -407,7 +427,8 @@ export class EventPanelSheetController {
     this.gesture = {
       startX: touch.clientX,
       startY: touch.clientY,
-      startVisible: this.visibleHeight,
+      startVisible: this.renderedVisibleHeight(),
+      startFull: this.fullHeight,
       target: event.target instanceof Element ? event.target : null,
       claimed: null,
       samples: [{ y: touch.clientY, time: event.timeStamp }],
@@ -433,7 +454,15 @@ export class EventPanelSheetController {
     if (event.cancelable) event.preventDefault();
     gesture.samples.push({ y: touch.clientY, time: event.timeStamp });
     if (gesture.samples.length > MAX_SAMPLES) gesture.samples.shift();
-    this.dragHeight = bottomSheetDragHeight(gesture.startVisible, deltaY, this.heights);
+    this.drag = { startVisible: gesture.startVisible, startFull: gesture.startFull, deltaY };
+  }
+
+  /** Visible height on screen, read from the transform so a settle that is under way counts where it is. */
+  private renderedVisibleHeight(): number {
+    const panel = this.options.panel();
+    if (!panel || !this.entered) return this.visibleHeight;
+    const offset = new DOMMatrixReadOnly(getComputedStyle(panel).transform).m42;
+    return Math.max(0, this.fullHeight - offset);
   }
 
   private handleTouchEnd(): void {
@@ -443,7 +472,7 @@ export class EventPanelSheetController {
     if (!gesture || gesture.claimed !== "sheet" || released === null) return;
     const low = this.collapsible ? "collapse" : "close";
     const result = settleBottomSheet(released, bottomSheetReleaseVelocity(gesture.samples), this.heights, low);
-    this.dragHeight = null;
+    this.drag = null;
     this.restMotion = "settle";
     if (!this.options.gridEditing()) this.gridEditDip = false;
     if (result === "close") {
@@ -461,6 +490,6 @@ export class EventPanelSheetController {
 
   private cancelGesture(): void {
     this.gesture = null;
-    this.dragHeight = null;
+    this.drag = null;
   }
 }

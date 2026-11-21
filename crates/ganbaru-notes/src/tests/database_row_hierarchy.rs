@@ -144,7 +144,7 @@ fn database_subitems_report_unloaded_ancestors_and_counts_and_restore_trashed_re
             window["row_hierarchy"][PAGE_C]["ancestor_row_page_ids"],
             json!([PAGE_B])
         );
-        sqlx::query("UPDATE notes_pages SET in_trash = 1 WHERE id = ?")
+        sqlx::query("UPDATE notes_pages SET in_trash = 1, trashed_time = '2026-01-01T00:00:00.000Z' WHERE id = ?")
             .bind(PAGE_B)
             .execute(&pool)
             .await
@@ -152,7 +152,7 @@ fn database_subitems_report_unloaded_ancestors_and_counts_and_restore_trashed_re
         let orphan = metadata(&pool, &[PAGE_C]).await;
         assert_eq!(orphan[PAGE_C]["depth"], 0);
         assert!(orphan[PAGE_C]["parent_row_page_id"].is_null());
-        sqlx::query("UPDATE notes_pages SET in_trash = 0 WHERE id = ?")
+        sqlx::query("UPDATE notes_pages SET in_trash = 0, trashed_time = NULL WHERE id = ?")
             .bind(PAGE_B)
             .execute(&pool)
             .await

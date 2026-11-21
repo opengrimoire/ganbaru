@@ -1024,3 +1024,66 @@ fn deleting_a_data_source_removes_its_row_pages_and_options() {
         assert_eq!(remaining, 0);
     });
 }
+
+#[test]
+fn page_trash_columns_agree() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        let insert = |id: &'static str,
+                      in_trash: i64,
+                      archived: i64,
+                      trashed_time: Option<&'static str>,
+                      trash_owner: Option<&'static str>| {
+            sqlx::query(
+                "INSERT INTO notes_pages (id, in_trash, archived, trashed_time, trash_owner)
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(id)
+            .bind(in_trash)
+            .bind(archived)
+            .bind(trashed_time)
+            .bind(trash_owner)
+        };
+        let since = Some("2026-11-21T00:00:00.000Z");
+        for (id, in_trash, archived, trashed_time, trash_owner) in [
+            ("live", 0, 0, None, None),
+            ("archived", 0, 1, None, None),
+            ("trashed", 1, 0, since, None),
+            ("trashed-owned", 1, 0, since, Some("token")),
+            ("trashed-from-archive", 1, 1, since, Some("token")),
+        ] {
+            insert(id, in_trash, archived, trashed_time, trash_owner)
+                .execute(&pool)
+                .await
+                .unwrap_or_else(|e| panic!("{id} should be accepted: {e}"));
+        }
+        for (id, in_trash, trashed_time, trash_owner) in [
+            ("trashed-without-time", 1, None, None),
+            ("owned-without-time", 1, None, Some("token")),
+            ("live-with-time", 0, since, None),
+            ("live-with-owner", 0, None, Some("token")),
+        ] {
+            assert!(
+                insert(id, in_trash, 0, trashed_time, trash_owner)
+                    .execute(&pool)
+                    .await
+                    .is_err(),
+                "{id} should be refused"
+            );
+        }
+        assert!(
+            sqlx::query("UPDATE notes_pages SET in_trash = 0 WHERE id = 'trashed'")
+                .execute(&pool)
+                .await
+                .is_err(),
+            "a restore clears the trash time in the same write"
+        );
+        assert!(
+            sqlx::query("UPDATE notes_pages SET trashed_time = NULL WHERE id = 'trashed'")
+                .execute(&pool)
+                .await
+                .is_err(),
+            "a trashed page keeps its trash time"
+        );
+    });
+}

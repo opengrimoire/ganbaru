@@ -188,7 +188,15 @@ fn validate_page(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
             optional_json(icon, "notes page icon")?;
             optional_json(cover, "notes page cover")
         }
-        (page_group::LIFECYCLE, [_, _, owner]) => optional_not_blank(owner, "notes trash owner"),
+        (page_group::LIFECYCLE, [in_trash, trashed_time, owner]) => {
+            optional_not_blank(owner, "notes trash owner")?;
+            // Mirrors the notes_pages CHECK: a trashed page has a trash time, and a page outside
+            // Trash has neither a time nor an owner.
+            match (in_trash, is_null(trashed_time), is_null(owner)) {
+                (Field::Integer(1), false, _) | (Field::Integer(0), true, true) => Ok(()),
+                _ => Err(AdapterError("notes page trash state")),
+            }
+        }
         _ => Ok(()),
     }
 }
@@ -947,6 +955,42 @@ mod tests {
                 adapter
                     .derived(BLOCKS_TABLE, block_group::PLACEMENT, &invalid)
                     .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn page_trash_state_mirrors_the_table_check() {
+        let adapter = NotesAdapter;
+        let lifecycle = |in_trash: i64, since: Option<&str>, owner: Option<&str>| {
+            value(vec![
+                Field::Integer(in_trash),
+                since.map_or(Field::Null, t),
+                owner.map_or(Field::Null, t),
+            ])
+        };
+        for valid in [
+            lifecycle(0, None, None),
+            lifecycle(1, Some("2026-11-21T00:00:00.000Z"), None),
+            lifecycle(1, Some("2026-11-21T00:00:00.000Z"), Some("token")),
+        ] {
+            adapter
+                .validate(PAGES_TABLE, page_group::LIFECYCLE, &valid)
+                .unwrap();
+        }
+        for invalid in [
+            lifecycle(1, None, None),
+            lifecycle(1, None, Some("token")),
+            lifecycle(0, Some("2026-11-21T00:00:00.000Z"), None),
+            lifecycle(0, None, Some("token")),
+            lifecycle(1, Some("2026-11-21T00:00:00.000Z"), Some("  ")),
+            lifecycle(2, Some("2026-11-21T00:00:00.000Z"), None),
+        ] {
+            assert!(
+                adapter
+                    .validate(PAGES_TABLE, page_group::LIFECYCLE, &invalid)
+                    .is_err(),
+                "{invalid:?} should be held invalid"
             );
         }
     }

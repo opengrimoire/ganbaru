@@ -837,7 +837,7 @@ fn sidebar_pages_report_trashed_parents_for_seed_pages() {
         )
         .await
         .unwrap();
-        sqlx::query("UPDATE notes_pages SET in_trash = 1 WHERE id = ?")
+        sqlx::query("UPDATE notes_pages SET in_trash = 1, trashed_time = '2026-01-01T00:00:00.000Z' WHERE id = ?")
             .bind(PAGE_A)
             .execute(&pool)
             .await

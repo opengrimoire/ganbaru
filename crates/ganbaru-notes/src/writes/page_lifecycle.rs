@@ -7,6 +7,7 @@ use crate::block_storage::{BlockRowInsert, insert_block_row, replace_block_paylo
 use crate::models::{
     NoteBlockRow, NoteLoadedPage, NoteMovePage, NotePageDto, NoteParent, page_parent_columns,
 };
+use crate::page_lifecycle::PageLifecycleWrite;
 use crate::validation::{plain_text_from_payload, require_uuid, validate_parent};
 use crate::{data_sources, page_history, reads};
 use sqlx::{Sqlite, SqlitePool, Transaction};
@@ -181,13 +182,10 @@ pub async fn trash_page(
         repair_page_parent_for_active_restore(&mut tx, page_id).await?
     };
     super::database_lifecycle::set_page_trash(&mut tx, page_id, in_trash).await?;
-    if in_trash {
-        sqlx::query("UPDATE notes_pages SET archived = 0 WHERE id = ?")
-            .bind(page_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| format!("clear trashed Notes page archive state: {e}"))?;
-    }
+    // A restore returns a page trashed while archived to Archive, where its block stays hidden.
+    let root_child_page_block_visible = root_child_page_block_visible
+        && crate::page_lifecycle::load_page_lifecycle_tx(&mut tx, page_id).await?
+            == Some(crate::page_lifecycle::PageLifecycle::Live);
     set_root_child_page_block_visibility(&mut tx, page_id, root_child_page_block_visible).await?;
     for parent in child_parents {
         touch_parent_block(&mut tx, &parent).await?;
@@ -627,19 +625,17 @@ pub async fn archive_page(
     } else {
         repair_page_parent_for_active_restore(&mut tx, page_id).await?
     };
-    let result = sqlx::query(
-        "UPDATE notes_pages
-         SET archived = ?,
-             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE id = ? AND in_trash = 0",
-    )
-    .bind(if archived { 1_i64 } else { 0_i64 })
-    .bind(page_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| format!("archive notes page: {e}"))?;
-    if result.rows_affected() == 0 {
-        return Err("notes page not found".to_string());
+    let request = if archived {
+        crate::page_lifecycle::PageMove::Archive
+    } else {
+        crate::page_lifecycle::PageMove::Unarchive
+    };
+    match crate::page_lifecycle::move_page_lifecycle_tx(&mut tx, page_id, &request).await? {
+        PageLifecycleWrite::Applied | PageLifecycleWrite::AlreadyInState => {}
+        // A trashed page is outside the page tree, so Archive cannot reach it.
+        PageLifecycleWrite::Rejected { .. } | PageLifecycleWrite::Missing => {
+            return Err("notes page not found".to_string());
+        }
     }
     sqlx::query(PAGE_BLOCK_VISIBILITY_SQL)
         .bind(if root_child_page_block_visible {

@@ -320,6 +320,104 @@ fn trashing_archived_page_clears_archive_state() {
 }
 
 #[test]
+fn trashing_a_parent_keeps_an_archived_descendant_in_archive_after_restore() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        writes::create_page(
+            &pool,
+            NotePageCreate {
+                id: PAGE_B.to_string(),
+                title: "Nested".to_string(),
+                parent: page_parent(PAGE_A),
+                folder_id: None,
+                project_id: None,
+                first_block_id: BLOCK_B.to_string(),
+                after_block_id: None,
+                properties: None,
+            },
+        )
+        .await
+        .unwrap();
+        writes::archive_page(&pool, PAGE_B, true).await.unwrap();
+        let lifecycle = |id: &'static str| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_as::<_, (i64, i64, Option<String>, Option<String>)>(
+                    "SELECT in_trash, archived, trashed_time, trash_owner
+                     FROM notes_pages WHERE id = ?",
+                )
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+
+        writes::trash_page(&pool, PAGE_A, true).await.unwrap();
+        let (root_trash, root_archived, root_since, root_owner) = lifecycle(PAGE_A).await;
+        let (child_trash, child_archived, child_since, child_owner) = lifecycle(PAGE_B).await;
+        assert_eq!((root_trash, root_archived), (1, 0));
+        assert_eq!((child_trash, child_archived), (1, 1));
+        assert!(root_since.is_some() && root_since == child_since);
+        assert!(root_owner.is_some() && root_owner == child_owner);
+        assert_eq!(
+            writes::archive_page(&pool, PAGE_B, false)
+                .await
+                .err()
+                .as_deref(),
+            Some("notes page not found"),
+            "a trashed page cannot leave Archive"
+        );
+
+        writes::trash_page(&pool, PAGE_A, false).await.unwrap();
+        assert_eq!(lifecycle(PAGE_A).await, (0, 0, None, None));
+        assert_eq!(lifecycle(PAGE_B).await, (0, 1, None, None));
+        assert_eq!(reads::list_archived_pages(&pool).await.unwrap().len(), 1);
+    });
+}
+
+#[test]
+fn repeated_archive_and_trash_requests_leave_the_page_alone() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        let edited = || async {
+            sqlx::query_scalar::<_, String>("SELECT last_edited_time FROM notes_pages WHERE id = ?")
+                .bind(PAGE_A)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        };
+        writes::archive_page(&pool, PAGE_A, false).await.unwrap();
+        writes::archive_page(&pool, PAGE_A, true).await.unwrap();
+        let archived_at = edited().await;
+        writes::archive_page(&pool, PAGE_A, true).await.unwrap();
+        assert_eq!(edited().await, archived_at);
+        writes::archive_page(&pool, PAGE_A, false).await.unwrap();
+
+        writes::trash_page(&pool, PAGE_A, true).await.unwrap();
+        let first: (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT trashed_time, trash_owner FROM notes_pages WHERE id = ?")
+                .bind(PAGE_A)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        writes::trash_page(&pool, PAGE_A, true).await.unwrap();
+        let second: (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT trashed_time, trash_owner FROM notes_pages WHERE id = ?")
+                .bind(PAGE_A)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(first, second, "trashing again keeps the first deletion");
+        writes::trash_page(&pool, PAGE_A, false).await.unwrap();
+        writes::trash_page(&pool, PAGE_A, false).await.unwrap();
+        assert_eq!(reads::list_pages(&pool).await.unwrap().len(), 1);
+    });
+}
+
+#[test]
 fn trashing_parent_page_updates_descendant_pages() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;

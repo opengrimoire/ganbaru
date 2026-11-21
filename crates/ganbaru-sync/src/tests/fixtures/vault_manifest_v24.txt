@@ -522,6 +522,7 @@ table 290 notes_pages replicated key id rule any
   group 9 max last_edited_time:timestamp
   check child_block_id,parent_data_source_id within 3
   check folder_id,child_block_id,parent_data_source_id within 3
+  check in_trash,trashed_time,trash_owner within 7
 table 292 notes_blocks replicated key id rule any
   group 0 register created_time:timestamp source_provider:optional_text(..=262144) source_object_id:optional_text(..=262144) source_last_edited_time:optional_text(..=262144)
   group 1 register parent_page_id:optional_row_key->290:cascade parent_block_id:optional_row_key->292:cascade

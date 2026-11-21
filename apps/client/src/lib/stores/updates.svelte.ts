@@ -234,9 +234,13 @@ class UpdateManagerStore {
 
   async installUpdate(): Promise<void> {
     if (!this.pendingUpdate || this.status !== "available") return;
-    const context = await this.loadInstallContext();
-    if (!context.selfUpdater) return;
+    // The install claims the offer before any await, so a second press finds it taken.
     this.status = "downloading";
+    const context = await this.loadInstallContext();
+    if (!context.selfUpdater) {
+      this.status = "available";
+      return;
+    }
     this.errorMessage = null;
     this.downloadedBytes = 0;
     this.contentLength = null;

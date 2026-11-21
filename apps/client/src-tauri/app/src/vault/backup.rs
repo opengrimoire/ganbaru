@@ -2183,8 +2183,8 @@ mod retention_tests {
         assert_eq!(read_marker(&target).await, REPLACEMENT_MARKER);
         let rollbacks = list_rollbacks(&target).unwrap();
         assert_eq!(rollbacks.len(), 1);
-        assert_eq!(rollbacks[0].origin, RollbackOrigin::Replacement);
-        assert!(!rollbacks[0].flagged);
+        assert_eq!(rollbacks[0].retention.origin(), RollbackOrigin::Replacement);
+        assert!(!rollbacks[0].retention.flagged());
         restore_rollback(&target, &rollbacks[0].id, chrono::Utc::now())
             .await
             .unwrap();
@@ -2210,7 +2210,7 @@ mod retention_tests {
         assert_eq!(fs::read(target.join("README.md")).unwrap(), b"device file");
         let rollbacks = list_rollbacks(&target).unwrap();
         assert_eq!(rollbacks.len(), 1);
-        assert!(rollbacks[0].flagged && !rollbacks[0].dismissed);
+        assert!(rollbacks[0].retention.flagged() && !rollbacks[0].retention.dismissed());
         restore_rollback(&target, &rollbacks[0].id, chrono::Utc::now())
             .await
             .unwrap();
@@ -2218,7 +2218,7 @@ mod retention_tests {
         assert_eq!(fs::read(target.join(&note)).unwrap(), note_bytes);
         let after = list_rollbacks(&target).unwrap();
         assert_eq!(after.len(), 1);
-        assert_eq!(after[0].origin, RollbackOrigin::Reset);
+        assert_eq!(after[0].retention.origin(), RollbackOrigin::Reset);
         let _ = fs::remove_dir_all(parent);
     }
 
@@ -2289,7 +2289,7 @@ mod retention_tests {
         assert_eq!(read_marker(&target).await, REPLACEMENT_MARKER);
         let rollbacks = list_rollbacks(&target).unwrap();
         assert_eq!(rollbacks.len(), 1);
-        assert_eq!(rollbacks[0].origin, RollbackOrigin::Replacement);
+        assert_eq!(rollbacks[0].retention.origin(), RollbackOrigin::Replacement);
         let _ = fs::remove_dir_all(parent);
     }
 

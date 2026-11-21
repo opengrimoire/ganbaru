@@ -63,47 +63,192 @@ pub enum RollbackOrigin {
     Replacement,
 }
 
-/// Retention record stored in [`RETENTION_FILE`].
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct Retention {
-    pub origin: RollbackOrigin,
-    /// The replacement held drastically less data than this copy.
-    pub flagged: bool,
-    /// The user dismissed the flagged notice.
-    pub dismissed: bool,
-    /// The copy holds the whole vault layout, not only the database.
-    pub full: bool,
-    /// The copy is a whole other vault that a restore replaced; restoring it brings that
-    /// vault back in this folder.
-    #[serde(default)]
-    pub other_vault: bool,
-    /// The vault this copy belongs to, recorded when another vault replaced it. A copy of
-    /// another vault than the one in the folder is hidden and never restored, until that
-    /// vault is back.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vault: Option<String>,
+/// Why a rollback copy was kept and what it holds, decoded strictly from [`RETENTION_FILE`].
+/// Copies of the vault in the folder name their `owner` once another vault replaced them
+/// there, so they stay with the vault they belong to.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Retention {
+    /// A reset, or the data a rollback restore replaced. A `full` copy holds the whole vault
+    /// layout, as the data a whole-layout restore replaced does.
+    Reset { full: bool, owner: Option<String> },
+    /// The database a replacement of the same vault replaced.
+    Replacement { owner: Option<String> },
+    /// The whole layout a replacement of the same vault replaced while holding drastically less
+    /// data, shown for review until the user dismisses it.
+    Flagged {
+        dismissed: bool,
+        owner: Option<String>,
+    },
+    /// The whole other vault `vault` that a restore replaced; restoring it brings that vault
+    /// back in this folder.
+    OtherVault { vault: String },
+}
+
+impl Default for Retention {
+    /// A copy without a retention file is a reset copy.
+    fn default() -> Self {
+        Self::Reset {
+            full: false,
+            owner: None,
+        }
+    }
 }
 
 impl Retention {
     /// Retention of a same-vault replacement, keeping the whole layout when flagged.
     pub(crate) fn replacement(flagged: bool) -> Self {
-        Self {
-            origin: RollbackOrigin::Replacement,
-            flagged,
-            full: flagged,
-            ..Self::default()
+        if flagged {
+            Self::Flagged {
+                dismissed: false,
+                owner: None,
+            }
+        } else {
+            Self::Replacement { owner: None }
         }
     }
 
     /// Retention of the whole vault `vault_id` that a restore of another vault replaced.
     fn other_vault(vault_id: &str) -> Self {
+        Self::OtherVault {
+            vault: vault_id.to_string(),
+        }
+    }
+
+    pub(crate) fn origin(&self) -> RollbackOrigin {
+        match self {
+            Self::Reset { .. } => RollbackOrigin::Reset,
+            Self::Replacement { .. } | Self::Flagged { .. } | Self::OtherVault { .. } => {
+                RollbackOrigin::Replacement
+            }
+        }
+    }
+
+    pub(crate) fn flagged(&self) -> bool {
+        matches!(self, Self::Flagged { .. })
+    }
+
+    pub(crate) fn dismissed(&self) -> bool {
+        matches!(
+            self,
+            Self::Flagged {
+                dismissed: true,
+                ..
+            }
+        )
+    }
+
+    fn is_other_vault(&self) -> bool {
+        matches!(self, Self::OtherVault { .. })
+    }
+
+    /// Whether the copy holds the whole vault layout, not only the database.
+    fn full(&self) -> bool {
+        match self {
+            Self::Reset { full, .. } => *full,
+            Self::Replacement { .. } => false,
+            Self::Flagged { .. } | Self::OtherVault { .. } => true,
+        }
+    }
+
+    /// The vault the copy belongs to, when it is recorded.
+    fn vault(&self) -> Option<&str> {
+        match self {
+            Self::Reset { owner, .. }
+            | Self::Replacement { owner }
+            | Self::Flagged { owner, .. } => owner.as_deref(),
+            Self::OtherVault { vault } => Some(vault),
+        }
+    }
+
+    /// The same copy recorded as belonging to `vault_id`. A whole other vault already names
+    /// its vault and stays as it is.
+    fn claimed_by(self, vault_id: &str) -> Self {
+        let owner = Some(vault_id.to_string());
+        match self {
+            Self::Reset { full, .. } => Self::Reset { full, owner },
+            Self::Replacement { .. } => Self::Replacement { owner },
+            Self::Flagged { dismissed, .. } => Self::Flagged { dismissed, owner },
+            other @ Self::OtherVault { .. } => other,
+        }
+    }
+
+    /// The same copy with its review notice dismissed. Only a flagged copy has one.
+    fn dismissed_notice(self) -> Self {
+        match self {
+            Self::Flagged { owner, .. } => Self::Flagged {
+                dismissed: true,
+                owner,
+            },
+            other => other,
+        }
+    }
+}
+
+/// The retention record as [`RETENTION_FILE`] stores it.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredRetention {
+    origin: RollbackOrigin,
+    flagged: bool,
+    dismissed: bool,
+    full: bool,
+    #[serde(default)]
+    other_vault: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vault: Option<String>,
+}
+
+impl From<&Retention> for StoredRetention {
+    fn from(retention: &Retention) -> Self {
         Self {
-            origin: RollbackOrigin::Replacement,
-            full: true,
-            other_vault: true,
-            vault: Some(vault_id.to_string()),
-            ..Self::default()
+            origin: retention.origin(),
+            flagged: retention.flagged(),
+            dismissed: retention.dismissed(),
+            full: retention.full(),
+            other_vault: retention.is_other_vault(),
+            vault: retention.vault().map(str::to_string),
+        }
+    }
+}
+
+impl TryFrom<StoredRetention> for Retention {
+    type Error = String;
+
+    /// Refuses every field combination that no [`Retention`] holds.
+    fn try_from(stored: StoredRetention) -> Result<Self, String> {
+        let StoredRetention {
+            origin,
+            flagged,
+            dismissed,
+            full,
+            other_vault,
+            vault,
+        } = stored;
+        let inconsistent =
+            |detail: &str| Err(format!("rollback retention is inconsistent: {detail}"));
+        if dismissed && !flagged {
+            return inconsistent("only a flagged copy can be dismissed");
+        }
+        match (origin, other_vault, flagged) {
+            (RollbackOrigin::Replacement, true, false) => match (full, vault) {
+                (true, Some(vault)) => Ok(Self::OtherVault { vault }),
+                (false, _) => inconsistent("a whole other vault must hold the whole layout"),
+                (true, None) => inconsistent("a whole other vault must name its vault"),
+            },
+            (_, true, _) => inconsistent("a whole other vault is a plain replacement"),
+            (RollbackOrigin::Reset, false, false) => Ok(Self::Reset { full, owner: vault }),
+            (RollbackOrigin::Reset, false, true) => inconsistent("a reset copy is never flagged"),
+            (RollbackOrigin::Replacement, false, false) if full => {
+                inconsistent("an unflagged replacement keeps only the database")
+            }
+            (RollbackOrigin::Replacement, false, false) => Ok(Self::Replacement { owner: vault }),
+            (RollbackOrigin::Replacement, false, true) if !full => {
+                inconsistent("a flagged replacement keeps the whole layout")
+            }
+            (RollbackOrigin::Replacement, false, true) => Ok(Self::Flagged {
+                dismissed,
+                owner: vault,
+            }),
         }
     }
 }
@@ -112,26 +257,50 @@ impl DatabaseRollback {
     /// Whether the copy shows for the vault `current` in the folder: a whole other vault
     /// always shows, and any other copy only while the vault it belongs to is there.
     fn shows_for(&self, current: Option<&str>) -> bool {
-        self.other_vault || self.vault.is_none() || self.vault.as_deref() == current
+        self.retention.is_other_vault()
+            || self
+                .retention
+                .vault()
+                .is_none_or(|vault| Some(vault) == current)
     }
 }
 
-/// One restorable copy.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+/// One restorable copy whose retention record decoded.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DatabaseRollback {
     pub id: String,
     pub created_at: String,
     pub size_bytes: u64,
-    pub origin: RollbackOrigin,
-    pub flagged: bool,
-    pub dismissed: bool,
+    pub(crate) retention: Retention,
+}
+
+/// The copy as the webview reads it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RollbackView<'a> {
+    id: &'a str,
+    created_at: &'a str,
+    size_bytes: u64,
+    origin: RollbackOrigin,
+    flagged: bool,
+    dismissed: bool,
     /// The copy is a whole other vault that a restore replaced.
-    pub other_vault: bool,
-    #[serde(skip)]
-    full: bool,
-    #[serde(skip)]
-    vault: Option<String>,
+    other_vault: bool,
+}
+
+impl Serialize for DatabaseRollback {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        RollbackView {
+            id: &self.id,
+            created_at: &self.created_at,
+            size_bytes: self.size_bytes,
+            origin: self.retention.origin(),
+            flagged: self.retention.flagged(),
+            dismissed: self.retention.dismissed(),
+            other_vault: self.retention.is_other_vault(),
+        }
+        .serialize(serializer)
+    }
 }
 
 fn rollback_root(vault: &Path) -> PathBuf {
@@ -201,25 +370,32 @@ fn move_entries(from: &Path, to: &Path, names: &[String]) -> Result<(), String> 
     Ok(())
 }
 
-fn read_retention(directory: &Path) -> Retention {
+/// Reads the retention record of the copy in `directory`. A copy without one is a reset copy.
+/// A record that cannot be read or decoded is an error, so the copy is never mistaken for a
+/// database-only reset copy that retention may delete or a restore may move only in part.
+fn read_retention(directory: &Path) -> Result<Retention, String> {
     let path = directory.join(RETENTION_FILE);
-    let Ok(file) = fs::File::open(&path) else {
-        return Retention::default();
+    let file = match fs::File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Retention::default());
+        }
+        Err(error) => return Err(format!("read database rollback retention: {error}")),
     };
     let mut bytes = Vec::new();
-    if file
-        .take(MAX_RETENTION_FILE_BYTES + 1)
+    file.take(MAX_RETENTION_FILE_BYTES + 1)
         .read_to_end(&mut bytes)
-        .is_err()
-        || bytes.len() as u64 > MAX_RETENTION_FILE_BYTES
-    {
-        return Retention::default();
+        .map_err(|error| format!("read database rollback retention: {error}"))?;
+    if bytes.len() as u64 > MAX_RETENTION_FILE_BYTES {
+        return Err("database rollback retention is too large".to_string());
     }
-    serde_json::from_slice(&bytes).unwrap_or_default()
+    let stored: StoredRetention = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("decode database rollback retention: {error}"))?;
+    Retention::try_from(stored)
 }
 
-fn write_retention(directory: &Path, retention: Retention) -> Result<(), String> {
-    let bytes = serde_json::to_vec(&retention)
+fn write_retention(directory: &Path, retention: &Retention) -> Result<(), String> {
+    let bytes = serde_json::to_vec(&StoredRetention::from(retention))
         .map_err(|error| format!("encode database rollback retention: {error}"))?;
     ganbaru_atomic_files::write_file_atomically(
         &directory.join(RETENTION_FILE),
@@ -229,8 +405,9 @@ fn write_retention(directory: &Path, retention: Retention) -> Result<(), String>
     .map_err(|error| format!("write database rollback retention: {error}"))
 }
 
-/// Lists rollback directories, newest first, ignoring entries that are not
-/// rollback IDs or that hold no regular database file.
+/// Lists rollback directories, newest first, ignoring entries that are not rollback IDs,
+/// that hold no regular database file, or whose retention record does not decode. An
+/// ignored copy is never shown, restored, or pruned, so it stays on disk untouched.
 pub(crate) fn list_rollbacks(vault: &Path) -> Result<Vec<DatabaseRollback>, String> {
     let root = rollback_root(vault);
     let entries = match fs::read_dir(&root) {
@@ -256,17 +433,14 @@ pub(crate) fn list_rollbacks(vault: &Path) -> Result<Vec<DatabaseRollback>, Stri
         if !metadata.is_file() {
             continue;
         }
-        let retention = read_retention(&entry.path());
+        let Ok(retention) = read_retention(&entry.path()) else {
+            continue;
+        };
         rollbacks.push(DatabaseRollback {
             id,
             created_at: created.to_rfc3339_opts(SecondsFormat::Millis, true),
             size_bytes: metadata.len(),
-            origin: retention.origin,
-            flagged: retention.flagged,
-            dismissed: retention.dismissed,
-            other_vault: retention.other_vault,
-            full: retention.full,
-            vault: retention.vault,
+            retention,
         });
     }
     rollbacks.sort_by(|left, right| right.id.cmp(&left.id));
@@ -289,16 +463,12 @@ pub(crate) fn visible_rollbacks(vault: &Path) -> Result<Vec<DatabaseRollback>, S
 fn claim_rollbacks(vault: &Path, vault_id: &str) -> Result<(), String> {
     let root = rollback_root(vault);
     for rollback in list_rollbacks(vault)? {
-        if rollback.other_vault || rollback.vault.is_some() {
+        if rollback.retention.vault().is_some() {
             continue;
         }
-        let directory = root.join(&rollback.id);
         write_retention(
-            &directory,
-            Retention {
-                vault: Some(vault_id.to_string()),
-                ..read_retention(&directory)
-            },
+            &root.join(&rollback.id),
+            &rollback.retention.claimed_by(vault_id),
         )?;
     }
     Ok(())
@@ -323,16 +493,16 @@ fn pruned_rollbacks(
     }
     let kept_vaults: Vec<&str> = shown
         .iter()
-        .filter(|rollback| rollback.other_vault && !stale.contains(&rollback.id))
-        .filter_map(|rollback| rollback.vault.as_deref())
+        .filter(|rollback| rollback.retention.is_other_vault() && !stale.contains(&rollback.id))
+        .filter_map(|rollback| rollback.retention.vault())
         .collect();
     stale.extend(
         hidden
             .iter()
             .filter(|rollback| {
                 rollback
-                    .vault
-                    .as_deref()
+                    .retention
+                    .vault()
                     .is_none_or(|vault| !kept_vaults.contains(&vault))
             })
             .map(|rollback| rollback.id.clone()),
@@ -349,43 +519,33 @@ fn stale_rollbacks(rollbacks: &[DatabaseRollback], now: DateTime<Utc>) -> Vec<St
     let mut resets = 0;
     let mut replacements = 0;
     let mut other_vaults = 0;
-    let mut flagged: Vec<&DatabaseRollback> = Vec::new();
+    let mut flagged: Vec<(&DatabaseRollback, bool)> = Vec::new();
     for rollback in rollbacks {
-        if rollback.other_vault {
-            other_vaults += 1;
-            if other_vaults > MAX_OTHER_VAULT_ROLLBACKS {
-                stale.push(rollback.id.clone());
-            }
-            continue;
-        }
-        let count = match (rollback.origin, rollback.flagged) {
-            (_, true) => {
-                let expired = rollback.dismissed
+        let (count, limit) = match &rollback.retention {
+            Retention::OtherVault { .. } => (&mut other_vaults, MAX_OTHER_VAULT_ROLLBACKS),
+            Retention::Reset { .. } => (&mut resets, MAX_DATABASE_ROLLBACKS),
+            Retention::Replacement { .. } => (&mut replacements, MAX_REPLACEMENT_ROLLBACKS),
+            Retention::Flagged { dismissed, .. } => {
+                let expired = *dismissed
                     && parse_rollback_id(&rollback.id)
                         .is_ok_and(|created| created + DISMISSED_FLAGGED_RETENTION < now);
                 if expired {
                     stale.push(rollback.id.clone());
                 } else {
-                    flagged.push(rollback);
+                    flagged.push((rollback, *dismissed));
                 }
                 continue;
             }
-            (RollbackOrigin::Reset, false) => &mut resets,
-            (RollbackOrigin::Replacement, false) => &mut replacements,
         };
         *count += 1;
-        let limit = match rollback.origin {
-            RollbackOrigin::Reset => MAX_DATABASE_ROLLBACKS,
-            RollbackOrigin::Replacement => MAX_REPLACEMENT_ROLLBACKS,
-        };
         if *count > limit {
             stale.push(rollback.id.clone());
         }
     }
-    flagged.sort_by(|left, right| {
-        left.dismissed
-            .cmp(&right.dismissed)
-            .then_with(|| match left.dismissed {
+    flagged.sort_by(|(left, left_dismissed), (right, right_dismissed)| {
+        left_dismissed
+            .cmp(right_dismissed)
+            .then_with(|| match left_dismissed {
                 false => left.id.cmp(&right.id),
                 true => right.id.cmp(&left.id),
             })
@@ -394,7 +554,7 @@ fn stale_rollbacks(rollbacks: &[DatabaseRollback], now: DateTime<Utc>) -> Vec<St
         flagged
             .into_iter()
             .skip(MAX_FLAGGED_REPLACEMENTS)
-            .map(|rollback| rollback.id.clone()),
+            .map(|(rollback, _)| rollback.id.clone()),
     );
     stale
 }
@@ -455,6 +615,23 @@ pub(crate) fn prune_after_replacement(vault: &Path, at: DateTime<Utc>) -> Result
     prune_rollbacks(vault, at)
 }
 
+/// The creation time of the newest rollback directory in `root`, counting every directory
+/// named by a rollback ID, including copies [`list_rollbacks`] ignores.
+fn newest_rollback_time(root: &Path) -> Result<Option<DateTime<Utc>>, String> {
+    let entries =
+        fs::read_dir(root).map_err(|error| format!("read database rollbacks: {error}"))?;
+    let mut newest = None;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("read database rollbacks: {error}"))?;
+        let created = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| parse_rollback_id(name).ok());
+        newest = newest.max(created);
+    }
+    Ok(newest)
+}
+
 /// Moves the vault data a copy keeps into a new rollback directory whose ID sorts
 /// after every existing copy, so a clock step backwards or a pruned ID never makes
 /// the new copy the oldest. Returns `None` when there is no database to move.
@@ -470,9 +647,8 @@ fn create_rollback(
     ganbaru_atomic_files::create_private_directories(&root)
         .map_err(|error| format!("create database rollbacks: {error}"))?;
     let mut created = at;
-    if let Some(newest) = list_rollbacks(vault)?.first() {
-        let after_newest = parse_rollback_id(&newest.id)? + TimeDelta::milliseconds(1);
-        created = created.max(after_newest);
+    if let Some(newest) = newest_rollback_time(&root)? {
+        created = created.max(newest + TimeDelta::milliseconds(1));
     }
     let directory = loop {
         let candidate = root.join(rollback_id(created));
@@ -484,11 +660,11 @@ fn create_rollback(
             Err(error) => return Err(format!("create database rollback: {error}")),
         }
     };
-    let names = moved_entry_names(retention.full);
+    let names = moved_entry_names(retention.full());
     let kept = if retention == Retention::default() {
         Ok(())
     } else {
-        write_retention(&directory, retention)
+        write_retention(&directory, &retention)
     }
     .and_then(|()| move_entries(vault, &directory, &names));
     if let Err(error) = kept {
@@ -544,16 +720,13 @@ async fn validate_rollback(vault: &Path, id: &str) -> Result<(PathBuf, Retention
     if !is_directory || !is_file {
         return Err("unknown database rollback".to_string());
     }
-    let retention = read_retention(&directory);
-    if retention.other_vault {
-        if !retention.full {
-            return Err("unknown database rollback".to_string());
-        }
+    let retention = read_retention(&directory)?;
+    if retention.is_other_vault() {
         vault_id_at(&directory)?;
-    } else if retention.vault.is_some() || retention.full {
+    } else if retention.vault().is_some() || retention.full() {
         let current = vault_id_at(vault)?;
-        let belongs = retention.vault.as_deref().is_none_or(|id| id == current);
-        if !belongs || (retention.full && !holds_vault(&directory, &current)) {
+        let belongs = retention.vault().is_none_or(|id| id == current);
+        if !belongs || (retention.full() && !holds_vault(&directory, &current)) {
             return Err("database rollback belongs to a different vault".to_string());
         }
     }
@@ -571,30 +744,27 @@ pub(crate) async fn restore_rollback(
     at: DateTime<Utc>,
 ) -> Result<bool, String> {
     let (directory, retention) = validate_rollback(vault, id).await?;
-    let replaced_retention = if retention.other_vault {
+    let names = moved_entry_names(retention.full());
+    let replaced_retention = if retention.is_other_vault() {
         let current = vault_id_at(vault)?;
         claim_rollbacks(vault, &current)?;
         Retention::other_vault(&current)
     } else {
-        Retention {
-            full: retention.full,
-            ..Retention::default()
+        Retention::Reset {
+            full: retention.full(),
+            owner: None,
         }
     };
     let replaced = create_rollback(vault, at, replaced_retention)?;
-    if let Err(error) = move_entries(&directory, vault, &moved_entry_names(retention.full)) {
+    if let Err(error) = move_entries(&directory, vault, &names) {
         if let Some(replaced) = &replaced {
-            let _ = move_entries(
-                &rollback_root(vault).join(replaced),
-                vault,
-                &moved_entry_names(retention.full),
-            );
+            let _ = move_entries(&rollback_root(vault).join(replaced), vault, &names);
         }
         return Err(error);
     }
     fs::remove_dir_all(&directory).map_err(|error| format!("remove restored rollback: {error}"))?;
     prune_rollbacks(vault, at)?;
-    Ok(retention.other_vault)
+    Ok(retention.is_other_vault())
 }
 
 /// Marks a flagged rollback as reviewed, so its notice no longer shows. The copy
@@ -605,17 +775,11 @@ pub(crate) fn dismiss_rollback(vault: &Path, id: &str) -> Result<(), String> {
     if !fs::symlink_metadata(&directory).is_ok_and(|meta| meta.is_dir()) {
         return Err("unknown database rollback".to_string());
     }
-    let retention = read_retention(&directory);
-    if !retention.flagged || retention.dismissed {
+    let retention = read_retention(&directory)?;
+    if !retention.flagged() || retention.dismissed() {
         return Ok(());
     }
-    write_retention(
-        &directory,
-        Retention {
-            dismissed: true,
-            ..retention
-        },
-    )
+    write_retention(&directory, &retention.dismissed_notice())
 }
 
 /// Lists the active vault's database rollbacks, newest first.
@@ -647,7 +811,7 @@ fn refuse_other_vault_rollback(
     retention: &Retention,
     linked: bool,
 ) -> Result<(), String> {
-    if !retention.other_vault {
+    if !retention.is_other_vault() {
         return Ok(());
     }
     super::encrypted_backup::refuse_other_vault_while_linked(platform, linked)
@@ -765,7 +929,7 @@ pub async fn vault_restore_database_rollback(
     let transition = super::quiescence::reserve_vault_transition()?;
     let writable_vault = active_writable_vault_path(&app)?;
     let (copy_dir, retention) = validate_rollback(writable_vault.as_ref(), &id).await?;
-    if retention.other_vault {
+    if retention.is_other_vault() {
         refuse_other_vault_rollback(
             super::encrypted_backup::PLATFORM,
             &retention,
@@ -781,7 +945,7 @@ pub async fn vault_restore_database_rollback(
     .await?;
     let vault: &Path = writable_vault.as_ref();
     let restored = async {
-        if !retention.other_vault {
+        if !retention.is_other_vault() {
             refuse_anchor_rewind(vault, &copy_dir, &device_id).await?;
         }
         restore_rollback(vault, &id, super::now_utc()).await
@@ -856,13 +1020,181 @@ mod tests {
             id: rollback_id(at(id_second)),
             created_at: String::new(),
             size_bytes: 0,
-            origin: retention.origin,
-            flagged: retention.flagged,
-            dismissed: retention.dismissed,
-            other_vault: retention.other_vault,
-            full: retention.full,
-            vault: retention.vault,
+            retention,
         }
+    }
+
+    fn every_retention() -> Vec<Retention> {
+        let owners = [None, Some("vault-a".to_string())];
+        let mut all = vec![Retention::OtherVault {
+            vault: "vault-a".to_string(),
+        }];
+        for owner in owners {
+            for flag in [false, true] {
+                all.push(Retention::Reset {
+                    full: flag,
+                    owner: owner.clone(),
+                });
+                all.push(Retention::Flagged {
+                    dismissed: flag,
+                    owner: owner.clone(),
+                });
+            }
+            all.push(Retention::Replacement { owner });
+        }
+        all
+    }
+
+    /// The retention a stored record holds, stated from the rules each copy follows.
+    fn expected(stored: &StoredRetention) -> Option<Retention> {
+        let owner = stored.vault.clone();
+        match stored {
+            StoredRetention {
+                origin: RollbackOrigin::Replacement,
+                flagged: false,
+                dismissed: false,
+                full: true,
+                other_vault: true,
+                vault: Some(vault),
+            } => Some(Retention::OtherVault {
+                vault: vault.clone(),
+            }),
+            StoredRetention {
+                other_vault: true, ..
+            } => None,
+            StoredRetention {
+                origin: RollbackOrigin::Reset,
+                flagged: false,
+                dismissed: false,
+                full,
+                ..
+            } => Some(Retention::Reset { full: *full, owner }),
+            StoredRetention {
+                origin: RollbackOrigin::Replacement,
+                flagged: false,
+                dismissed: false,
+                full: false,
+                ..
+            } => Some(Retention::Replacement { owner }),
+            StoredRetention {
+                origin: RollbackOrigin::Replacement,
+                flagged: true,
+                dismissed,
+                full: true,
+                ..
+            } => Some(Retention::Flagged {
+                dismissed: *dismissed,
+                owner,
+            }),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn every_stored_combination_decodes_only_to_a_retention_it_can_hold() {
+        let mut decoded = 0;
+        for origin in [RollbackOrigin::Reset, RollbackOrigin::Replacement] {
+            for bits in 0..16u8 {
+                for vault in [None, Some("vault-a".to_string())] {
+                    let stored = StoredRetention {
+                        origin,
+                        flagged: bits & 1 != 0,
+                        dismissed: bits & 2 != 0,
+                        full: bits & 4 != 0,
+                        other_vault: bits & 8 != 0,
+                        vault,
+                    };
+                    let want = expected(&stored);
+                    let label = format!("{stored:?}");
+                    let got = Retention::try_from(stored).ok();
+                    assert_eq!(got, want, "{label}");
+                    decoded += usize::from(got.is_some());
+                }
+            }
+        }
+        assert_eq!(decoded, every_retention().len());
+    }
+
+    #[test]
+    fn every_retention_round_trips_through_its_stored_record() {
+        for retention in every_retention() {
+            let bytes = serde_json::to_vec(&StoredRetention::from(&retention)).unwrap();
+            let stored: StoredRetention = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(Retention::try_from(stored), Ok(retention.clone()));
+        }
+        let record =
+            serde_json::to_value(StoredRetention::from(&Retention::other_vault("v"))).unwrap();
+        assert_eq!(
+            record,
+            serde_json::json!({
+                "origin": "replacement",
+                "flagged": false,
+                "dismissed": false,
+                "full": true,
+                "otherVault": true,
+                "vault": "v",
+            })
+        );
+    }
+
+    #[test]
+    fn claiming_and_dismissing_change_only_the_owner_and_the_notice() {
+        for retention in every_retention() {
+            let claimed = retention.clone().claimed_by("vault-b");
+            let dismissed = retention.clone().dismissed_notice();
+            for changed in [&claimed, &dismissed] {
+                assert_eq!(changed.origin(), retention.origin(), "{retention:?}");
+                assert_eq!(changed.full(), retention.full(), "{retention:?}");
+                assert_eq!(changed.flagged(), retention.flagged(), "{retention:?}");
+                assert_eq!(changed.is_other_vault(), retention.is_other_vault());
+            }
+            match &retention {
+                Retention::OtherVault { .. } => assert_eq!(claimed, retention),
+                _ => assert_eq!(claimed.vault(), Some("vault-b"), "{retention:?}"),
+            }
+            assert_eq!(claimed.dismissed(), retention.dismissed());
+            assert_eq!(dismissed.vault(), retention.vault());
+            assert_eq!(dismissed.dismissed(), retention.flagged(), "{retention:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_copy_whose_retention_does_not_decode_is_kept_and_never_pruned_or_restored() {
+        let vault = test_vault("undecodable-retention");
+        for second in 0..(MAX_DATABASE_ROLLBACKS as u32 + 2) {
+            fs::write(database_file(&vault, ""), [second as u8]).unwrap();
+            move_database_to_rollback(&vault, at(second)).unwrap();
+            if second == 0 {
+                let oldest = rollback_root(&vault).join(rollback_id(at(0)));
+                fs::write(
+                    oldest.join(RETENTION_FILE),
+                    br#"{"origin":"reset","flagged":true,"dismissed":false,"full":false}"#,
+                )
+                .unwrap();
+            }
+        }
+        let oldest = rollback_root(&vault).join(rollback_id(at(0)));
+        assert!(
+            database_file(&oldest, "").exists(),
+            "the unreadable copy stays"
+        );
+        let listed = ids(&list_rollbacks(&vault).unwrap());
+        assert_eq!(listed.len(), MAX_DATABASE_ROLLBACKS);
+        assert!(!listed.contains(&rollback_id(at(0))));
+        assert!(read_retention(&oldest).is_err());
+        assert!(dismiss_rollback(&vault, &rollback_id(at(0))).is_err());
+        let refused = restore_rollback(&vault, &rollback_id(at(0)), at(50)).await;
+        assert!(refused.unwrap_err().contains("retention"));
+
+        fs::write(database_file(&vault, ""), b"db").unwrap();
+        let newer = create_rollback(&vault, at(0), Retention::default())
+            .unwrap()
+            .unwrap();
+        assert!(
+            parse_rollback_id(&newer).unwrap() > at(MAX_DATABASE_ROLLBACKS as u32 + 1),
+            "a new copy sorts after every copy on disk"
+        );
+        let _ = fs::remove_dir_all(vault);
     }
 
     #[test]
@@ -905,8 +1237,8 @@ mod tests {
         }
         let listed = &list_rollbacks(&vault).unwrap()[0];
         assert_eq!(listed.id, id);
-        assert_eq!(listed.origin, RollbackOrigin::Reset);
-        assert!(!listed.flagged);
+        assert_eq!(listed.retention.origin(), RollbackOrigin::Reset);
+        assert!(!listed.retention.flagged());
         assert_eq!(move_database_to_rollback(&vault, at(2)).unwrap(), None);
         let _ = fs::remove_dir_all(vault);
     }
@@ -954,10 +1286,7 @@ mod tests {
     #[test]
     fn retention_keeps_the_earliest_undismissed_flagged_copies() {
         let flagged = Retention::replacement(true);
-        let dismissed = Retention {
-            dismissed: true,
-            ..flagged.clone()
-        };
+        let dismissed = flagged.clone().dismissed_notice();
         let rollbacks = vec![
             rollback(9, flagged.clone()),
             rollback(8, dismissed.clone()),
@@ -981,22 +1310,15 @@ mod tests {
         fs::write(database_file(&vault, ""), b"db").unwrap();
         let reset = move_database_to_rollback(&vault, at(1)).unwrap().unwrap();
         dismiss_rollback(&vault, &reset).unwrap();
-        assert!(!list_rollbacks(&vault).unwrap()[0].dismissed);
+        assert!(!list_rollbacks(&vault).unwrap()[0].retention.dismissed());
 
         fs::write(database_file(&vault, ""), b"db").unwrap();
-        let flagged = create_rollback(
-            &vault,
-            at(2),
-            Retention {
-                full: false,
-                ..Retention::replacement(true)
-            },
-        )
-        .unwrap()
-        .unwrap();
+        let flagged = create_rollback(&vault, at(2), Retention::replacement(true))
+            .unwrap()
+            .unwrap();
         dismiss_rollback(&vault, &flagged).unwrap();
         let listed = list_rollbacks(&vault).unwrap();
-        assert!(listed[0].flagged && listed[0].dismissed);
+        assert!(listed[0].retention.flagged() && listed[0].retention.dismissed());
         assert!(dismiss_rollback(&vault, "../ganbaru.sqlite").is_err());
         let _ = fs::remove_dir_all(vault);
     }
@@ -1065,10 +1387,7 @@ mod tests {
     #[test]
     fn retention_keeps_hidden_copies_only_with_their_whole_vault() {
         let other = |vault: &str| Retention::other_vault(vault);
-        let owned = |vault: &str| Retention {
-            vault: Some(vault.to_string()),
-            ..Retention::default()
-        };
+        let owned = |vault: &str| Retention::default().claimed_by(vault);
         let rollbacks = vec![
             rollback(9, other("vault-c")),
             rollback(8, other("vault-b")),
@@ -1102,7 +1421,7 @@ mod tests {
 
         let shown = visible_rollbacks(&vault).unwrap();
         assert_eq!(ids(&shown), vec![kept_a.clone()]);
-        assert!(shown[0].other_vault);
+        assert!(shown[0].retention.is_other_vault());
         assert!(
             restore_rollback(&vault, &reset_a, at(3)).await.is_err(),
             "a copy of the replaced vault never restores into another vault"
@@ -1115,8 +1434,8 @@ mod tests {
         assert_eq!(marker(&vault).await, 1);
         let shown = visible_rollbacks(&vault).unwrap();
         assert_eq!(shown.len(), 2);
-        assert!(shown[0].other_vault);
-        assert_eq!(shown[0].vault.as_deref(), Some("vault-b"));
+        assert!(shown[0].retention.is_other_vault());
+        assert_eq!(shown[0].retention.vault(), Some("vault-b"));
         assert_eq!(shown[1].id, reset_a);
 
         assert!(restore_rollback(&vault, &shown[0].id, at(5)).await.unwrap());
@@ -1139,7 +1458,7 @@ mod tests {
         let phone = test_linked_phone(&pairing_root);
 
         let (_, other) = validate_rollback(&vault, &kept_a).await.unwrap();
-        assert!(other.other_vault);
+        assert!(other.is_other_vault());
         let linked = is_linked(&phone).unwrap();
         assert_eq!(
             refuse_other_vault_rollback(RestorePlatform::Android, &other, linked),
@@ -1149,10 +1468,7 @@ mod tests {
             refuse_other_vault_rollback(RestorePlatform::Desktop, &other, linked),
             Ok(())
         );
-        let same = Retention {
-            vault: Some("vault-b".to_string()),
-            ..Retention::default()
-        };
+        let same = Retention::default().claimed_by("vault-b");
         assert_eq!(
             refuse_other_vault_rollback(RestorePlatform::Android, &same, linked),
             Ok(()),

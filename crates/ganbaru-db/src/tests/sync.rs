@@ -305,6 +305,26 @@ fn spaces_start_unreached_and_late_change_resolutions_are_constrained() {
                 .unwrap();
         assert_eq!(resolution, None, "a late change starts unresolved");
 
+        sqlx::query("UPDATE sync_late_changes SET resolution = 'discard'")
+            .execute(&pool)
+            .await
+            .expect_err("a resolution names the revision that decided it");
+        sqlx::query("UPDATE sync_late_changes SET resolved_revision = 3")
+            .execute(&pool)
+            .await
+            .expect_err("a resolving revision names its resolution");
+        sqlx::query("UPDATE sync_late_changes SET resolution = 'discard', resolved_revision = 3")
+            .execute(&pool)
+            .await
+            .expect("a discard resolves a late change");
+        sqlx::query("UPDATE sync_late_changes SET resolved_revision = NULL")
+            .execute(&pool)
+            .await
+            .expect_err("a resolved late change keeps its revision");
+        sqlx::query("UPDATE sync_late_changes SET resolution = NULL, resolved_revision = NULL")
+            .execute(&pool)
+            .await
+            .expect("both cleared together leave the change unresolved");
         sqlx::query("UPDATE sync_late_changes SET resolution = 'discard', resolved_revision = 3")
             .execute(&pool)
             .await

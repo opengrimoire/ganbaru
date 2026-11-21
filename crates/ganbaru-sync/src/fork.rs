@@ -335,7 +335,9 @@ async fn store_evidence(
 /// Exclusion removes the merge effects of the applied operations past the shared prefix, restores
 /// the versions they superseded, and drops the operations, as if this replica had never stored
 /// them. The chain is then selected again, since the dropped operations may carry entries and a
-/// fork of an anchor's writer freezes its epoch.
+/// fork of an anchor's writer freezes its epoch. Settling moves evidence only from unsettled to
+/// settled, so a call that claims no row excludes nothing, and the claim commits with its effects
+/// in the engine write's transaction or not at all.
 pub(crate) async fn reconcile(
     engine: &Engine,
     conn: &mut SqliteConnection,

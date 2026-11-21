@@ -8,7 +8,7 @@ use ganbaru_sync::{
     AuthorizationView, DeviceNames, DeviceRef, Engine, LateChange, LateKind, local,
 };
 use ganbaru_sync_contracts::{DeviceKind, DeviceRole, Entry, LateRow, SetRole};
-use ganbaru_sync_replica::outbox::{MAX_OUTBOX_PROPOSALS, Outbox, OutboxEntry};
+use ganbaru_sync_replica::outbox::{MAX_OUTBOX_PROPOSALS, Outbox, OutboxEntry, OutboxState};
 use ganbaru_sync_replica::quarantine::Quarantine;
 use serde::Serialize;
 use tauri::{AppHandle, Runtime};
@@ -346,19 +346,17 @@ fn outbox_views(entries: &[OutboxEntry], names: &DeviceNames) -> Vec<OutboxEntry
                 | Entry::ServerConfig(_)
                 | Entry::Unknown { .. } => (ProposalChangeView::Unknown, None),
             };
-            let state = if entry.rejection.is_some() {
-                OutboxStateView::Rejected
-            } else if entry.held.is_some() {
-                OutboxStateView::Held
-            } else {
-                OutboxStateView::Pending
+            let state = match entry.state {
+                OutboxState::Gated { .. } | OutboxState::Pending { .. } => OutboxStateView::Pending,
+                OutboxState::Held { .. } => OutboxStateView::Held,
+                OutboxState::Rejected { .. } => OutboxStateView::Rejected,
             };
             OutboxEntryView {
                 change,
                 target: target.map(|device_id| names.describe(device_id)),
                 created_at_ms: u64::try_from(entry.proposal.proposal.created_at_ms).unwrap_or(0),
                 state,
-                rejection: entry.rejection.map(|rejection| rejection.as_str()),
+                rejection: entry.rejection().map(|rejection| rejection.as_str()),
             }
         })
         .collect();

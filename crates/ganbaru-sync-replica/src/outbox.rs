@@ -5,6 +5,10 @@
 //! proposal survives a crash between signing and sequencing, an unreachable anchor, an anchor
 //! restored from a backup, and a handover that supersedes the chain that held it. The anchor's
 //! own proposals take the same path.
+//!
+//! Each entry is in one [`OutboxState`]: gated on a handover the chain does not hold yet,
+//! pending, held by a selected entry, or finally rejected. [`OutboxState::transition`] owns
+//! every move, and loading refuses a file whose entry combines states.
 
 use std::path::{Path, PathBuf};
 
@@ -46,49 +50,210 @@ pub fn is_final(rejection: ProposalRejection) -> bool {
     )
 }
 
+/// Where one proposal of the outbox stands. `released_from` names the handover that released
+/// the proposal from its gate, kept so the outcome of that handover's follow-ups can be counted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutboxState {
+    /// Waits for the handover whose proposal hash is `after`. A gated proposal is neither sent
+    /// nor sequenced until the selected chain holds that handover, so the follow-ups of a
+    /// forced handover are durable before it seals and run only after it.
+    Gated {
+        /// The handover the proposal waits for.
+        after: Digest32,
+    },
+    /// Waits for an anchor to sequence it.
+    Pending {
+        /// The handover that released the proposal, if it was gated.
+        released_from: Option<Digest32>,
+    },
+    /// The local replica's selected chain holds the proposal in an entry of `epoch`. It is
+    /// kept until a later epoch holds it too, because a handover sealed from an earlier
+    /// revision supersedes it and then it waits again.
+    Held {
+        /// The epoch of the selected entry that holds the proposal.
+        epoch: u32,
+        /// The handover that released the proposal, if it was gated.
+        released_from: Option<Digest32>,
+    },
+    /// The anchor refused the proposal for a final reason, so it is never proposed again.
+    Rejected {
+        /// The final rejection the anchor gave.
+        rejection: ProposalRejection,
+        /// The handover that released the proposal, if it was gated.
+        released_from: Option<Digest32>,
+    },
+}
+
+/// What the outbox learned about one proposal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutboxEvent {
+    /// The anchor refused the proposal with this final rejection.
+    Rejected(ProposalRejection),
+    /// The local replica's selected chain moved, see [`ChainFacts`].
+    Followed(ChainFacts),
+}
+
+/// What the local replica's selected chain says about one proposal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChainFacts {
+    /// The epoch of the selected chain, or `None` before it has one.
+    pub epoch: Option<u32>,
+    /// Whether the chain holds the handover a gated proposal waits for. Ignored for a
+    /// proposal that is not gated.
+    pub gate_sealed: bool,
+    /// The epoch of the selected entry that holds the proposal, when one does.
+    pub held_at: Option<u32>,
+}
+
+/// A move [`OutboxState::transition`] refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IllegalOutboxMove {
+    /// A rejection that is not final never settles a proposal.
+    NotFinal(ProposalRejection),
+    /// A gated proposal was never sent, so no anchor answered it.
+    RejectedWhileGated,
+}
+
+impl std::fmt::Display for IllegalOutboxMove {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFinal(rejection) => {
+                write!(
+                    formatter,
+                    "rejection {rejection} does not settle a proposal"
+                )
+            }
+            Self::RejectedWhileGated => {
+                formatter.write_str("a gated proposal cannot be rejected before it is sent")
+            }
+        }
+    }
+}
+
+impl OutboxState {
+    /// Applies `event`. Returns the next state, or `None` when the proposal leaves the outbox
+    /// because a later epoch of the selected chain still holds it.
+    ///
+    /// - A final rejection rejects a waiting or held proposal and replaces the reason of a
+    ///   rejected one; it is refused for a gated proposal and for a reason that is not final.
+    /// - Following the chain keeps a rejected proposal and a gated one whose handover the chain
+    ///   does not hold yet. Any other proposal is held at the epoch of the entry that holds it,
+    ///   dropped once the chain is in a later epoch, and waits while no entry holds it; a
+    ///   released gate becomes its `released_from`.
+    pub fn transition(self, event: OutboxEvent) -> Result<Option<Self>, IllegalOutboxMove> {
+        match event {
+            OutboxEvent::Rejected(rejection) => {
+                if !is_final(rejection) {
+                    return Err(IllegalOutboxMove::NotFinal(rejection));
+                }
+                match self {
+                    Self::Gated { .. } => Err(IllegalOutboxMove::RejectedWhileGated),
+                    Self::Pending { released_from }
+                    | Self::Held { released_from, .. }
+                    | Self::Rejected { released_from, .. } => Ok(Some(Self::Rejected {
+                        rejection,
+                        released_from,
+                    })),
+                }
+            }
+            OutboxEvent::Followed(facts) => Ok(self.follow(facts)),
+        }
+    }
+
+    fn follow(self, facts: ChainFacts) -> Option<Self> {
+        let released_from = match self {
+            Self::Rejected { .. } => return Some(self),
+            Self::Gated { .. } if !facts.gate_sealed => return Some(self),
+            Self::Gated { after } => Some(after),
+            Self::Pending { released_from } | Self::Held { released_from, .. } => released_from,
+        };
+        match facts.held_at {
+            Some(held_at) if facts.epoch.is_some_and(|epoch| epoch > held_at) => None,
+            Some(epoch) => Some(Self::Held {
+                epoch,
+                released_from,
+            }),
+            None => Some(Self::Pending { released_from }),
+        }
+    }
+}
+
 /// One proposal in the outbox.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutboxEntry {
     /// The signed proposal.
     pub proposal: SignedProposal,
-    /// The final rejection the anchor gave, or `None` while the proposal waits.
-    pub rejection: Option<ProposalRejection>,
-    /// The epoch of the selected entry that holds the proposal, once the local replica holds
-    /// it. A held proposal is kept until a later epoch kept it too, because a handover sealed
-    /// from an earlier revision supersedes it and then it waits again.
-    pub held: Option<u32>,
-    /// The proposal hash of the handover the proposal waits for. A gated proposal is neither
-    /// sent nor sequenced until the selected chain holds that handover, so the follow-ups of a
-    /// forced handover are durable before it seals and run only after it.
-    pub after: Option<Digest32>,
-    /// The handover that released the proposal from its gate, kept so the outcome of that
-    /// handover's follow-ups can be counted.
-    pub released_from: Option<Digest32>,
+    /// Where the proposal stands.
+    pub state: OutboxState,
 }
 
 impl OutboxEntry {
     /// Whether the proposal still waits for an anchor and is not gated on a handover.
     pub fn pending(&self) -> bool {
-        self.rejection.is_none() && self.held.is_none() && self.after.is_none()
+        matches!(self.state, OutboxState::Pending { .. })
+    }
+
+    /// The final rejection the anchor gave, when it rejected the proposal.
+    pub fn rejection(&self) -> Option<ProposalRejection> {
+        match self.state {
+            OutboxState::Rejected { rejection, .. } => Some(rejection),
+            _ => None,
+        }
+    }
+
+    /// The epoch of the selected entry that holds the proposal, when the chain holds it.
+    pub fn held(&self) -> Option<u32> {
+        match self.state {
+            OutboxState::Held { epoch, .. } => Some(epoch),
+            _ => None,
+        }
+    }
+
+    /// The handover a gated proposal waits for.
+    pub fn after(&self) -> Option<Digest32> {
+        match self.state {
+            OutboxState::Gated { after } => Some(after),
+            _ => None,
+        }
+    }
+
+    /// The handover that released the proposal from its gate.
+    pub fn released_from(&self) -> Option<Digest32> {
+        match self.state {
+            OutboxState::Gated { .. } => None,
+            OutboxState::Pending { released_from }
+            | OutboxState::Held { released_from, .. }
+            | OutboxState::Rejected { released_from, .. } => released_from,
+        }
     }
 
     /// Whether [`Outbox::add`] may drop the entry to make room: a final rejection or a held
     /// proposal. A gated proposal is never dropped, since nothing else would sign it again.
     fn evictable(&self) -> bool {
-        !self.pending() && self.after.is_none()
+        matches!(
+            self.state,
+            OutboxState::Held { .. } | OutboxState::Rejected { .. }
+        )
     }
 
     /// Whether the entry belongs to the follow-ups of the handover `handover` and has not
     /// reached its goal: it is still gated, still waits, or the anchor rejected it for a reason
     /// other than the device being removed already or never enrolled.
     fn incomplete_after(&self, handover: &Digest32) -> bool {
-        if self.after.as_ref() != Some(handover) && self.released_from.as_ref() != Some(handover) {
-            return false;
-        }
-        match self.rejection {
-            Some(ProposalRejection::DeviceRemoved | ProposalRejection::UnknownDevice) => false,
-            Some(_) => true,
-            None => self.held.is_none(),
+        match self.state {
+            OutboxState::Gated { after } => after == *handover,
+            OutboxState::Pending { released_from } => released_from.as_ref() == Some(handover),
+            OutboxState::Held { .. } => false,
+            OutboxState::Rejected {
+                rejection,
+                released_from,
+            } => {
+                released_from.as_ref() == Some(handover)
+                    && !matches!(
+                        rejection,
+                        ProposalRejection::DeviceRemoved | ProposalRejection::UnknownDevice
+                    )
+            }
         }
     }
 }
@@ -201,7 +366,7 @@ impl Outbox {
         if next.len() >= MAX_OUTBOX_PROPOSALS {
             let Some(evicted) = next
                 .iter()
-                .position(|entry| entry.rejection.is_some())
+                .position(|entry| entry.rejection().is_some())
                 .or_else(|| next.iter().position(OutboxEntry::evictable))
             else {
                 return Err("sync proposal outbox is full".to_string());
@@ -210,10 +375,9 @@ impl Outbox {
         }
         next.push(OutboxEntry {
             proposal,
-            rejection: None,
-            held: None,
-            after: None,
-            released_from: None,
+            state: OutboxState::Pending {
+                released_from: None,
+            },
         });
         self.replace(next)?;
         Ok(true)
@@ -237,7 +401,7 @@ impl Outbox {
             if next.len() >= MAX_OUTBOX_PROPOSALS {
                 let Some(evicted) = next
                     .iter()
-                    .position(|entry| entry.rejection.is_some())
+                    .position(|entry| entry.rejection().is_some())
                     .or_else(|| next.iter().position(OutboxEntry::evictable))
                 else {
                     return Err("sync proposal outbox is full".to_string());
@@ -246,10 +410,7 @@ impl Outbox {
             }
             next.push(OutboxEntry {
                 proposal,
-                rejection: None,
-                held: None,
-                after: Some(after),
-                released_from: None,
+                state: OutboxState::Gated { after },
             });
         }
         if next == self.entries {
@@ -261,13 +422,13 @@ impl Outbox {
     /// Drops every proposal still gated on a handover, as when that handover was refused or
     /// lost to another one, so it never runs.
     pub fn withdraw_gated(&mut self) -> Result<(), String> {
-        if self.entries.iter().all(|entry| entry.after.is_none()) {
+        if self.entries.iter().all(|entry| entry.after().is_none()) {
             return Ok(());
         }
         let next = self
             .entries
             .iter()
-            .filter(|entry| entry.after.is_none())
+            .filter(|entry| entry.after().is_none())
             .cloned()
             .collect();
         self.replace(next)
@@ -294,9 +455,10 @@ impl Outbox {
         self.replace(next)
     }
 
-    /// Records the anchor's answer to a proposal. A final rejection marks it rejected, so it is
-    /// never proposed again; a revision or a rejection that is not final leaves it waiting until
-    /// [`Self::prune`] finds it in the selected chain.
+    /// Records the anchor's answer to a proposal. A final rejection marks a waiting or held
+    /// proposal rejected, so it is never proposed again; a revision or a rejection that is not
+    /// final leaves it waiting until [`Self::prune`] finds it in the selected chain. A rejection
+    /// of a gated proposal answers nothing this outbox sent, so it changes nothing.
     pub fn settle(
         &mut self,
         hash: &Digest32,
@@ -305,25 +467,27 @@ impl Outbox {
         let Err(rejection) = outcome else {
             return Ok(());
         };
-        if !is_final(rejection) {
-            return Ok(());
-        }
         let Some(index) = self.position(hash) else {
             return Ok(());
         };
-        if self.entries[index].rejection == Some(rejection) {
+        let current = self.entries[index].state;
+        let Ok(Some(state)) = current.transition(OutboxEvent::Rejected(rejection)) else {
+            return Ok(());
+        };
+        if state == current {
             return Ok(());
         }
         let mut next = self.entries.clone();
-        next[index].rejection = Some(rejection);
+        next[index].state = state;
         self.replace(next)
     }
 
-    /// Follows the selected chain of the local replica: a waiting proposal it holds is marked
-    /// held at the epoch of its entry; a held proposal is dropped once the chain is in a later
-    /// epoch that still holds it, and waits again when a handover from an earlier revision
-    /// superseded its entry, so the next anchor sequences it again. A gated proposal is released
-    /// once the selected chain holds the handover it waits for, and waits like any other.
+    /// Follows the selected chain of the local replica with [`OutboxState::transition`]: a
+    /// waiting proposal it holds is marked held at the epoch of its entry; a held proposal is
+    /// dropped once the chain is in a later epoch that still holds it, and waits again when a
+    /// handover from an earlier revision superseded its entry, so the next anchor sequences it
+    /// again. A gated proposal is released once the selected chain holds the handover it waits
+    /// for, and waits like any other.
     pub async fn prune(
         &mut self,
         engine: &Engine,
@@ -337,37 +501,17 @@ impl Outbox {
             .map(|view| view.epoch);
         let mut next = Vec::with_capacity(self.entries.len());
         for entry in &self.entries {
-            if entry.rejection.is_some() {
-                next.push(entry.clone());
-                continue;
+            let facts = chain_facts(engine, conn, ctx, entry, epoch).await?;
+            let followed = entry
+                .state
+                .transition(OutboxEvent::Followed(facts))
+                .map_err(|error| format!("follow sync proposal outbox: {error}"))?;
+            if let Some(state) = followed {
+                next.push(OutboxEntry {
+                    proposal: entry.proposal.clone(),
+                    state,
+                });
             }
-            if let Some(handover) = entry.after {
-                let sealed = engine
-                    .proposal_position(conn, ctx, &handover)
-                    .await
-                    .map_err(|error| format!("read sync proposal revision: {error}"))?
-                    .is_some();
-                if !sealed {
-                    next.push(entry.clone());
-                    continue;
-                }
-            }
-            let released_from = entry.after.or(entry.released_from);
-            let position = engine
-                .proposal_position(conn, ctx, &entry.proposal.hash())
-                .await
-                .map_err(|error| format!("read sync proposal revision: {error}"))?;
-            let held = match position {
-                Some((held_at, _)) if epoch.is_some_and(|epoch| epoch > held_at) => continue,
-                Some((held_at, _)) => Some(held_at),
-                None => None,
-            };
-            next.push(OutboxEntry {
-                held,
-                after: None,
-                released_from,
-                ..entry.clone()
-            });
         }
         if next == self.entries {
             return Ok(());
@@ -398,16 +542,7 @@ impl Outbox {
     fn replace(&mut self, next: Vec<OutboxEntry>) -> Result<(), String> {
         let file = OutboxFile {
             schema_version: OUTBOX_SCHEMA_VERSION,
-            proposals: next
-                .iter()
-                .map(|entry| StoredProposal {
-                    proposal: URL_SAFE_NO_PAD.encode(entry.proposal.encode()),
-                    rejection: entry.rejection.map(ProposalRejection::as_u8),
-                    held: entry.held,
-                    after: entry.after.map(|hash| URL_SAFE_NO_PAD.encode(hash)),
-                    released_from: entry.released_from.map(|hash| URL_SAFE_NO_PAD.encode(hash)),
-                })
-                .collect(),
+            proposals: next.iter().map(encode_entry).collect(),
         };
         let bytes = serde_json::to_vec_pretty(&file)
             .map_err(|error| format!("encode sync proposal outbox: {error}"))?;
@@ -425,6 +560,70 @@ impl Outbox {
     }
 }
 
+/// Reads what the selected chain says about `entry`. The proposal's own position is read only
+/// when it matters: not for a rejected proposal, nor for a gated one whose handover the chain
+/// does not hold yet.
+async fn chain_facts(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    entry: &OutboxEntry,
+    epoch: Option<u32>,
+) -> Result<ChainFacts, String> {
+    let mut facts = ChainFacts {
+        epoch,
+        gate_sealed: false,
+        held_at: None,
+    };
+    match entry.state {
+        OutboxState::Rejected { .. } => return Ok(facts),
+        OutboxState::Gated { after } => {
+            facts.gate_sealed = position_epoch(engine, conn, ctx, &after).await?.is_some();
+            if !facts.gate_sealed {
+                return Ok(facts);
+            }
+        }
+        OutboxState::Pending { .. } | OutboxState::Held { .. } => {}
+    }
+    facts.held_at = position_epoch(engine, conn, ctx, &entry.proposal.hash()).await?;
+    Ok(facts)
+}
+
+/// The epoch of the selected entry that holds the proposal with hash `hash`.
+async fn position_epoch(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    hash: &Digest32,
+) -> Result<Option<u32>, String> {
+    Ok(engine
+        .proposal_position(conn, ctx, hash)
+        .await
+        .map_err(|error| format!("read sync proposal revision: {error}"))?
+        .map(|(epoch, _)| epoch))
+}
+
+fn encode_entry(entry: &OutboxEntry) -> StoredProposal {
+    let mut stored = StoredProposal {
+        proposal: URL_SAFE_NO_PAD.encode(entry.proposal.encode()),
+        rejection: None,
+        held: None,
+        after: None,
+        released_from: entry
+            .released_from()
+            .map(|hash| URL_SAFE_NO_PAD.encode(hash)),
+    };
+    match entry.state {
+        OutboxState::Gated { after } => stored.after = Some(URL_SAFE_NO_PAD.encode(after)),
+        OutboxState::Pending { .. } => {}
+        OutboxState::Held { epoch, .. } => stored.held = Some(epoch),
+        OutboxState::Rejected { rejection, .. } => stored.rejection = Some(rejection.as_u8()),
+    }
+    stored
+}
+
+/// Decodes one stored entry. At most one of `after`, `held`, and `rejection` is set, and a
+/// gated entry names no releasing handover, so a file that combines them is refused.
 fn decode_entry(stored: StoredProposal) -> Result<OutboxEntry, String> {
     let bytes = URL_SAFE_NO_PAD
         .decode(stored.proposal.as_bytes())
@@ -439,17 +638,26 @@ fn decode_entry(stored: StoredProposal) -> Result<OutboxEntry, String> {
                 .ok_or_else(|| "sync proposal outbox names an unknown rejection".to_string())
         })
         .transpose()?;
-    Ok(OutboxEntry {
-        proposal,
-        rejection,
-        held: stored.held,
-        after: stored.after.as_deref().map(decode_digest).transpose()?,
-        released_from: stored
-            .released_from
-            .as_deref()
-            .map(decode_digest)
-            .transpose()?,
-    })
+    let after = stored.after.as_deref().map(decode_digest).transpose()?;
+    let released_from = stored
+        .released_from
+        .as_deref()
+        .map(decode_digest)
+        .transpose()?;
+    let state = match (after, stored.held, rejection, released_from) {
+        (Some(after), None, None, None) => OutboxState::Gated { after },
+        (None, None, None, released_from) => OutboxState::Pending { released_from },
+        (None, Some(epoch), None, released_from) => OutboxState::Held {
+            epoch,
+            released_from,
+        },
+        (None, None, Some(rejection), released_from) => OutboxState::Rejected {
+            rejection,
+            released_from,
+        },
+        _ => return Err("sync proposal outbox holds a contradictory entry".to_string()),
+    };
+    Ok(OutboxEntry { proposal, state })
 }
 
 fn decode_digest(text: &str) -> Result<Digest32, String> {

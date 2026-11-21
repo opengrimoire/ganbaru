@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 
 use super::keys::KitKeys;
-use super::outbox::{Outbox, is_final};
+use super::outbox::{Outbox, OutboxEntry, is_final};
 use super::writer::{
     SelectedHead, SequencedCheck, SyncKey, SyncKeyStore, WriterRecord, ensure_device_key,
     sequenced_check,
@@ -401,7 +401,7 @@ pub async fn hold_for_anchor(
     {
         return Ok(Ok(revision));
     }
-    if let Some(rejection) = outbox.get(&hash).and_then(|entry| entry.rejection) {
+    if let Some(rejection) = outbox.get(&hash).and_then(OutboxEntry::rejection) {
         return Ok(Err(rejection));
     }
     if outbox.has_room() {
@@ -601,7 +601,7 @@ fn queue_new_kit(
             return Err("save the waiting recovery kit before replacing it".to_string());
         }
         let proposed = outbox.entries().iter().any(|entry| {
-            entry.rejection.is_none()
+            entry.rejection().is_none()
                 && matches!(
                     &entry.proposal.proposal.entry,
                     Entry::SetRole(SetRole::Recovery { recovery_admin_key })

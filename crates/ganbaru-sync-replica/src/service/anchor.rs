@@ -917,7 +917,7 @@ impl<H: SyncHost> Session<'_, H> {
         if !outbox
             .entries()
             .iter()
-            .any(|entry| entry.pending() || entry.after.is_some())
+            .any(|entry| entry.pending() || entry.after().is_some())
         {
             return Ok(false);
         }

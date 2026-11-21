@@ -18,8 +18,8 @@ use std::sync::Mutex;
 /// retention never treat it as a copy.
 const JOURNAL_FILE: &str = "restore.json";
 
-/// Error a vault operation returns while a rollback restore is left unfinished.
-pub(crate) const RESTORE_RECOVERY_PENDING: &str = "an interrupted rollback restore could not be finished, so the vault was left as found; see the log for the reason";
+/// Error a vault operation returns while a rollback restore or reset is left unfinished.
+pub(crate) const RESTORE_RECOVERY_PENDING: &str = "an interrupted rollback restore or reset could not be finished, so the vault was left as found; see the log for the reason";
 
 /// Serializes recoveries in this process, so two first opens never move the same entries.
 static RECOVERY: Mutex<()> = Mutex::new(());
@@ -322,7 +322,11 @@ impl RestoreRecord {
 
 /// Moves each of `names` found in `from` to `to`. A name present in both places is a layout no
 /// restore leaves, so nothing moves and the reason is returned.
-fn move_back(from: &Path, to: &Path, names: &[String]) -> Result<Option<String>, String> {
+pub(super) fn move_back(
+    from: &Path,
+    to: &Path,
+    names: &[String],
+) -> Result<Option<String>, String> {
     let present: Vec<&String> = names
         .iter()
         .filter(|name| fs::symlink_metadata(from.join(name)).is_ok())
@@ -332,7 +336,7 @@ fn move_back(from: &Path, to: &Path, names: &[String]) -> Result<Option<String>,
         .find(|name| fs::symlink_metadata(to.join(name)).is_ok())
     {
         return Ok(Some(format!(
-            "'{name}' is in both the vault and a copy the restore moved"
+            "'{name}' is in both the vault and the copy it moved to"
         )));
     }
     for name in present {
@@ -349,41 +353,46 @@ pub(super) fn flush(directories: &[&Path]) -> Result<(), String> {
         .map_err(|error| format!("flush the rollback restore: {error}"))
 }
 
-/// Whether a restore into `vault` left its journal, so it is still unfinished or pending.
+/// Whether a restore into `vault` or a reset of it left its journal, so it is still unfinished
+/// or pending.
 pub(crate) fn is_pending(vault: &Path) -> bool {
-    journal_file::exists(&journal_path(vault))
+    journal_file::exists(&journal_path(vault)) || super::reset_journal::is_pending(vault)
 }
 
-/// Settles an unfinished restore into `vault`, if any. Undecodable journals and layouts a
-/// restore would not leave are reported as pending and left untouched.
+/// Settles an unfinished reset of `vault` and an unfinished restore into it, if any. Undecodable
+/// journals and layouts neither would leave are reported as pending and left untouched.
 pub(crate) fn recover(vault: &Path) -> Result<Recovery, String> {
     let _recovery = RECOVERY
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let now = crate::vault::now_utc();
+    if let Recovery::Pending(reason) = super::reset_journal::recover(vault, now)? {
+        return Ok(Recovery::Pending(reason));
+    }
     match RestoreRecord::load(vault) {
         None => Ok(Recovery::Settled),
         Some(Err(error)) => Ok(Recovery::Pending(error)),
-        Some(Ok(record)) => record.resume(crate::vault::now_utc()),
+        Some(Ok(record)) => record.resume(now),
     }
 }
 
-/// Settles an unfinished restore into `vault`, refusing with [`RESTORE_RECOVERY_PENDING`] when
-/// it is left pending or fails.
+/// Settles an unfinished reset or restore of `vault`, refusing with [`RESTORE_RECOVERY_PENDING`]
+/// when one is left pending or fails.
 pub(crate) fn recover_or_refuse(vault: &Path) -> Result<(), String> {
     match recover(vault) {
         Ok(Recovery::Settled) => Ok(()),
         Ok(Recovery::Pending(reason)) => {
-            eprintln!("Rollback restore recovery: {reason}");
+            eprintln!("Rollback recovery: {reason}");
             Err(RESTORE_RECOVERY_PENDING.to_string())
         }
         Err(error) => {
-            eprintln!("Rollback restore recovery: {error}");
+            eprintln!("Rollback recovery: {error}");
             Err(RESTORE_RECOVERY_PENDING.to_string())
         }
     }
 }
 
-/// Refuses with [`RESTORE_RECOVERY_PENDING`] while a restore into `vault` is unfinished.
+/// Refuses with [`RESTORE_RECOVERY_PENDING`] while a reset or restore of `vault` is unfinished.
 pub(super) fn refuse_pending(vault: &Path) -> Result<(), String> {
     if is_pending(vault) {
         return Err(RESTORE_RECOVERY_PENDING.to_string());

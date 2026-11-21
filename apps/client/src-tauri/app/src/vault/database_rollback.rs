@@ -23,6 +23,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+mod reset_journal;
 mod restore_journal;
 
 pub(crate) use restore_journal::{
@@ -629,14 +630,43 @@ fn prune_unchecked(vault: &Path, now: DateTime<Utc>) -> Result<(), String> {
 
 /// Moves the vault database into a new reset copy and prunes old copies.
 /// Returns `None` when the vault has no database to move.
+///
+/// The reset is journaled: an error or a crash before every database file durably reached the
+/// copy moves them back, so the vault never holds the database apart from its log.
 #[cfg(any(test, desktop))]
 pub(crate) fn move_database_to_rollback(
     vault: &Path,
     at: DateTime<Utc>,
 ) -> Result<Option<String>, String> {
-    let created = create_rollback(vault, at, Retention::default())?;
-    prune_rollbacks(vault, at)?;
-    Ok(created)
+    restore_journal::refuse_pending(vault)?;
+    if fs::symlink_metadata(database_file(vault, "")).is_err() {
+        return Ok(None);
+    }
+    let (directory, id) = create_rollback_directory(vault, at)?;
+    let mut record = match reset_journal::ResetRecord::begin(vault, &id) {
+        Ok(record) => record,
+        Err(error) => {
+            let _ = fs::remove_dir(&directory);
+            return Err(error);
+        }
+    };
+    let root = rollback_root(vault);
+    let moved = move_entries(vault, &directory, &moved_entry_names(false))
+        .and_then(|()| restore_journal::flush(&[&directory, &root, vault]))
+        .and_then(|()| record.advance(reset_journal::Event::MovedOut));
+    match (moved, record.resume(at)) {
+        (Ok(()), Ok(RestoreRecovery::Settled)) => Ok(Some(id)),
+        // The database is durably in the copy, so the reset stands; the journal stays and the
+        // next open of the vault finishes it.
+        (Ok(()), Ok(RestoreRecovery::Pending(reason)) | Err(reason)) => {
+            eprintln!("Reset cleanup: {reason}");
+            Ok(Some(id))
+        }
+        (Err(error), Ok(RestoreRecovery::Settled)) => Err(error),
+        (Err(error), Ok(RestoreRecovery::Pending(undo)) | Err(undo)) => {
+            Err(format!("{error}; undo the reset: {undo}"))
+        }
+    }
 }
 
 /// Keeps the data of `replaced`, a vault folder another copy of the same vault is

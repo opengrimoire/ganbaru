@@ -34,6 +34,7 @@ export class ChatChannelNavigationController {
   private archivedNavigation = $state<Record<string, ChatChannelRead[]>>({});
   private archivedNavigationRequests = new Map<string, Promise<void>>();
   private loadRequest = 0;
+  private archivedRequest = 0;
   private archivedProjectId: string | null = null;
 
   constructor(private readonly options: ChatChannelNavigationControllerOptions) {}
@@ -56,7 +57,7 @@ export class ChatChannelNavigationController {
     this.activeChannels = [];
     this.archivedChannels = [];
     this.archivedProjectId = null;
-    this.archivedChannelsLoading = false;
+    this.abandonArchivedLoad();
     this.archivedChannelsError = null;
     this.channelsLoading = true;
     this.archiveOpen = false;
@@ -68,6 +69,7 @@ export class ChatChannelNavigationController {
     this.activeChannels = [];
     this.archivedChannels = [];
     this.archivedProjectId = null;
+    this.abandonArchivedLoad();
     this.archivedChannelsError = null;
     this.clearArchivedNavigation();
   }
@@ -127,7 +129,9 @@ export class ChatChannelNavigationController {
     this.activeChannels = [];
     this.archivedChannels = [];
     this.archivedProjectId = null;
+    this.abandonArchivedLoad();
     this.archivedChannelsError = null;
+    if (this.archiveOpen) void this.loadArchived(projectId).catch(() => undefined);
     try {
       const cached = this.channelsForProject(projectId);
       const active = cached.length > 0
@@ -144,15 +148,16 @@ export class ChatChannelNavigationController {
 
   async loadArchived(projectId: string): Promise<void> {
     if (this.archivedProjectId === projectId) return;
+    const request = ++this.archivedRequest;
     this.archivedChannelsLoading = true;
     this.archivedChannelsError = null;
     try {
       const archived = await chatApi.listChatChannels(projectId, true);
-      if (this.options.currentProjectId() !== projectId) return;
+      if (!this.isCurrentArchivedRequest(request, projectId)) return;
       this.archivedChannels = archived;
       this.archivedProjectId = projectId;
     } catch (error: unknown) {
-      if (this.options.currentProjectId() === projectId) {
+      if (this.isCurrentArchivedRequest(request, projectId)) {
         this.archivedChannelsError = chatErrorMessage(
           error,
           translate("chatErrors.actions.loadArchivedChannels"),
@@ -160,8 +165,19 @@ export class ChatChannelNavigationController {
       }
       throw error;
     } finally {
-      if (this.options.currentProjectId() === projectId) this.archivedChannelsLoading = false;
+      if (this.isCurrentArchivedRequest(request, projectId)) this.archivedChannelsLoading = false;
     }
+  }
+
+  /** Whether archive request `request` is still the latest one and its project is still shown. */
+  private isCurrentArchivedRequest(request: number, projectId: string): boolean {
+    return request === this.archivedRequest && this.options.currentProjectId() === projectId;
+  }
+
+  /** Abandon any archive listing in flight, since what it would fill was cleared. */
+  private abandonArchivedLoad(): void {
+    this.archivedRequest += 1;
+    this.archivedChannelsLoading = false;
   }
 
   async create(request: CreateChatChannelRequest): Promise<ChatChannelRead> {

@@ -483,21 +483,19 @@ fn refresh_job_times_agree_with_its_state() {
         .execute(&pool)
         .await
         .unwrap();
-        let insert = |id: &'static str,
-                      state: &'static str,
-                      started: Option<i64>,
-                      finished: Option<i64>| {
-            sqlx::query(
-                "INSERT INTO music_refresh_jobs
+        let insert =
+            |id: &'static str, state: &'static str, started: Option<i64>, finished: Option<i64>| {
+                sqlx::query(
+                    "INSERT INTO music_refresh_jobs
                     (id, source_collection_id, kind, state, generation, requested_at_ms,
                      started_at_ms, finished_at_ms, updated_at_ms)
                  VALUES (?, 'source-1', 'youtube-playlist', ?, 1, 1, ?, ?, 1)",
-            )
-            .bind(id)
-            .bind(state)
-            .bind(started)
-            .bind(finished)
-        };
+                )
+                .bind(id)
+                .bind(state)
+                .bind(started)
+                .bind(finished)
+            };
 
         let accepted = [
             ("queued", None, None),
@@ -529,27 +527,26 @@ fn refresh_job_times_agree_with_its_state() {
             ("cancelled", None, None),
         ];
         for (state, started, finished) in rejected {
-            let result = insert("rejected", state, started, finished).execute(&pool).await;
+            let result = insert("rejected", state, started, finished)
+                .execute(&pool)
+                .await;
             assert!(result.is_err(), "{state} {started:?} {finished:?}");
         }
 
-        let start_without_time = sqlx::query(
-            "UPDATE music_refresh_jobs SET state = 'running' WHERE id = 'a'",
-        )
-        .execute(&pool)
-        .await;
+        let start_without_time =
+            sqlx::query("UPDATE music_refresh_jobs SET state = 'running' WHERE id = 'a'")
+                .execute(&pool)
+                .await;
         assert!(start_without_time.is_err());
-        let finish_without_time = sqlx::query(
-            "UPDATE music_refresh_jobs SET state = 'completed' WHERE id = 'b'",
-        )
-        .execute(&pool)
-        .await;
+        let finish_without_time =
+            sqlx::query("UPDATE music_refresh_jobs SET state = 'completed' WHERE id = 'b'")
+                .execute(&pool)
+                .await;
         assert!(finish_without_time.is_err());
-        let reopen = sqlx::query(
-            "UPDATE music_refresh_jobs SET finished_at_ms = NULL WHERE id = 'c'",
-        )
-        .execute(&pool)
-        .await;
+        let reopen =
+            sqlx::query("UPDATE music_refresh_jobs SET finished_at_ms = NULL WHERE id = 'c'")
+                .execute(&pool)
+                .await;
         assert!(reopen.is_err());
         sqlx::query(
             "UPDATE music_refresh_jobs SET state = 'running', started_at_ms = 2 WHERE id = 'a'",

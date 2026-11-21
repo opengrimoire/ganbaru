@@ -2,7 +2,7 @@ import { tick } from "svelte";
 import type { MusicPlaybackMode, MusicRepeatMode, MusicWeight } from "$lib/music/library/contracts";
 import type { MusicActivityPhase, MusicAssignmentBehavior, MusicAssignmentSource } from "$lib/music/context-assignment";
 import { emptyMusicSkipBreakdown, type MusicPlaylistSkipReason, type MusicSavedQueueEntry } from "$lib/music/playlists/playback";
-import { probeLocalMedia, type LocalBackendKind } from "$lib/api/media-player";
+import { probeLocalMedia } from "$lib/api/media-player";
 import { confirmLocalMusicSources, pickMediaFolder, registerEmbeddedArtwork, registerMediaFile, registerMusicArtworkAsset } from "$lib/api/music";
 import { isManagedMusicArtworkReference } from "$lib/music/managed-artwork";
 import { clampRate, clampVolume, formatVolumePercent, MAX_VOLUME, type PlaybackSnapshot } from "$lib/music/playback";
@@ -23,6 +23,14 @@ import { createMusicExternalControls } from "$lib/stores/music-player/external-c
 import { createMusicYouTubeAdapter } from "$lib/stores/music-player/youtube-adapter";
 import type { NativeYouTubeHost } from "$lib/music/youtube-native-host";
 import { createMusicWebviewLocalAdapter } from "$lib/stores/music-player/webview-local-adapter";
+import {
+  localMediaHasVideo,
+  localMediaSrc,
+  localVideoReady,
+  NO_WEBVIEW_LOCAL_MEDIA,
+  transitionWebviewLocalMedia,
+  type WebviewLocalMedia,
+} from "$lib/stores/music-player/local-media-state";
 import { MusicObservationSender } from "$lib/stores/music-player/observation-sender";
 
 export type { MusicStaleVisual } from "$lib/stores/music-player/hosted-media-controller";
@@ -100,10 +108,7 @@ class MusicPlayerStore {
   youtubePlaybackStarting = $state(false);
   youtubeKnownDurations = $state<Record<string, number>>({});
   localMediaElement = $state<HTMLMediaElement | null>(null);
-  localMediaSrc = $state<string | null>(null);
-  localHasVideo = $state(false);
-  localBackendKind = $state<LocalBackendKind>("none");
-  localVideoReady = $state(false);
+  localMedia = $state.raw<WebviewLocalMedia>(NO_WEBVIEW_LOCAL_MEDIA);
   currentArtworkUrl = $state<string | null>(null);
   staleVisual = $state<MusicStaleVisual | null>(null);
   surfaceElement = $state<HTMLElement | null>(null);
@@ -240,6 +245,21 @@ class MusicPlayerStore {
 
   get canPlayNextTrack(): boolean {
     return this.native?.canNext ?? false;
+  }
+
+  /** The media URL the WebView element plays, or `null` when no local file is loaded there. */
+  get localMediaSrc(): string | null {
+    return localMediaSrc(this.localMedia);
+  }
+
+  /** Whether the WebView local file shows video rather than artwork. */
+  get localHasVideo(): boolean {
+    return localMediaHasVideo(this.localMedia);
+  }
+
+  /** Whether the WebView local video has decoded its first frame. */
+  get localVideoReady(): boolean {
+    return localVideoReady(this.localMedia);
   }
 
   get isLocalVideoActive(): boolean {
@@ -418,7 +438,7 @@ class MusicPlayerStore {
       if (artwork) await this.hostedMediaController.unregisterGeneration([artwork], hostedGeneration);
       return;
     }
-    this.currentArtworkUrl = artwork; this.localHasVideo = false;
+    this.currentArtworkUrl = artwork; this.localMedia = transitionWebviewLocalMedia(this.localMedia, { type: "artworkShown" });
     await this.hostedMediaController.retainCurrent(hostedGeneration);
   }
 
@@ -444,7 +464,7 @@ class MusicPlayerStore {
         const probe = await probeLocalMedia(source.path);
         const media = await registerMediaFile(source.path, hostedGeneration);
         if (!this.loadRuntime.isCurrent(load)) { await this.hostedMediaController.unregisterGeneration([media], hostedGeneration); return; }
-        this.localMediaSrc = media; this.localHasVideo = true; this.localBackendKind = "webview";
+        this.localMedia = transitionWebviewLocalMedia(this.localMedia, { type: "loaded", src: media });
         this.webviewLocalAdapter.prepare(effect.positionMs, probe.playableStartMs ?? 0);
         await this.hostedMediaController.retainCurrent(hostedGeneration); await tick();
         if (!this.loadRuntime.isCurrent(load)) return;

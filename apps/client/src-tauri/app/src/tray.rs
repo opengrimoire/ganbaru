@@ -59,12 +59,88 @@ struct PomodoroTrayState {
     phase: String,
     remaining_seconds: u32,
     total_seconds: u32,
-    is_running: bool,
-    is_active: bool,
-    can_pause_resume: bool,
-    can_add_focus_time: bool,
-    paused_pulse_frame: Option<u8>,
+    activity: TrayFocusActivity,
     native_context: Option<crate::pomodoro::FocusNativeContext>,
+}
+
+/// What the tray may offer for the committed Focus mode. Every control flag is derived from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrayFocusActivity {
+    /// No open run: only the status line shows.
+    Inactive,
+    /// A focus phase counts down: Pause is offered.
+    RunningFocus { extension_available: bool },
+    /// A manual focus pause: Resume is offered and the ring pulses.
+    PausedFocus {
+        extension_available: bool,
+        pulse_frame: u8,
+    },
+    /// A break counts down: only Skip is offered.
+    RunningBreak,
+    /// An idle, suspend, failed, or return wait: only Skip is offered.
+    Waiting,
+}
+
+impl TrayFocusActivity {
+    /// Maps one committed snapshot to its tray activity.
+    fn from_mode(
+        mode: ganbaru_pomodoro::FocusMode,
+        open_run: bool,
+        focus_phase: bool,
+        focus_extension_used: bool,
+        pulse_frame: u8,
+    ) -> Self {
+        use ganbaru_pomodoro::FocusMode;
+        let extension_available = !focus_extension_used;
+        match mode {
+            FocusMode::Stopped | FocusMode::Expired => Self::Inactive,
+            _ if !open_run => Self::Inactive,
+            FocusMode::Running if focus_phase => Self::RunningFocus {
+                extension_available,
+            },
+            FocusMode::Running => Self::RunningBreak,
+            FocusMode::ManualPause if focus_phase => Self::PausedFocus {
+                extension_available,
+                pulse_frame,
+            },
+            FocusMode::ManualPause
+            | FocusMode::IdlePause
+            | FocusMode::IdleFailed
+            | FocusMode::Suspended
+            | FocusMode::ReturnWait => Self::Waiting,
+        }
+    }
+
+    fn is_active(self) -> bool {
+        self != Self::Inactive
+    }
+
+    fn is_running(self) -> bool {
+        matches!(self, Self::RunningFocus { .. } | Self::RunningBreak)
+    }
+
+    fn can_pause_resume(self) -> bool {
+        matches!(self, Self::RunningFocus { .. } | Self::PausedFocus { .. })
+    }
+
+    fn can_add_focus_time(self) -> bool {
+        matches!(
+            self,
+            Self::RunningFocus {
+                extension_available: true
+            } | Self::PausedFocus {
+                extension_available: true,
+                ..
+            }
+        )
+    }
+
+    fn paused_pulse_frame(self) -> Option<u8> {
+        match self {
+            Self::PausedFocus { pulse_frame, .. } => Some(pulse_frame),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -76,17 +152,12 @@ struct MusicTrayState {
     can_next: bool,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PomodoroTrayUpdate {
+#[derive(Debug)]
+struct PomodoroTrayUpdate {
     phase: String,
     remaining_seconds: u32,
     total_seconds: u32,
-    is_running: bool,
-    is_active: bool,
-    can_pause_resume: bool,
-    can_add_focus_time: bool,
-    paused_pulse_frame: Option<u8>,
+    activity: TrayFocusActivity,
 }
 
 #[derive(Debug, Deserialize)]
@@ -132,11 +203,7 @@ static TRAY_STATE: LazyLock<Mutex<TrayState>> = LazyLock::new(|| {
             phase: "idle".to_string(),
             remaining_seconds: 0,
             total_seconds: 0,
-            is_running: false,
-            is_active: false,
-            can_pause_resume: false,
-            can_add_focus_time: false,
-            paused_pulse_frame: None,
+            activity: TrayFocusActivity::Inactive,
             native_context: None,
         },
         music: MusicTrayState {
@@ -285,7 +352,7 @@ fn music_status_label(status: &str) -> &'static str {
 }
 
 fn is_pomodoro_active(state: &PomodoroTrayState) -> bool {
-    state.is_active
+    state.activity.is_active()
 }
 
 fn pomodoro_progress(state: &PomodoroTrayState) -> f64 {
@@ -369,9 +436,9 @@ fn menu_shape(state: &TrayState) -> MenuShape {
     MenuShape {
         pomodoro_active: is_pomodoro_active(&state.pomodoro),
         pomodoro_phase_id: phase_id(&state.pomodoro.phase),
-        pomodoro_running: state.pomodoro.is_running,
-        pomodoro_can_pause_resume: state.pomodoro.can_pause_resume,
-        pomodoro_can_add_focus_time: state.pomodoro.can_add_focus_time,
+        pomodoro_running: state.pomodoro.activity.is_running(),
+        pomodoro_can_pause_resume: state.pomodoro.activity.can_pause_resume(),
+        pomodoro_can_add_focus_time: state.pomodoro.activity.can_add_focus_time(),
         music_status: state.music.status.clone(),
         music_title: state.music.title.clone(),
         music_can_play_pause: state.music.can_play_pause,
@@ -381,10 +448,7 @@ fn menu_shape(state: &TrayState) -> MenuShape {
 }
 
 fn pomodoro_paused_pulse_frame(state: &PomodoroTrayState) -> Option<u8> {
-    if state.phase != "focus" || !state.is_active || state.is_running {
-        return None;
-    }
-    normalized_paused_pulse_frame(state.paused_pulse_frame)
+    normalized_paused_pulse_frame(state.activity.paused_pulse_frame())
 }
 
 fn build_menu(app: &AppHandle, state: &TrayState) -> Result<Menu<tauri::Wry>, String> {
@@ -408,17 +472,17 @@ fn build_menu(app: &AppHandle, state: &TrayState) -> Result<Menu<tauri::Wry>, St
     }
 
     let pomodoro_active = is_pomodoro_active(&state.pomodoro);
-    let pause_resume_label = if state.pomodoro.is_running {
+    let pause_resume_label = if state.pomodoro.activity.is_running() {
         "Pause focus"
     } else {
         "Resume focus"
     };
     let pause_resume_item = MenuItemBuilder::with_id("pause_resume", pause_resume_label)
-        .enabled(state.pomodoro.can_pause_resume)
+        .enabled(state.pomodoro.activity.can_pause_resume())
         .build(app)
         .map_err(|e| e.to_string())?;
     let add_focus_time_item = MenuItemBuilder::with_id("add_focus_time", "Extend focus 3 minutes")
-        .enabled(state.pomodoro.can_add_focus_time)
+        .enabled(state.pomodoro.activity.can_add_focus_time())
         .build(app)
         .map_err(|e| e.to_string())?;
     let skip_item = MenuItemBuilder::with_id("skip", phase_advance_label(&state.pomodoro.phase))
@@ -533,16 +597,19 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "pause_resume" => {
                 let state = lock_tray(&TRAY_STATE).pomodoro.clone();
-                if state.can_pause_resume {
-                    dispatch_focus_control(
-                        app,
-                        if state.is_running {
-                            ganbaru_pomodoro::FocusIntent::Pause
-                        } else {
-                            ganbaru_pomodoro::FocusIntent::Resume
-                        },
-                        state.native_context,
-                    );
+                let intent = match state.activity {
+                    TrayFocusActivity::RunningFocus { .. } => {
+                        Some(ganbaru_pomodoro::FocusIntent::Pause)
+                    }
+                    TrayFocusActivity::PausedFocus { .. } => {
+                        Some(ganbaru_pomodoro::FocusIntent::Resume)
+                    }
+                    TrayFocusActivity::Inactive
+                    | TrayFocusActivity::RunningBreak
+                    | TrayFocusActivity::Waiting => None,
+                };
+                if let Some(intent) = intent {
+                    dispatch_focus_control(app, intent, state.native_context);
                 }
             }
             "skip" => {
@@ -601,11 +668,7 @@ async fn update_tray(
                 phase: update.phase,
                 remaining_seconds: update.remaining_seconds,
                 total_seconds: update.total_seconds,
-                is_running: update.is_running,
-                is_active: update.is_active,
-                can_pause_resume: update.can_pause_resume,
-                can_add_focus_time: update.can_add_focus_time,
-                paused_pulse_frame: update.paused_pulse_frame,
+                activity: update.activity,
                 native_context: Some(context),
             };
             apply_tray_state(&callback_app, &next)?;
@@ -647,17 +710,19 @@ pub(crate) async fn reconcile_committed_focus(
         return Err("Native Focus tray snapshot was superseded".to_owned());
     }
     let running = snapshot.mode == FocusMode::Running;
-    let active = snapshot
-        .run
-        .as_ref()
-        .is_some_and(|run| run.ended_at_ms.is_none())
-        && !matches!(snapshot.mode, FocusMode::Stopped | FocusMode::Expired);
-    let focus = snapshot
-        .segment
-        .as_ref()
-        .is_some_and(|segment| segment.phase == FocusPhase::Focus);
-    let actionable =
-        active && focus && matches!(snapshot.mode, FocusMode::Running | FocusMode::ManualPause);
+    let activity = TrayFocusActivity::from_mode(
+        snapshot.mode,
+        snapshot
+            .run
+            .as_ref()
+            .is_some_and(|run| run.ended_at_ms.is_none()),
+        snapshot
+            .segment
+            .as_ref()
+            .is_some_and(|segment| segment.phase == FocusPhase::Focus),
+        snapshot.focus_extension_used,
+        ((now_ms.max(0) / 180) % i64::from(PAUSED_PULSE_FRAME_COUNT)) as u8,
+    );
     let remaining = snapshot
         .remaining_ms
         .saturating_sub(if running {
@@ -687,12 +752,7 @@ pub(crate) async fn reconcile_committed_focus(
                     .map(|segment| segment.chosen_duration_ms)
                     .unwrap_or(0),
             ),
-            is_running: running,
-            is_active: active,
-            can_pause_resume: actionable,
-            can_add_focus_time: actionable && !snapshot.focus_extension_used,
-            paused_pulse_frame: (snapshot.mode == FocusMode::ManualPause)
-                .then(|| ((now_ms.max(0) / 180) % i64::from(PAUSED_PULSE_FRAME_COUNT)) as u8),
+            activity,
         },
         context,
     )
@@ -755,17 +815,13 @@ pub(crate) fn publish_music_session(
 mod tests {
     use super::*;
 
-    fn tray_state_with_pause_resume(can_pause_resume: bool) -> TrayState {
+    fn tray_state_with_activity(activity: TrayFocusActivity) -> TrayState {
         TrayState {
             pomodoro: PomodoroTrayState {
                 phase: "focus".to_string(),
                 remaining_seconds: 1200,
                 total_seconds: 2400,
-                is_running: true,
-                is_active: true,
-                can_pause_resume,
-                can_add_focus_time: false,
-                paused_pulse_frame: None,
+                activity,
                 native_context: None,
             },
             music: MusicTrayState {
@@ -878,12 +934,66 @@ mod tests {
 
     #[test]
     fn menu_shape_tracks_pause_resume_availability() {
-        let disabled = menu_shape(&tray_state_with_pause_resume(false));
-        let enabled = menu_shape(&tray_state_with_pause_resume(true));
+        let disabled = menu_shape(&tray_state_with_activity(TrayFocusActivity::RunningBreak));
+        let enabled = menu_shape(&tray_state_with_activity(TrayFocusActivity::RunningFocus {
+            extension_available: false,
+        }));
 
         assert!(!disabled.pomodoro_can_pause_resume);
         assert!(enabled.pomodoro_can_pause_resume);
         assert_ne!(disabled, enabled);
+    }
+
+    #[test]
+    fn every_focus_mode_maps_to_one_tray_activity() {
+        use ganbaru_pomodoro::FocusMode;
+        let modes = [
+            FocusMode::Stopped,
+            FocusMode::Running,
+            FocusMode::ManualPause,
+            FocusMode::IdlePause,
+            FocusMode::IdleFailed,
+            FocusMode::Suspended,
+            FocusMode::ReturnWait,
+            FocusMode::Expired,
+        ];
+        for mode in modes {
+            for focus in [false, true] {
+                for extension_used in [false, true] {
+                    let closed =
+                        TrayFocusActivity::from_mode(mode, false, focus, extension_used, 3);
+                    assert_eq!(closed, TrayFocusActivity::Inactive, "{mode:?}");
+                    let activity =
+                        TrayFocusActivity::from_mode(mode, true, focus, extension_used, 3);
+                    let expected = match (mode, focus) {
+                        (FocusMode::Stopped | FocusMode::Expired, _) => TrayFocusActivity::Inactive,
+                        (FocusMode::Running, true) => TrayFocusActivity::RunningFocus {
+                            extension_available: !extension_used,
+                        },
+                        (FocusMode::Running, false) => TrayFocusActivity::RunningBreak,
+                        (FocusMode::ManualPause, true) => TrayFocusActivity::PausedFocus {
+                            extension_available: !extension_used,
+                            pulse_frame: 3,
+                        },
+                        _ => TrayFocusActivity::Waiting,
+                    };
+                    assert_eq!(activity, expected, "{mode:?} focus={focus}");
+                    assert_eq!(
+                        activity.can_pause_resume(),
+                        focus && matches!(mode, FocusMode::Running | FocusMode::ManualPause)
+                    );
+                    assert_eq!(
+                        activity.can_add_focus_time(),
+                        activity.can_pause_resume() && !extension_used
+                    );
+                    assert_eq!(activity.is_running(), mode == FocusMode::Running);
+                    assert_eq!(
+                        activity.paused_pulse_frame().is_some(),
+                        focus && mode == FocusMode::ManualPause
+                    );
+                }
+            }
+        }
     }
 
     #[test]

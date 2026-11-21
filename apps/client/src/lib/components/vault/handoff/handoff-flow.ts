@@ -64,3 +64,11 @@ export function handoffBusy(state: HandoffActivity): HandoffBusy | null {
 export function handoffInviting(state: HandoffActivity): boolean {
   return state.invite.phase === "creating";
 }
+
+/** The confirmation dialog the panel shows; an unlink names the device it would unlink. */
+export type HandoffConfirmation =
+  | { kind: "network" }
+  | { kind: "networkRevoke" }
+  | { kind: "unlink"; deviceId: string }
+  | { kind: "recover" }
+  | { kind: "firstCopy" };

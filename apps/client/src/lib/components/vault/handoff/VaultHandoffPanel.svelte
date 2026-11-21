@@ -54,6 +54,7 @@
     transitionHandoffActivity,
     type HandoffAction,
     type HandoffActivity,
+    type HandoffConfirmation,
   } from "./handoff-flow";
 
 
@@ -119,8 +120,7 @@
   let networkError = $state<string | null>(null);
   let approvalError = $state<string | null>(null);
   let enrollmentCode = $state<string | null>(null);
-  let confirmation = $state<"network" | "networkRevoke" | "unlink" | "recover" | "firstCopy" | null>(null);
-  let unlinkDeviceId = $state<string | null>(null);
+  let confirmation = $state<HandoffConfirmation | null>(null);
   /** The folder chosen for the first copy of the linked vault on this computer; null uses the default. */
   let linkFolder = $state<string | null>(null);
   let networkAccess = $state<DesktopNetworkAccess | null>(
@@ -398,8 +398,8 @@
   }
 
   function setNetworkAccess(enabled: boolean): void {
-    if (enabled) confirmation = "network";
-    else confirmation = "networkRevoke";
+    if (enabled) confirmation = { kind: "network" };
+    else confirmation = { kind: "networkRevoke" };
   }
 
   /** Shows `next` below the onboarding title, focusing its code field unless the keyboard chose it from the tabs. */
@@ -462,20 +462,18 @@
     }
   }
 
-  async function unlink(): Promise<void> {
+  async function unlink(deviceId: string): Promise<void> {
     confirmation = null;
     const started = startHandoffAction("unlink");
     error = null;
     try {
-      if (!unlinkDeviceId) throw new Error("Linked device identity is unavailable");
-      await unlinkVaultDevice(unlinkDeviceId);
+      await unlinkVaultDevice(deviceId);
       await loadStatus();
       invitation = null;
       notice = t("vaultHandoff.unlinked");
     } catch (cause) {
       fail(cause);
     } finally {
-      unlinkDeviceId = null;
       finishHandoffAction(started);
     }
   }
@@ -510,7 +508,7 @@
       void cancelReceive();
       return;
     }
-    confirmation = "firstCopy";
+    confirmation = { kind: "firstCopy" };
   }
 
   /** Lets the user choose an empty folder for the first copy of the linked vault on this computer. */
@@ -631,7 +629,7 @@
                     type="button"
                     class={`${buttonClass} bg-background`}
                     disabled={busy !== null}
-                    onclick={() => { confirmation = "network"; }}
+                    onclick={() => { confirmation = { kind: "network" }; }}
                   >
                     {#if busy === "network"}<LoaderCircle size={14} class="animate-spin" />{/if}
                     {t("vaultHandoff.allowNetworkAccess")}
@@ -810,7 +808,7 @@
                 type="button"
                 class={buttonClass}
                 disabled={controlsBusy}
-                onclick={() => { unlinkDeviceId = device.deviceId; confirmation = "unlink"; }}
+                onclick={() => { confirmation = { kind: "unlink", deviceId: device.deviceId }; }}
               >
                 {t("vaultHandoff.unlink")}
               </button>
@@ -932,7 +930,7 @@
           </button>
         {/if}
         {#if presentation === "settings" && recoverAvailable}
-          <button type="button" class={buttonClass} disabled={busy !== null} onclick={() => { confirmation = "recover"; }}>
+          <button type="button" class={buttonClass} disabled={busy !== null} onclick={() => { confirmation = { kind: "recover" }; }}>
             {t("vaultHandoff.recover")}
           </button>
         {/if}
@@ -963,7 +961,7 @@
       <SyncSection
         {buttonClass}
         mobileLayout={platform === "android"}
-        onRecoverLocalCopy={recoverAvailable && busy === null ? () => { confirmation = "recover"; } : undefined}
+        onRecoverLocalCopy={recoverAvailable && busy === null ? () => { confirmation = { kind: "recover" }; } : undefined}
         onFreshCopy={isCoordinatorClient && status.replicaReady ? getFreshCopy : undefined}
       />
     {/if}
@@ -1077,7 +1075,7 @@
   {/await}
 {/if}
 
-{#if confirmation === "network"}
+{#if confirmation?.kind === "network"}
   <ConfirmDialog
     title={t("vaultHandoff.networkAccessConfirmTitle")}
     message={networkAccess?.state === "networkConfirmationRequired"
@@ -1089,7 +1087,7 @@
     onConfirm={() => void grantNetworkAccess()}
     onCancel={() => { confirmation = null; }}
   />
-{:else if confirmation === "networkRevoke"}
+{:else if confirmation?.kind === "networkRevoke"}
   <ConfirmDialog
     title={t("vaultHandoff.networkAccessRevokeTitle")}
     message={t("vaultHandoff.networkAccessRevokeMessage")}
@@ -1099,16 +1097,17 @@
     onConfirm={() => void revokeNetworkAccess()}
     onCancel={() => { confirmation = null; }}
   />
-{:else if confirmation === "unlink"}
+{:else if confirmation?.kind === "unlink"}
+  {@const deviceId = confirmation.deviceId}
   <ConfirmDialog
     title={t("vaultHandoff.unlinkTitle")}
     message={t("vaultHandoff.unlinkMessage")}
     confirmLabel={t("vaultHandoff.unlink")}
     cancelLabel={t("common.cancel")}
-    onConfirm={() => void unlink()}
-    onCancel={() => { confirmation = null; unlinkDeviceId = null; }}
+    onConfirm={() => void unlink(deviceId)}
+    onCancel={() => { confirmation = null; }}
   />
-{:else if confirmation === "recover"}
+{:else if confirmation?.kind === "recover"}
   <ConfirmDialog
     title={t("vaultHandoff.recoverTitle")}
     message={t("vaultHandoff.recoverMessage")}
@@ -1117,7 +1116,7 @@
     onConfirm={() => void recover()}
     onCancel={() => { confirmation = null; }}
   />
-{:else if confirmation === "firstCopy"}
+{:else if confirmation?.kind === "firstCopy"}
   <ConfirmDialog
     title={t("vaultHandoff.firstCopyTitle")}
     message={platform === "android"

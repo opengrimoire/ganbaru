@@ -1,17 +1,22 @@
 //! Projection of provider runtime events into organizational conversations.
 
-use super::super::agent_runs::{SETTLED_RUN_STATES, unsettled_run_state_sql};
+use super::super::agent_runs::SETTLED_RUN_STATES;
 use super::super::events::{
     ApprovalSubject, CanonicalEvent, CanonicalRuntimeEvent, ChangedFileSummary, TurnCompletedEvent,
 };
 use super::super::models::{
     ChatError, ChatErrorCode, ChatParticipantId, ChatReplyThreadId, ChatResult, ChatTurnId,
-    ChatWorkAssignmentId,
+    ChatWorkAssignmentId, ChatWorkAssignmentState,
 };
 use super::reports::{
     AgentUpdate, insert_agent_update, run_asked_host_question, run_result_report,
 };
 use crate::models::ChatTurnState;
+use crate::repository::state_writes::{
+    GuardedRow, StateWriteColumns, StateWriteValue, persist_assignment_transition,
+    persist_guarded_transition,
+};
+use crate::state::ChatAgentRunState;
 use crate::usage_counters::record_run_usage;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -164,8 +169,8 @@ async fn project_event_arms(
                 transaction,
                 assignment_id,
                 run_id,
-                "waiting_for_approval",
-                "waiting",
+                ChatWorkAssignmentState::WaitingForApproval,
+                ChatAgentRunState::Waiting,
                 None,
                 runtime.created_at.as_str(),
             )
@@ -200,8 +205,8 @@ async fn project_event_arms(
                 transaction,
                 assignment_id,
                 run_id,
-                "waiting_for_answer",
-                "waiting",
+                ChatWorkAssignmentState::WaitingForAnswer,
+                ChatAgentRunState::Waiting,
                 None,
                 runtime.created_at.as_str(),
             )
@@ -227,8 +232,8 @@ async fn project_event_arms(
                 transaction,
                 assignment_id,
                 run_id,
-                "working",
-                "working",
+                ChatWorkAssignmentState::Working,
+                ChatAgentRunState::Working,
                 None,
                 runtime.created_at.as_str(),
             )
@@ -239,8 +244,8 @@ async fn project_event_arms(
                 transaction,
                 assignment_id,
                 run_id,
-                "failed",
-                "failed",
+                ChatWorkAssignmentState::Failed,
+                ChatAgentRunState::Failed,
                 Some(PROVIDER_USAGE_LIMIT_REASON),
                 runtime.created_at.as_str(),
             )
@@ -278,8 +283,8 @@ async fn project_event_arms(
                     transaction,
                     assignment_id,
                     run_id,
-                    "ready_for_review",
-                    "completed",
+                    ChatWorkAssignmentState::ReadyForReview,
+                    ChatAgentRunState::Completed,
                     None,
                     runtime.created_at.as_str(),
                 )
@@ -302,16 +307,16 @@ async fn project_event_arms(
                 }
             } else {
                 let state = if changed_files.is_empty() {
-                    "completed"
+                    ChatWorkAssignmentState::Completed
                 } else {
-                    "ready_for_review"
+                    ChatWorkAssignmentState::ReadyForReview
                 };
                 if !update_assignment_and_run_state(
                     transaction,
                     assignment_id,
                     run_id,
                     state,
-                    "completed",
+                    ChatAgentRunState::Completed,
                     None,
                     runtime.created_at.as_str(),
                 )
@@ -352,8 +357,8 @@ async fn project_event_arms(
                 transaction,
                 assignment_id,
                 run_id,
-                "failed",
-                "failed",
+                ChatWorkAssignmentState::Failed,
+                ChatAgentRunState::Failed,
                 Some(reason),
                 runtime.created_at.as_str(),
             )
@@ -376,8 +381,8 @@ async fn project_event_arms(
                 transaction,
                 assignment_id,
                 run_id,
-                "failed",
-                "failed",
+                ChatWorkAssignmentState::Failed,
+                ChatAgentRunState::Failed,
                 Some(&event.message),
                 runtime.created_at.as_str(),
             )
@@ -535,19 +540,21 @@ async fn settle_run(
     run_id: &str,
     occurred_at: &str,
 ) -> ChatResult<()> {
-    let sql = format!(
-        "UPDATE chat_agent_runs
-         SET state = 'completed', settled_at = ?, updated_at = ?
-         WHERE id = ? AND {}",
-        unsettled_run_state_sql("state")
-    );
-    sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
-        .bind(occurred_at)
-        .bind(occurred_at)
-        .bind(run_id)
-        .execute(&mut **transaction)
-        .await
-        .map_err(persistence_error)?;
+    let at = StateWriteValue::Text(occurred_at);
+    persist_guarded_transition(
+        &mut **transaction,
+        GuardedRow {
+            table: "chat_agent_runs",
+            key: "id = ?",
+            key_values: &[StateWriteValue::Text(run_id)],
+        },
+        ChatAgentRunState::Completed,
+        StateWriteColumns {
+            assignments: "settled_at = ?, updated_at = ?",
+            values: &[at, at],
+        },
+    )
+    .await?;
     Ok(())
 }
 
@@ -597,49 +604,63 @@ pub(crate) async fn update_assignment_and_run_state(
     connection: &mut SqliteConnection,
     assignment_id: &ChatWorkAssignmentId,
     run_id: &str,
-    assignment_state: &str,
-    run_state: &str,
+    assignment_state: ChatWorkAssignmentState,
+    run_state: ChatAgentRunState,
     reason: Option<&str>,
     occurred_at: &str,
 ) -> ChatResult<bool> {
-    let terminal = matches!(assignment_state, "completed" | "failed" | "cancelled");
-    // A settled assignment never leaves its state, so provider events that arrive after a
-    // cancel applied from another device cannot reopen it.
-    let assignment = sqlx::query(
-        "UPDATE chat_work_assignments
-         SET state = ?, state_reason = ?, settled_at = CASE WHEN ? THEN ? ELSE NULL END,
-             revision = revision + 1, updated_at = ?
-         WHERE id = ? AND state NOT IN ('completed', 'failed', 'cancelled')",
+    // The assignment table never moves settled work back to progress, so provider events that
+    // arrive after a cancel applied from another device cannot reopen it.
+    let at = StateWriteValue::Text(occurred_at);
+    let reason = StateWriteValue::OptionalText(reason);
+    let settled_values = [reason, at, at];
+    let open_values = [reason, at];
+    let settled_run_values = [at, at];
+    let open_run_values = [at];
+    let applied = persist_assignment_transition(
+        connection,
+        assignment_id.as_str(),
+        assignment_state,
+        StateWriteColumns {
+            assignments: if assignment_state.is_settled() {
+                "state_reason = ?, settled_at = ?, revision = revision + 1, updated_at = ?"
+            } else {
+                "state_reason = ?, settled_at = NULL, revision = revision + 1, updated_at = ?"
+            },
+            values: if assignment_state.is_settled() {
+                &settled_values
+            } else {
+                &open_values
+            },
+        },
     )
-    .bind(assignment_state)
-    .bind(reason)
-    .bind(terminal)
-    .bind(occurred_at)
-    .bind(occurred_at)
-    .bind(assignment_id.as_str())
-    .execute(&mut *connection)
-    .await
-    .map_err(persistence_error)?;
-    let applied = assignment.rows_affected() == 1;
-    let run_terminal = SETTLED_RUN_STATES.contains(&run_state);
-    if !applied && !run_terminal {
+    .await?
+    .is_applied();
+    if !applied && !run_state.is_settled() {
         return Ok(false);
     }
-    let run_update = format!(
-        "UPDATE chat_agent_runs
-         SET state = ?, settled_at = CASE WHEN ? THEN ? ELSE NULL END, updated_at = ?
-         WHERE id = ? AND {}",
-        unsettled_run_state_sql("state")
-    );
-    sqlx::query(sqlx::AssertSqlSafe(run_update.as_str()))
-        .bind(run_state)
-        .bind(run_terminal)
-        .bind(occurred_at)
-        .bind(occurred_at)
-        .bind(run_id)
-        .execute(&mut *connection)
-        .await
-        .map_err(persistence_error)?;
+    persist_guarded_transition(
+        connection,
+        GuardedRow {
+            table: "chat_agent_runs",
+            key: "id = ?",
+            key_values: &[StateWriteValue::Text(run_id)],
+        },
+        run_state,
+        StateWriteColumns {
+            assignments: if run_state.is_settled() {
+                "settled_at = ?, updated_at = ?"
+            } else {
+                "settled_at = NULL, updated_at = ?"
+            },
+            values: if run_state.is_settled() {
+                &settled_run_values
+            } else {
+                &open_run_values
+            },
+        },
+    )
+    .await?;
     Ok(applied)
 }
 

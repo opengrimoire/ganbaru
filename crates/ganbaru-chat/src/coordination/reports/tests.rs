@@ -52,6 +52,11 @@ pub(crate) async fn seed(pool: &SqlitePool, assignment_state: &str, run_state: &
     drop(connection);
     let conversation = default_channel_ids(PROJECT_ID).unwrap().0;
     let digest = "a".repeat(64);
+    let settled_at = if matches!(assignment_state, "completed" | "failed" | "cancelled") {
+        format!("'{NOW}'")
+    } else {
+        "NULL".to_string()
+    };
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
          VALUES ('{AGENT}', 'ai_agent', 'Helper', '{NOW}', '{NOW}');
@@ -70,9 +75,9 @@ pub(crate) async fn seed(pool: &SqlitePool, assignment_state: &str, run_state: &
             (id, conversation_id, root_item_id, last_activity_at, created_at, updated_at)
          VALUES ('{THREAD}', '{conversation}', 'item:root', '{NOW}', '{NOW}', '{NOW}');
          INSERT INTO chat_work_assignments
-            (id, reply_thread_id, agent_id, triggering_message_item_id, state,
+            (id, reply_thread_id, agent_id, triggering_message_item_id, state, settled_at,
              model_selection_schema_version, model_selection_data, created_at, updated_at)
-         VALUES ('{ASSIGNMENT}', '{THREAD}', '{AGENT}', 'item:root', '{assignment_state}',
+         VALUES ('{ASSIGNMENT}', '{THREAD}', '{AGENT}', 'item:root', '{assignment_state}', {settled_at},
                  1, '{{}}', '{NOW}', '{NOW}');
          UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
          INSERT INTO chat_agent_runs

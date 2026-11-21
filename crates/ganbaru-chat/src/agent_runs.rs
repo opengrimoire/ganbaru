@@ -2,8 +2,13 @@
 
 use super::models::{
     ChatAgentRunId, ChatAuthorizationRevisionId, ChatError, ChatErrorCode, ChatResult,
-    ChatThreadId, ChatTurnId, ChatWorkAssignmentId, UtcTimestamp,
+    ChatThreadId, ChatTurnId, ChatWorkAssignmentId, ChatWorkAssignmentState, UtcTimestamp,
 };
+use crate::repository::state_writes::{
+    GuardedRow, StateWriteColumns, StateWriteValue, persist_assignment_transition,
+    persist_guarded_transition,
+};
+use crate::state::{ChatAgentRunState, ChatDispatchJobState};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::{Row, Sqlite, SqliteConnection, Transaction};
@@ -476,7 +481,7 @@ pub async fn settle_launch(
     )
     .await?
     {
-        if !settle_run_state(&mut transaction, binding, "cancelled", now).await? {
+        if !settle_run_state(&mut transaction, binding, ChatAgentRunState::Cancelled, now).await? {
             transaction.rollback().await.map_err(persistence_error)?;
             return Ok(LaunchSettlement::RunSettled);
         }
@@ -486,7 +491,7 @@ pub async fn settle_launch(
     if requires_handoff(launch, launch_error)
         && assignment_unsettled(&mut transaction, binding).await?
     {
-        if !settle_run_state(&mut transaction, binding, "failed", now).await? {
+        if !settle_run_state(&mut transaction, binding, ChatAgentRunState::Failed, now).await? {
             transaction.rollback().await.map_err(persistence_error)?;
             return Ok(LaunchSettlement::RunSettled);
         }
@@ -495,34 +500,53 @@ pub async fn settle_launch(
         return Ok(LaunchSettlement::HandoffRequired);
     }
     let assignment_updated = match launch_error {
-        Some(error) => sqlx::query(
-            "UPDATE chat_work_assignments
-             SET state = 'failed', state_reason = ?, settled_at = ?,
-                 revision = revision + 1, updated_at = ?
-             WHERE id = ? AND state NOT IN ('completed', 'failed', 'cancelled')",
-        )
-        .bind(&error.message)
-        .bind(now.as_str())
-        .bind(now.as_str())
-        .bind(binding.assignment_id.as_str()),
-        None => sqlx::query(
-            "UPDATE chat_work_assignments
-             SET state = 'working', state_reason = NULL,
-                 revision = revision + 1, updated_at = ?
-             WHERE id = ? AND state NOT IN ('completed', 'failed', 'cancelled')",
-        )
-        .bind(now.as_str())
-        .bind(binding.assignment_id.as_str()),
+        Some(error) => {
+            persist_assignment_transition(
+                &mut transaction,
+                binding.assignment_id.as_str(),
+                ChatWorkAssignmentState::Failed,
+                StateWriteColumns {
+                    assignments: "state_reason = ?, settled_at = ?, revision = revision + 1, \
+                                  updated_at = ?",
+                    values: &[
+                        StateWriteValue::Text(&error.message),
+                        StateWriteValue::Text(now.as_str()),
+                        StateWriteValue::Text(now.as_str()),
+                    ],
+                },
+            )
+            .await?
+        }
+        None => {
+            persist_assignment_transition(
+                &mut transaction,
+                binding.assignment_id.as_str(),
+                ChatWorkAssignmentState::Working,
+                StateWriteColumns {
+                    assignments: "state_reason = NULL, revision = revision + 1, updated_at = ?",
+                    values: &[StateWriteValue::Text(now.as_str())],
+                },
+            )
+            .await?
+        }
     }
-    .execute(&mut *transaction)
-    .await
-    .map_err(persistence_error)?
-    .rows_affected()
-        > 0;
+    .is_applied();
     let (run_state, job_state, settlement) = match (assignment_updated, launch_error) {
-        (false, _) => ("cancelled", "cancelled", LaunchSettlement::Superseded),
-        (true, Some(_)) => ("failed", "failed", LaunchSettlement::Recorded),
-        (true, None) => ("working", "completed", LaunchSettlement::Recorded),
+        (false, _) => (
+            ChatAgentRunState::Cancelled,
+            ChatDispatchJobState::Cancelled,
+            LaunchSettlement::Superseded,
+        ),
+        (true, Some(_)) => (
+            ChatAgentRunState::Failed,
+            ChatDispatchJobState::Failed,
+            LaunchSettlement::Recorded,
+        ),
+        (true, None) => (
+            ChatAgentRunState::Working,
+            ChatDispatchJobState::Completed,
+            LaunchSettlement::Recorded,
+        ),
     };
     if !settle_run_state(&mut transaction, binding, run_state, now).await? {
         transaction.rollback().await.map_err(persistence_error)?;
@@ -533,7 +557,7 @@ pub async fn settle_launch(
          SET state = ?, last_error = ?, updated_at = ?
          WHERE assignment_id = ? AND state = 'claimed' AND claim_token = ?",
     )
-    .bind(job_state)
+    .bind(job_state.as_str())
     .bind(launch_error.map(|error| error.message.as_str()))
     .bind(now.as_str())
     .bind(binding.assignment_id.as_str())
@@ -541,7 +565,7 @@ pub async fn settle_launch(
     .execute(&mut *transaction)
     .await
     .map_err(persistence_error)?;
-    if run_state == "working" {
+    if run_state == ChatAgentRunState::Working {
         insert_delivered_sources(
             &mut transaction,
             &binding.run_id,
@@ -648,36 +672,35 @@ pub async fn record_fresh_session_handoff(
     interrupt_open_requests_of_run_thread(connection, &binding.run_id, now).await
 }
 
-/// Moves the unsettled run of `binding` to `state`, stamping its start or settle time. Returns
-/// false when the run already settled or no longer exists.
+/// Moves the unsettled run of `binding` to `state`, stamping its start time when it works and
+/// its settle time otherwise. Returns false when the run already settled or no longer exists.
 async fn settle_run_state(
     connection: &mut SqliteConnection,
     binding: &AgentRunBinding,
-    state: &str,
+    state: ChatAgentRunState,
     now: &UtcTimestamp,
 ) -> ChatResult<bool> {
-    let run_update = format!(
-        "UPDATE chat_agent_runs
-         SET state = ?,
-             started_at = CASE WHEN ? = 'working' THEN ? ELSE started_at END,
-             settled_at = CASE WHEN ? = 'working' THEN settled_at ELSE ? END,
-             updated_at = ?
-         WHERE id = ? AND {}",
-        unsettled_run_state_sql("state")
-    );
-    Ok(sqlx::query(sqlx::AssertSqlSafe(run_update.as_str()))
-        .bind(state)
-        .bind(state)
-        .bind(now.as_str())
-        .bind(state)
-        .bind(now.as_str())
-        .bind(now.as_str())
-        .bind(binding.run_id.as_str())
-        .execute(&mut *connection)
-        .await
-        .map_err(persistence_error)?
-        .rows_affected()
-        > 0)
+    let stamp = StateWriteValue::Text(now.as_str());
+    let columns = StateWriteColumns {
+        assignments: if state == ChatAgentRunState::Working {
+            "started_at = ?, updated_at = ?"
+        } else {
+            "settled_at = ?, updated_at = ?"
+        },
+        values: &[stamp, stamp],
+    };
+    Ok(persist_guarded_transition(
+        connection,
+        GuardedRow {
+            table: "chat_agent_runs",
+            key: "id = ?",
+            key_values: &[StateWriteValue::Text(binding.run_id.as_str())],
+        },
+        state,
+        columns,
+    )
+    .await?
+    .is_applied())
 }
 
 /// Records that `run_id` delivered `sources` to its native session. A source delivered twice
@@ -897,21 +920,17 @@ mod tests {
             .await
             .unwrap();
         let condition = format!("SELECT {}", unsettled_run_state_sql("?"));
-        for state in [
-            "queued",
-            "starting",
-            "working",
-            "waiting",
-            "completed",
-            "failed",
-            "cancelled",
-        ] {
+        for state in crate::state::ChatAgentRunState::ALL {
             let unsettled: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(condition.as_str()))
-                .bind(state)
+                .bind(state.as_str())
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-            assert_eq!(unsettled, !SETTLED_RUN_STATES.contains(&state), "{state}");
+            assert_eq!(unsettled, !state.is_settled(), "{state:?}");
+            assert_eq!(
+                SETTLED_RUN_STATES.contains(&state.as_str()),
+                state.is_settled()
+            );
         }
     }
 

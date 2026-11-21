@@ -172,6 +172,8 @@ pub const ASSIGNMENT_STATES: [&str; 8] = [
     "failed",
     "cancelled",
 ];
+/// The assignment states that carry a settled time; every other state carries none.
+pub const SETTLED_ASSIGNMENT_STATES: [&str; 3] = ["completed", "failed", "cancelled"];
 /// The only assignment state a review outcome may accompany.
 pub const REVIEWED_ASSIGNMENT_STATE: &str = "completed";
 /// Outcomes of a review of ready-for-review work.
@@ -1069,6 +1071,9 @@ fn validate_scheduled(group: GroupId, fields: &[Field]) -> Result<(), AdapterErr
             scheduled_references(references)
         }
         (scheduled_group::FAILURE, [failed_at, error]) => {
+            if !matches!(failed_at, Field::Null) && matches!(error, Field::Null) {
+                return Err(AdapterError("chat scheduled failure needs its error"));
+            }
             optional_timestamp(failed_at)?;
             optional_bounded(error, MAX_REASON_CHARS, "chat scheduled failure")
         }
@@ -1266,7 +1271,7 @@ fn validate_assignment(group: GroupId, fields: &[Field]) -> Result<(), AdapterEr
         (assignment_group::STATE, [state, reason, settled_at, outcome, reviewed_at, reviewer]) => {
             one_of(state, &ASSIGNMENT_STATES, "chat assignment state")?;
             optional_bounded(reason, MAX_REASON_CHARS, "chat assignment state reason")?;
-            optional_timestamp(settled_at)?;
+            assignment_settled_at(state, settled_at)?;
             assignment_review(state, outcome, reviewed_at, reviewer)
         }
         (assignment_group::UPDATED, [at]) => timestamp(at),
@@ -1365,6 +1370,18 @@ fn delegation_folder_ceiling(field: &Field) -> Result<(), AdapterError> {
         }
     }
     Ok(())
+}
+
+/// Settled work, and only settled work, says when it settled, so a replicated row keeps the
+/// same agreement local writers keep.
+fn assignment_settled_at(state: &Field, settled_at: &Field) -> Result<(), AdapterError> {
+    let settled = SETTLED_ASSIGNMENT_STATES.contains(&text(state)?);
+    match settled_at {
+        Field::Null if settled => Err(AdapterError("chat assignment settled time is missing")),
+        Field::Null => Ok(()),
+        _ if !settled => Err(AdapterError("chat assignment open work has a settled time")),
+        _ => timestamp(settled_at),
+    }
 }
 
 /// A review is all three fields or none, and only on completed work: the review judges a

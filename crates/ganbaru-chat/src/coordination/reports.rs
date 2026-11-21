@@ -10,6 +10,8 @@
 use super::delegation::MAX_REPORT_BODY_BYTES;
 use crate::ids::derived_id;
 use crate::models::{ChatError, ChatErrorCode, ChatResult};
+use crate::repository::state_writes::sources_sql;
+use crate::state::ChatDispatchJobState;
 use crate::timeline::{bounded_projected_revision, next_order_key};
 use ganbaru_sync_contracts::chat_channel_notes::MAX_CHANNEL_NOTE_CHARS;
 use serde_json::{Value, json};
@@ -474,17 +476,19 @@ pub async fn requeue_answered_assignment(
     if queued.rows_affected() != 1 {
         return Ok(false);
     }
-    sqlx::query(
+    let requeue = format!(
         "UPDATE chat_assignment_dispatch_jobs
          SET state = 'queued', available_at = ?1, claimed_at = NULL, claim_token = NULL,
              last_error = NULL, updated_at = ?1
-         WHERE assignment_id = ?2",
-    )
-    .bind(now)
-    .bind(assignment_id)
-    .execute(connection)
-    .await
-    .map_err(persistence_error)?;
+         WHERE assignment_id = ?2 AND state IN ({})",
+        sources_sql(ChatDispatchJobState::Queued)
+    );
+    sqlx::query(sqlx::AssertSqlSafe(requeue.as_str()))
+        .bind(now)
+        .bind(assignment_id)
+        .execute(connection)
+        .await
+        .map_err(persistence_error)?;
     Ok(true)
 }
 

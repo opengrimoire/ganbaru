@@ -821,6 +821,65 @@ fn scheduled_message_attachments_are_held_by_value_until_the_schedule_is_removed
 }
 
 #[test]
+fn a_failed_scheduled_message_carries_its_error_for_local_writes() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_default_channel(&pool).await;
+        let channel_id: String =
+            sqlx::query_scalar("SELECT id FROM chat_channels WHERE is_default = 1 LIMIT 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let insert =
+            |id: &'static str, failed_at: Option<&'static str>, error: Option<&'static str>| {
+                sqlx::query(
+                    "INSERT INTO chat_scheduled_messages
+                    (id, client_command_id, channel_id, request_data, scheduled_for,
+                     failed_at, last_error, created_at, updated_at)
+                 VALUES (?, ?, ?, '{}', ?, ?, ?, ?, ?)",
+                )
+                .bind(id)
+                .bind(id)
+                .bind(channel_id.clone())
+                .bind("2026-08-03T15:00:00Z")
+                .bind(failed_at)
+                .bind(error)
+                .bind(NOW)
+                .bind(NOW)
+                .execute(&pool)
+            };
+        let refusal = "A failed Chat scheduled message must carry its error";
+        let error = insert("scheduled-1", Some(NOW), None).await.unwrap_err();
+        assert!(error.to_string().contains(refusal), "{error}");
+        insert("scheduled-1", Some(NOW), Some("channel_archived"))
+            .await
+            .unwrap();
+        insert("scheduled-2", None, None).await.unwrap();
+
+        let fail = |error: Option<&'static str>| {
+            sqlx::query(
+                "UPDATE chat_scheduled_messages SET failed_at = ?, last_error = ?
+                 WHERE id = 'scheduled-2'",
+            )
+            .bind(NOW)
+            .bind(error)
+            .execute(&pool)
+        };
+        let error = fail(None).await.unwrap_err();
+        assert!(error.to_string().contains(refusal), "{error}");
+        fail(Some("channel_archived")).await.unwrap();
+
+        sqlx::query("UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
+        fail(None)
+            .await
+            .expect("a remote apply is checked by the Chat sync domain instead");
+    });
+}
+
+#[test]
 fn chat_workspace_schema_preserves_attachments_and_scopes_resources_to_threads() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;

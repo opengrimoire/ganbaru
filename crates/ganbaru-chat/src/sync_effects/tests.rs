@@ -1380,7 +1380,7 @@ async fn dispatch_job_state(pool: &SqlitePool) -> String {
 }
 
 async fn set_assignment_state(pool: &SqlitePool, state: &str) {
-    sqlx::query("UPDATE chat_work_assignments SET state = ? WHERE id = ?")
+    sqlx::query("UPDATE chat_work_assignments SET state = ?1, settled_at = CASE WHEN ?1 IN ('completed', 'failed', 'cancelled') THEN updated_at END WHERE id = ?2")
         .bind(state)
         .bind(ASSIGNMENT_ID)
         .execute(pool)
@@ -1394,8 +1394,8 @@ async fn a_remotely_settled_assignment_ends_its_dispatch_and_revokes_its_runs_on
     seed_organization(&pool).await;
     sqlx::query(
         "INSERT INTO chat_assignment_dispatch_jobs
-            (id, assignment_id, state, available_at, created_at, updated_at)
-         VALUES ('dispatch:sync-effects', ?1, 'claimed', ?2, ?2, ?2)",
+            (id, assignment_id, state, claim_token, available_at, created_at, updated_at)
+         VALUES ('dispatch:sync-effects', ?1, 'claimed', 'claim:sync-effects', ?2, ?2, ?2)",
     )
     .bind(ASSIGNMENT_ID)
     .bind(NOW)
@@ -1631,7 +1631,7 @@ async fn an_applied_delegated_child_in_an_outcome_state_is_reported_for_its_pare
     let working = run_hook(&pool, ASSIGNMENTS_TABLE, &[child]).await;
     assert!(working.delegated_outcomes.is_empty());
     for state in ["completed", "ready_for_review", "failed", "cancelled"] {
-        sqlx::query("UPDATE chat_work_assignments SET state = ? WHERE id = ?")
+        sqlx::query("UPDATE chat_work_assignments SET state = ?1, settled_at = CASE WHEN ?1 IN ('completed', 'failed', 'cancelled') THEN updated_at END WHERE id = ?2")
             .bind(state)
             .bind(child)
             .execute(&pool)

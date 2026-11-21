@@ -10,6 +10,8 @@ use crate::attachment_files;
 use crate::coordination::access::{access_ceiling, effective_access_level_sql};
 use crate::coordination::revocation::{revoke_assignment_authorizations, revoke_authorization};
 use crate::models::{ChatError, ChatErrorCode, ChatResult};
+use crate::repository::state_writes::sources_sql;
+use crate::state::ChatDispatchJobState;
 use chrono::{DateTime, SecondsFormat, Utc};
 use ganbaru_chat_contracts::models::{
     ChatAgentAccess, ChatFolderCapability, ChatRuntimeApprovalPolicy,
@@ -814,21 +816,24 @@ async fn follow_assignment_state(
         }
         "completed" | "failed" | "cancelled" => {
             let now = now();
-            let ended_jobs = sqlx::query(
-                "UPDATE chat_assignment_dispatch_jobs SET state = ?, updated_at = ?
-                 WHERE assignment_id = ? AND state IN ('queued', 'claimed')",
-            )
-            .bind(if state == "cancelled" {
-                "cancelled"
+            let job_state = if state == "cancelled" {
+                ChatDispatchJobState::Cancelled
             } else {
-                "failed"
-            })
-            .bind(&now)
-            .bind(assignment_id)
-            .execute(&mut *connection)
-            .await
-            .map_err(persistence_error)?
-            .rows_affected();
+                ChatDispatchJobState::Failed
+            };
+            let end_jobs = format!(
+                "UPDATE chat_assignment_dispatch_jobs SET state = ?, updated_at = ?
+                 WHERE assignment_id = ? AND state IN ({})",
+                sources_sql(job_state)
+            );
+            let ended_jobs = sqlx::query(sqlx::AssertSqlSafe(end_jobs.as_str()))
+                .bind(job_state.as_str())
+                .bind(&now)
+                .bind(assignment_id)
+                .execute(&mut *connection)
+                .await
+                .map_err(persistence_error)?
+                .rows_affected();
             let revoked = revoke_assignment_authorizations(
                 connection,
                 assignment_id,

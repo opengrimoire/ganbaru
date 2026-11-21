@@ -1795,9 +1795,11 @@ pub const SCHEDULED: TableSpec = TableSpec {
         collation: Collation::Binary,
     }],
     redirects: true,
-    triggers: &[applier_visible(
-        "chat_scheduled_messages_reply_thread_insert",
-    )],
+    triggers: &[
+        applier_visible("chat_scheduled_messages_reply_thread_insert"),
+        gated("chat_scheduled_messages_failure_names_its_error_insert"),
+        gated("chat_scheduled_messages_failure_names_its_error_update"),
+    ],
     ..BASE
 };
 
@@ -1953,6 +1955,8 @@ pub const ASSIGNMENTS: TableSpec = TableSpec {
     triggers: &[
         applier_visible("chat_work_assignment_delegation_insert"),
         gated("chat_work_assignment_delegation_depth_insert"),
+        gated("chat_work_assignments_settled_at_agrees_insert"),
+        gated("chat_work_assignments_settled_at_agrees_update"),
     ],
     local_columns: &[REVISION],
     revision_column: Some("revision"),
@@ -2231,7 +2235,13 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         ),
         device("chat_assignment_context_sources", &[]),
         device("chat_assignment_context_packages", &[]),
-        device("chat_assignment_dispatch_jobs", &[]),
+        device(
+            "chat_assignment_dispatch_jobs",
+            &[
+                applier_visible("chat_assignment_dispatch_jobs_claim_token_agrees_insert"),
+                applier_visible("chat_assignment_dispatch_jobs_claim_token_agrees_update"),
+            ],
+        ),
         device(
             "chat_attachment_references",
             &[gated("chat_attachment_messages_expose_resource")],

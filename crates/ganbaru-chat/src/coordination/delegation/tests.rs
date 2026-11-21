@@ -30,6 +30,11 @@ async fn migrated_pool() -> SqlitePool {
 /// Seeds a channel where the lead's working parent assignment delegated a child to the helper
 /// in the child's own reply thread, with the parent in `parent_state`.
 async fn seed_delegation(pool: &SqlitePool, parent_state: &str) {
+    let parent_settled_at = if matches!(parent_state, "completed" | "failed" | "cancelled") {
+        format!("'{NOW}'")
+    } else {
+        "NULL".to_string()
+    };
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "INSERT INTO project_groups (id, name, order_key) VALUES ('group-delegation', 'D', 'a0');
          INSERT INTO projects (id, group_id, name, order_key)
@@ -72,10 +77,10 @@ async fn seed_delegation(pool: &SqlitePool, parent_state: &str) {
          VALUES ('reply:parent', '{conversation}', 'item:parent-root', '{NOW}', '{NOW}', '{NOW}'),
                 ('reply:child', '{conversation}', 'item:child-root', '{NOW}', '{NOW}', '{NOW}');
          INSERT INTO chat_work_assignments
-            (id, reply_thread_id, agent_id, triggering_message_item_id, state,
+            (id, reply_thread_id, agent_id, triggering_message_item_id, state, settled_at,
              model_selection_schema_version, model_selection_data, created_at, updated_at)
          VALUES ('{PARENT}', 'reply:parent', '{PARENT_AGENT}', 'item:parent-root',
-                 '{parent_state}', 1, '{{}}', '{NOW}', '{NOW}');
+                 '{parent_state}', {parent_settled_at}, 1, '{{}}', '{NOW}', '{NOW}');
          INSERT INTO chat_work_assignments
             (id, reply_thread_id, agent_id, triggering_message_item_id, state,
              parent_assignment_id, delegation_depth, delegation_objective,
@@ -115,7 +120,7 @@ async fn settle_child_with_update(pool: &SqlitePool, state: &str, update_kind: &
 }
 
 async fn set_child_state(pool: &SqlitePool, state: &str, reason: Option<&str>) {
-    sqlx::query("UPDATE chat_work_assignments SET state = ?, state_reason = ? WHERE id = ?")
+    sqlx::query("UPDATE chat_work_assignments SET state = ?1, state_reason = ?2, settled_at = CASE WHEN ?1 IN ('completed', 'failed', 'cancelled') THEN updated_at END WHERE id = ?3")
         .bind(state)
         .bind(reason)
         .bind(CHILD)

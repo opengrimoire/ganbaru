@@ -4,8 +4,10 @@ use super::internal_mcp::{InternalMcpRunScope, generate_opaque_handle};
 use ganbaru_chat::coordination::revocation::PARENT_AUTHORITY_REVOKED_REASON;
 use ganbaru_chat::repository::state_writes::{
     StateWriteColumns, StateWriteValue, guarded_thread_state_assignment, persist_turn_transition,
+    sources_sql,
 };
 use ganbaru_chat::runtime::ChatRuntimeRegistry;
+use ganbaru_chat::state::ChatDispatchJobState;
 use ganbaru_chat_contracts::models::{
     ChatAgentRunId, ChatAuthorizationRevisionId, ChatError, ChatErrorCode, ChatProjectionKey,
     ChatResult, ChatThreadId, ChatThreadState, ChatTurnId, ChatTurnState, ProjectWorkingFolderId,
@@ -686,17 +688,19 @@ pub(super) async fn persist_revocation_before_cleanup(
                     )
                     .await?;
                 for descendant_id in &cancelled {
-                    sqlx::query(
+                    let end_jobs = format!(
                         "UPDATE chat_assignment_dispatch_jobs
                          SET state = 'cancelled', last_error = ?, updated_at = ?
-                         WHERE assignment_id = ? AND state IN ('queued', 'claimed')",
-                    )
-                    .bind(PARENT_AUTHORITY_REVOKED_REASON)
-                    .bind(&settled_at)
-                    .bind(descendant_id)
-                    .execute(&mut *transaction)
-                    .await
-                    .map_err(persistence_error)?;
+                         WHERE assignment_id = ? AND state IN ({})",
+                        sources_sql(ChatDispatchJobState::Cancelled)
+                    );
+                    sqlx::query(sqlx::AssertSqlSafe(end_jobs.as_str()))
+                        .bind(PARENT_AUTHORITY_REVOKED_REASON)
+                        .bind(&settled_at)
+                        .bind(descendant_id)
+                        .execute(&mut *transaction)
+                        .await
+                        .map_err(persistence_error)?;
                 }
             }
             ganbaru_chat::coordination::delegation::post_delegation_outcome(
@@ -707,20 +711,22 @@ pub(super) async fn persist_revocation_before_cleanup(
             .await?;
         }
         settled_assignment = assignment_id;
-        sqlx::query(
+        let end_jobs = format!(
             "UPDATE chat_assignment_dispatch_jobs
              SET state = 'cancelled', last_error = ?, updated_at = ?
              WHERE assignment_id IN (
                SELECT assignment_id FROM chat_assignment_authorization_revisions
                WHERE id = ?
-             ) AND state IN ('queued', 'claimed')",
-        )
-        .bind(reason)
-        .bind(&settled_at)
-        .bind(authorization_revision_id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(persistence_error)?;
+             ) AND state IN ({})",
+            sources_sql(ChatDispatchJobState::Cancelled)
+        );
+        sqlx::query(sqlx::AssertSqlSafe(end_jobs.as_str()))
+            .bind(reason)
+            .bind(&settled_at)
+            .bind(authorization_revision_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(persistence_error)?;
     }
     for run in runs {
         // A turn that already settled keeps its outcome; only a turn still in progress is

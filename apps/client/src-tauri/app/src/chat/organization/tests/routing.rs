@@ -23,7 +23,7 @@ pub(super) async fn review_work_in(state: &str) -> SqlitePool {
 }
 
 pub(super) async fn set_review_state(pool: &SqlitePool, state: &str) {
-    sqlx::query("UPDATE chat_work_assignments SET state = ?1 WHERE id = ?2")
+    sqlx::query("UPDATE chat_work_assignments SET state = ?1, settled_at = CASE WHEN ?1 IN ('completed', 'failed', 'cancelled') THEN updated_at END WHERE id = ?2")
         .bind(state)
         .bind(ROUTED_ASSIGNMENT_ID)
         .execute(pool)
@@ -405,7 +405,7 @@ fn reviewed_or_continued_work_does_not_continue_again() {
         post_reply(&pool, "command:queue", Some(ChatFollowupRouting::Queue)).await;
         sqlx::query(
             "UPDATE chat_work_assignments
-             SET state = 'completed', review_outcome = 'accepted',
+             SET state = 'completed', settled_at = updated_at, review_outcome = 'accepted',
                  reviewed_by_participant_id = ?1, reviewed_at = ?2
              WHERE id = ?3",
         )

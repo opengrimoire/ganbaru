@@ -57,15 +57,19 @@ pub(super) async fn persist_restore(
     .execute(&mut *transaction)
     .await
     .map_err(persistence_error)?;
-    sqlx::query(
+    let cancel_followups = format!(
         "UPDATE chat_queued_followups SET state = 'cancelled', updated_at = ?
-         WHERE thread_id = ? AND state = 'queued'",
-    )
-    .bind(now.as_str())
-    .bind(request.thread_id.as_str())
-    .execute(&mut *transaction)
-    .await
-    .map_err(persistence_error)?;
+         WHERE thread_id = ? AND state IN ({})",
+        ganbaru_chat::repository::state_writes::sources_sql(
+            ganbaru_chat::state::ChatQueuedFollowupState::Cancelled
+        )
+    );
+    sqlx::query(sqlx::AssertSqlSafe(cancel_followups))
+        .bind(now.as_str())
+        .bind(request.thread_id.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(persistence_error)?;
     enqueue_invalidated_checkpoints(&mut transaction, &request.thread_id, target, now).await?;
     append_reverted_event(
         &mut transaction,

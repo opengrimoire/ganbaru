@@ -363,8 +363,8 @@ fn takeover_ends_the_local_dispatch_jobs_of_the_work_it_settles() {
             seed_assignment_on_old_owner(&pool, seeded).await;
             sqlx::query(
                 "INSERT INTO chat_assignment_dispatch_jobs
-                    (id, assignment_id, state, available_at, created_at, updated_at)
-                 VALUES ('dispatch:old', 'assignment:old', 'claimed', ?1, ?1, ?1)",
+                    (id, assignment_id, state, claim_token, available_at, created_at, updated_at)
+                 VALUES ('dispatch:old', 'assignment:old', 'claimed', 'claim:old', ?1, ?1, ?1)",
             )
             .bind(now.as_str())
             .execute(&pool)
@@ -456,8 +456,8 @@ fn a_device_whose_start_merged_onto_another_executor_ends_only_its_own_dispatch(
         seed_assignment_on_old_owner(&pool, "working").await;
         sqlx::query(
             "INSERT INTO chat_assignment_dispatch_jobs
-                (id, assignment_id, state, available_at, created_at, updated_at)
-             VALUES ('dispatch:old', 'assignment:old', 'claimed', ?1, ?1, ?1)",
+                (id, assignment_id, state, claim_token, available_at, created_at, updated_at)
+             VALUES ('dispatch:old', 'assignment:old', 'claimed', 'claim:old', ?1, ?1, ?1)",
         )
         .bind(now.as_str())
         .execute(&pool)

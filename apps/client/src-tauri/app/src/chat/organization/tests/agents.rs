@@ -587,8 +587,9 @@ fn only_live_dispatch_jobs_block_archiving_a_agent() {
             seed_assignment_on_old_owner(&pool, "queued").await;
             sqlx::query(
                 "INSERT INTO chat_assignment_dispatch_jobs
-                    (id, assignment_id, state, available_at, created_at, updated_at)
-                 VALUES ('dispatch:old', 'assignment:old', ?1, ?2, ?2, ?2)",
+                    (id, assignment_id, state, claim_token, available_at, created_at, updated_at)
+                 VALUES ('dispatch:old', 'assignment:old', ?1,
+                         CASE WHEN ?1 = 'claimed' THEN 'claim:old' END, ?2, ?2, ?2)",
             )
             .bind(job_state)
             .bind("2026-08-04T17:02:00.000Z")

@@ -19,7 +19,7 @@ async fn reviewed_work(state: &str) -> (SqlitePool, ChatWorkAssignmentRead) {
     .execute(&pool)
     .await
     .unwrap();
-    sqlx::query("UPDATE chat_work_assignments SET state = ?1 WHERE id = ?2")
+    sqlx::query("UPDATE chat_work_assignments SET state = ?1, settled_at = CASE WHEN ?1 IN ('completed', 'failed', 'cancelled') THEN updated_at END WHERE id = ?2")
         .bind(state)
         .bind(REVIEWED_ASSIGNMENT_ID)
         .execute(&pool)

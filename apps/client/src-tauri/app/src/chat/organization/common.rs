@@ -522,17 +522,7 @@ pub(super) fn wire_folder_capability(value: ChatFolderCapability) -> &'static st
 }
 
 pub(super) fn parse_work_state(value: &str) -> ChatResult<ChatWorkAssignmentState> {
-    match value {
-        "queued" => Ok(ChatWorkAssignmentState::Queued),
-        "working" => Ok(ChatWorkAssignmentState::Working),
-        "waiting_for_answer" => Ok(ChatWorkAssignmentState::WaitingForAnswer),
-        "waiting_for_approval" => Ok(ChatWorkAssignmentState::WaitingForApproval),
-        "ready_for_review" => Ok(ChatWorkAssignmentState::ReadyForReview),
-        "completed" => Ok(ChatWorkAssignmentState::Completed),
-        "failed" => Ok(ChatWorkAssignmentState::Failed),
-        "cancelled" => Ok(ChatWorkAssignmentState::Cancelled),
-        _ => Err(stored_value_error("assignment state")),
-    }
+    ChatWorkAssignmentState::parse(value).ok_or_else(|| stored_value_error("assignment state"))
 }
 
 /// The stored review outcome `value`.
@@ -571,16 +561,7 @@ pub(crate) fn native_assignment_safety_mode(approval: ChatRuntimeApprovalPolicy)
 }
 
 pub(super) fn wire_work_state(value: ChatWorkAssignmentState) -> &'static str {
-    match value {
-        ChatWorkAssignmentState::Queued => "queued",
-        ChatWorkAssignmentState::Working => "working",
-        ChatWorkAssignmentState::WaitingForAnswer => "waiting_for_answer",
-        ChatWorkAssignmentState::WaitingForApproval => "waiting_for_approval",
-        ChatWorkAssignmentState::ReadyForReview => "ready_for_review",
-        ChatWorkAssignmentState::Completed => "completed",
-        ChatWorkAssignmentState::Failed => "failed",
-        ChatWorkAssignmentState::Cancelled => "cancelled",
-    }
+    value.as_str()
 }
 
 pub(super) fn u32_value(value: i64) -> ChatResult<u32> {

@@ -615,6 +615,11 @@ pub(crate) fn prune_after_replacement(vault: &Path, at: DateTime<Utc>) -> Result
     prune_rollbacks(vault, at)
 }
 
+/// Whether the vault folder at `vault` holds the rollback copy `id`.
+pub(crate) fn holds_rollback(vault: &Path, id: &str) -> bool {
+    parse_rollback_id(id).is_ok() && rollback_root(vault).join(id).is_dir()
+}
+
 /// The creation time of the newest rollback directory in `root`, counting every directory
 /// named by a rollback ID, including copies [`list_rollbacks`] ignores.
 fn newest_rollback_time(root: &Path) -> Result<Option<DateTime<Utc>>, String> {
@@ -673,6 +678,12 @@ fn create_rollback(
             Err(cleanup) => format!("{error}; remove empty database rollback: {cleanup}"),
         });
     }
+    // A replacement deletes what is left of `vault` after this returns, so the moves must reach
+    // stable storage first. A failed flush keeps the moved entries where they are.
+    [directory.as_path(), root.as_path(), vault]
+        .into_iter()
+        .try_for_each(ganbaru_atomic_files::sync_directory_entries)
+        .map_err(|error| format!("flush database rollback: {error}"))?;
     Ok(Some(rollback_id(created)))
 }
 

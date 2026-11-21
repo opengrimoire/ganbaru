@@ -16,9 +16,9 @@
 //! The picked file never travels back from the webview: inspection keeps it behind a random
 //! token, and only that token selects it for the restore.
 
+use super::backup::swap_journal::{self, Replacement};
 use super::backup::{
-    SkippedEntries, extract_backup_archive, move_into_new_folder, recover_interrupted_restore,
-    replace_vault_flagging, replace_with_other_vault, replacement_shrinks_drastically,
+    SkippedEntries, extract_backup_archive, move_into_new_folder, replacement_shrinks_drastically,
     validate_restored_vault,
 };
 use super::quiescence::{self, RunningTerminals, VaultTransition};
@@ -59,8 +59,6 @@ const RESTORED_ARCHIVE_FILE: &str = "archive.zip";
 const RESTORE_STAGING_NAME: &str = ".ganbaru.restore";
 /// Prefix of the private folder an independent copy is restored in beside its new folder.
 const RESTORE_COPY_STAGING_PREFIX: &str = ".ganbaru.restore-";
-/// Folder name the replaced vault waits in while a restore swaps folders.
-const RESTORE_ROLLBACK_NAME: &str = ".ganbaru.rollback";
 /// Trigger names that keep the person identity and contact card from being deleted. An
 /// independent copy recreates them unchanged after removing both rows.
 const IDENTITY_TRIGGERS: [&str; 2] = [
@@ -521,7 +519,10 @@ fn sweep_interrupted_backups_at(
     if let Err(error) = sweep_backup_staging(transfer_root) {
         failures.push(error.to_string());
     }
-    if let Some(parent) = restore_target.and_then(Path::parent)
+    // A swap left pending may still need its staged vault, so its staging stays until it settles.
+    if let Some(target) = restore_target
+        && !swap_journal::has_unfinished_swap(target)
+        && let Some(parent) = target.parent()
         && let Err(error) = sweep_restore_staging(parent)
     {
         failures.push(error);
@@ -1204,15 +1205,12 @@ async fn remove_person_identity(conn: &mut sqlx::SqliteConnection) -> Result<(),
     tx.commit().await.map_err(failed)
 }
 
-/// The staging and swap folders a restore uses beside `target`.
-fn restore_paths(target: &Path) -> Result<(PathBuf, PathBuf), String> {
+/// The staging folder a restore uses beside `target`.
+fn restore_staging_path(target: &Path) -> Result<PathBuf, String> {
     let parent = target
         .parent()
         .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
-    Ok((
-        parent.join(RESTORE_STAGING_NAME),
-        parent.join(RESTORE_ROLLBACK_NAME),
-    ))
+    Ok(parent.join(RESTORE_STAGING_NAME))
 }
 
 /// Replaces the vault at `target` with the staged vault while every runtime is drained, then
@@ -1221,19 +1219,21 @@ fn restore_paths(target: &Path) -> Result<(PathBuf, PathBuf), String> {
 async fn replace_active_vault(
     app: &tauri::AppHandle,
     transition: VaultTransition,
-    (staging, target, rollback): (&Path, &Path, &Path),
+    (staging, target): (&Path, &Path),
     other_vault: bool,
     expected_active: Option<PathBuf>,
 ) -> Result<VaultInfo, String> {
-    let flagged = !other_vault && replacement_shrinks_drastically(target, staging).await;
+    let replacement = if other_vault {
+        Replacement::OtherVault
+    } else {
+        Replacement::SameVault {
+            flagged: replacement_shrinks_drastically(target, staging).await,
+        }
+    };
     let quiescence =
         quiescence::begin_reserved_quiescence(app, transition, RunningTerminals::Block).await?;
     let activation_app = app.clone();
-    let (staging, target, rollback) = (
-        staging.to_path_buf(),
-        target.to_path_buf(),
-        rollback.to_path_buf(),
-    );
+    let (staging, target) = (staging.to_path_buf(), target.to_path_buf());
     blocking(move || {
         let activated = (|| {
             let active = super::read_app_state(&activation_app)?
@@ -1245,11 +1245,7 @@ async fn replace_active_vault(
             }
             super::ensure_vault_skeleton(&staging)?;
             super::vault_lock::process_vault_lock().replace_with(&staging, &target, || {
-                if other_vault {
-                    replace_with_other_vault(&staging, &target, &rollback)
-                } else {
-                    replace_vault_flagging(&staging, &target, &rollback, flagged)
-                }
+                swap_journal::swap(&staging, &target, replacement)
             })?;
             let info = vault_info_from_path(&target)?;
             super::select_quiesced_vault(&activation_app, &info, &quiescence)?;
@@ -1282,10 +1278,9 @@ async fn place_restored_backup(
         && active.summary.other_devices == 0
     {
         let target = &active.root;
-        let (staging, rollback) = restore_paths(target)?;
+        let staging = restore_staging_path(target)?;
         let recover_target = target.clone();
-        let recover_rollback = rollback.clone();
-        blocking(move || recover_interrupted_restore(&recover_target, &recover_rollback)).await??;
+        blocking(move || swap_journal::recover_or_refuse(&recover_target)).await??;
         let staged = StagedFolder::new(&staging);
         let device_id = super::ensure_device_id(app)?;
         let (_, placement) =
@@ -1294,7 +1289,7 @@ async fn place_restored_backup(
             let restored = replace_active_vault(
                 app,
                 transition,
-                (&staging, target, &rollback),
+                (&staging, target),
                 false,
                 Some(target.clone()),
             )
@@ -1367,15 +1362,14 @@ async fn place_restored_backup(
     active: Option<&ActiveVault>,
 ) -> Result<(VaultInfo, RestorePlacement), RestoreError> {
     let target = super::default_vault_path(app)?;
-    let (staging, rollback) = restore_paths(&target)?;
+    let staging = restore_staging_path(&target)?;
     let recover_target = target.clone();
-    let recover_rollback = rollback.clone();
     blocking(move || {
         if let Some(parent) = recover_target.parent() {
             fs::create_dir_all(parent)
                 .map_err(|error| format!("create app data directory: {error}"))?;
         }
-        recover_interrupted_restore(&recover_target, &recover_rollback)
+        swap_journal::recover_or_refuse(&recover_target)
     })
     .await??;
     let staged = StagedFolder::new(&staging);
@@ -1399,7 +1393,7 @@ async fn place_restored_backup(
         replace_active_vault(
             app,
             transition,
-            (&staging, &target, &rollback),
+            (&staging, &target),
             other_vault,
             active.map(|active| active.root.clone()),
         )

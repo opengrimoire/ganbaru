@@ -542,7 +542,7 @@ async fn settle_run(
 ) -> ChatResult<()> {
     let at = StateWriteValue::Text(occurred_at);
     persist_guarded_transition(
-        &mut **transaction,
+        transaction,
         GuardedRow {
             table: "chat_agent_runs",
             key: "id = ?",

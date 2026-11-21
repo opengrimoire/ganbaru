@@ -867,15 +867,12 @@ pub(crate) async fn restore_rollback(
             owner: None,
         }
     };
-    let holds_database = fs::symlink_metadata(database_file(vault, "")).is_ok();
-    if !holds_database
-        && let Some(name) = names
-            .iter()
-            .find(|name| fs::symlink_metadata(vault.join(name)).is_ok())
-    {
-        return Err(format!("move vault entry: '{name}' already exists"));
-    }
-    let replaced = if holds_database {
+    // Whatever the copy would replace is set aside as a rollback, even a stray journal file left
+    // beside a database that is gone, so the restore never deletes or refuses over it.
+    let holds_entries = names
+        .iter()
+        .any(|name| fs::symlink_metadata(vault.join(name)).is_ok());
+    let replaced = if holds_entries {
         Some(create_rollback_directory(vault, at)?)
     } else {
         None
@@ -1522,6 +1519,31 @@ mod tests {
             .unwrap();
         assert_eq!(marker(&vault).await, 2);
         let _ = fs::remove_dir_all(vault);
+    }
+
+    #[tokio::test]
+    async fn restore_reopens_a_vault_whose_database_is_gone_and_keeps_what_was_left() {
+        for (name, leftover) in [
+            ("lost-database-wal", "-wal"),
+            ("lost-database-empty", ""),
+        ] {
+            let vault = test_vault(name);
+            create_database(&vault, BEFORE_RESET).await;
+            let before = move_database_to_rollback(&vault, at(1)).unwrap().unwrap();
+            fs::write(database_file(&vault, leftover), b"").unwrap();
+            write_manifest(&vault, "vault-a");
+            assert!(super::super::refuse_lost_database(&vault).is_err());
+
+            restore_rollback(&vault, &before, at(2)).await.unwrap();
+            assert_eq!(marker(&vault).await, 1, "{name}");
+            super::super::refuse_lost_database(&vault).unwrap();
+            let replaced = rollback_root(&vault).join(rollback_id(at(2)));
+            assert!(
+                database_file(&replaced, leftover).exists(),
+                "{name}: the leftover file is kept beside the rollbacks"
+            );
+            let _ = fs::remove_dir_all(vault);
+        }
     }
 
     #[tokio::test]

@@ -470,3 +470,98 @@ fn artwork_overrides_require_a_managed_reference_with_its_size() {
         }
     });
 }
+
+#[test]
+fn refresh_job_times_agree_with_its_state() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO music_source_collections
+                (id, kind, identity_key, name, youtube_playlist_id, created_at_ms, updated_at_ms)
+             VALUES ('source-1', 'youtube-playlist', 'youtube-playlist:PL1', 'Online', 'PL1', 1, 1);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let insert = |id: &'static str,
+                      state: &'static str,
+                      started: Option<i64>,
+                      finished: Option<i64>| {
+            sqlx::query(
+                "INSERT INTO music_refresh_jobs
+                    (id, source_collection_id, kind, state, generation, requested_at_ms,
+                     started_at_ms, finished_at_ms, updated_at_ms)
+                 VALUES (?, 'source-1', 'youtube-playlist', ?, 1, 1, ?, ?, 1)",
+            )
+            .bind(id)
+            .bind(state)
+            .bind(started)
+            .bind(finished)
+        };
+
+        let accepted = [
+            ("queued", None, None),
+            ("running", Some(2), None),
+            ("completed", Some(2), Some(3)),
+            ("partial", Some(2), Some(3)),
+            ("failed", Some(2), Some(3)),
+            ("cancelled", None, Some(3)),
+            ("cancelled", Some(2), Some(3)),
+        ];
+        let ids = ["a", "b", "c", "d", "e", "f", "g"];
+        for (id, (state, started, finished)) in ids.into_iter().zip(accepted) {
+            insert(id, state, started, finished)
+                .execute(&pool)
+                .await
+                .unwrap_or_else(|error| panic!("{state} {started:?} {finished:?}: {error}"));
+        }
+
+        let rejected = [
+            ("queued", Some(2), None),
+            ("queued", None, Some(3)),
+            ("running", None, None),
+            ("running", Some(2), Some(3)),
+            ("completed", None, Some(3)),
+            ("completed", Some(2), None),
+            ("partial", Some(2), None),
+            ("failed", None, Some(3)),
+            ("cancelled", Some(2), None),
+            ("cancelled", None, None),
+        ];
+        for (state, started, finished) in rejected {
+            let result = insert("rejected", state, started, finished).execute(&pool).await;
+            assert!(result.is_err(), "{state} {started:?} {finished:?}");
+        }
+
+        let start_without_time = sqlx::query(
+            "UPDATE music_refresh_jobs SET state = 'running' WHERE id = 'a'",
+        )
+        .execute(&pool)
+        .await;
+        assert!(start_without_time.is_err());
+        let finish_without_time = sqlx::query(
+            "UPDATE music_refresh_jobs SET state = 'completed' WHERE id = 'b'",
+        )
+        .execute(&pool)
+        .await;
+        assert!(finish_without_time.is_err());
+        let reopen = sqlx::query(
+            "UPDATE music_refresh_jobs SET finished_at_ms = NULL WHERE id = 'c'",
+        )
+        .execute(&pool)
+        .await;
+        assert!(reopen.is_err());
+        sqlx::query(
+            "UPDATE music_refresh_jobs SET state = 'running', started_at_ms = 2 WHERE id = 'a'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE music_refresh_jobs SET state = 'completed', finished_at_ms = 3 WHERE id = 'b'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+    });
+}

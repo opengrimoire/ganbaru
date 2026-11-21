@@ -101,8 +101,8 @@ async fn seed(pool: &SqlitePool) {
     sqlx::query(
         "INSERT INTO music_refresh_jobs
             (id, source_collection_id, local_root_id, kind, state, generation,
-             requested_at_ms, updated_at_ms)
-         VALUES ('refresh-1', 'source-1', 'root-1', 'local-root', 'running', 1, 2, 2)",
+             requested_at_ms, started_at_ms, updated_at_ms)
+         VALUES ('refresh-1', 'source-1', 'root-1', 'local-root', 'running', 1, 2, 2, 2)",
     )
     .execute(pool)
     .await

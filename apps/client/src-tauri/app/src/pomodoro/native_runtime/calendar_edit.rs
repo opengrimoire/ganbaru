@@ -50,14 +50,63 @@ pub(super) struct UndoSlot {
     generation: u64,
     delete_command_id: String,
     delete_intent_hash: String,
+    window: UndoWindow,
+    preimage: Arc<ganbaru_calendar::events::deletion::UndoPreimage>,
+}
+
+/// Whether the deletion that owns a slot is known to have committed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UndoArming {
+    /// Installed before COMMIT with a capped lifetime. Every Undo still confirms the
+    /// deletion receipt inside its own transaction.
+    Prospective,
+    /// The deletion's COMMIT returned; the full opportunity started then.
+    Confirmed,
+}
+
+/// The monotonic and wall-clock bounds of one Undo opportunity and its arming phase.
+#[derive(Clone, Copy, Debug)]
+struct UndoWindow {
+    arming: UndoArming,
     expires_at: Instant,
     started_wall_ms: i64,
-    preimage: Arc<ganbaru_calendar::events::deletion::UndoPreimage>,
+}
+
+impl UndoWindow {
+    fn prospective(now: Instant, wall_ms: i64) -> Self {
+        Self {
+            arming: UndoArming::Prospective,
+            expires_at: now + DELETE_UNDO_LIFETIME,
+            started_wall_ms: wall_ms,
+        }
+    }
+
+    /// The only move out of `Prospective`: starts the normal opportunity once the deletion
+    /// commit is confirmed. Returns false when the window cannot be armed, which revokes it.
+    /// A confirmed window never renews, so receipt retries cannot extend it.
+    fn confirm(&mut self, now: Instant, wall_ms: Option<i64>) -> bool {
+        if self.arming == UndoArming::Confirmed {
+            return true;
+        }
+        let Some(wall_ms) = wall_ms else {
+            return false;
+        };
+        *self = Self {
+            arming: UndoArming::Confirmed,
+            expires_at: now + DELETE_UNDO_LIFETIME,
+            started_wall_ms: wall_ms,
+        };
+        true
+    }
+
+    fn remaining(&self, now: Instant, wall_ms: Option<i64>) -> Option<Duration> {
+        undo_remaining(self.expires_at, self.started_wall_ms, now, wall_ms?)
+    }
 }
 
 impl UndoSlot {
     pub(super) fn deadline(&self) -> Instant {
-        self.expires_at
+        self.window.expires_at
     }
 
     fn verify(&self, request: &CommitRequest, now: Instant) -> Result<(), String> {
@@ -69,13 +118,13 @@ impl UndoSlot {
             self.generation,
             &self.delete_command_id,
             &self.preimage.review_revision,
-            self.expires_at,
+            self.window.expires_at,
             now,
         )
     }
 
     fn remaining(&self, now: Instant, wall_ms: Option<i64>) -> Option<Duration> {
-        undo_remaining(self.expires_at, self.started_wall_ms, now, wall_ms?)
+        self.window.remaining(now, wall_ms)
     }
 
     async fn prepare(
@@ -312,23 +361,24 @@ impl Owner {
         &mut self,
         request: CommitRequest,
     ) -> Result<CommitReply, CommitFailure> {
-        let mut verified_uncommitted = false;
-        self.calendar_edit_checked(request, &mut verified_uncommitted)
+        // Only the authorized receipt lookup proves a failed retry did not already
+        // commit, so every preflight failure leaves its outcome unknown.
+        match self
+            .calendar_preflight(&request)
             .await
-            .map_err(|error| {
-                if verified_uncommitted {
-                    error
-                } else {
-                    error.mark_uncertain()
-                }
-            })
+            .map_err(CommitFailure::mark_uncertain)?
+        {
+            CalendarPreflight::Replayed(reply) => Ok(reply),
+            CalendarPreflight::Fresh(fresh) => self.calendar_write(request, fresh).await,
+        }
     }
 
-    async fn calendar_edit_checked(
+    /// Opens the vault and looks up the request's receipt. A found receipt replays its
+    /// committed reply; otherwise the write continues in the returned transaction.
+    async fn calendar_preflight(
         &mut self,
-        request: CommitRequest,
-        verified_uncommitted: &mut bool,
-    ) -> Result<CommitReply, CommitFailure> {
+        request: &CommitRequest,
+    ) -> Result<CalendarPreflight, CommitFailure> {
         if self.frozen() || self.freeze_requested() {
             return Err("Calendar saving is suspended while the vault changes".into());
         }
@@ -369,11 +419,27 @@ impl Owner {
             }) {
                 self.calendar_undo = None;
             }
-            return Ok(self.calendar_reply(receipt));
+            return Ok(CalendarPreflight::Replayed(self.calendar_reply(receipt)));
         }
-        // Only this authorized receipt lookup proves a failed retry did not
-        // already commit. Earlier vault/queue failures leave its outcome unknown.
-        *verified_uncommitted = true;
+        Ok(CalendarPreflight::Fresh(FreshCalendarWrite {
+            _permit,
+            pool,
+            tx,
+        }))
+    }
+
+    /// Writes a request whose receipt preflight proved it has not committed, so its
+    /// failures are known to have left the vault unchanged until COMMIT itself.
+    async fn calendar_write(
+        &mut self,
+        request: CommitRequest,
+        fresh: FreshCalendarWrite,
+    ) -> Result<CommitReply, CommitFailure> {
+        let FreshCalendarWrite {
+            _permit,
+            pool,
+            mut tx,
+        } = fresh;
         if request.vault_generation != self.projection.vault_generation {
             return Err("Calendar save belongs to a previous vault generation".into());
         }
@@ -569,8 +635,10 @@ impl Owner {
                 generation: request.vault_generation,
                 delete_command_id: request.command_id().to_owned(),
                 delete_intent_hash: request.receipt_identity()?,
-                expires_at: Instant::now() + DELETE_UNDO_LIFETIME,
-                started_wall_ms: now_ms().map_err(|error| error.message)?,
+                window: UndoWindow::prospective(
+                    Instant::now(),
+                    now_ms().map_err(|error| error.message)?,
+                ),
                 preimage: Arc::new(preimage),
             });
         }
@@ -581,15 +649,9 @@ impl Owner {
             self.calendar_undo = None;
         } else if request.is_delete()
             && let Some(slot) = &mut self.calendar_undo
+            && !slot.window.confirm(Instant::now(), now_ms().ok())
         {
-            // Start the normal opportunity after a confirmed commit. Receipt
-            // retries never renew it; an uncertain commit keeps its earlier cap.
-            slot.expires_at = Instant::now() + DELETE_UNDO_LIFETIME;
-            if let Ok(wall_ms) = now_ms() {
-                slot.started_wall_ms = wall_ms;
-            } else {
-                self.calendar_undo = None;
-            }
+            self.calendar_undo = None;
         }
         self.next_boundary_ms = next_boundary;
         // The edit may create a current commitment; probe again until a heartbeat resolves it.
@@ -602,6 +664,20 @@ impl Owner {
         self.effects.invalidate_preferences();
         Ok(self.calendar_reply(receipt))
     }
+}
+
+/// Outcome of the receipt preflight of one Calendar save.
+enum CalendarPreflight {
+    /// The request already committed; this is its replayed reply.
+    Replayed(CommitReply),
+    /// The request has not committed and continues under the held write permit.
+    Fresh(FreshCalendarWrite),
+}
+
+struct FreshCalendarWrite {
+    _permit: crate::vault::write_fence::ManagedVaultWritePermit,
+    pool: sqlx::SqlitePool,
+    tx: sqlx::Transaction<'static, sqlx::Sqlite>,
 }
 
 fn dismissal_matches(
@@ -634,6 +710,33 @@ mod tests {
                 "vault", 2, "delete", vault, generation, command
             ));
         }
+    }
+
+    #[test]
+    fn an_undo_window_confirms_once_and_never_renews() {
+        let start = Instant::now();
+        let mut window = UndoWindow::prospective(start, 1_000);
+        assert_eq!(window.arming, UndoArming::Prospective);
+
+        let later = start + Duration::from_secs(2);
+        assert!(window.confirm(later, Some(3_000)));
+        assert_eq!(window.arming, UndoArming::Confirmed);
+        assert_eq!(window.expires_at, later + DELETE_UNDO_LIFETIME);
+        assert_eq!(window.started_wall_ms, 3_000);
+
+        let retry = later + Duration::from_secs(1);
+        assert!(window.confirm(retry, Some(4_000)));
+        assert_eq!(window.expires_at, later + DELETE_UNDO_LIFETIME);
+        assert_eq!(window.started_wall_ms, 3_000);
+    }
+
+    #[test]
+    fn an_undo_window_without_a_wall_clock_cannot_be_armed() {
+        let start = Instant::now();
+        let mut window = UndoWindow::prospective(start, 1_000);
+        assert!(!window.confirm(start, None));
+        assert_eq!(window.arming, UndoArming::Prospective);
+        assert_eq!(window.expires_at, start + DELETE_UNDO_LIFETIME);
     }
 
     #[test]

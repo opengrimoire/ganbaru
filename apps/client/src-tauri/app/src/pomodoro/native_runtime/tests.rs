@@ -109,5 +109,8 @@ fn vault_access_is_frozen_until_attached_and_only_resuming_carries_a_revision() 
     assert!(VaultAccess::Resuming { revision: 7 }.is_frozen());
     assert_eq!(VaultAccess::Attached.resume_revision(), None);
     assert_eq!(VaultAccess::Frozen.resume_revision(), None);
-    assert_eq!(VaultAccess::Resuming { revision: 7 }.resume_revision(), Some(7));
+    assert_eq!(
+        VaultAccess::Resuming { revision: 7 }.resume_revision(),
+        Some(7)
+    );
 }

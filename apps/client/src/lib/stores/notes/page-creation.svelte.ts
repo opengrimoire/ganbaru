@@ -142,22 +142,35 @@ export function createNotesPageCreationController(context: NotesPageCreationCont
 
   /**
    * Wait for a creation attempt to finish without waiting for a possible retry. Only a failed create request is
-   * `failed`; a created page whose reconcile failed exists and reports `ready`.
+   * `failed`; a created page whose reconcile failed exists and reports `unshown`.
    */
-  async function awaitAttempt(pageId: string): Promise<"ready" | "failed"> {
+  async function awaitAttempt(pageId: string): Promise<"ready" | "failed" | "unshown"> {
     await attempts.get(pageId);
-    return pending[pageId]?.phase === "create-failed" ? "failed" : "ready";
+    const phase = pending[pageId]?.phase;
+    if (phase === "create-failed") return "failed";
+    return phase === "reconcile-failed" ? "unshown" : "ready";
   }
 
-  /** Release blocked edits after a draft whose create request failed is removed from Notes. */
-  function discardFailed(pageId: string): void {
-    if (pending[pageId]?.phase !== "create-failed" || attempts.has(pageId)) return;
+  function release(pageId: string): void {
     const next = { ...pending };
     delete next[pageId];
     pending = next;
     previews.delete(pageId);
     completions.get(pageId)?.resolve("discarded");
     completions.delete(pageId);
+  }
+
+  /** Release blocked edits after a draft whose create request failed is removed from Notes. */
+  function discardFailed(pageId: string): void {
+    if (pending[pageId]?.phase !== "create-failed" || attempts.has(pageId)) return;
+    release(pageId);
+  }
+
+  /** Release blocked edits of a removed page whose creation failed at either step, since it will not be shown again. */
+  function releaseRemoved(pageId: string): void {
+    const phase = pending[pageId]?.phase;
+    if ((phase !== "create-failed" && phase !== "reconcile-failed") || attempts.has(pageId)) return;
+    release(pageId);
   }
 
   /** Retry the failed step: the create request, or only the reconcile of a page that was already created. */
@@ -180,6 +193,7 @@ export function createNotesPageCreationController(context: NotesPageCreationCont
     awaitReady,
     awaitAttempt,
     discardFailed,
+    releaseRemoved,
     retry,
     isPending(pageId: string | null): boolean {
       return Boolean(pageId && pending[pageId]);

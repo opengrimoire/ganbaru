@@ -61,8 +61,11 @@ interface NotesPageActionsContext {
   activateProvisionalPage: (loaded: NotesLoadedPage, openMode: NotesPageOpenMode) => void | Promise<void>;
   beginPageCreation: (request: Parameters<typeof createNotesPage>[0], provisional: NotesLoadedPage) => void;
   awaitPageReady: (pageId: string | null) => Promise<void>;
-  awaitPageCreationAttempt: (pageId: string) => Promise<"ready" | "failed">;
+  /** `unshown` is a page the backend created whose editors could not show it, so its edits wait on a reconcile retry. */
+  awaitPageCreationAttempt: (pageId: string) => Promise<"ready" | "failed" | "unshown">;
   discardFailedPageCreation: (pageId: string) => void;
+  /** Release a removed page whose creation never became usable, so its waiting edits stop blocking. */
+  releaseRemovedPageCreation: (pageId: string) => void;
   activateRestoredPage: (page: NotesPage) => Promise<void>;
   applyPostMutation: (result: NotesPostMutationResult) => void;
   selectPage: (pageId: string | null) => Promise<void>;
@@ -326,7 +329,8 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
     try {
       const failedCreationIds = new Set<string>();
       for (const id of removedIds) {
-        if (await context.awaitPageCreationAttempt(id) === "failed") failedCreationIds.add(id);
+        // Neither a failed draft nor an unshown page can flush its waiting edits, so both skip the flush and are released.
+        if (await context.awaitPageCreationAttempt(id) !== "ready") failedCreationIds.add(id);
       }
       const rootIsAlreadyInactive = failedCreationIds.has(pageId)
         && !await isNotesPageActive(pageId);
@@ -359,7 +363,7 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
         && (pendingWriteFailed || failedCreationIds.has(selectedPageId))) {
         context.discardRemovedPageWrites();
       }
-      for (const id of failedCreationIds) context.discardFailedPageCreation(id);
+      for (const id of failedCreationIds) context.releaseRemovedPageCreation(id);
       const preferred = nextSelectedNotesPageIdInProject(visiblePages, pageId, projectId);
       if (trashed) {
         context.prependTrashedPage(trashed);

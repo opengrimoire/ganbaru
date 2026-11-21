@@ -126,7 +126,7 @@ describe("Notes page creation controller", () => {
 
     controller.begin(request, loaded);
     const blockedEdit = controller.awaitReady(request.id);
-    expect(await controller.awaitAttempt(request.id)).toBe("ready");
+    expect(await controller.awaitAttempt(request.id)).toBe("unshown");
     expect(controller.errorFor(request.id)).toBe("hydrate failed");
     expect(controller.isSaved(request.id)).toBe(true);
     expect(controller.previewForSelection(request.id)).toBeNull();
@@ -148,5 +148,18 @@ describe("Notes page creation controller", () => {
     controller.discardFailed(request.id);
     expect(controller.isPending(request.id)).toBe(true);
     expect(controller.errorFor(request.id)).toBe("hydrate failed");
+  });
+
+  it("releases the waiting edits of an unshown page once it is removed", async () => {
+    backend.createNotesPage.mockResolvedValue(loaded);
+    const { createNotesPageCreationController } = await import("./page-creation.svelte");
+    const controller = createNotesPageCreationController({ reconcile: () => Promise.reject(new Error("hydrate failed")) });
+
+    controller.begin(request, loaded);
+    const blockedEdit = controller.awaitReady(request.id);
+    expect(await controller.awaitAttempt(request.id)).toBe("unshown");
+    controller.releaseRemoved(request.id);
+    await expect(blockedEdit).rejects.toThrow("notes page was discarded");
+    expect(controller.isPending(request.id)).toBe(false);
   });
 });

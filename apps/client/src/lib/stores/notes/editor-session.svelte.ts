@@ -1289,6 +1289,7 @@ export function createNotesEditorStore(
     awaitPageReady: pageCreationController.awaitReady,
     awaitPageCreationAttempt: pageCreationController.awaitAttempt,
     discardFailedPageCreation: pageCreationController.discardFailed,
+    releaseRemovedPageCreation: pageCreationController.releaseRemoved,
     activateRestoredPage,
     applyPostMutation,
     selectPage: (pageId) => selectPage(pageId),

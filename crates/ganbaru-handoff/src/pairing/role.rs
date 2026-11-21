@@ -40,7 +40,8 @@ pub(super) enum MemberCopy {
 /// A requested change of the link role.
 #[derive(Clone, Debug)]
 pub(super) enum LinkEvent {
-    /// A device of its own was linked.
+    /// A device of its own was linked. Only desktop links devices.
+    #[cfg_attr(not(desktop), allow(dead_code))]
     PeerLinked,
     /// The last device of its own was unlinked.
     PeersEmptied,
@@ -58,7 +59,8 @@ pub(super) enum LinkEvent {
     },
     /// The coordinator acknowledged the activation of `transfer_id`.
     CopyAcknowledged { transfer_id: String },
-    /// The coordinator prepared a copy for one of its devices.
+    /// The coordinator prepared a copy for one of its devices. Only desktop serves copies.
+    #[cfg_attr(not(desktop), allow(dead_code))]
     OutgoingPrepared { transfer: StoredOutgoingTransfer },
     /// The coordinator released the copy `transfer_id` without an activation.
     OutgoingReleased { transfer_id: String },

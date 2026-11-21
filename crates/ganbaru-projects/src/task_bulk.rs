@@ -11,6 +11,8 @@ use super::mutations::{
     ensure_priority_is_live, ensure_priority_matches_project, task_status_order,
 };
 use super::order::OrderPlacement;
+use super::task_commands::task_conflict;
+use super::task_completion::TaskCompletion;
 use super::validation::require_non_empty;
 
 const MAX_SELECTED_TASKS: usize = 1_000;
@@ -377,21 +379,17 @@ async fn apply_field_change(
                 task_status_order(&row.project_id, status_id, row.parent_task_id.as_deref())
                     .place(tx, &row.id, &OrderPlacement::End)
                     .await?;
+            let completion = TaskCompletion::of(was_terminal, row.completed_at.as_deref())
+                .transition(terminal, now);
             row.status_id.clone_from(status_id);
             row.status_order_key = status_order_key.into_string();
-            row.completed_at = if terminal {
-                row.completed_at.clone().or_else(|| Some(now.to_string()))
-            } else {
-                None
-            };
-            let event = if !was_terminal && terminal {
-                "completed"
-            } else if was_terminal && !terminal {
-                "reopened"
-            } else {
-                "status_changed"
-            };
-            ("status", Some(old_name), Some(new_name), event)
+            row.completed_at = completion.completed_at;
+            (
+                "status",
+                Some(old_name),
+                Some(new_name),
+                completion.change.status_event_type(),
+            )
         }
         TaskBulkChange::Priority { priority } => {
             if row.priority == *priority {
@@ -414,9 +412,10 @@ async fn apply_field_change(
             )
         }
     };
-    sqlx::query(
+    let updated = sqlx::query(
         "UPDATE project_tasks SET status_id = ?, status_order_key = ?, completed_at = ?,
-         priority = ?, archived_at = ?, revision = revision + 1, updated_at = ? WHERE id = ?",
+         priority = ?, archived_at = ?, revision = revision + 1, updated_at = ?
+         WHERE id = ? AND revision = ?",
     )
     .bind(&row.status_id)
     .bind(&row.status_order_key)
@@ -425,14 +424,14 @@ async fn apply_field_change(
     .bind(&row.archived_at)
     .bind(now)
     .bind(&row.id)
+    .bind(row.revision)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("apply bulk task field: {e}"))?;
+    if updated.rows_affected() != 1 {
+        return Err(task_conflict(&row.id));
+    }
     row.updated_at = now.to_string();
-    row.revision = sqlx::query_scalar("SELECT revision FROM project_tasks WHERE id = ?")
-        .bind(&row.id)
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(|e| format!("read bulk task revision: {e}"))?;
+    row.revision += 1;
     insert_task_field_change_event(tx, &row.id, event_type, field, old, new, None).await
 }

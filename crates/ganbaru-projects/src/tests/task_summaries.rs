@@ -2,6 +2,9 @@ use super::*;
 use crate::task_summaries::{ProjectTaskSummary, list_task_summaries};
 
 async fn set_task(pool: &SqlitePool, id: &str, updated_at: &str, completed: bool, archived: bool) {
+    if completed {
+        complete_fixture_task(pool, id, "2026-10-01T00:00:00Z").await;
+    }
     sqlx::query(
         "UPDATE project_tasks
          SET updated_at = ?,
@@ -65,5 +68,31 @@ fn task_summaries_respect_the_project_filter_and_limit() {
                 .len(),
             2
         );
+    });
+}
+
+#[test]
+fn task_summaries_read_completion_from_the_status_not_a_stale_completion_time() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_project_graph_fixture(&pool).await;
+        sqlx::query(
+            "UPDATE project_tasks SET completed_at = '2026-10-01T00:00:00Z' WHERE id = 'task-a'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        complete_fixture_task(&pool, "task-b", "2026-10-01T00:00:00Z").await;
+        sqlx::query("UPDATE project_tasks SET completed_at = NULL WHERE id = 'task-b'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let tasks = list_task_summaries(&pool, &["project-a".to_string()], 10)
+            .await
+            .unwrap();
+
+        assert!(tasks.iter().any(|task| *task == summary("task-a", false)));
+        assert!(tasks.iter().any(|task| *task == summary("task-b", true)));
     });
 }

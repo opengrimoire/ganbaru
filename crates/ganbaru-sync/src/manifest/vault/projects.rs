@@ -200,18 +200,16 @@ pub mod status_group {
     pub const CREATED: GroupId = group_id(0);
     /// `name`.
     pub const NAME: GroupId = group_id(1);
-    /// `category`.
-    pub const CATEGORY: GroupId = group_id(2);
-    /// `terminal`.
-    pub const TERMINAL: GroupId = group_id(3);
+    /// `category` and `terminal`, which is set exactly when the category is done.
+    pub const KIND: GroupId = group_id(2);
     /// `color`.
-    pub const COLOR: GroupId = group_id(4);
+    pub const COLOR: GroupId = group_id(3);
     /// `order_key`.
-    pub const ORDER: GroupId = group_id(5);
+    pub const ORDER: GroupId = group_id(4);
     /// `deleted_at`.
-    pub const DELETED: GroupId = group_id(6);
+    pub const DELETED: GroupId = group_id(5);
     /// `updated_at`.
-    pub const UPDATED: GroupId = group_id(7);
+    pub const UPDATED: GroupId = group_id(6);
 }
 
 /// Priority field groups.
@@ -1000,12 +998,13 @@ pub const STATUSES: TableSpec = TableSpec {
             "name",
             &[trimmed("name", MAX_NAME_CHARS)],
         ),
-        register(
-            status_group::CATEGORY,
-            "category",
-            &[text("category", MAX_ENUM_CHARS)],
+        // The terminal flag follows the category, so both merge as one value.
+        coupled(
+            status_group::KIND,
+            "kind",
+            &[text("category", MAX_ENUM_CHARS), flag("terminal")],
+            &[],
         ),
-        register(status_group::TERMINAL, "terminal", &[flag("terminal")]),
         register(status_group::COLOR, "color", &[color("color")]),
         order(status_group::ORDER),
         register(
@@ -1015,6 +1014,7 @@ pub const STATUSES: TableSpec = TableSpec {
         ),
         updated(status_group::UPDATED),
     ],
+    resolutions: &[within(&["terminal", "category"], status_group::KIND)],
     triggers: &[
         applier_visible("project_statuses_order_key_insert"),
         applier_visible("project_statuses_order_key_update"),

@@ -221,12 +221,12 @@ table 100 project_sections replicated key id rule any
 table 101 project_statuses replicated key id rule any
   group 0 immutable project_id:row_key->97:cascade created_at:timestamp
   group 1 register name:trimmed_text(1..=1000)
-  group 2 register category:text(..=32)
-  group 3 register terminal:flag
-  group 4 register color:integer(0..=31)
-  group 5 position order_key:order_key
-  group 6 register deleted_at:optional_timestamp
-  group 7 max updated_at:timestamp
+  group 2 coupled category:text(..=32) terminal:flag
+  group 3 register color:integer(0..=31)
+  group 4 position order_key:order_key
+  group 5 register deleted_at:optional_timestamp
+  group 6 max updated_at:timestamp
+  check terminal,category within 2
 table 102 project_priorities replicated key sync_key rule any
   group 0 immutable project_id:row_key->97:cascade id:trimmed_text(1..=128)
   group 1 register created_at:timestamp

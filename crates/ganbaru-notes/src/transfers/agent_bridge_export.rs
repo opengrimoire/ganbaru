@@ -89,7 +89,7 @@ struct BridgeTask {
     start_date: Option<String>,
     due_date: Option<String>,
     target_end_date: Option<String>,
-    completed_at: Option<String>,
+    completed: bool,
     blocker_reason: Option<String>,
     checklist: Vec<BridgeChecklistItem>,
     tags: Vec<String>,
@@ -652,7 +652,7 @@ async fn load_project_tasks(
                 task.start_date,
                 task.due_date,
                 task.target_end_date,
-                task.completed_at,
+                status.terminal = 1 AS completed,
                 task.blocker_reason,
                 section.name AS section_name,
                 status.name AS status_name,
@@ -711,9 +711,9 @@ async fn load_project_tasks(
                 target_end_date: row
                     .try_get("target_end_date")
                     .map_err(|e| format!("read bridge task target end date: {e}"))?,
-                completed_at: row
-                    .try_get("completed_at")
-                    .map_err(|e| format!("read bridge task completed at: {e}"))?,
+                completed: row
+                    .try_get("completed")
+                    .map_err(|e| format!("read bridge task completion: {e}"))?,
                 blocker_reason: row
                     .try_get("blocker_reason")
                     .map_err(|e| format!("read bridge task blocker: {e}"))?,

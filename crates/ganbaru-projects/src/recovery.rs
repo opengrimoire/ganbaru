@@ -48,6 +48,7 @@ use crate::mutations::{
     can_parent_subtasks, dependency_would_cycle, task_section_order, task_status_order,
 };
 use crate::order::{OrderGroup, OrderPlacement};
+use crate::task_completion::TaskCompletion;
 
 /// SQL expression of the current time in the stored timestamp form.
 const NOW_SQL: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
@@ -512,6 +513,23 @@ async fn place(
                 None => restored("section_id"),
             };
             let status_fresh = restored("status_id") || restored("parent_task_id");
+            // A task restored into a fallback status takes that status's completion.
+            let terminal: i64 =
+                sqlx::query_scalar("SELECT terminal FROM project_statuses WHERE id = ?")
+                    .bind(&status_id)
+                    .fetch_one(&mut *conn)
+                    .await
+                    .map_err(|error| format!("read a restored task status: {error}"))?;
+            let now: String = sqlx::query_scalar("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")
+                .fetch_one(&mut *conn)
+                .await
+                .map_err(|error| format!("read the restore time: {error}"))?;
+            let completion = TaskCompletion::of(terminal != 0, row.text("completed_at"))
+                .transition(terminal != 0, &now);
+            row.set(
+                "completed_at",
+                completion.completed_at.map_or(Field::Null, Field::Text),
+            );
             if is_root || !section_fresh {
                 let order_key = task_section_order(&project_id, &section_id, parent.as_deref())
                     .place(conn, key, &end)

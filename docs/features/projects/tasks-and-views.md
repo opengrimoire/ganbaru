@@ -4,6 +4,8 @@
 
 A task has stable identity, project, section, optional parent task, title, description, status, priority, type, estimate, start and due dates with optional times, target end date, milestone state, blocker reason, dependencies, tags, custom values, archive state, and timestamps. Task assignees and reviewers are planned.
 
+A task is completed exactly while its status is in the done category, which is the only terminal category. Its completion time is set when it becomes completed, kept across later edits while it stays completed, and cleared when it reopens; changing a status into or out of the done category completes or reopens every task in it. A checked checklist item likewise keeps the time it was first checked.
+
 Subtasks are normal tasks with a parent. Checklist items are lighter completion records owned by one task. A parent and its descendants keep explicit states; completing a parent does not silently erase open child work.
 
 The project header's add button opens task detail on an empty draft in the default section and status from any view. The draft offers the same sections as an existing task, but nothing is persisted until it is submitted with a title: the task is created first, then its checklist, subtasks, parent, tags, dependencies, scheduled blocks, and custom values are written against it, and any that fail are reported on the created task. Closing a changed draft asks before discarding it. Adding a task from an add row in the List view creates it in place without opening task detail, and keeps the add row open for the next title.

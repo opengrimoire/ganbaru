@@ -32,6 +32,7 @@ pub mod scheduling;
 pub mod structure_commands;
 pub mod task_bulk;
 pub mod task_commands;
+mod task_completion;
 pub mod task_reminders;
 pub mod task_summaries;
 mod task_views;

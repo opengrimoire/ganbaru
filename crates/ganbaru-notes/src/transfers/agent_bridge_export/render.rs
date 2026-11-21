@@ -212,11 +212,7 @@ fn render_projects(markdown: &mut String, projects: &[BridgeProject]) {
                     escape_inline(&display_title(&current_section))
                 ));
             }
-            let marker = if task.completed_at.is_some() {
-                "[x]"
-            } else {
-                "[ ]"
-            };
+            let marker = if task.completed { "[x]" } else { "[ ]" };
             markdown.push_str(&format!(
                 "- {marker} {} (`{}`)\n",
                 escape_inline(&display_title(&task.title)),

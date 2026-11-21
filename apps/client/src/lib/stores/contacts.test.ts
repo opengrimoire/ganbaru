@@ -100,6 +100,7 @@ describe("contacts store", () => {
     later.resolve(snapshot(2));
     await second;
     expect(contacts.loading).toBe(false);
+    expect(contacts.identity?.cardRevision).toBe(2);
   });
 
   it("stays card loading until every overlapping card command finishes", async () => {
@@ -118,6 +119,17 @@ describe("contacts store", () => {
     opened.resolve(cardView(3));
     await opening;
     expect(contacts.cardLoading).toBe(false);
+    expect(contacts.identity?.cardRevision).toBe(4);
+  });
+
+  it("shows the later of two card reads that finish in start order", async () => {
+    api.loadLocalCard.mockResolvedValueOnce(cardView(3)).mockResolvedValueOnce(cardView(4));
+    const contacts = await load();
+
+    const first = contacts.loadCard();
+    const second = contacts.loadCard();
+    await Promise.all([first, second]);
+
     expect(contacts.identity?.cardRevision).toBe(4);
   });
 });

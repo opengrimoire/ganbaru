@@ -47,8 +47,8 @@ let replicationListenerStarted = false;
 
 /**
  * Orders the results of overlapping commands. A write's result always applies, because it carries that write, and
- * takes the next stamp when it lands. A read's result applies only when the read started after the shown result was
- * stamped, so an older read never replaces a newer write or read.
+ * takes the next stamp when it lands. A read's result applies only when the read started after the shown result
+ * was stamped, and keeps its start stamp, so an older read never replaces a newer write or read.
  */
 interface ResultOrder {
   stamps: number;
@@ -70,7 +70,11 @@ function startCommand(order: ResultOrder): number {
 
 /** Whether a result of a command that started at `started` may replace what is shown, and records it if so. */
 function admitResult(order: ResultOrder, kind: CommandKind, started: number): boolean {
-  if (kind === "read" && started <= order.shown) return false;
+  if (kind === "read") {
+    if (started <= order.shown) return false;
+    order.shown = started;
+    return true;
+  }
   order.stamps += 1;
   order.shown = order.stamps;
   return true;

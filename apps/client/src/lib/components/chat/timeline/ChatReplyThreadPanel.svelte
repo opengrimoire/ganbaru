@@ -647,7 +647,6 @@
   .thread-header > span { flex:1; }
   .scratch-inspector { display:grid; min-width:2rem; min-height:2rem; place-items:center; border-radius:0.42rem; color:var(--muted-foreground); }
   .scratch-inspector:hover { background:var(--accent); color:var(--foreground); }
-  /* Entries rest on the end of the scroll area, so a short thread starts at the bottom beside the composer. */
   .thread-scroll { display:flex; min-height:0; flex:1; flex-direction:column; overflow-y:scroll; overscroll-behavior:contain; padding-block:0.4rem calc(var(--chat-composer-dock-height,0px) + 0.4rem); }
   .date-divider { display:flex; align-items:center; gap:0.5rem; margin:0.75rem 0; color:var(--muted-foreground); font-size: calc(0.65rem * var(--type-scale)); }
   .date-divider::before,.date-divider::after { height:1px; flex:1; background:var(--border); content:""; }
@@ -662,7 +661,7 @@
   .thread-failure { height:100%; font-size: calc(0.7rem * var(--type-scale)); }
   .load-older { display:block; margin:0.3rem auto 0.6rem; border-radius:0.4rem; padding:0.3rem 0.5rem; color:var(--muted-foreground); font-size: calc(0.68rem * var(--type-scale)); }.load-older:hover { background:var(--accent); }
   /* Every presentation lays entries and the composer on the channel feed's gutters and width, so their edges line up the same way. */
-  .thread-canvas { --chat-message-row-padding-inline:0rem; flex:0 0 auto; margin-top:auto; width:min(calc(100% - var(--chat-conversation-gutter,1rem) - var(--chat-conversation-gutter,1rem)),var(--chat-conversation-max-width,60rem)); margin-inline:auto; }
+  .thread-canvas { --chat-message-row-padding-inline:0rem; flex:0 0 auto; width:min(calc(100% - var(--chat-conversation-gutter,1rem) - var(--chat-conversation-gutter,1rem)),var(--chat-conversation-max-width,60rem)); margin-inline:auto; }
   .thread-request,.thread-secrets { padding-inline:max(var(--chat-conversation-gutter,1rem),calc((100% - var(--chat-conversation-max-width,60rem)) / 2)); }
   @container chat-shell (max-width:440px) { .reply-thread-panel { --chat-conversation-gutter:0.5rem; } }
   @media (pointer:coarse) { .scratch-inspector { min-width:2.75rem; min-height:2.75rem; } }

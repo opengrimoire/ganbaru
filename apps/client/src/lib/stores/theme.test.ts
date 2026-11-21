@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UserThemeRead } from "../api/themes";
 
-const { getConfigKey, listenSyncApplied, loadAllUserThemes, loadDismissals, setConfigKey } = vi.hoisted(() => ({
+const {
+  getConfigKey, insertTheme, listenSyncApplied, loadAllUserThemes, loadDismissals, recordDismissal, replaceThemeContent, setConfigKey,
+} = vi.hoisted(() => ({
+  insertTheme: vi.fn(),
+  recordDismissal: vi.fn(),
+  replaceThemeContent: vi.fn(),
   getConfigKey: vi.fn(),
   listenSyncApplied: vi.fn(),
   loadAllUserThemes: vi.fn(),
@@ -10,7 +15,7 @@ const { getConfigKey, listenSyncApplied, loadAllUserThemes, loadDismissals, setC
 }));
 
 vi.mock("../api/sync", () => ({ listenSyncApplied }));
-vi.mock("../api/themes", () => ({ loadAllUserThemes, loadDismissals }));
+vi.mock("../api/themes", () => ({ insertTheme, loadAllUserThemes, loadDismissals, recordDismissal, replaceThemeContent }));
 vi.mock("../vault/config", () => ({ getConfigKey, setConfigKey }));
 vi.mock("$lib/windows/sync-transport", () => ({
   emitWindowSync: vi.fn(async () => undefined),
@@ -109,5 +114,35 @@ describe("hydrateUserThemes", () => {
     expect(vi.getTimerCount()).toBe(0);
     expect(getTheme().id).not.toBe(SAVED_THEME_ID);
     expect(setConfigKey).not.toHaveBeenCalled();
+  });
+});
+
+describe("persistThemeToDb", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    getConfigKey.mockImplementation((_key: string, fallback: unknown) => fallback);
+    listenSyncApplied.mockResolvedValue(() => undefined);
+    loadDismissals.mockResolvedValue([]);
+    loadAllUserThemes.mockResolvedValue([]);
+    insertTheme.mockResolvedValue(undefined);
+    replaceThemeContent.mockResolvedValue(undefined);
+  });
+
+  it("records a dismissal queued for a fresh theme on a later save when recording it failed after the insert", async () => {
+    recordDismissal.mockRejectedValueOnce(new Error("database is locked")).mockResolvedValue(undefined);
+    const { getTheme } = await import("./theme.svelte");
+    const theme = getTheme();
+    const id = theme.duplicateTheme(theme.id);
+    if (!id) throw new Error("The active theme could not be duplicated");
+    await theme.dismissUpgrade(id);
+
+    await expect(theme.persistThemeToDb(id)).rejects.toThrow("database is locked");
+    loadAllUserThemes.mockResolvedValue([storedTheme(id)]);
+    await theme.persistThemeToDb(id);
+
+    expect(insertTheme).toHaveBeenCalledOnce();
+    expect(recordDismissal).toHaveBeenCalledTimes(2);
+    expect(recordDismissal.mock.calls[1]?.[0]).toBe(id);
   });
 });

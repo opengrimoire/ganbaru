@@ -600,6 +600,14 @@ async function saveThemeAsCopy(
   return { kind: "savedAsCopy", id: copy.id, displayName: copy.displayName, reason };
 }
 
+/** Record the dismissal queued for a theme before its row existed, keeping it queued if the write fails. */
+async function recordPendingDismissal(id: ThemeId): Promise<void> {
+  const pending = pendingDismissals.get(id);
+  if (pending === undefined) return;
+  await recordDismissal(id, pending);
+  pendingDismissals.delete(id);
+}
+
 /**
  * Flush the in-memory state of a theme to SQLite. Called by the editor's
  * Save path. Fresh themes go through `dbInsertTheme`, and pending dismissals
@@ -618,14 +626,12 @@ async function persistThemeToDb(id: ThemeId, choice?: ThemeSaveChoice): Promise<
     await dbInsertTheme(edited);
     freshThemes.delete(id);
     storedThemeWrites.set(id, edited);
-    const pending = pendingDismissals.get(id);
-    if (pending !== undefined) {
-      await recordDismissal(id, pending);
-      pendingDismissals.delete(id);
-    }
+    await recordPendingDismissal(id);
     return { kind: "saved" };
   }
   const stored = await loadStoredTheme(id);
+  // A dismissal whose write failed after the insert stays queued and is recorded by the next save.
+  if (stored) await recordPendingDismissal(id);
   if (choice === "copy") return saveThemeAsCopy(id, stored, "copy");
   const plan = planThemeSave({
     base: id === editingThemeId ? editingBase : undefined,

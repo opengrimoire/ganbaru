@@ -1,7 +1,7 @@
 use super::{
     NativeResponse,
     config::{DistractionsConfig, DistractionsMode, UsageLimitsConfig},
-    events::{block_event_phase, spool_block_event},
+    events::{block_event_context, block_event_phase, spool_block_event},
     rules::{HostDecision, decide_url, host_from_url, host_matches_rule},
     snapshot::{RuntimeState, StateSnapshot, runtime_status_at, should_enforce},
 };
@@ -1145,4 +1145,37 @@ fn published_rules_apply_only_to_the_vault_they_were_read_from() {
     assert!(!defaults.blocked_category_ids.is_empty());
     assert!(!defaults.blocked_category_ids.iter().any(|id| id == "news"));
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn block_events_record_only_the_current_runtime_phase_and_run() {
+    let updated = "2026-05-26T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+    let mut snapshot = StateSnapshot {
+        config_dir: None,
+        vault_path: None,
+        config: config(),
+        limit_state: None,
+        runtime: Some(runtime_for_phase_updated_at(
+            "focus",
+            false,
+            updated.to_rfc3339(),
+        )),
+    };
+    assert_eq!(
+        block_event_context(&snapshot, updated + chrono::Duration::seconds(10)),
+        (Some("focus".to_string()), Some("run-1".to_string()))
+    );
+    assert_eq!(
+        block_event_context(&snapshot, updated + chrono::Duration::seconds(46)),
+        (None, None),
+        "a stale runtime file must not stamp its run on a later block"
+    );
+    let runtime = snapshot.runtime.as_mut().unwrap();
+    runtime.active = false;
+    runtime.paused = true;
+    assert_eq!(
+        block_event_context(&snapshot, updated + chrono::Duration::seconds(10)),
+        (None, None),
+        "an inactive runtime records no pause phase"
+    );
 }

@@ -1,11 +1,11 @@
 //! Browser block events the host spools for the app to record in the vault.
 
-use chrono::SecondsFormat;
+use chrono::{DateTime, SecondsFormat, Utc};
 
 use crate::config::normalize_host_rule;
 use crate::now_utc;
 use crate::rules::HostDecision;
-use crate::snapshot::{RuntimeState, StateSnapshot};
+use crate::snapshot::{RuntimeState, StateSnapshot, runtime_status_at};
 use crate::spool::{BlockEvent, record_block_event};
 
 /// Spools a block for the app. Browsing history is kept nowhere else, and only the redacted host
@@ -26,11 +26,7 @@ pub(super) fn spool_block_event(
     let source_key = normalize_host_rule(host)
         .filter(|host| !host.contains('/'))
         .ok_or_else(|| "block event host is invalid".to_string())?;
-    let phase = block_event_phase(snapshot.runtime.as_ref());
-    let run_id = phase
-        .as_deref()
-        .and(snapshot.runtime.as_ref())
-        .and_then(|runtime| runtime.active_run_id.clone());
+    let (phase, run_id) = block_event_context(snapshot, now_utc());
     let event_nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
@@ -50,6 +46,24 @@ pub(super) fn spool_block_event(
             blocker_mode: decision.blocker_mode(&snapshot.config.mode),
         },
     )
+}
+
+/// The phase and run a block event records at `checked_at`. Only runtime state that is current
+/// for enforcement contributes, so a stale or expired file never stamps an old run on the event.
+pub(super) fn block_event_context(
+    snapshot: &StateSnapshot,
+    checked_at: DateTime<Utc>,
+) -> (Option<String>, Option<String>) {
+    let runtime = snapshot
+        .runtime
+        .as_ref()
+        .filter(|_| runtime_status_at(snapshot, checked_at).0);
+    let phase = block_event_phase(runtime);
+    let run_id = phase
+        .as_deref()
+        .and(runtime)
+        .and_then(|runtime| runtime.active_run_id.clone());
+    (phase, run_id)
 }
 
 pub(super) fn block_event_phase(runtime: Option<&RuntimeState>) -> Option<String> {

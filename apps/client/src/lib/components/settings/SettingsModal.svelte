@@ -142,7 +142,10 @@
     void untrack(() => prepareMobileThemeEditor());
   });
 
-  /** Loads the mobile theme editor once on its own; after a failure, only `retry` loads it again. */
+  /**
+   * Loads the mobile theme editor once on its own. A failure stays until `retry` loads again or the person dismisses
+   * it, which lets the next view that needs the editor start one new load.
+   */
   async function prepareMobileThemeEditor(retry = false): Promise<void> {
     if (!lazyLoadCanStart(mobileThemeEditorLoad, retry)) return;
     const loading = beginLazyComponentLoad(mobileThemeEditorLoad, "editor");

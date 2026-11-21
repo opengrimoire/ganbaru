@@ -89,3 +89,107 @@ describe("MusicReviewAuditionController", () => {
     expect(player.suspendForReview).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("MusicReviewAuditionController interleavings", () => {
+  const bindings = [{ rootId: "root", folderPath: "/Music", status: "available" as const }];
+
+  beforeEach(() => {
+    player.contextOwner = "manual";
+    player.snapshot.positionMs = 0;
+    vi.clearAllMocks();
+  });
+
+  it("is inactive and owns nothing before the first preview", () => {
+    const audition = new MusicReviewAuditionController();
+    expect(audition.active).toBe(false);
+    expect(audition.reviewItemId).toBeNull();
+    expect(audition.ownsPlayback).toBe(false);
+  });
+
+  it("is active while playback suspends and owns playback once the item loads", async () => {
+    let finishSuspend!: (value: MusicReviewPlaybackCheckpoint) => void;
+    player.suspendForReview.mockImplementationOnce(() => new Promise((resolve) => { finishSuspend = resolve; }));
+    const audition = new MusicReviewAuditionController();
+
+    const previewing = audition.preview(detail(), bindings, false);
+    expect(audition.active).toBe(true);
+    expect(audition.reviewItemId).toBeNull();
+
+    finishSuspend(checkpoint);
+    expect(await previewing).toBe(true);
+    expect(audition.reviewItemId).toBe("review-item");
+    expect(audition.ownsPlayback).toBe(true);
+    expect(player.loadReviewItem).toHaveBeenCalledWith("review-item", false);
+  });
+
+  it("restores a checkpoint that arrives after Review was discarded and reports the preview as stale", async () => {
+    let finishSuspend!: (value: MusicReviewPlaybackCheckpoint) => void;
+    player.suspendForReview.mockImplementationOnce(() => new Promise((resolve) => { finishSuspend = resolve; }));
+    const audition = new MusicReviewAuditionController();
+
+    const previewing = audition.preview(detail(), bindings, true);
+    audition.discard();
+    finishSuspend(checkpoint);
+
+    expect(await previewing).toBe(false);
+    expect(player.restoreAfterReview).toHaveBeenCalledWith(checkpoint);
+    expect(player.loadReviewItem).not.toHaveBeenCalled();
+    expect(audition.active).toBe(false);
+  });
+
+  it("ends the audition when playback cannot be suspended", async () => {
+    player.suspendForReview.mockRejectedValueOnce(new Error("busy"));
+    const audition = new MusicReviewAuditionController();
+
+    expect(await audition.preview(detail(), bindings, true)).toBe(false);
+    expect(audition.active).toBe(false);
+    expect(player.loadReviewItem).not.toHaveBeenCalled();
+  });
+
+  it("keeps the suspended checkpoint when an item fails to load, so closing Review still restores it", async () => {
+    player.loadReviewItem.mockRejectedValueOnce(new Error("missing file"));
+    const audition = new MusicReviewAuditionController();
+
+    expect(await audition.preview(detail(), bindings, true)).toBe(false);
+    expect(audition.active).toBe(true);
+    expect(audition.reviewItemId).toBeNull();
+    expect(audition.error).not.toBeNull();
+
+    await audition.restore();
+    expect(player.restoreAfterReview).toHaveBeenCalledWith(checkpoint);
+  });
+
+  it("suspends only once across previews of different items", async () => {
+    const audition = new MusicReviewAuditionController();
+    await audition.preview(detail(), bindings, true);
+    const other = detail();
+    other.item = { ...other.item, id: "other-item" };
+
+    expect(await audition.preview(other, bindings, true)).toBe(true);
+    expect(player.suspendForReview).toHaveBeenCalledOnce();
+    expect(audition.reviewItemId).toBe("other-item");
+  });
+
+  it("hands playback to an automation boundary and resumes the item where it stopped on the next preview", async () => {
+    const audition = new MusicReviewAuditionController();
+    await audition.preview(detail(), bindings, true);
+    player.contextOwner = "review";
+    player.snapshot.positionMs = 42_000;
+
+    audition.supersedeForBoundary("pomodoro");
+
+    expect(player.contextOwner).toBe("pomodoro");
+    expect(audition.active).toBe(false);
+    expect(player.restoreAfterReview).not.toHaveBeenCalled();
+
+    await audition.preview(detail(), bindings, true);
+    expect(player.seekToMs).toHaveBeenCalledWith(42_000);
+  });
+
+  it("restores nothing when Review closes before any playback was suspended", async () => {
+    const audition = new MusicReviewAuditionController();
+    await audition.restore();
+    expect(player.restoreAfterReview).not.toHaveBeenCalled();
+    expect(audition.active).toBe(false);
+  });
+});

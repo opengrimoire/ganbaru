@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ChatDraftRead } from "$lib/chat/contracts";
+import type { ChatDraftRead, SaveChatDraftRequest } from "$lib/chat/contracts";
 import { ChatComposerController, chatDraftId, type ChatDraftApi } from "./controller";
 import type { ChatDraftWindowSync } from "./window-sync";
 
@@ -112,6 +112,7 @@ describe("ChatComposerController", () => {
       modelSelection,
       loading: true,
     });
+    await vi.waitFor(() => expect(api.read).toHaveBeenCalledTimes(1));
     resolveRead?.(null);
     await binding;
     expect(controller.snapshot()).toMatchObject({
@@ -469,5 +470,87 @@ describe("ChatComposerController", () => {
     await controller.flush();
 
     expect(controller.snapshot()).toMatchObject({ text: "Second", saving: false, dirty: false });
+  });
+
+  it("keeps failed edits unsaved with the error until the next edit", async () => {
+    const api = fakeApi({
+      save: vi.fn(async (value: SaveChatDraftRequest) => draft({ ...value })).mockRejectedValueOnce({ code: "io", message: "Disk full", recoverable: true }),
+    });
+    const controller = new ChatComposerController(api, 0, fakeSync().sync);
+    await controller.bind("workspace-1", null);
+
+    controller.setText("Unsaved");
+    await expect(controller.flush()).rejects.toMatchObject({ code: "io" });
+    expect(controller.snapshot()).toMatchObject({ text: "Unsaved", loading: false, saving: false, dirty: true });
+    expect(controller.snapshot().error).toEqual(expect.any(String));
+
+    controller.setText("Unsaved again");
+    expect(controller.snapshot()).toMatchObject({ dirty: true, saving: false, error: null });
+    await controller.flush();
+    expect(controller.snapshot()).toMatchObject({ dirty: false, saving: false, error: null });
+  });
+
+  it("shows a load failure on an empty composer that still accepts edits", async () => {
+    const api = fakeApi({ read: vi.fn().mockRejectedValueOnce({ code: "io", message: "Offline", recoverable: true }) });
+    const controller = new ChatComposerController(api, 0, fakeSync().sync);
+    await expect(controller.bind("workspace-1", null)).rejects.toMatchObject({ code: "io" });
+
+    expect(controller.snapshot()).toMatchObject({ text: "", loading: false, saving: false, dirty: false });
+    expect(controller.snapshot().error).toEqual(expect.any(String));
+    controller.setText("Typed");
+    expect(controller.snapshot()).toMatchObject({ dirty: true, error: null });
+  });
+
+  it("refuses edits while a draft loads", async () => {
+    let resolveRead: ((value: ChatDraftRead | null) => void) | undefined;
+    const api = fakeApi({ read: vi.fn(() => new Promise<ChatDraftRead | null>((resolve) => { resolveRead = resolve; })) });
+    const controller = new ChatComposerController(api, 0, fakeSync().sync);
+    const bound = controller.bind("workspace-1", null);
+
+    controller.setText("Too early");
+    expect(controller.snapshot()).toMatchObject({ text: "", loading: true, dirty: false });
+    await vi.waitFor(() => expect(api.read).toHaveBeenCalledTimes(1));
+    resolveRead?.(null);
+    await bound;
+    expect(controller.snapshot()).toMatchObject({ text: "", loading: false, dirty: false });
+  });
+
+  it("keeps edits made during a save marked saving and clears the conflict notice on the next edit", async () => {
+    let rejectFirst: ((reason: unknown) => void) | undefined;
+    const api = fakeApi({
+      read: vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(draft({ text: "From the other window" })),
+      save: vi.fn()
+        .mockImplementationOnce(() => new Promise<ChatDraftRead>((_resolve, reject) => { rejectFirst = reject; }))
+        .mockImplementation(async (value) => draft({ ...value })),
+    });
+    const controller = new ChatComposerController(api, 0, fakeSync().sync);
+    await controller.bind("workspace-1", null);
+
+    controller.setText("Mine");
+    const first = controller.flush();
+    await vi.waitFor(() => expect(api.save).toHaveBeenCalledTimes(1));
+    expect(controller.snapshot()).toMatchObject({ saving: true, dirty: true, error: null });
+    rejectFirst?.(staleDraft);
+    await first;
+    expect(controller.snapshot()).toMatchObject({ text: "From the other window", saving: false, dirty: false, changedElsewhere: true });
+
+    controller.dismissChangedElsewhere();
+    expect(controller.snapshot().changedElsewhere).toBe(false);
+  });
+
+  it("returns to a clean empty draft after clear and reset", async () => {
+    const api = fakeApi({ read: vi.fn(async () => draft()) });
+    const controller = new ChatComposerController(api, 0, fakeSync().sync);
+    await controller.bind("workspace-1", null);
+    controller.setText("Pending");
+
+    await controller.clear();
+    expect(controller.snapshot()).toMatchObject({ text: "", draftId: chatDraftId("workspace-1", null), dirty: false, saving: false, error: null });
+
+    controller.setText("Again");
+    controller.reset();
+    expect(controller.snapshot()).toMatchObject({ text: "", draftId: null, loading: false, dirty: false, saving: false, error: null });
+    controller.setText("Ignored");
+    expect(controller.snapshot()).toMatchObject({ text: "", dirty: false });
   });
 });

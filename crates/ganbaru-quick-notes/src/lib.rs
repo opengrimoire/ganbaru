@@ -1070,7 +1070,9 @@ pub async fn trash_from_pool(
     .await
 }
 
-/// Restores a trashed note to the front of the unpinned active notes.
+/// Restores a trashed note, unpinned, to where it was trashed from: Trash keeps the
+/// `archived` flag, so an archived note returns to Archive and an active note returns
+/// to the active notes. Its order key is placed ahead of the unpinned active notes.
 pub async fn restore_from_pool(
     pool: &SqlitePool,
     request: &QuickNoteRevisionRequest,

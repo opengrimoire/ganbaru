@@ -131,16 +131,59 @@ fn pending_kit(seed: &RecoverySeed, active: bool) -> Result<PendingRecoveryKit, 
     Ok(PendingRecoveryKit { code, qr, active })
 }
 
-/// Whether the kit of `seed` protects the vault, as [`PendingRecoveryKit::active`] defines it.
-fn kit_active(
-    view: Option<&AuthorizationView>,
-    stored: Option<RecoveryPublicKeys>,
-    seed: &RecoverySeed,
-) -> Result<bool, String> {
-    match view {
-        Some(view) => authority::recovery_kit_active(view, seed),
-        None => Ok(stored == Some(authority::recovery_public_keys(seed)?)),
+/// What decides whether a waiting kit protects the vault.
+enum Protection {
+    /// The selected log of the vault's sync space names the kit's recovery admin key.
+    Charter(AuthorizationView),
+    /// Without a charter, the vault database keeps these kit keys for the first one.
+    Unlinked(Option<RecoveryPublicKeys>),
+}
+
+impl Protection {
+    /// Whether the kit of `seed` protects the vault, as [`PendingRecoveryKit::active`] defines
+    /// it.
+    fn protects(&self, seed: &RecoverySeed) -> Result<bool, String> {
+        match self {
+            Self::Charter(view) => authority::recovery_kit_active(view, seed),
+            Self::Unlinked(stored) => Ok(*stored == Some(authority::recovery_public_keys(seed)?)),
+        }
     }
+}
+
+/// The recovery kit lifecycle of a vault, read once from its database and the key store.
+struct KitLifecycle {
+    /// Whether the vault database keeps a kit's public keys.
+    stored: bool,
+    /// What decides whether the waiting kit protects the vault.
+    protection: Protection,
+    /// The seed whose kit waits for the user to save it, with whether it protects the vault.
+    waiting: Option<(RecoverySeed, bool)>,
+}
+
+/// Reads the recovery kit lifecycle of the vault `vault_id`.
+async fn lifecycle(
+    conn: &mut SqliteConnection,
+    keys: &Arc<dyn SyncKeyStore>,
+    vault_id: &str,
+) -> Result<KitLifecycle, String> {
+    let view = authorization(conn, vault_id).await?;
+    let stored = stored_keys(conn).await?;
+    let protection = match view {
+        Some(view) => Protection::Charter(view),
+        None => Protection::Unlinked(stored),
+    };
+    let waiting = match pending_seed(keys, vault_id).await? {
+        Some(seed) => {
+            let active = protection.protects(&seed)?;
+            Some((seed, active))
+        }
+        None => None,
+    };
+    Ok(KitLifecycle {
+        stored: stored.is_some(),
+        protection,
+        waiting,
+    })
 }
 
 /// The recovery kit of the vault `vault_id`.
@@ -149,17 +192,13 @@ pub(crate) async fn state(
     keys: &Arc<dyn SyncKeyStore>,
     vault_id: &str,
 ) -> Result<RecoveryKitState, String> {
-    let view = authorization(conn, vault_id).await?;
-    let stored = stored_keys(conn).await?;
-    let pending = match pending_seed(keys, vault_id).await? {
-        Some(seed) => Some(pending_kit(
-            &seed,
-            kit_active(view.as_ref(), stored, &seed)?,
-        )?),
+    let lifecycle = lifecycle(conn, keys, vault_id).await?;
+    let pending = match &lifecycle.waiting {
+        Some((seed, active)) => Some(pending_kit(seed, *active)?),
         None => None,
     };
     Ok(RecoveryKitState {
-        stored: stored.is_some(),
+        stored: lifecycle.stored,
         pending,
     })
 }
@@ -222,15 +261,18 @@ async fn finish_create(
     }
 }
 
-/// Puts back the seed `replaced` wrote over, unless the vault's charter names the new seed.
+/// Puts back the seed `replaced` wrote over, unless the new seed already protects the vault:
+/// the charter founded meanwhile names it, or its keys were stored after all.
 async fn undo_replaced_seed(
     conn: &mut SqliteConnection,
     keys: &Arc<dyn SyncKeyStore>,
     vault_id: &str,
     replaced: &ReplacedSeed,
 ) -> Result<(), String> {
-    if let Some(view) = authorization(conn, vault_id).await?
-        && authority::recovery_kit_active(&view, &replaced.seed)?
+    let current = lifecycle(conn, keys, vault_id).await?;
+    if current
+        .waiting
+        .is_some_and(|(seed, active)| active && seed.ct_eq(&replaced.seed))
     {
         return Ok(());
     }
@@ -281,19 +323,27 @@ pub(crate) async fn confirm_saved(
     if typed_last_group.chars().count() > MAX_TYPED_GROUP_CHARS {
         return Ok(false);
     }
-    let Some(seed) = pending_seed(keys, vault_id).await? else {
+    let KitLifecycle {
+        protection,
+        waiting,
+        ..
+    } = lifecycle(conn, keys, vault_id).await?;
+    let Some((seed, _)) = waiting else {
         return Err("no recovery kit waits to be saved".to_string());
     };
     if !seed.last_group_matches(typed_last_group) {
         return Ok(false);
     }
-    let view = authorization(conn, vault_id).await?;
-    let stored = stored_keys(conn).await?;
+    // The key store checks protection again as it forgets, against the seed it holds then.
     let keys = keys.clone();
     let vault_id = vault_id.to_string();
-    blocking(move || match view {
-        Some(view) => authority::forget_recovery_seed(keys.as_ref(), &vault_id, &view),
-        None => authority::forget_unlinked_recovery_seed(keys.as_ref(), &vault_id, stored),
+    blocking(move || match protection {
+        Protection::Charter(view) => {
+            authority::forget_recovery_seed(keys.as_ref(), &vault_id, &view)
+        }
+        Protection::Unlinked(stored) => {
+            authority::forget_unlinked_recovery_seed(keys.as_ref(), &vault_id, stored)
+        }
     })
     .await?;
     Ok(true)

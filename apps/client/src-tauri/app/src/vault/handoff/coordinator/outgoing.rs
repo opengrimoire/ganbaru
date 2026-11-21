@@ -108,12 +108,19 @@ impl<R: Runtime> CoordinatorState<R> {
         Ok(CoordinatorResponse::ActivationAcknowledged { transfer_id })
     }
 
-    pub(super) fn cancel(&mut self, transfer_id: String) -> Result<CoordinatorResponse, String> {
+    /// Cancels the prepared transfer when it is the one `device_id` asked for; another linked
+    /// device cannot cancel it.
+    pub(super) fn cancel(
+        &mut self,
+        transfer_id: String,
+        device_id: String,
+    ) -> Result<CoordinatorResponse, String> {
         let prepared = self
             .prepared
             .as_ref()
             .ok_or_else(|| "transfer is no longer active".to_string())?;
-        if prepared.metadata.transfer_id != transfer_id {
+        if prepared.metadata.transfer_id != transfer_id || prepared.metadata.device_id != device_id
+        {
             return Err("cancelled transfer does not match the active transfer".to_string());
         }
         self.cleanup_prepared();

@@ -20,8 +20,10 @@ pub(crate) enum CoordinatorOperation {
         device_id: String,
         transfer_id: String,
     },
+    /// Cancels the transfer prepared for `device_id`, the authenticated device that asks.
     Cancel {
         transfer_id: String,
+        device_id: String,
     },
     /// Authenticated request from a linked device for the person's signing key of the vault
     /// it is linked for.
@@ -138,7 +140,10 @@ impl<R: Runtime> CoordinatorState<R> {
                 device_id,
                 transfer_id,
             } => self.activated(vault_id, device_id, transfer_id),
-            CoordinatorOperation::Cancel { transfer_id } => self.cancel(transfer_id),
+            CoordinatorOperation::Cancel {
+                transfer_id,
+                device_id,
+            } => self.cancel(transfer_id, device_id),
             CoordinatorOperation::ReleasePersonKey {
                 vault_id,
                 device_id,

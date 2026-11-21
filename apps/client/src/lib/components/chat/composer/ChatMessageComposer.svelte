@@ -1437,7 +1437,8 @@
       const read = await chatApi.listChatAssignmentTargets({ agentId, channelId, replyThreadId });
       if (stillCurrent()) targets = read;
     } catch (cause: unknown) {
-      if (request === assignmentPreviewRequest && stillCurrent()) error = chatErrorMessage(cause);
+      const inFlight = assignmentPreview.phase === "loading" && assignmentPreview.request === request;
+      if (inFlight && stillCurrent()) error = chatErrorMessage(cause);
     }
     assignmentPreview = transitionAssignmentPreview(assignmentPreview, { type: "loaded", request, targets });
   }

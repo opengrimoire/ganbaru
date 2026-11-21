@@ -428,4 +428,58 @@ describe("Chat reply thread tabs", () => {
     await toThread;
     expect(chatApi.readChatChannelPage).toHaveBeenCalledTimes(pageReads);
   });
+
+  /** Shows the general channel with a working folder and a provider thread of its project selected. */
+  async function showGeneralWithFolder(): Promise<void> {
+    vi.mocked(chatApi.readChatProjectPrimaryWorkingFolder).mockResolvedValue({
+      projectId: "project", workingFolderId: "folder", revision: 1,
+    });
+    await chat.ensureLoaded();
+    await chat.selectChannel("general");
+    chat.selectedThreadId = "thread-of-general";
+    expect(chat.selectedWorkingFolderId).toBe("folder");
+  }
+
+  it("drops the previous project's folder and thread as soon as another project's channel shows", async () => {
+    await showGeneralWithFolder();
+    const primary = deferred<Awaited<ReturnType<typeof chatApi.readChatProjectPrimaryWorkingFolder>>>();
+    vi.mocked(chatApi.readChatProjectPrimaryWorkingFolder).mockReturnValueOnce(primary.promise);
+
+    const selection = chat.selectChannel("elsewhere");
+    await vi.waitFor(() => expect(chat.selectedChannelId).toBe("elsewhere"));
+
+    expect(chat.selectedWorkingFolderId).toBeNull();
+    expect(chat.primaryWorkingFolder).toBeNull();
+    expect(chat.selectedThreadId).toBeNull();
+    expect(chat.draftThreadId).toBeNull();
+    primary.resolve({ projectId: "other-project", workingFolderId: "other-folder", revision: 1 });
+    await selection;
+    expect(chat.selectedWorkingFolderId).toBe("other-folder");
+  });
+
+  it("leaves no previous project's folder selected when loading another project's channel fails", async () => {
+    await showGeneralWithFolder();
+    vi.mocked(chatApi.readChatProjectPrimaryWorkingFolder).mockRejectedValueOnce(new Error("no working folder"));
+    vi.mocked(workingFolderApi.lastProjectWorkingFolder).mockRejectedValueOnce(new Error("device state unreadable"));
+
+    await expect(chat.selectChannel("elsewhere")).rejects.toThrow("device state unreadable");
+
+    expect(chat.selectedChannelId).toBe("elsewhere");
+    expect(chat.selectedWorkingFolderId).toBeNull();
+    expect(chat.selectedThreadId).toBeNull();
+  });
+
+  it("keeps the folder but drops the thread while another channel of the same project loads", async () => {
+    await showGeneralWithFolder();
+    const primary = deferred<Awaited<ReturnType<typeof chatApi.readChatProjectPrimaryWorkingFolder>>>();
+    vi.mocked(chatApi.readChatProjectPrimaryWorkingFolder).mockReturnValueOnce(primary.promise);
+
+    const selection = chat.selectChannel("other");
+    await vi.waitFor(() => expect(chat.selectedChannelId).toBe("other"));
+
+    expect(chat.selectedWorkingFolderId).toBe("folder");
+    expect(chat.selectedThreadId).toBeNull();
+    primary.resolve({ projectId: "project", workingFolderId: "folder", revision: 1 });
+    await selection;
+  });
 });

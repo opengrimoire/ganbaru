@@ -828,6 +828,14 @@ export class ChatStore {
     return true;
   }
 
+  /** Clears the selected provider thread, its run and environment, and its interaction state. */
+  private dropThreadSelection(): void {
+    this.selectedThreadId = null;
+    this.selectedExecutionRunId = null;
+    this.selectedExecutionEnvironmentId = null;
+    this.interaction = null;
+  }
+
   /** Reads and shows a channel for one selection request, stopping when a newer request starts. */
   private async loadShownChannel(
     request: number,
@@ -839,9 +847,17 @@ export class ChatStore {
     if (request !== this.channelSelectionRequest) return;
     this.channelNavigationController.upsert(channel);
     const changedChannel = this.selectedChannelId !== channelId;
+    const changedProject = this.selectedChannel?.projectId !== channel.projectId;
     const changedMode = this.replyThreadTabId !== replyThreadTabId;
     this.selectedChannelId = channelId;
     this.replyThreadTabId = replyThreadTabId;
+    // Nothing chosen for the previous channel may stay a target while this channel's folder is read below.
+    if (changedChannel) this.dropThreadSelection();
+    if (changedProject) {
+      this.selectedWorkingFolderId = null;
+      this.primaryWorkingFolder = null;
+      this.composerRuntimeController.discardDraft();
+    }
     // A cached history and the open reply thread appear with the channel instead of after the reads below.
     if (changedChannel) this.communicationController.showCachedChannel(channelId);
     if (replyThreadTabId) this.showReplyThreadOfTab(channelId, replyThreadTabId);

@@ -16,6 +16,7 @@ import {
   type Contact,
   type ContactRequest,
   type ContactsError,
+  type LocalContactCard,
   type LocalIdentity,
   type ContactsRowRevision,
   type ContactsSnapshot,
@@ -44,6 +45,37 @@ let cardError = $state<ContactsError | null>(null);
 let generation = 0;
 let replicationListenerStarted = false;
 
+/**
+ * Orders the results of overlapping commands. A write's result always applies, because it carries that write, and
+ * takes the next stamp when it lands. A read's result applies only when the read started after the shown result was
+ * stamped, so an older read never replaces a newer write or read.
+ */
+interface ResultOrder {
+  stamps: number;
+  shown: number;
+}
+
+const snapshotOrder: ResultOrder = { stamps: 0, shown: 0 };
+const cardOrder: ResultOrder = { stamps: 0, shown: 0 };
+let pendingLoads = 0;
+let pendingCardCommands = 0;
+
+type CommandKind = "read" | "write";
+
+/** Stamp taken when a command starts. */
+function startCommand(order: ResultOrder): number {
+  order.stamps += 1;
+  return order.stamps;
+}
+
+/** Whether a result of a command that started at `started` may replace what is shown, and records it if so. */
+function admitResult(order: ResultOrder, kind: CommandKind, started: number): boolean {
+  if (kind === "read" && started <= order.shown) return false;
+  order.stamps += 1;
+  order.shown = order.stamps;
+  return true;
+}
+
 onActiveVaultIdentityChange(() => {
   generation += 1;
   identity = null;
@@ -51,6 +83,8 @@ onActiveVaultIdentityChange(() => {
   contacts = [];
   requests = [];
   loaded = false;
+  pendingLoads = 0;
+  pendingCardCommands = 0;
   loading = false;
   cardLoading = false;
   error = null;
@@ -64,30 +98,42 @@ function applySnapshot(snapshot: ContactsSnapshot): void {
   loaded = true;
 }
 
-/** Runs a snapshot-returning command, keeping the result only if the vault did not change meanwhile. */
-async function mutate(run: () => Promise<ContactsSnapshot>): Promise<void> {
+/**
+ * Runs a snapshot-returning command, keeping the result only if the vault did not change meanwhile and, for a read,
+ * no newer result landed first.
+ */
+async function runSnapshotCommand(run: () => Promise<ContactsSnapshot>, kind: CommandKind): Promise<void> {
   const expected = generation;
+  const started = startCommand(snapshotOrder);
   try {
     const snapshot = await run();
-    if (expected !== generation) return;
+    if (expected !== generation || !admitResult(snapshotOrder, kind, started)) return;
     applySnapshot(snapshot);
     error = null;
   } catch (cause) {
     const failure = normalizeContactsError(cause);
-    if (expected === generation) error = failure;
+    if (expected === generation && (kind === "write" || started > snapshotOrder.shown)) error = failure;
     throw failure;
   }
 }
 
+function mutate(run: () => Promise<ContactsSnapshot>): Promise<void> {
+  return runSnapshotCommand(run, "write");
+}
+
 async function refresh(): Promise<void> {
   const expected = generation;
+  pendingLoads += 1;
   loading = true;
   try {
-    await mutate(listContacts);
+    await runSnapshotCommand(listContacts, "read");
   } catch {
     // The error is already recorded for the UI.
   } finally {
-    if (expected === generation) loading = false;
+    if (expected === generation) {
+      pendingLoads -= 1;
+      loading = pendingLoads > 0;
+    }
   }
 }
 
@@ -108,7 +154,7 @@ function startContactsReplicationListener(): void {
   void listenSyncApplied((tables) => {
     if (loaded && tables.some((table) => CONTACT_LIST_TABLES.has(table))) void refresh();
     if (card !== null && tables.includes(CONTACT_CARD_TABLE)) {
-      void runCardCommand(loadLocalCard).catch(() => undefined);
+      void runCardCommand(loadLocalCard, "read").catch(() => undefined);
     }
   }).catch((error: unknown) => {
     replicationListenerStarted = false;
@@ -116,24 +162,30 @@ function startContactsReplicationListener(): void {
   });
 }
 
-async function runCardCommand(run: () => Promise<Awaited<ReturnType<typeof loadLocalCard>>>): Promise<void> {
+/** Runs a card command, ordered like {@link runSnapshotCommand}: signing the current card reads, regenerating writes. */
+async function runCardCommand(run: () => Promise<LocalContactCard>, kind: CommandKind): Promise<void> {
   const expected = generation;
+  const started = startCommand(cardOrder);
+  pendingCardCommands += 1;
   cardLoading = true;
   try {
     const view = await run();
-    if (expected !== generation) return;
+    if (expected !== generation || !admitResult(cardOrder, kind, started)) return;
     identity = view.identity;
     card = view.card;
     cardError = null;
   } catch (cause) {
     const failure = normalizeContactsError(cause);
-    if (expected === generation) {
+    if (expected === generation && (kind === "write" || started > cardOrder.shown)) {
       card = null;
       cardError = failure;
     }
     throw failure;
   } finally {
-    if (expected === generation) cardLoading = false;
+    if (expected === generation) {
+      pendingCardCommands -= 1;
+      cardLoading = pendingCardCommands > 0;
+    }
   }
 }
 
@@ -178,10 +230,10 @@ export function getContacts() {
     /** Signs the current card; creates the identity the first time the card is opened. */
     loadCard(): Promise<void> {
       startContactsReplicationListener();
-      return runCardCommand(loadLocalCard);
+      return runCardCommand(loadLocalCard, "read");
     },
     regenerateCard(): Promise<void> {
-      return runCardCommand(regenerateLocalCard);
+      return runCardCommand(regenerateLocalCard, "write");
     },
     sendRequest(cardText: string, trust: ContactTrustChoice): Promise<void> {
       return mutate(() => sendContactRequest(cardText, trust));

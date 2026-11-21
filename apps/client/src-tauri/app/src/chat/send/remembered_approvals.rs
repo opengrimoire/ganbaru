@@ -10,7 +10,7 @@ use crate::chat::send_commands::ResolveChatApprovalCommand;
 use ganbaru_chat::coordination::remembered_approvals::{
     approval_is_live, channel_run_scope, remember_approval, rememberable_approval,
 };
-use ganbaru_chat::runtime::ChatRuntimeRegistry;
+use ganbaru_chat::runtime::{ChatRuntimeRegistry, OpenRequestKind};
 use ganbaru_chat_contracts::events::ApprovalDecisionOption;
 use ganbaru_chat_contracts::models::*;
 use serde_json::Value;
@@ -203,12 +203,12 @@ async fn resolve_remembered(
     thread_id: &ChatThreadId,
     request_id: &str,
 ) -> ChatResult<()> {
-    if !wait_for_approval_state(app, thread_id).await {
-        return Ok(());
-    }
     let Some(open) = read_open_approval(pool, thread_id, request_id).await? else {
         return Ok(());
     };
+    if !wait_for_open_approval(app, thread_id, &open.provider_request_id).await {
+        return Ok(());
+    }
     let Some(option_id) = allow_once_option(&open.allowed_decisions) else {
         return Ok(());
     };
@@ -236,13 +236,23 @@ async fn resolve_remembered(
     }
 }
 
-/// Waits until the provider session of `thread_id` waits for an approval, which it reaches
-/// only after the event that opened the request is delivered. Returns false when it does not
-/// reach that state in time or stops running.
-async fn wait_for_approval_state(app: &tauri::AppHandle, thread_id: &ChatThreadId) -> bool {
+/// Waits until the runtime of `thread_id` holds the approval `provider_request_id` open, which
+/// it does only after the event that opened the request is delivered. Returns false when the
+/// request does not open in time or the session stops running.
+async fn wait_for_open_approval(
+    app: &tauri::AppHandle,
+    thread_id: &ChatThreadId,
+    provider_request_id: &str,
+) -> bool {
+    let Ok(provider_request_id) = ProviderRequestId::new(provider_request_id.to_string()) else {
+        return false;
+    };
     for _ in 0..WAITING_POLLS {
         match app.state::<ChatRuntimeRegistry>().snapshot(thread_id) {
-            Ok(snapshot) if snapshot.session_state == ProviderSessionState::WaitingForApproval => {
+            Ok(snapshot)
+                if snapshot.open_request(&provider_request_id)
+                    == Some(OpenRequestKind::Approval) =>
+            {
                 return true;
             }
             Ok(_) => tokio::time::sleep(WAITING_POLL_INTERVAL).await,

@@ -49,7 +49,6 @@ pub(super) struct ClaudeItemEvent {
 pub struct ClaudeRouteState {
     pub provider_thread_id: Option<String>,
     pub active_chat_turn_id: Option<ChatTurnId>,
-    pub session_state: ProviderSessionState,
     pub modes: TurnModeSnapshot,
     pub model_id: Option<ModelId>,
     pub resume_cursor: ClaudeResumeCursor,
@@ -74,7 +73,6 @@ impl ClaudeRouteState {
         Self {
             provider_thread_id: None,
             active_chat_turn_id: None,
-            session_state: ProviderSessionState::Starting,
             modes,
             model_id,
             resume_cursor,
@@ -218,7 +216,6 @@ impl ClaudeEventNormalizer {
         let Some(turn_id) = state.active_chat_turn_id.take() else {
             return Ok(None);
         };
-        state.session_state = ProviderSessionState::Ready;
         self.event(
             state,
             source,

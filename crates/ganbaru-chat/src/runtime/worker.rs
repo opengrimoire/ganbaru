@@ -8,10 +8,7 @@ struct RuntimeWorker {
     event_sink: Option<Arc<dyn ProviderEventSink>>,
     session: Option<ProviderSessionSnapshot>,
     snapshot: Arc<Mutex<ThreadRuntimeSnapshot>>,
-    generation: Arc<AtomicU64>,
     interrupt_confirmation_timeout: Duration,
-    /// The turn an accepted interrupt is waiting on, and when the runtime stops waiting.
-    interrupt_deadline: Option<(ChatTurnId, Instant)>,
     /// How long the session must stay quiet before it restarts onto an updated CLI, when one was
     /// installed while it ran.
     restart_when_quiet: Option<Duration>,
@@ -25,7 +22,6 @@ impl RuntimeWorker {
     fn new(
         thread_id: ChatThreadId,
         snapshot: Arc<Mutex<ThreadRuntimeSnapshot>>,
-        generation: Arc<AtomicU64>,
         interrupt_confirmation_timeout: Duration,
     ) -> Self {
         Self {
@@ -34,9 +30,7 @@ impl RuntimeWorker {
             event_sink: None,
             session: None,
             snapshot,
-            generation,
             interrupt_confirmation_timeout,
-            interrupt_deadline: None,
             restart_when_quiet: None,
             stop_check_at: None,
             cpu_sample: None,
@@ -54,18 +48,10 @@ impl RuntimeWorker {
             self.stop_check_at = None;
         }
         match command {
-            ThreadRuntimeCommand::SessionState(value) => self.update(|state| {
-                state.session_state = value;
-            }),
-            ThreadRuntimeCommand::TurnActive(value) => self.update(|state| {
-                state.turn_active = value;
-                if !value {
-                    state.active_turn_id = None;
-                }
-            }),
-            ThreadRuntimeCommand::PendingRequest(value) => self.update(|state| {
-                state.pending_request = value;
-            }),
+            #[cfg(any(test, feature = "test-support"))]
+            ThreadRuntimeCommand::ApplyPhaseInput(input) => {
+                self.apply(input);
+            }
             ThreadRuntimeCommand::TerminalLinkedOperation(value) => self.update(|state| {
                 state.terminal_linked_operation = value;
             }),
@@ -91,18 +77,13 @@ impl RuntimeWorker {
                 context,
                 response,
             } => {
-                if self.session_state() != ProviderSessionState::Ready {
+                let turn_id = request.turn_id.clone();
+                if !self.apply(RuntimeInput::TurnAccepted(turn_id.clone())) {
                     let _ = response.send(Err(runtime_invalid_state_error(
                         "Chat provider session must be ready before context compaction",
                     )));
                     return false;
                 }
-                let turn_id = request.turn_id.clone();
-                self.update(|state| {
-                    state.session_state = ProviderSessionState::Active;
-                    state.active_turn_id = Some(turn_id);
-                    state.turn_active = true;
-                });
                 let result = match self.driver.as_mut() {
                     Some(driver) => {
                         run_driver_operation(&context, driver.compact_context(request, &context))
@@ -111,11 +92,7 @@ impl RuntimeWorker {
                     None => Err(runtime_unavailable_error()),
                 };
                 if result.is_err() {
-                    self.update(|state| {
-                        state.session_state = ProviderSessionState::Ready;
-                        state.active_turn_id = None;
-                        state.turn_active = false;
-                    });
+                    self.apply(RuntimeInput::TurnWithdrawn(turn_id));
                 }
                 let _ = response.send(result);
             }
@@ -124,13 +101,7 @@ impl RuntimeWorker {
                 context,
                 response,
             } => {
-                if matches!(
-                    self.session_state(),
-                    ProviderSessionState::Stopped
-                        | ProviderSessionState::Starting
-                        | ProviderSessionState::Stopping
-                        | ProviderSessionState::Failed
-                ) {
+                if !self.read(|state| state.phase.is_running()) {
                     let _ = response.send(Err(runtime_invalid_state_error(
                         "Chat provider session is unavailable for MCP status",
                     )));
@@ -152,59 +123,14 @@ impl RuntimeWorker {
                 context,
                 response,
             } => {
-                if self.driver.is_some()
-                    && !matches!(
-                        self.session_state(),
-                        ProviderSessionState::Stopped | ProviderSessionState::Failed
-                    )
-                {
-                    let _ = response.send(Err(runtime_invalid_state_error(
-                        "Chat provider session is already running",
-                    )));
+                let Some(sink) = self.begin_session(event_sink) else {
+                    let _ = response.send(Err(session_running_error()));
                     return false;
-                }
-                let generation = self.next_generation();
-                self.driver.take();
-                self.restart_when_quiet = None;
-                self.clear_stop_checks();
-                self.session = None;
-                self.update(|state| {
-                    state.session_id = None;
-                    state.session_state = ProviderSessionState::Starting;
-                    state.capabilities = crate::models::ProviderCapabilities::default();
-                    state.turn_active = false;
-                    state.active_turn_id = None;
-                    state.pending_request = false;
-                    state.generation = generation;
-                });
-                let sink: Arc<dyn ProviderEventSink> = Arc::new(GenerationEventSink {
-                    thread_id: self.thread_id.clone(),
-                    generation,
-                    current_generation: Arc::clone(&self.generation),
-                    snapshot: Arc::clone(&self.snapshot),
-                    inner: event_sink,
-                });
-                self.event_sink = Some(Arc::clone(&sink));
+                };
                 let result =
                     run_driver_operation(&context, driver.start_session(request, sink, &context))
                         .await;
-                if result.is_err() {
-                    let _ = self.flush_events(&context).await;
-                }
-                match &result {
-                    Ok(session) => {
-                        self.session = Some(session.clone());
-                        self.update(|state| {
-                            state.session_id = Some(session.session_id.clone());
-                            state.session_state = session.state;
-                            state.capabilities = session.capabilities.clone();
-                        });
-                    }
-                    Err(_) => {
-                        self.update(|state| state.session_state = ProviderSessionState::Failed)
-                    }
-                }
-                self.driver = Some(driver);
+                self.finish_session(driver, &result, &context).await;
                 let _ = response.send(result);
             }
             ThreadRuntimeCommand::ResumeSession {
@@ -214,59 +140,14 @@ impl RuntimeWorker {
                 context,
                 response,
             } => {
-                if self.driver.is_some()
-                    && !matches!(
-                        self.session_state(),
-                        ProviderSessionState::Stopped | ProviderSessionState::Failed
-                    )
-                {
-                    let _ = response.send(Err(runtime_invalid_state_error(
-                        "Chat provider session is already running",
-                    )));
+                let Some(sink) = self.begin_session(event_sink) else {
+                    let _ = response.send(Err(session_running_error()));
                     return false;
-                }
-                let generation = self.next_generation();
-                self.driver.take();
-                self.restart_when_quiet = None;
-                self.clear_stop_checks();
-                self.session = None;
-                self.update(|state| {
-                    state.session_id = None;
-                    state.session_state = ProviderSessionState::Starting;
-                    state.capabilities = crate::models::ProviderCapabilities::default();
-                    state.turn_active = false;
-                    state.active_turn_id = None;
-                    state.pending_request = false;
-                    state.generation = generation;
-                });
-                let sink: Arc<dyn ProviderEventSink> = Arc::new(GenerationEventSink {
-                    thread_id: self.thread_id.clone(),
-                    generation,
-                    current_generation: Arc::clone(&self.generation),
-                    snapshot: Arc::clone(&self.snapshot),
-                    inner: event_sink,
-                });
-                self.event_sink = Some(Arc::clone(&sink));
+                };
                 let result =
                     run_driver_operation(&context, driver.resume_session(request, sink, &context))
                         .await;
-                if result.is_err() {
-                    let _ = self.flush_events(&context).await;
-                }
-                match &result {
-                    Ok(session) => {
-                        self.session = Some(session.clone());
-                        self.update(|state| {
-                            state.session_id = Some(session.session_id.clone());
-                            state.session_state = session.state;
-                            state.capabilities = session.capabilities.clone();
-                        });
-                    }
-                    Err(_) => {
-                        self.update(|state| state.session_state = ProviderSessionState::Failed)
-                    }
-                }
-                self.driver = Some(driver);
+                self.finish_session(driver, &result, &context).await;
                 let _ = response.send(result);
             }
             ThreadRuntimeCommand::SendTurn {
@@ -275,29 +156,25 @@ impl RuntimeWorker {
                 context,
                 response,
             } => {
-                if self.session_state() != ProviderSessionState::Ready {
+                let turn_id = request.turn_id.clone();
+                if !self.apply(RuntimeInput::TurnAccepted(turn_id.clone())) {
                     let _ = response.send(Err(runtime_invalid_state_error(
                         "Chat provider session is not ready for a new turn",
                     )));
                     return false;
                 }
-                let turn_id = request.turn_id.clone();
-                self.update(|state| {
-                    state.session_state = ProviderSessionState::Active;
-                    state.active_turn_id = Some(turn_id);
-                    state.turn_active = true;
-                });
                 let result = match self.driver.as_mut() {
                     Some(driver) => {
                         run_driver_operation(&context, driver.send_turn(request, &context)).await
                     }
                     None => Err(runtime_unavailable_error()),
                 };
-                if result.is_err() {
-                    let _ = self.flush_events(&context).await;
-                    self.update(|state| state.session_state = ProviderSessionState::Failed);
-                } else {
-                    reservation.handoff_to_event_sink();
+                match &result {
+                    Ok(_) => reservation.handoff_to_event_sink(),
+                    Err(_) => {
+                        let _ = self.flush_events(&context).await;
+                        self.abandon_dispatch(turn_id).await;
+                    }
                 }
                 let _ = response.send(result);
             }
@@ -325,7 +202,10 @@ impl RuntimeWorker {
                 context,
                 response,
             } => {
-                if self.session_state() != ProviderSessionState::WaitingForApproval {
+                let request_id = request.provider_request_id.clone();
+                if self.read(|state| state.open_request(&request_id))
+                    != Some(OpenRequestKind::Approval)
+                {
                     let _ = response.send(Err(runtime_invalid_state_error(
                         "Chat provider session has no pending approval",
                     )));
@@ -339,16 +219,7 @@ impl RuntimeWorker {
                     None => Err(runtime_unavailable_error()),
                 };
                 if result.is_ok() {
-                    self.update(|state| {
-                        state.pending_request = false;
-                        if matches!(
-                            state.session_state,
-                            ProviderSessionState::WaitingForApproval
-                                | ProviderSessionState::WaitingForUserInput
-                        ) {
-                            state.session_state = ProviderSessionState::Active;
-                        }
-                    });
+                    self.apply(RuntimeInput::RequestClosed(request_id));
                 }
                 let _ = response.send(result);
             }
@@ -357,7 +228,10 @@ impl RuntimeWorker {
                 context,
                 response,
             } => {
-                if self.session_state() != ProviderSessionState::WaitingForUserInput {
+                let request_id = request.provider_request_id.clone();
+                if self.read(|state| state.open_request(&request_id))
+                    != Some(OpenRequestKind::UserInput)
+                {
                     let _ = response.send(Err(runtime_invalid_state_error(
                         "Chat provider session has no pending user input request",
                     )));
@@ -371,10 +245,7 @@ impl RuntimeWorker {
                     None => Err(runtime_unavailable_error()),
                 };
                 if result.is_ok() {
-                    self.update(|state| {
-                        state.pending_request = false;
-                        state.session_state = ProviderSessionState::Active;
-                    });
+                    self.apply(RuntimeInput::RequestClosed(request_id));
                 }
                 let _ = response.send(result);
             }
@@ -383,20 +254,13 @@ impl RuntimeWorker {
                 context,
                 response,
             } => {
-                if !matches!(
-                    self.session_state(),
-                    ProviderSessionState::Active
-                        | ProviderSessionState::WaitingForApproval
-                        | ProviderSessionState::WaitingForUserInput
-                ) {
+                let turn_id = request.turn_id.clone();
+                if !self.apply(RuntimeInput::InterruptRequested(turn_id.clone())) {
                     let _ = response.send(Err(runtime_invalid_state_error(
                         "Chat provider session has no interruptible turn",
                     )));
                     return false;
                 }
-                let previous_state = self.session_state();
-                let turn_id = request.turn_id.clone();
-                self.update(|state| state.session_state = ProviderSessionState::Stopping);
                 let result = match self.driver.as_mut() {
                     Some(driver) => {
                         run_driver_operation(&context, driver.interrupt_turn(request, &context))
@@ -404,14 +268,16 @@ impl RuntimeWorker {
                     }
                     None => Err(runtime_unavailable_error()),
                 };
-                if result.is_err() {
-                    self.update(|state| state.session_state = previous_state);
-                } else {
-                    self.interrupt_deadline = Some((
+                // The turn may have settled while the provider answered; then neither input
+                // applies and the phase keeps what the provider reported.
+                let input = match &result {
+                    Ok(_) => RuntimeInput::InterruptAccepted {
                         turn_id,
-                        Instant::now() + self.interrupt_confirmation_timeout,
-                    ));
-                }
+                        deadline: Instant::now() + self.interrupt_confirmation_timeout,
+                    },
+                    Err(_) => RuntimeInput::InterruptRejected(turn_id),
+                };
+                self.apply(input);
                 let _ = response.send(result);
             }
             ThreadRuntimeCommand::Rollback {
@@ -473,6 +339,18 @@ impl RuntimeWorker {
         force: bool,
         context: DriverOperationContext,
     ) -> ChatResult<()> {
+        self.stop_driver_with_outcome(force, context, StopOutcome::FromResult)
+            .await
+    }
+
+    /// Stops the provider. The phase ends `Stopped` after a clean stop, or `Failed` after an
+    /// unclean one or when `outcome` says the session already failed.
+    async fn stop_driver_with_outcome(
+        &mut self,
+        force: bool,
+        context: DriverOperationContext,
+        outcome: StopOutcome,
+    ) -> ChatResult<()> {
         self.restart_when_quiet = None;
         self.clear_stop_checks();
         let initial_flush = self.flush_events(&context).await;
@@ -481,16 +359,17 @@ impl RuntimeWorker {
             self.event_sink = None;
             self.update(|state| {
                 state.session_id = None;
-                state.session_state = ProviderSessionState::Stopped;
                 state.capabilities = crate::models::ProviderCapabilities::default();
-                state.active_turn_id = None;
-                state.turn_active = false;
-                state.pending_request = false;
+                let _ = state.apply(RuntimeInput::StopStarted);
+                let _ = state.apply(RuntimeInput::StopFinished {
+                    clean: outcome == StopOutcome::FromResult,
+                });
             });
             return initial_flush;
         };
-        self.update(|state| state.session_state = ProviderSessionState::Stopping);
-        if let (Some(session), Some(turn_id)) = (self.session.as_ref(), self.active_turn_id()) {
+        self.apply(RuntimeInput::StopStarted);
+        let stopping_turn = self.read(|state| state.active_turn_id().cloned());
+        if let (Some(session), Some(turn_id)) = (self.session.as_ref(), stopping_turn) {
             let request = InterruptTurnRequest {
                 command: ChatCommandContext {
                     client_command_id: ChatCommandId::new("runtime-stop-interrupt")
@@ -524,20 +403,16 @@ impl RuntimeWorker {
         };
         let final_flush = self.flush_events(&context).await;
         let result = initial_flush.and(stop_result).and(final_flush);
-        self.next_generation();
         self.session = None;
         self.event_sink = None;
+        let clean = result.is_ok() && outcome == StopOutcome::FromResult;
+        // Retiring the generation in the same critical section as the phase change keeps a late
+        // event of this session from landing on the stopped phase.
         self.update(|state| {
+            state.generation += 1;
             state.session_id = None;
-            state.session_state = if result.is_ok() {
-                ProviderSessionState::Stopped
-            } else {
-                ProviderSessionState::Failed
-            };
             state.capabilities = crate::models::ProviderCapabilities::default();
-            state.active_turn_id = None;
-            state.turn_active = false;
-            state.pending_request = false;
+            let _ = state.apply(RuntimeInput::StopFinished { clean });
         });
         result
     }
@@ -552,10 +427,7 @@ impl RuntimeWorker {
     /// The earlier of a pending interrupt deadline and the next stop check: the idle deadline or
     /// a restart after a CLI update, postponed while an earlier check found the session busy.
     fn next_deadline(&self, idle_timeout: Duration) -> Option<Instant> {
-        let interrupt = self
-            .interrupt_deadline
-            .as_ref()
-            .map(|(_, deadline)| *deadline);
+        let interrupt = self.read(|state| state.phase.interrupt_deadline().map(|(_, at)| at));
         let stop = [self.idle_deadline(idle_timeout), self.restart_deadline()]
             .into_iter()
             .flatten()
@@ -624,9 +496,12 @@ impl RuntimeWorker {
 
     /// Whether a pending interrupt deadline has passed.
     fn interrupt_expired(&self, now: Instant) -> bool {
-        self.interrupt_deadline
-            .as_ref()
-            .is_some_and(|(_, deadline)| *deadline <= now)
+        self.read(|state| {
+            state
+                .phase
+                .interrupt_deadline()
+                .is_some_and(|(_, deadline)| deadline <= now)
+        })
     }
 
     /// Settles a turn whose provider accepted an interrupt but never confirmed it: records a
@@ -635,12 +510,14 @@ impl RuntimeWorker {
     /// belong to a retired generation and are ignored as late. Does nothing when the turn
     /// already settled.
     async fn expire_interrupt(&mut self) {
-        let Some((turn_id, _)) = self.interrupt_deadline.take() else {
+        let Some(turn_id) = self.read(|state| {
+            state
+                .phase
+                .interrupt_deadline()
+                .map(|(turn_id, _)| turn_id.clone())
+        }) else {
             return;
         };
-        if self.active_turn_id().as_ref() != Some(&turn_id) {
-            return;
-        }
         let provider = self.driver.as_ref().map(|driver| {
             let configuration = driver.instance_configuration();
             (
@@ -699,11 +576,77 @@ impl RuntimeWorker {
             .map(|snapshot| snapshot.last_activity + idle_timeout)
     }
 
-    fn active_turn_id(&self) -> Option<ChatTurnId> {
-        self.snapshot
-            .lock()
-            .ok()
-            .and_then(|snapshot| snapshot.active_turn_id.clone())
+    /// Retires the previous session and opens the phase for a new one, unless a session still
+    /// runs. Returns the event sink for the new session.
+    fn begin_session(
+        &mut self,
+        event_sink: Arc<dyn ProviderEventSink>,
+    ) -> Option<Arc<dyn ProviderEventSink>> {
+        let generation = {
+            let mut state = self.snapshot.lock().ok()?;
+            state.apply(RuntimeInput::SessionStarting).ok()?;
+            state.generation += 1;
+            state.session_id = None;
+            state.capabilities = crate::models::ProviderCapabilities::default();
+            state.generation
+        };
+        self.driver.take();
+        self.restart_when_quiet = None;
+        self.clear_stop_checks();
+        self.session = None;
+        let sink: Arc<dyn ProviderEventSink> = Arc::new(GenerationEventSink {
+            thread_id: self.thread_id.clone(),
+            generation,
+            snapshot: Arc::clone(&self.snapshot),
+            inner: event_sink,
+        });
+        self.event_sink = Some(Arc::clone(&sink));
+        Some(sink)
+    }
+
+    /// Records the outcome of a start or resume and keeps the driver for later commands.
+    async fn finish_session(
+        &mut self,
+        driver: Box<dyn ProviderDriver>,
+        result: &ChatResult<ProviderSessionSnapshot>,
+        context: &DriverOperationContext,
+    ) {
+        match result {
+            Ok(session) => {
+                self.session = Some(session.clone());
+                self.update(|state| {
+                    state.session_id = Some(session.session_id.clone());
+                    state.capabilities = session.capabilities.clone();
+                    let _ = state.apply(RuntimeInput::SessionOpened);
+                });
+            }
+            Err(_) => {
+                let _ = self.flush_events(context).await;
+                self.apply(RuntimeInput::SessionOpenFailed);
+            }
+        }
+        self.driver = Some(driver);
+    }
+
+    /// Ends a turn the driver could not dispatch. The provider may already run it, for example
+    /// when the dispatch timed out after the provider started, so the session stops: its later
+    /// events would land on a turn recorded as failed.
+    async fn abandon_dispatch(&mut self, turn_id: ChatTurnId) {
+        self.apply(RuntimeInput::DispatchFailed(turn_id));
+        let deadline = Instant::now() + DEFAULT_STOP_TIMEOUT;
+        if let Err(error) = self
+            .stop_driver_with_outcome(
+                false,
+                operation_context("runtime-dispatch-failed", deadline),
+                StopOutcome::Failed,
+            )
+            .await
+        {
+            eprintln!(
+                "Chat could not stop a provider after a failed dispatch, code {:?}",
+                error.code
+            );
+        }
     }
 
     async fn flush_events(&mut self, context: &DriverOperationContext) -> ChatResult<()> {
@@ -714,14 +657,25 @@ impl RuntimeWorker {
     }
 
     fn session_state(&self) -> ProviderSessionState {
-        self.snapshot
-            .lock()
-            .map(|snapshot| snapshot.session_state)
-            .unwrap_or(ProviderSessionState::Failed)
+        self.read(|state| state.session_state())
     }
 
-    fn next_generation(&self) -> u64 {
-        self.generation.fetch_add(1, Ordering::AcqRel) + 1
+    /// Applies `input` to the phase and reports whether the phase allowed it.
+    fn apply(&self, input: RuntimeInput) -> bool {
+        self.snapshot
+            .lock()
+            .is_ok_and(|mut snapshot| snapshot.apply(input).is_ok())
+    }
+
+    /// Reads the snapshot. A poisoned snapshot reads as a failed session.
+    fn read<T>(&self, read: impl FnOnce(&ThreadRuntimeSnapshot) -> T) -> T {
+        match self.snapshot.lock() {
+            Ok(snapshot) => read(&snapshot),
+            Err(_) => read(&ThreadRuntimeSnapshot {
+                phase: RuntimePhase::Failed { turn: None },
+                ..ThreadRuntimeSnapshot::stopped()
+            }),
+        }
     }
 
     fn touch(&self) {
@@ -735,20 +689,27 @@ impl RuntimeWorker {
     }
 }
 
+/// How a stop reports the phase it leaves.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StopOutcome {
+    /// `Stopped` after a clean stop, `Failed` otherwise.
+    FromResult,
+    /// `Failed`, because the session already failed before the stop.
+    Failed,
+}
+
+fn session_running_error() -> ChatError {
+    runtime_invalid_state_error("Chat provider session is already running")
+}
+
 pub(super) async fn run_thread_runtime(
     thread_id: ChatThreadId,
     mut receiver: mpsc::Receiver<ThreadRuntimeCommand>,
     snapshot: Arc<Mutex<ThreadRuntimeSnapshot>>,
-    generation: Arc<AtomicU64>,
     idle_timeout: IdleTimeout,
     interrupt_confirmation_timeout: Duration,
 ) {
-    let mut worker = RuntimeWorker::new(
-        thread_id,
-        snapshot,
-        generation,
-        interrupt_confirmation_timeout,
-    );
+    let mut worker = RuntimeWorker::new(thread_id, snapshot, interrupt_confirmation_timeout);
     loop {
         // Checked before waiting too, so steady commands never postpone an expired interrupt.
         if worker.interrupt_expired(Instant::now()) {

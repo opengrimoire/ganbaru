@@ -39,9 +39,13 @@ pub(crate) async fn steer_turn(
             true,
         ));
     }
-    let session_id = snapshot.session_id.ok_or_else(runtime_not_running_error)?;
+    let session_id = snapshot
+        .session_id
+        .clone()
+        .ok_or_else(runtime_not_running_error)?;
     let turn_id = snapshot
-        .active_turn_id
+        .active_turn_id()
+        .cloned()
         .ok_or_else(runtime_not_running_error)?;
     let command_id = request.command.client_command_id.clone();
     match claim_command_receipt(

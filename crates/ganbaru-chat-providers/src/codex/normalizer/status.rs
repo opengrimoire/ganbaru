@@ -221,7 +221,6 @@ impl CodexEventNormalizer {
         state: &mut CodexRouteState,
         _params: Value,
     ) -> ChatResult<Vec<CanonicalRuntimeEvent>> {
-        state.session_state = ProviderSessionState::Stopped;
         Ok(vec![self.event(
             state,
             "thread/closed",

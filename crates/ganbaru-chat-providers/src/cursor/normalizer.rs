@@ -32,7 +32,6 @@ struct NormalizedItemInput {
 pub struct CursorRouteState {
     pub provider_thread_id: String,
     pub active_turn_id: Option<ChatTurnId>,
-    pub session_state: ProviderSessionState,
     pub modes: TurnModeSnapshot,
     pub model_id: Option<ModelId>,
     pub config_options: Vec<AcpConfigOption>,
@@ -56,7 +55,6 @@ impl CursorRouteState {
         Self {
             provider_thread_id,
             active_turn_id: None,
-            session_state: ProviderSessionState::Ready,
             modes,
             model_id,
             config_options,
@@ -255,7 +253,6 @@ impl CursorEventNormalizer {
                 self.provider_display_name
             ))
         })?;
-        state.session_state = ProviderSessionState::Ready;
         let terminal = match stop_reason {
             "cancelled" => CanonicalEvent::TurnAborted(TurnAbortedEvent {
                 state: ChatTurnState::Interrupted,
@@ -292,7 +289,6 @@ impl CursorEventNormalizer {
         let mut events = self.close_text_items(state)?;
         events.extend(self.interrupt_open_tools(state)?);
         let turn_id = state.active_turn_id.take().expect("turn checked above");
-        state.session_state = ProviderSessionState::Ready;
         events.push(self.event(
             state,
             "transport/interrupted",

@@ -180,7 +180,7 @@ pub(crate) async fn send_turn(
     let mcp_registry = app.state::<crate::chat::internal_mcp::InternalMcpRegistry>();
     let mut snapshot = owner.snapshot()?;
     if origin.run().is_some() {
-        if snapshot.turn_active {
+        if snapshot.turn_active() {
             return Err(ChatError::new(
                 ChatErrorCode::Busy,
                 "The previous organizational turn must settle before authority can rotate",
@@ -198,7 +198,7 @@ pub(crate) async fn send_turn(
             snapshot = owner.snapshot()?;
             // Each organizational run launches a new process with its own target scope, so a
             // process that survives the stop must never be reused for this run.
-            if snapshot.session_state == ProviderSessionState::Ready {
+            if snapshot.session_state() == ProviderSessionState::Ready {
                 return Err(ChatError::new(
                     ChatErrorCode::Busy,
                     "The previous organizational session could not be stopped",
@@ -207,7 +207,7 @@ pub(crate) async fn send_turn(
             }
         }
     }
-    let fresh_native_session = !matches!(snapshot.session_state, ProviderSessionState::Ready)
+    let fresh_native_session = !matches!(snapshot.session_state(), ProviderSessionState::Ready)
         || snapshot.session_id.is_none();
     let internal_mcp = if authority_support.internal_host_tools {
         if fresh_native_session {

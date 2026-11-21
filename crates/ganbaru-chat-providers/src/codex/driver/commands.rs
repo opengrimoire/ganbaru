@@ -121,7 +121,6 @@ pub(super) async fn dispatch_codex_command(
             }
             let mut state = live.route.lock().map_err(|_| driver_state_error())?;
             state.active_provider_turn_id = Some(provider_turn_id.as_str().to_string());
-            state.session_state = ProviderSessionState::Active;
             drop(state);
             Ok(TurnDispatchReceipt {
                 turn_id: request.turn_id,
@@ -178,7 +177,6 @@ fn prepare_codex_command_route(
     state.active_chat_turn_id = Some(request.turn_id.clone());
     state.active_provider_turn_id = None;
     state.modes = request.modes;
-    state.session_state = ProviderSessionState::Active;
     Ok(())
 }
 
@@ -186,7 +184,6 @@ pub(super) fn clear_codex_command_route(live: &CodexLiveSession) {
     if let Ok(mut state) = live.route.lock() {
         state.active_chat_turn_id = None;
         state.active_provider_turn_id = None;
-        state.session_state = ProviderSessionState::Ready;
         if let Some(retry) = state.capacity_retry.take() {
             retry.cancel();
         }
@@ -439,7 +436,6 @@ async fn emit_codex_command_result(
         )?);
         state.active_chat_turn_id = None;
         state.active_provider_turn_id = None;
-        state.session_state = ProviderSessionState::Ready;
         events.push(live.normalizer.event(
             &state,
             "command/completed",

@@ -1011,7 +1011,7 @@ async fn settle_event_failure(resources: &EventPumpResources, code: &str, messag
         .lock()
         .map_err(|_| driver_state_error())
         .and_then(|mut state| {
-            state.session_state = ProviderSessionState::Failed;
+            state.busy = false;
             resources.normalizer.external_event(
                 &state,
                 "transport/error",
@@ -1059,7 +1059,7 @@ async fn end_after_git_metadata_change(resources: &EventPumpResources) -> bool {
         .lock()
         .map_err(|_| driver_state_error())
         .and_then(|mut state| {
-            state.session_state = ProviderSessionState::Failed;
+            state.busy = false;
             let warning = resources.normalizer.external_event(
                 &state,
                 "session/git_metadata_changed",

@@ -4,10 +4,10 @@ use crate::events::{CanonicalEvent, CanonicalRuntimeEvent, NotificationEvent};
 use crate::models::{
     ChatCommandContext, ChatCommandId, ChatError, ChatErrorCode, ChatResult, ChatThreadId,
     ChatTurnId, CompactContextRequest, DriverOperationReceipt, InterruptTurnRequest, McpStatusRead,
-    McpStatusRequest, ProviderFamilyId, ProviderSessionId, ProviderSessionSnapshot,
-    ProviderSessionState, ResolveApprovalRequest, ResolveUserInputRequest, ResumeSessionRequest,
-    RollbackRequest, SendTurnRequest, StartSessionRequest, SteerTurnRequest, StopSessionRequest,
-    TurnDispatchReceipt,
+    McpStatusRequest, ProviderFamilyId, ProviderRequestId, ProviderSessionId,
+    ProviderSessionSnapshot, ProviderSessionState, ResolveApprovalRequest, ResolveUserInputRequest,
+    ResumeSessionRequest, RollbackRequest, SendTurnRequest, StartSessionRequest, SteerTurnRequest,
+    StopSessionRequest, TurnDispatchReceipt,
 };
 use crate::providers::{
     DriverCancellation, DriverFuture, DriverOperationContext, ProviderDriver, ProviderEventSink,
@@ -26,11 +26,15 @@ use tokio::task::JoinHandle;
 
 mod event_sink;
 mod helpers;
+pub mod phase;
 mod worker;
 
 #[cfg(test)]
 use event_sink::event_matches_active_turn;
 use helpers::*;
+pub use phase::{
+    OpenRequestKind, RuntimeInput, RuntimePhase, RuntimeRejection, RuntimeTurn, TurnProgress,
+};
 use worker::run_thread_runtime;
 
 const DEFAULT_COMMAND_CAPACITY: usize = 32;
@@ -56,9 +60,10 @@ const CPU_SAMPLE_MAX_AGE: Duration = Duration::from_secs(120);
 const BUSY_CPU_PERCENT: u128 = 2;
 
 pub enum ThreadRuntimeCommand {
-    SessionState(ProviderSessionState),
-    TurnActive(bool),
-    PendingRequest(bool),
+    /// Applies a phase input directly, for tests that need a runtime state without a provider.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    ApplyPhaseInput(RuntimeInput),
     TerminalLinkedOperation(bool),
     Touch,
     /// Stops the session once it is idle and quiet when it runs a CLI of this family, so the next
@@ -142,13 +147,12 @@ pub enum ThreadRuntimeCommand {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ThreadRuntimeSnapshot {
     pub session_id: Option<ProviderSessionId>,
-    pub session_state: ProviderSessionState,
     pub capabilities: crate::models::ProviderCapabilities,
-    pub active_turn_id: Option<ChatTurnId>,
-    pub turn_active: bool,
-    pub pending_request: bool,
+    /// Changed only through [`RuntimePhase::apply`] by the worker and the generation event sink.
+    pub(crate) phase: RuntimePhase,
     pub terminal_linked_operation: bool,
     pub accepting_commands: bool,
+    /// Counts provider sessions; events from an earlier session are ignored as late.
     pub generation: u64,
     pub last_activity: Instant,
 }
@@ -158,11 +162,8 @@ impl ThreadRuntimeSnapshot {
     pub fn stopped() -> Self {
         Self {
             session_id: None,
-            session_state: ProviderSessionState::Stopped,
             capabilities: crate::models::ProviderCapabilities::default(),
-            active_turn_id: None,
-            turn_active: false,
-            pending_request: false,
+            phase: RuntimePhase::Stopped,
             terminal_linked_operation: false,
             accepting_commands: true,
             generation: 0,
@@ -170,24 +171,65 @@ impl ThreadRuntimeSnapshot {
         }
     }
 
+    pub fn phase(&self) -> &RuntimePhase {
+        &self.phase
+    }
+
+    /// The provider session state derived from the phase.
+    pub fn session_state(&self) -> ProviderSessionState {
+        self.phase.session_state()
+    }
+
+    /// Whether a turn runs on a usable session, including one being interrupted.
+    pub fn turn_active(&self) -> bool {
+        self.phase.turn_active()
+    }
+
+    /// The turn whose provider events the runtime still accepts.
+    pub fn active_turn_id(&self) -> Option<&ChatTurnId> {
+        self.phase.active_turn_id()
+    }
+
+    pub fn has_open_requests(&self) -> bool {
+        self.phase.has_open_requests()
+    }
+
+    /// The kind of an open request of the running turn.
+    pub fn open_request(&self, request_id: &ProviderRequestId) -> Option<OpenRequestKind> {
+        self.phase.open_request(request_id)
+    }
+
+    /// Applies `input` to the phase, or leaves it unchanged when the move is not allowed.
+    pub(crate) fn apply(&mut self, input: RuntimeInput) -> Result<(), RuntimeRejection> {
+        self.phase.apply(input)
+    }
+
     /// Reports whether an owner in this state holds nothing a fresh owner would not recreate.
     fn can_evict(&self, now: Instant, idle_timeout: Duration) -> bool {
         self.accepting_commands
             && self.session_id.is_none()
-            && self.session_state == ProviderSessionState::Stopped
-            && !self.turn_active
-            && !self.pending_request
+            && self.phase == RuntimePhase::Stopped
             && !self.terminal_linked_operation
             && now.saturating_duration_since(self.last_activity) >= idle_timeout
     }
 
     pub fn can_idle_stop(&self, now: Instant, idle_timeout: Duration) -> bool {
         self.accepting_commands
-            && self.session_state == ProviderSessionState::Ready
-            && !self.turn_active
-            && !self.pending_request
+            && self.phase.is_ready()
             && !self.terminal_linked_operation
             && now.saturating_duration_since(self.last_activity) >= idle_timeout
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl ThreadRuntimeSnapshot {
+    /// Returns a snapshot in `phase`, for tests that read a runtime state directly.
+    #[doc(hidden)]
+    pub fn in_phase_for_test(phase: RuntimePhase) -> Self {
+        Self {
+            phase,
+            ..Self::stopped()
+        }
     }
 }
 
@@ -575,7 +617,6 @@ impl ChatRuntimeRegistry {
         owners.retain(|_, owner| !owner.can_evict(now, idle_timeout));
         let (sender, receiver) = mpsc::channel(capacity.max(1));
         let snapshot = Arc::new(Mutex::new(ThreadRuntimeSnapshot::stopped()));
-        let generation = Arc::new(AtomicU64::new(0));
         let worker_thread_id = thread_id.clone();
         let worker_snapshot = Arc::clone(&snapshot);
         let idle_timeout = self.idle_timeout.clone();
@@ -588,7 +629,6 @@ impl ChatRuntimeRegistry {
                 worker_thread_id,
                 receiver,
                 worker_snapshot,
-                generation,
                 idle_timeout,
                 interrupt_confirmation_timeout,
             )
@@ -651,12 +691,12 @@ impl ChatRuntimeRegistry {
         for owner in &owners {
             let snapshot = owner.snapshot()?;
             if !matches!(
-                snapshot.session_state,
+                snapshot.session_state(),
                 ProviderSessionState::Stopped | ProviderSessionState::Failed
             ) {
                 live_processes += 1;
             }
-            if snapshot.turn_active {
+            if snapshot.turn_active() {
                 active_turns += 1;
             }
         }
@@ -717,7 +757,7 @@ impl ChatRuntimeRegistry {
         let mut count = 0u64;
         for owner in &owners {
             if !matches!(
-                owner.snapshot()?.session_state,
+                owner.snapshot()?.session_state(),
                 ProviderSessionState::Stopped | ProviderSessionState::Failed
             ) {
                 count = count.saturating_add(1);
@@ -864,18 +904,15 @@ mod event_scope_tests {
     #[test]
     fn thread_level_compaction_bypasses_active_turn_correlation() {
         let active_turn_id = ChatTurnId::new("turn-1".to_string()).unwrap();
-        let snapshot = Arc::new(Mutex::new(ThreadRuntimeSnapshot {
-            session_id: None,
-            session_state: ProviderSessionState::Active,
-            capabilities: crate::models::ProviderCapabilities::default(),
-            active_turn_id: Some(active_turn_id),
-            turn_active: true,
-            pending_request: false,
-            terminal_linked_operation: false,
-            accepting_commands: true,
-            generation: 1,
-            last_activity: Instant::now(),
-        }));
+        let mut state = ThreadRuntimeSnapshot::stopped();
+        for input in [
+            RuntimeInput::SessionStarting,
+            RuntimeInput::SessionOpened,
+            RuntimeInput::TurnAccepted(active_turn_id),
+        ] {
+            state.apply(input).unwrap();
+        }
+        let snapshot = Arc::new(Mutex::new(state));
         let event = CanonicalRuntimeEvent {
             schema_version: CANONICAL_EVENT_SCHEMA_VERSION,
             event_id: ChatEventId::new("event-compaction".to_string()).unwrap(),

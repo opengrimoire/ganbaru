@@ -78,7 +78,6 @@ pub struct CodexRouteState {
     pub provider_thread_id: Option<String>,
     pub active_chat_turn_id: Option<ChatTurnId>,
     pub active_provider_turn_id: Option<String>,
-    pub session_state: ProviderSessionState,
     pub thread_state: ChatThreadState,
     pub modes: TurnModeSnapshot,
     pub effective_model_id: Option<ModelId>,
@@ -100,12 +99,21 @@ pub struct CodexRouteState {
 const MAX_ABANDONED_PROVIDER_TURNS: usize = 8;
 
 impl CodexRouteState {
+    /// The state a session change reports as its previous state: `Active` while a chat turn
+    /// runs, `Ready` otherwise. The runtime owns the session state; this only labels events.
+    pub fn running_session_state(&self) -> ProviderSessionState {
+        if self.active_chat_turn_id.is_some() {
+            ProviderSessionState::Active
+        } else {
+            ProviderSessionState::Ready
+        }
+    }
+
     pub fn new(modes: TurnModeSnapshot, model_id: Option<ModelId>) -> Self {
         Self {
             provider_thread_id: None,
             active_chat_turn_id: None,
             active_provider_turn_id: None,
-            session_state: ProviderSessionState::Starting,
             thread_state: ChatThreadState::Active,
             modes,
             effective_model_id: model_id,

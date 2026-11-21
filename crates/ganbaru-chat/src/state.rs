@@ -2,6 +2,10 @@
 
 use super::models::{ChatError, ChatResult, ChatThreadState, ChatTurnState, ProviderSessionState};
 
+/// Legal moves of the reported provider session state. The runtime derives the state from
+/// [`crate::runtime::phase::RuntimePhase`], and a test checks every phase move against this table.
+/// An interrupt reports `Stopping` until the provider settles or refuses it, so `Stopping` returns
+/// to a running state, and a provider whose process ends reports `Stopped` from any running state.
 pub const SESSION_TRANSITIONS: &[(ProviderSessionState, ProviderSessionState)] = &[
     (
         ProviderSessionState::Stopped,
@@ -13,9 +17,14 @@ pub const SESSION_TRANSITIONS: &[(ProviderSessionState, ProviderSessionState)] =
         ProviderSessionState::Stopping,
     ),
     (ProviderSessionState::Starting, ProviderSessionState::Failed),
+    (
+        ProviderSessionState::Starting,
+        ProviderSessionState::Stopped,
+    ),
     (ProviderSessionState::Ready, ProviderSessionState::Active),
     (ProviderSessionState::Ready, ProviderSessionState::Stopping),
     (ProviderSessionState::Ready, ProviderSessionState::Failed),
+    (ProviderSessionState::Ready, ProviderSessionState::Stopped),
     (ProviderSessionState::Active, ProviderSessionState::Ready),
     (
         ProviderSessionState::Active,
@@ -27,6 +36,7 @@ pub const SESSION_TRANSITIONS: &[(ProviderSessionState, ProviderSessionState)] =
     ),
     (ProviderSessionState::Active, ProviderSessionState::Stopping),
     (ProviderSessionState::Active, ProviderSessionState::Failed),
+    (ProviderSessionState::Active, ProviderSessionState::Stopped),
     (
         ProviderSessionState::WaitingForApproval,
         ProviderSessionState::Active,
@@ -44,6 +54,10 @@ pub const SESSION_TRANSITIONS: &[(ProviderSessionState, ProviderSessionState)] =
         ProviderSessionState::Failed,
     ),
     (
+        ProviderSessionState::WaitingForApproval,
+        ProviderSessionState::Stopped,
+    ),
+    (
         ProviderSessionState::WaitingForUserInput,
         ProviderSessionState::Active,
     ),
@@ -58,12 +72,26 @@ pub const SESSION_TRANSITIONS: &[(ProviderSessionState, ProviderSessionState)] =
     (
         ProviderSessionState::WaitingForUserInput,
         ProviderSessionState::Failed,
+    ),
+    (
+        ProviderSessionState::WaitingForUserInput,
+        ProviderSessionState::Stopped,
     ),
     (
         ProviderSessionState::Stopping,
         ProviderSessionState::Stopped,
     ),
     (ProviderSessionState::Stopping, ProviderSessionState::Failed),
+    (ProviderSessionState::Stopping, ProviderSessionState::Ready),
+    (ProviderSessionState::Stopping, ProviderSessionState::Active),
+    (
+        ProviderSessionState::Stopping,
+        ProviderSessionState::WaitingForApproval,
+    ),
+    (
+        ProviderSessionState::Stopping,
+        ProviderSessionState::WaitingForUserInput,
+    ),
     (ProviderSessionState::Failed, ProviderSessionState::Starting),
     (ProviderSessionState::Failed, ProviderSessionState::Stopping),
     (ProviderSessionState::Failed, ProviderSessionState::Stopped),

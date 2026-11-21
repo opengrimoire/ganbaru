@@ -241,12 +241,11 @@ async fn fail_session(
             let failed = resources
                 .normalizer
                 .failed_event(&mut state, source, &error.message)?;
-            let previous_state = if failed.is_some() {
+            let previous_state = if failed.is_some() || state.active_chat_turn_id.is_some() {
                 ProviderSessionState::Active
             } else {
-                state.session_state
+                ProviderSessionState::Ready
             };
-            state.session_state = ProviderSessionState::Failed;
             let changed = resources.normalizer.external_event(
                 &state,
                 source,
@@ -329,14 +328,6 @@ async fn route_provider_request(
         if !claims_routed_plan(&mut state, &routed.event, control_request_id) {
             return Ok(());
         }
-        if provider_request_id.is_some() {
-            state.session_state = if matches!(&routed.event, CanonicalEvent::UserInputRequested(_))
-            {
-                ProviderSessionState::WaitingForUserInput
-            } else {
-                ProviderSessionState::WaitingForApproval
-            };
-        }
         resources.normalizer.external_event(
             &state,
             "control/can_use_tool",
@@ -384,10 +375,7 @@ async fn route_withdrawn_request(
         }
     };
     let event = {
-        let mut state = resources.route.lock().map_err(|_| state_error())?;
-        if state.active_chat_turn_id.is_some() {
-            state.session_state = ProviderSessionState::Active;
-        }
+        let state = resources.route.lock().map_err(|_| state_error())?;
         resources.normalizer.external_event(
             &state,
             "control/cancel_request",
@@ -446,7 +434,7 @@ async fn route_closed(resources: &ClaudeRouterResources) {
             let interrupted = resources
                 .normalizer
                 .interrupted_event(&mut state, "Claude stream closed")?;
-            state.session_state = if expected {
+            let closed_state = if expected {
                 ProviderSessionState::Stopped
             } else {
                 ProviderSessionState::Failed
@@ -462,7 +450,7 @@ async fn route_closed(resources: &ClaudeRouterResources) {
                     } else {
                         ProviderSessionState::Ready
                     },
-                    state: state.session_state,
+                    state: closed_state,
                     reason: Some(if expected {
                         "Claude session stopped".to_string()
                     } else {

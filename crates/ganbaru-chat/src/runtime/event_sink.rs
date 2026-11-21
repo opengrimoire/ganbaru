@@ -1,10 +1,12 @@
 use super::helpers::stale_event_error;
 use super::*;
 
+/// Forwards one provider session's events to the durable sink and applies them to the runtime
+/// phase. Events from an earlier session, another thread, or a turn the phase no longer holds
+/// are recorded as late warnings instead.
 pub(super) struct GenerationEventSink {
     pub(super) thread_id: ChatThreadId,
     pub(super) generation: u64,
-    pub(super) current_generation: Arc<AtomicU64>,
     pub(super) snapshot: Arc<Mutex<ThreadRuntimeSnapshot>>,
     pub(super) inner: Arc<dyn ProviderEventSink>,
 }
@@ -12,39 +14,19 @@ pub(super) struct GenerationEventSink {
 impl ProviderEventSink for GenerationEventSink {
     fn emit<'a>(&'a self, event: CanonicalRuntimeEvent) -> DriverFuture<'a, ()> {
         Box::pin(async move {
-            if self.current_generation.load(Ordering::Acquire) != self.generation {
+            if let Some(reason) = self.late_reason(&event) {
                 self.inner
-                    .emit(late_event_warning(
-                        event,
-                        &self.thread_id,
-                        "inactive_session_generation",
-                    ))
-                    .await?;
-                return Err(stale_event_error());
-            }
-            if event.thread_id != self.thread_id {
-                self.inner
-                    .emit(late_event_warning(
-                        event,
-                        &self.thread_id,
-                        "mismatched_thread",
-                    ))
-                    .await?;
-                return Err(stale_event_error());
-            }
-            if !event_matches_active_turn(&self.snapshot, &event) {
-                self.inner
-                    .emit(late_event_warning(
-                        event,
-                        &self.thread_id,
-                        "settled_or_mismatched_turn",
-                    ))
+                    .emit(late_event_warning(event, &self.thread_id, reason))
                     .await?;
                 return Err(stale_event_error());
             }
             self.inner.emit(event.clone()).await?;
-            if self.current_generation.load(Ordering::Acquire) == self.generation {
-                update_snapshot_for_event(&self.snapshot, &event);
+            // The generation is checked again in the same critical section that applies the
+            // event, so a session that ended while the event was persisted is never changed.
+            if let Ok(mut state) = self.snapshot.lock()
+                && state.generation == self.generation
+            {
+                apply_event(&mut state, &event);
             }
             Ok(())
         })
@@ -55,10 +37,34 @@ impl ProviderEventSink for GenerationEventSink {
     }
 }
 
+impl GenerationEventSink {
+    fn late_reason(&self, event: &CanonicalRuntimeEvent) -> Option<&'static str> {
+        let Ok(state) = self.snapshot.lock() else {
+            return Some("inactive_session_generation");
+        };
+        if state.generation != self.generation {
+            Some("inactive_session_generation")
+        } else if event.thread_id != self.thread_id {
+            Some("mismatched_thread")
+        } else if !event_matches_turn(&state, event) {
+            Some("settled_or_mismatched_turn")
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(test)]
 pub(super) fn event_matches_active_turn(
     snapshot: &Arc<Mutex<ThreadRuntimeSnapshot>>,
     event: &CanonicalRuntimeEvent,
 ) -> bool {
+    snapshot
+        .lock()
+        .is_ok_and(|state| event_matches_turn(&state, event))
+}
+
+fn event_matches_turn(state: &ThreadRuntimeSnapshot, event: &CanonicalRuntimeEvent) -> bool {
     if event.turn_id.is_none()
         && matches!(
             &event.event,
@@ -92,13 +98,7 @@ pub(super) fn event_matches_active_turn(
             | CanonicalEvent::ToolProgress(_)
             | CanonicalEvent::FilesPersisted(_)
     );
-    if !requires_active_turn {
-        return true;
-    }
-    snapshot
-        .lock()
-        .map(|state| event.turn_id.as_ref() == state.active_turn_id.as_ref())
-        .unwrap_or(false)
+    !requires_active_turn || event.turn_id.as_ref() == state.active_turn_id()
 }
 
 fn late_event_warning(
@@ -122,59 +122,63 @@ fn late_event_warning(
     event
 }
 
-fn update_snapshot_for_event(
-    snapshot: &Arc<Mutex<ThreadRuntimeSnapshot>>,
-    event: &CanonicalRuntimeEvent,
-) {
-    let Ok(mut state) = snapshot.lock() else {
-        return;
-    };
+/// Applies a persisted provider event to the snapshot.
+fn apply_event(state: &mut ThreadRuntimeSnapshot, event: &CanonicalRuntimeEvent) {
     state.last_activity = Instant::now();
+    if let Some(input) = phase_input(event)
+        && let Err(rejection) = state.apply(input)
+    {
+        eprintln!(
+            "Chat runtime ignored a provider {} event while the session was {:?}",
+            rejection.input, rejection.from
+        );
+    }
     match &event.event {
-        CanonicalEvent::SessionStarted(event) => {
-            state.session_id = Some(event.session_id.clone());
-            state.session_state = event.state;
-            state.capabilities = event.capability_overrides.clone();
+        CanonicalEvent::SessionStarted(started) => {
+            state.session_id = Some(started.session_id.clone());
+            state.capabilities = started.capability_overrides.clone();
         }
-        CanonicalEvent::SessionStateChanged(event) => state.session_state = event.state,
-        CanonicalEvent::SessionExited(event) => {
+        CanonicalEvent::SessionExited(_) => {
             state.session_id = None;
-            state.session_state = if event.expected {
-                ProviderSessionState::Stopped
-            } else {
-                ProviderSessionState::Failed
-            };
-            state.active_turn_id = None;
-            state.turn_active = false;
-            state.pending_request = false;
             state.capabilities = crate::models::ProviderCapabilities::default();
         }
-        CanonicalEvent::TurnStarted(_) => {
-            state.active_turn_id = event.turn_id.clone();
-            state.turn_active = true;
-            state.session_state = ProviderSessionState::Active;
-        }
-        CanonicalEvent::TurnCompleted(_) | CanonicalEvent::TurnAborted(_) => {
-            state.active_turn_id = None;
-            state.turn_active = false;
-            state.pending_request = false;
-            state.session_state = ProviderSessionState::Ready;
-        }
-        CanonicalEvent::RequestOpened(_) => {
-            state.pending_request = true;
-            state.session_state = ProviderSessionState::WaitingForApproval;
-        }
-        CanonicalEvent::UserInputRequested(_) => {
-            state.pending_request = true;
-            state.session_state = ProviderSessionState::WaitingForUserInput;
-        }
-        CanonicalEvent::RequestResolved(_) | CanonicalEvent::UserInputResolved(_) => {
-            state.pending_request = false;
-            state.session_state = ProviderSessionState::Active;
-        }
-        CanonicalEvent::RuntimeError(event) if !event.recoverable => {
-            state.session_state = ProviderSessionState::Failed;
-        }
         _ => {}
+    }
+}
+
+/// The phase input a provider event reports, if any. A provider's own `Ready`, `Active`, or
+/// waiting state is ignored: the runtime derives those from turns and requests.
+fn phase_input(event: &CanonicalRuntimeEvent) -> Option<RuntimeInput> {
+    match &event.event {
+        CanonicalEvent::SessionStateChanged(changed) => match changed.state {
+            ProviderSessionState::Stopped => Some(RuntimeInput::ProviderStopped),
+            ProviderSessionState::Failed => Some(RuntimeInput::ProviderFailed),
+            _ => None,
+        },
+        CanonicalEvent::SessionExited(exited) => Some(RuntimeInput::ProviderExited {
+            expected: exited.expected,
+        }),
+        CanonicalEvent::TurnStarted(_) => event.turn_id.clone().map(RuntimeInput::TurnStarted),
+        CanonicalEvent::TurnCompleted(_) | CanonicalEvent::TurnAborted(_) => {
+            event.turn_id.clone().map(RuntimeInput::TurnSettled)
+        }
+        CanonicalEvent::RequestOpened(opened) => Some(RuntimeInput::RequestOpened {
+            request_id: opened.request_id.clone(),
+            kind: OpenRequestKind::Approval,
+        }),
+        CanonicalEvent::UserInputRequested(requested) => Some(RuntimeInput::RequestOpened {
+            request_id: requested.request_id.clone(),
+            kind: OpenRequestKind::UserInput,
+        }),
+        CanonicalEvent::RequestResolved(resolved) => {
+            Some(RuntimeInput::RequestClosed(resolved.request_id.clone()))
+        }
+        CanonicalEvent::UserInputResolved(resolved) => {
+            Some(RuntimeInput::RequestClosed(resolved.request_id.clone()))
+        }
+        CanonicalEvent::RuntimeError(error) if !error.recoverable => {
+            Some(RuntimeInput::ProviderFailed)
+        }
+        _ => None,
     }
 }

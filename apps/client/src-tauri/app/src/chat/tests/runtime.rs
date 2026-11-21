@@ -9,12 +9,15 @@ use crate::chat::workspace::mutation::{
 use ganbaru_chat::repository::events::AppendCanonicalEventRequest;
 use ganbaru_chat::repository::rebuild::rebuild_thread_projections;
 use ganbaru_chat::repository::recovery::recover_orphaned_turns;
-use ganbaru_chat::runtime::{ChatRuntimeRegistry, ThreadRuntimeCommand, ThreadRuntimeSnapshot};
+use ganbaru_chat::runtime::{
+    ChatRuntimeRegistry, OpenRequestKind, RuntimeInput, RuntimePhase, ThreadRuntimeCommand,
+    ThreadRuntimeSnapshot,
+};
 use ganbaru_chat_contracts::events::CanonicalEvent;
 use ganbaru_chat_contracts::models::{ChatChangeNotification, ChatError, ChatResult, UtcTimestamp};
 use ganbaru_chat_contracts::models::{
-    ChatCheckpointId, ChatCommandContext, ChatCommandId, ChatErrorCode, ChatThreadId,
-    ProviderFamilyId, ProviderSessionState, RollbackRequest,
+    ChatCheckpointId, ChatCommandContext, ChatCommandId, ChatErrorCode, ChatThreadId, ChatTurnId,
+    ProviderFamilyId, ProviderRequestId, ProviderSessionState, RollbackRequest,
 };
 use ganbaru_chat_providers::ProviderEventSink;
 use std::collections::HashSet;
@@ -109,8 +112,8 @@ fn bounded_runtime_queue_reports_busy_without_dropping_the_first_command() {
             .owner_for_test(ChatThreadId::new("thread-busy").unwrap(), 1)
             .unwrap();
         owner
-            .try_command(ThreadRuntimeCommand::SessionState(
-                ProviderSessionState::Ready,
+            .try_command(ThreadRuntimeCommand::ApplyPhaseInput(
+                RuntimeInput::SessionStarting,
             ))
             .unwrap();
         let error = owner.try_command(ThreadRuntimeCommand::Touch).unwrap_err();
@@ -118,8 +121,8 @@ fn bounded_runtime_queue_reports_busy_without_dropping_the_first_command() {
         start_worker.send(()).unwrap();
         tokio::time::sleep(Duration::from_millis(10)).await;
         assert_eq!(
-            owner.snapshot().unwrap().session_state,
-            ProviderSessionState::Ready
+            owner.snapshot().unwrap().session_state(),
+            ProviderSessionState::Starting
         );
     });
 }
@@ -128,24 +131,36 @@ fn bounded_runtime_queue_reports_busy_without_dropping_the_first_command() {
 fn idle_stop_requires_ready_unprotected_session_and_shutdown_is_visible() {
     tauri::async_runtime::block_on(async {
         let now = Instant::now();
-        let mut snapshot = ThreadRuntimeSnapshot {
-            session_id: None,
-            session_state: ProviderSessionState::Ready,
-            capabilities: ganbaru_chat_contracts::models::ProviderCapabilities::default(),
-            active_turn_id: None,
-            turn_active: false,
-            pending_request: false,
-            terminal_linked_operation: false,
-            accepting_commands: true,
-            generation: 1,
-            last_activity: now - Duration::from_secs(60),
+        let idle_snapshot = |inputs: &[RuntimeInput]| {
+            let mut phase = RuntimePhase::Stopped;
+            for input in [RuntimeInput::SessionStarting, RuntimeInput::SessionOpened]
+                .iter()
+                .chain(inputs)
+            {
+                phase.apply(input.clone()).unwrap();
+            }
+            let mut snapshot = ThreadRuntimeSnapshot::in_phase_for_test(phase);
+            snapshot.generation = 1;
+            snapshot.last_activity = now - Duration::from_secs(60);
+            snapshot
         };
-        assert!(snapshot.can_idle_stop(now, Duration::from_secs(30)));
-        snapshot.turn_active = true;
-        assert!(!snapshot.can_idle_stop(now, Duration::from_secs(30)));
-        snapshot.turn_active = false;
-        snapshot.pending_request = true;
-        assert!(!snapshot.can_idle_stop(now, Duration::from_secs(30)));
+        let turn = ChatTurnId::new("turn-idle").unwrap();
+        assert!(idle_snapshot(&[]).can_idle_stop(now, Duration::from_secs(30)));
+        assert!(
+            !idle_snapshot(&[RuntimeInput::TurnAccepted(turn.clone())])
+                .can_idle_stop(now, Duration::from_secs(30))
+        );
+        assert!(
+            !idle_snapshot(&[
+                RuntimeInput::TurnAccepted(turn.clone()),
+                RuntimeInput::TurnStarted(turn),
+                RuntimeInput::RequestOpened {
+                    request_id: ProviderRequestId::new("request-idle").unwrap(),
+                    kind: OpenRequestKind::Approval,
+                },
+            ])
+            .can_idle_stop(now, Duration::from_secs(30))
+        );
 
         let registry = ChatRuntimeRegistry::default();
         let mutations = ChatWorkspaceMutationRegistry::default();
@@ -158,7 +173,7 @@ fn idle_stop_requires_ready_unprotected_session_and_shutdown_is_visible() {
             .unwrap();
         let stopped = owner.snapshot().unwrap();
         assert!(!stopped.accepting_commands);
-        assert_eq!(stopped.session_state, ProviderSessionState::Stopped);
+        assert_eq!(stopped.session_state(), ProviderSessionState::Stopped);
     });
 }
 
@@ -277,8 +292,23 @@ fn fake_driver_streams_approval_stops_restarts_and_rejects_late_events() {
             .await
             .unwrap();
         assert_eq!(
-            owner.snapshot().unwrap().session_state,
+            owner.snapshot().unwrap().session_state(),
             ProviderSessionState::WaitingForApproval
+        );
+        let mut unknown = approval_request("fake-turn");
+        unknown.provider_request_id = ProviderRequestId::new("not-open").unwrap();
+        let unknown_error = owner
+            .resolve_approval(
+                unknown,
+                operation_context("approve-unknown", Duration::from_secs(1)),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(unknown_error.code, ChatErrorCode::InvalidStateTransition);
+        assert_eq!(
+            owner.snapshot().unwrap().session_state(),
+            ProviderSessionState::WaitingForApproval,
+            "only the open request can be answered"
         );
         owner
             .resolve_approval(
@@ -288,7 +318,7 @@ fn fake_driver_streams_approval_stops_restarts_and_rejects_late_events() {
             .await
             .unwrap();
         assert_eq!(
-            owner.snapshot().unwrap().session_state,
+            owner.snapshot().unwrap().session_state(),
             ProviderSessionState::Ready
         );
         let late_turn_error = first.emit_late_content("fake-turn").await.unwrap_err();
@@ -339,9 +369,15 @@ fn fake_driver_streams_approval_stops_restarts_and_rejects_late_events() {
                 .is_err()
         );
         assert_eq!(
-            owner.snapshot().unwrap().session_state,
+            owner.snapshot().unwrap().session_state(),
             ProviderSessionState::Failed
         );
+        let failed = owner.snapshot().unwrap();
+        assert!(
+            !failed.turn_active(),
+            "a failed dispatch leaves no running turn"
+        );
+        assert_eq!(failed.active_turn_id(), None);
 
         let restarted = Arc::new(FakeDriverControl::default());
         let sink: Arc<dyn ProviderEventSink> =
@@ -356,7 +392,7 @@ fn fake_driver_streams_approval_stops_restarts_and_rejects_late_events() {
             .await
             .unwrap();
         assert_eq!(
-            owner.snapshot().unwrap().session_state,
+            owner.snapshot().unwrap().session_state(),
             ProviderSessionState::Ready
         );
     });
@@ -399,7 +435,7 @@ fn unsupported_provider_rollback_fails_without_corrupting_the_session() {
             .unwrap_err();
         assert_eq!(error.code, ChatErrorCode::CapabilityUnsupported);
         assert_eq!(
-            owner.snapshot().unwrap().session_state,
+            owner.snapshot().unwrap().session_state(),
             ProviderSessionState::Ready
         );
     });
@@ -573,7 +609,7 @@ fn reading_unknown_threads_creates_no_runtime_owner() {
         let thread_id = ChatThreadId::new("thread-unknown").unwrap();
         assert!(registry.existing_owner(&thread_id).unwrap().is_none());
         let snapshot = registry.snapshot(&thread_id).unwrap();
-        assert_eq!(snapshot.session_state, ProviderSessionState::Stopped);
+        assert_eq!(snapshot.session_state(), ProviderSessionState::Stopped);
         assert!(snapshot.session_id.is_none());
         assert!(registry.existing_owner(&thread_id).unwrap().is_none());
         assert!(registry.owners().unwrap().is_empty());
@@ -594,11 +630,11 @@ fn stopped_unreferenced_owners_are_evicted_after_the_idle_timeout() {
         drop(registry.owner(stale.clone()).unwrap());
         let held_owner = registry.owner(held.clone()).unwrap();
         let ready_owner = registry.owner(ready.clone()).unwrap();
-        ready_owner
-            .try_command(ThreadRuntimeCommand::SessionState(
-                ProviderSessionState::Ready,
-            ))
-            .unwrap();
+        for input in [RuntimeInput::SessionStarting, RuntimeInput::SessionOpened] {
+            ready_owner
+                .try_command(ThreadRuntimeCommand::ApplyPhaseInput(input))
+                .unwrap();
+        }
         tokio::time::sleep(Duration::from_millis(10)).await;
         drop(ready_owner);
         tokio::time::sleep(Duration::from_millis(40)).await;
@@ -635,7 +671,7 @@ fn ready_session_stops_lazily_and_hung_shutdown_stays_bounded() {
             .unwrap();
         tokio::time::sleep(Duration::from_millis(60)).await;
         assert_eq!(
-            idle_owner.snapshot().unwrap().session_state,
+            idle_owner.snapshot().unwrap().session_state(),
             ProviderSessionState::Stopped
         );
 
@@ -710,14 +746,17 @@ fn a_provider_update_restarts_only_quiet_idle_sessions_of_its_family() {
         let quiet = Duration::from_millis(80);
         let idle = started_owner(&idle_registry).await;
         let busy = started_owner(&busy_registry).await;
-        busy.try_command(ThreadRuntimeCommand::TurnActive(true))
-            .unwrap();
+        let busy_turn = ChatTurnId::new("turn-busy").unwrap();
+        busy.try_command(ThreadRuntimeCommand::ApplyPhaseInput(
+            RuntimeInput::TurnAccepted(busy_turn.clone()),
+        ))
+        .unwrap();
 
         idle.try_command(restart_after_update("other", quiet))
             .unwrap();
         tokio::time::sleep(Duration::from_millis(160)).await;
         assert_eq!(
-            idle.snapshot().unwrap().session_state,
+            idle.snapshot().unwrap().session_state(),
             ProviderSessionState::Ready
         );
 
@@ -728,24 +767,26 @@ fn a_provider_update_restarts_only_quiet_idle_sessions_of_its_family() {
             .unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(
-            idle.snapshot().unwrap().session_state,
+            idle.snapshot().unwrap().session_state(),
             ProviderSessionState::Ready,
             "a session waits for the quiet period before restarting"
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(
-            idle.snapshot().unwrap().session_state,
+            idle.snapshot().unwrap().session_state(),
             ProviderSessionState::Stopped
         );
         let busy_state = busy.snapshot().unwrap();
-        assert!(busy_state.turn_active, "a running turn is never stopped");
-        assert_ne!(busy_state.session_state, ProviderSessionState::Stopped);
+        assert!(busy_state.turn_active(), "a running turn is never stopped");
+        assert_ne!(busy_state.session_state(), ProviderSessionState::Stopped);
 
-        busy.try_command(ThreadRuntimeCommand::TurnActive(false))
-            .unwrap();
+        busy.try_command(ThreadRuntimeCommand::ApplyPhaseInput(
+            RuntimeInput::TurnSettled(busy_turn),
+        ))
+        .unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(
-            busy.snapshot().unwrap().session_state,
+            busy.snapshot().unwrap().session_state(),
             ProviderSessionState::Stopped
         );
     });
@@ -763,7 +804,7 @@ fn reported_background_work_keeps_an_idle_session_running() {
             .unwrap();
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(
-            owner.snapshot().unwrap().session_state,
+            owner.snapshot().unwrap().session_state(),
             ProviderSessionState::Ready,
             "neither the idle stop nor an update restart cuts off background work"
         );
@@ -772,7 +813,7 @@ fn reported_background_work_keeps_an_idle_session_running() {
         owner.try_command(ThreadRuntimeCommand::Touch).unwrap();
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(
-            owner.snapshot().unwrap().session_state,
+            owner.snapshot().unwrap().session_state(),
             ProviderSessionState::Stopped,
             "the session stops once its background work ends and it stays idle"
         );
@@ -788,7 +829,7 @@ fn a_changed_idle_timeout_reaches_running_sessions() {
         owner.try_command(ThreadRuntimeCommand::Touch).unwrap();
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(
-            owner.snapshot().unwrap().session_state,
+            owner.snapshot().unwrap().session_state(),
             ProviderSessionState::Stopped
         );
     });
@@ -855,14 +896,14 @@ fn an_unconfirmed_interrupt_settles_the_turn_and_stops_the_provider() {
             )
             .await
             .unwrap();
-        assert!(owner.snapshot().unwrap().turn_active);
+        assert!(owner.snapshot().unwrap().turn_active());
         assert_eq!(terminal_events(&control, "ignored-stop"), 0);
 
         let deadline = Instant::now() + Duration::from_secs(5);
         // The fake keeps streaming during the stop, which reports the stop as failed; either way
         // the provider session is gone.
         while !matches!(
-            owner.snapshot().unwrap().session_state,
+            owner.snapshot().unwrap().session_state(),
             ProviderSessionState::Stopped | ProviderSessionState::Failed
         ) {
             assert!(Instant::now() < deadline, "the interrupt never settled");
@@ -888,8 +929,8 @@ fn an_unconfirmed_interrupt_settles_the_turn_and_stops_the_provider() {
                     && aborted.recoverable
         ));
         let snapshot = owner.snapshot().unwrap();
-        assert!(!snapshot.turn_active);
-        assert_eq!(snapshot.active_turn_id, None);
+        assert!(!snapshot.turn_active());
+        assert_eq!(snapshot.active_turn_id(), None);
 
         let late = control.emit_late_abort("ignored-stop").await.unwrap_err();
         assert_eq!(late.code, ChatErrorCode::Conflict);
@@ -908,7 +949,7 @@ fn an_unconfirmed_interrupt_settles_the_turn_and_stops_the_provider() {
             .await
             .unwrap();
         assert_eq!(
-            owner.snapshot().unwrap().session_state,
+            owner.snapshot().unwrap().session_state(),
             ProviderSessionState::Ready
         );
     });
@@ -952,7 +993,7 @@ fn a_confirmed_interrupt_settles_once_without_the_watchdog() {
         control.emit_late_abort("confirmed-stop").await.unwrap();
         tokio::time::sleep(timeout * 3).await;
         let snapshot = owner.snapshot().unwrap();
-        assert_eq!(snapshot.session_state, ProviderSessionState::Ready);
+        assert_eq!(snapshot.session_state(), ProviderSessionState::Ready);
         assert_eq!(terminal_events(&control, "confirmed-stop"), 1);
         assert!(!control.events().iter().any(|event| {
             matches!(&event.event, CanonicalEvent::RuntimeWarning(warning) if warning.code == "provider_interrupt_unconfirmed")

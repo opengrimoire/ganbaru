@@ -416,7 +416,6 @@ impl ProviderDriver for CursorProviderDriver {
                     ));
                 }
                 state.active_turn_id = Some(request.turn_id.clone());
-                state.session_state = ProviderSessionState::Active;
                 state.modes = request.modes;
                 state.model_id = request.model_id.clone();
                 state.config_options = setup.config_options;

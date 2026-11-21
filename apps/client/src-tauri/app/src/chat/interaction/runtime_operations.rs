@@ -207,7 +207,7 @@ pub(crate) async fn stop_session(
                 .session_id
                 .clone()
                 .ok_or_else(session_not_running_error)?,
-            runtime_snapshot.active_turn_id.clone().ok_or_else(|| {
+            runtime_snapshot.active_turn_id().cloned().ok_or_else(|| {
                 ChatError::new(
                     ChatErrorCode::InvalidStateTransition,
                     "Chat turn is not running",

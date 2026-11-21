@@ -18,10 +18,14 @@ pub(crate) async fn read_interaction_state(
 ) -> ChatResult<ChatInteractionStateRead> {
     let pool = chat_pool(app.clone(), db_url).await?;
     let snapshot = app.state::<ChatRuntimeRegistry>().snapshot(&thread_id)?;
+    let session_state = snapshot.session_state();
+    let active_turn_id = snapshot
+        .active_turn_id()
+        .map(|value| value.as_str().to_string());
     Ok(ChatInteractionStateRead {
         session_id: snapshot.session_id.map(|value| value.into_inner()),
-        session_state: snapshot.session_state,
-        active_turn_id: snapshot.active_turn_id.map(|value| value.into_inner()),
+        session_state,
+        active_turn_id,
         capabilities: snapshot.capabilities,
         pending_request: read_pending_request(&pool, &thread_id).await?,
         queued_followup: read_queued_followup(&pool, &thread_id).await?,

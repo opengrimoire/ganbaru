@@ -452,7 +452,6 @@ impl ClaudeProviderDriver {
             .map_err(|_| protocol_identifier_error("session UUID"))?;
         let mut route_state = ClaudeRouteState::new(input.modes(), model.clone(), cursor.clone());
         route_state.provider_thread_id = Some(cursor.session_uuid.clone());
-        route_state.session_state = ProviderSessionState::Ready;
         let route = Arc::new(Mutex::new(route_state));
         let pending_requests = Arc::new(Mutex::new(HashMap::new()));
         let normalizer = Arc::new(ClaudeEventNormalizer::new(

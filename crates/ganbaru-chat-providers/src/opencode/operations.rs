@@ -325,7 +325,7 @@ impl ProviderDriver for OpenCodeProviderDriver {
                     ));
                 }
                 state.active_turn_id = Some(request.turn_id.clone());
-                state.session_state = ProviderSessionState::Active;
+                state.busy = true;
                 state.modes = request.modes;
                 live.normalizer.external_event(
                     &state,
@@ -358,7 +358,7 @@ impl ProviderDriver for OpenCodeProviderDriver {
                                         return Ok(None);
                                     }
                                     state.active_turn_id = None;
-                                    state.session_state = ProviderSessionState::Ready;
+                                    state.busy = false;
                                     normalizer
                                         .external_event(
                                             &state,
@@ -385,7 +385,7 @@ impl ProviderDriver for OpenCodeProviderDriver {
                 let aborted = {
                     let mut state = live.route.lock().map_err(|_| driver_state_error())?;
                     state.active_turn_id = None;
-                    state.session_state = ProviderSessionState::Ready;
+                    state.busy = false;
                     live.normalizer.external_event(
                         &state,
                         "turn/dispatch_failed",
@@ -482,7 +482,7 @@ impl ProviderDriver for OpenCodeProviderDriver {
                 let mut state = live.route.lock().map_err(|_| driver_state_error())?;
                 match state.take_interrupted_turn(&request.turn_id) {
                     Some(turn_id) => {
-                        state.session_state = ProviderSessionState::Ready;
+                        state.busy = false;
                         Some(live.normalizer.interrupted_turn(
                             &state,
                             "turn/interrupted",

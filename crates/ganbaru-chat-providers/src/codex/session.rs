@@ -326,12 +326,6 @@ async fn route_server_request(
         }
         return Err(error);
     }
-    if let Ok(mut state) = resources.route.lock() {
-        state.session_state = match method {
-            "item/tool/requestUserInput" => ProviderSessionState::WaitingForUserInput,
-            _ => ProviderSessionState::WaitingForApproval,
-        };
-    }
     Ok(())
 }
 
@@ -707,9 +701,6 @@ pub async fn resolve_codex_approval(
         }),
     )?;
     sink.emit(event).await?;
-    if let Ok(mut state) = route.lock() {
-        state.session_state = ProviderSessionState::Active;
-    }
     Ok(())
 }
 
@@ -760,9 +751,6 @@ pub async fn resolve_codex_user_input(
         }),
     )?;
     sink.emit(event).await?;
-    if let Ok(mut state) = route.lock() {
-        state.session_state = ProviderSessionState::Active;
-    }
     Ok(())
 }
 
@@ -842,9 +830,9 @@ async fn route_closed(resources: &CodexRouterResources) {
         .route
         .lock()
         .map_err(|_| router_state_error())
-        .and_then(|mut state| {
-            let previous = state.session_state;
-            state.session_state = if expected {
+        .and_then(|state| {
+            let previous = state.running_session_state();
+            let closed_state = if expected {
                 ProviderSessionState::Stopped
             } else {
                 ProviderSessionState::Failed
@@ -858,7 +846,7 @@ async fn route_closed(resources: &CodexRouterResources) {
                 CanonicalEvent::SessionStateChanged(SessionStateChangedEvent {
                     session_id: resources.normalizer.session_id(),
                     previous_state: previous,
-                    state: state.session_state,
+                    state: closed_state,
                     reason: Some(if expected {
                         "Codex session stopped".to_string()
                     } else {
@@ -892,10 +880,9 @@ async fn route_oversized(resources: &CodexRouterResources, byte_length: usize) {
         .route
         .lock()
         .map_err(|_| router_state_error())
-        .and_then(|mut state| {
+        .and_then(|state| {
             let malformed = resources.normalizer.oversized_event(&state, byte_length)?;
-            let previous = state.session_state;
-            state.session_state = ProviderSessionState::Failed;
+            let previous = state.running_session_state();
             let closed = resources.normalizer.event(
                 &state,
                 "transport/closed",

@@ -426,7 +426,6 @@ impl ProviderDriver for CodexProviderDriver {
                 }
                 state.active_chat_turn_id = Some(request.turn_id);
                 state.active_provider_turn_id = None;
-                state.session_state = ProviderSessionState::Active;
             }
             if let Err(error) = live
                 .connection
@@ -788,7 +787,6 @@ impl ProviderDriver for CodexProviderDriver {
                         .is_some_and(CodexCapacityRetry::retrying);
                 if !mismatch && !ended {
                     state.active_provider_turn_id = Some(provider_turn_id.as_str().to_string());
-                    state.session_state = ProviderSessionState::Active;
                 }
                 mismatch
             };

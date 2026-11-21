@@ -38,7 +38,6 @@ impl ClaudeEventNormalizer {
                 let provider_id = ProviderThreadId::new(provider_thread.clone())
                     .map_err(|_| protocol_error("session UUID"))?;
                 state.usage.session_model(text(object, "model"));
-                state.session_state = ProviderSessionState::Ready;
                 let mut events = vec![
                     self.event(
                         state,
@@ -244,7 +243,6 @@ impl ClaudeEventNormalizer {
         state.turn_text.clear();
         state.plans.end_turn();
         state.resume_cursor.turn_count = state.resume_cursor.turn_count.saturating_add(1);
-        state.session_state = ProviderSessionState::Ready;
         let turn_id = state.active_chat_turn_id.take();
         let event = if is_success {
             CanonicalEvent::TurnCompleted(TurnCompletedEvent {

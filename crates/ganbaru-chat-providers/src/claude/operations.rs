@@ -348,7 +348,6 @@ impl ProviderDriver for ClaudeProviderDriver {
                     return Err(send_busy_error());
                 }
                 state.active_chat_turn_id = Some(request.turn_id.clone());
-                state.session_state = ProviderSessionState::Active;
                 state.modes = request.modes;
                 state.model_id = effective_model.clone();
                 live.normalizer.external_event(
@@ -405,7 +404,6 @@ impl ProviderDriver for ClaudeProviderDriver {
                     ));
                 }
                 state.active_chat_turn_id = Some(request.turn_id);
-                state.session_state = ProviderSessionState::Active;
                 live.normalizer.external_event(
                     &state,
                     "turn/started",
@@ -511,8 +509,7 @@ impl ProviderDriver for ClaudeProviderDriver {
             let live = self.live_mut(&request.session_id)?;
             resolve_approval(&live.connection.client(), &live.pending_requests, &request).await?;
             let event = {
-                let mut state = live.route.lock().map_err(|_| driver_state_error())?;
-                state.session_state = ProviderSessionState::Active;
+                let state = live.route.lock().map_err(|_| driver_state_error())?;
                 live.normalizer.external_event(
                     &state,
                     "control/approval_resolved",
@@ -541,8 +538,7 @@ impl ProviderDriver for ClaudeProviderDriver {
             let live = self.live_mut(&request.session_id)?;
             resolve_user_input(&live.connection.client(), &live.pending_requests, &request).await?;
             let event = {
-                let mut state = live.route.lock().map_err(|_| driver_state_error())?;
-                state.session_state = ProviderSessionState::Active;
+                let state = live.route.lock().map_err(|_| driver_state_error())?;
                 live.normalizer.external_event(
                     &state,
                     "control/user_input_resolved",
@@ -686,6 +682,5 @@ fn send_busy_error() -> ChatError {
 fn release_active_turn(route: &Mutex<ClaudeRouteState>) {
     if let Ok(mut state) = route.lock() {
         state.active_chat_turn_id = None;
-        state.session_state = ProviderSessionState::Ready;
     }
 }

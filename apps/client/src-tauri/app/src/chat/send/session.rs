@@ -205,8 +205,8 @@ pub(super) async fn ensure_session(
         developer_instructions_delivered,
     } = context;
     let snapshot = owner.snapshot()?;
-    if reuse_existing_session(snapshot.session_id.is_some(), snapshot.session_state)? {
-        let session_id = snapshot.session_id.ok_or_else(|| {
+    if reuse_existing_session(snapshot.session_id.is_some(), snapshot.session_state())? {
+        let session_id = snapshot.session_id.clone().ok_or_else(|| {
             ChatError::new(
                 ChatErrorCode::InvalidStateTransition,
                 "Chat provider session identity is unavailable",
@@ -216,7 +216,7 @@ pub(super) async fn ensure_session(
         validate_modes(&snapshot.capabilities, request.modes)?;
         return Ok(ProviderSessionSnapshot {
             session_id,
-            state: snapshot.session_state,
+            state: snapshot.session_state(),
             provider_thread_id: existing.and_then(|value| value.provider_thread_id.clone()),
             continuation_group_id: continuation_group_id.clone(),
             resume_cursor: existing.and_then(|value| value.resume_cursor.clone()),

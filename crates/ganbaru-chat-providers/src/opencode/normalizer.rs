@@ -36,7 +36,9 @@ pub struct OpenCodeRouteState {
     /// The turn the user interrupted or stopped; when OpenCode reports idle for it before the abort
     /// returns, the turn settles as interrupted rather than completed.
     interrupt_requested: Option<ChatTurnId>,
-    pub session_state: ProviderSessionState,
+    /// Whether OpenCode last reported the session busy or the driver dispatched a turn, so a
+    /// repeated status report emits no state change.
+    pub(super) busy: bool,
     pub modes: TurnModeSnapshot,
     message_roles: HashMap<String, String>,
     rollback_message_id: Option<String>,
@@ -85,7 +87,7 @@ impl OpenCodeRouteState {
             provider_thread_id,
             active_turn_id: None,
             interrupt_requested: None,
-            session_state: ProviderSessionState::Ready,
+            busy: false,
             modes,
             message_roles: HashMap::new(),
             rollback_message_id: None,

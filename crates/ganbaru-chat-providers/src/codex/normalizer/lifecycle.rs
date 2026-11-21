@@ -178,7 +178,6 @@ impl CodexEventNormalizer {
             return Ok(Vec::new());
         }
         state.active_provider_turn_id = Some(provider_turn_id.clone());
-        state.session_state = ProviderSessionState::Active;
         state.changed_files.clear();
         let chat_turn_id = state.active_chat_turn_id.clone();
         let provider_turn = provider_identifier::<ProviderTurnId>(&provider_turn_id)
@@ -259,7 +258,6 @@ impl CodexEventNormalizer {
         stop_reason: Option<String>,
     ) -> ChatResult<CanonicalRuntimeEvent> {
         let chat_turn = state.active_chat_turn_id.clone();
-        state.session_state = ProviderSessionState::Ready;
         state.active_chat_turn_id = None;
         state.active_provider_turn_id = None;
         state.stream_indexes.clear();

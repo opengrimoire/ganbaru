@@ -426,7 +426,6 @@ impl CodexProviderDriver {
             let mut state = route.lock().map_err(|_| driver_state_error())?;
             state.provider_thread_id = Some(provider_thread_id.as_str().to_string());
             state.effective_model_id = Some(effective_model.clone());
-            state.session_state = ProviderSessionState::Ready;
         }
         let started_at = now_utc()?;
         let resume_cursor = VersionedJson {

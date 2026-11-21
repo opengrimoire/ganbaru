@@ -47,9 +47,7 @@ impl OpenCodeEventNormalizer {
             .ok_or_else(|| protocol_error("session status"))?;
         match status {
             "busy" => {
-                let previous = state.session_state;
-                state.session_state = ProviderSessionState::Active;
-                if previous == state.session_state {
+                if std::mem::replace(&mut state.busy, true) {
                     return Ok(Vec::new());
                 }
                 Ok(vec![self.event(
@@ -59,17 +57,15 @@ impl OpenCodeEventNormalizer {
                     None,
                     CanonicalEvent::SessionStateChanged(SessionStateChangedEvent {
                         session_id: self.session_id.clone(),
-                        previous_state: previous,
-                        state: state.session_state,
+                        previous_state: ProviderSessionState::Ready,
+                        state: ProviderSessionState::Active,
                         reason: None,
                     }),
                 )?])
             }
             "idle" => {
-                let previous = state.session_state;
-                state.session_state = ProviderSessionState::Ready;
                 let mut events = Vec::new();
-                if previous != state.session_state {
+                if std::mem::replace(&mut state.busy, false) {
                     events.push(self.event(
                         state,
                         "session.status",
@@ -77,8 +73,8 @@ impl OpenCodeEventNormalizer {
                         None,
                         CanonicalEvent::SessionStateChanged(SessionStateChangedEvent {
                             session_id: self.session_id.clone(),
-                            previous_state: previous,
-                            state: state.session_state,
+                            previous_state: ProviderSessionState::Active,
+                            state: ProviderSessionState::Ready,
                             reason: None,
                         }),
                     )?);
@@ -155,7 +151,7 @@ impl OpenCodeEventNormalizer {
             }),
         )?];
         if let Some(turn_id) = state.active_turn_id.take() {
-            state.session_state = ProviderSessionState::Ready;
+            state.busy = false;
             events.push(self.event(
                 state,
                 "session.error",

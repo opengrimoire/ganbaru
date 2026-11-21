@@ -248,4 +248,40 @@ describe("native Music command projection", () => {
     await Promise.resolve();
     expect(mocks.readFrame).toHaveBeenCalledTimes(2);
   });
+
+  it("shares one subscription between connects made while it is still subscribing", async () => {
+    let finish: (() => void) | undefined;
+    mocks.subscribe.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const client = new NativeMusicSessionClient({ snapshot: vi.fn(), effect: async () => undefined, error: vi.fn() });
+    const first = client.connect();
+    const second = client.connect();
+    expect(second).toBe(first);
+    finish?.();
+    await first;
+    await client.connect();
+    expect(mocks.subscribe).toHaveBeenCalledTimes(1);
+    expect(mocks.host).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns to idle after a failed subscribe so the next connect subscribes again", async () => {
+    mocks.subscribe.mockImplementationOnce(() => { throw new Error("subscribe refused"); });
+    const client = new NativeMusicSessionClient({ snapshot: vi.fn(), effect: async () => undefined, error: vi.fn() });
+    await expect(client.connect()).rejects.toThrow("subscribe refused");
+    await client.connect();
+    expect(mocks.subscribe).toHaveBeenCalledTimes(2);
+    expect(mocks.subscribe.mock.calls[0]?.[0]).not.toEqual(mocks.subscribe.mock.calls[1]?.[0]);
+  });
+
+  it("reads a repeated notice once and acknowledges the repeat without applying it again", async () => {
+    const effect = vi.fn(async () => undefined);
+    const client = new NativeMusicSessionClient({ snapshot: vi.fn(), effect, error: vi.fn() });
+    await client.connect();
+    const value = frame(2, snapshot(2), [{ kind: "pause", generation: 1 }]);
+    receive(value);
+    receive(value);
+    await vi.waitFor(() => expect(mocks.acknowledge).toHaveBeenCalledTimes(3));
+    expect(mocks.readFrame).toHaveBeenCalledTimes(2);
+    expect(effect).toHaveBeenCalledTimes(1);
+    expect(mocks.acknowledge).toHaveBeenLastCalledWith(expect.any(String), 2);
+  });
 });

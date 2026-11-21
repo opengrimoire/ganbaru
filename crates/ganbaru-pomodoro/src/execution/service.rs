@@ -153,7 +153,7 @@ async fn apply_intent(
                 return Err(invalid_state("Only a running focus phase can be paused"));
             }
             session.pause(tx, now_ms, now_ms, "manual").await?;
-            session.state.mode = FocusMode::ManualPause;
+            session.enter_mode(FocusMode::ManualPause)?;
             session.state.paused_prompts_dismissed = false;
             Ok(())
         }
@@ -316,7 +316,7 @@ impl Session {
     ) -> Result<(), FocusExecutionError> {
         self.active_segment()?;
         self.close_pause(tx, now_ms).await?;
-        self.state.mode = FocusMode::Running;
+        self.enter_mode(FocusMode::Running)?;
         self.clear_waits();
         self.update_deadline(tx, now_ms).await
     }
@@ -394,7 +394,7 @@ impl Session {
             && (phase != FocusPhase::Focus
                 || (context.platform == FocusPlatform::Android && !context.foreground))
         {
-            self.state.mode = FocusMode::ReturnWait;
+            self.enter_mode(FocusMode::ReturnWait)?;
             self.state.return_started_at_ms = Some(close_at);
             self.state.paused_prompts_dismissed = false;
             return Ok(());

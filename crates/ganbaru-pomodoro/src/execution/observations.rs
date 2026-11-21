@@ -2,7 +2,7 @@ use sqlx::{Sqlite, Transaction};
 
 use super::decisions::*;
 use super::models::*;
-use super::mutations::{Continuation, Session};
+use super::mutations::{Continuation, Session, expect_one_row};
 use super::persistence::*;
 
 const ACTIVITY_OBSERVATION_MAX_AGE_MS: i64 = 15_000;
@@ -128,7 +128,7 @@ impl Session {
                 self.close_segment(tx, failed_at_ms, "interrupted", "focus_failed")
                     .await?;
                 self.state.focus_failed_at_ms = Some(failed_at_ms);
-                self.state.mode = FocusMode::IdleFailed;
+                self.enter_mode(FocusMode::IdleFailed)?;
                 Ok(true)
             }
             FocusObservation::Deadline | FocusObservation::ForegroundChanged { .. } => {
@@ -146,7 +146,7 @@ impl Session {
                             let ended_at_ms = segment.planned_end_ms;
                             self.close_segment(tx, ended_at_ms, "completed", "completed")
                                 .await?;
-                            self.state.mode = FocusMode::ReturnWait;
+                            self.enter_mode(FocusMode::ReturnWait)?;
                             self.state.return_started_at_ms = Some(ended_at_ms);
                         } else {
                             self.advance(tx, now_ms, false, context).await?;
@@ -159,9 +159,10 @@ impl Session {
             FocusObservation::Heartbeat => {
                 if !expired {
                     if let Some(run) = self.run.as_ref().filter(|run| run.ended_at_ms.is_none()) {
-                        sqlx::query("UPDATE pomodoro_runs SET last_heartbeat = ? WHERE id = ? AND ended_at IS NULL")
+                        let beat = sqlx::query("UPDATE pomodoro_runs SET last_heartbeat = ? WHERE id = ? AND ended_at IS NULL")
                             .bind(format_timestamp(now_ms)?).bind(&run.id).execute(&mut **tx).await
                             .map_err(|error| format!("Persist native Focus heartbeat: {error}"))?;
+                        expect_one_row(beat, "Persist native Focus heartbeat")?;
                     }
                 }
                 Ok(expired || reconciled)
@@ -225,7 +226,7 @@ impl Session {
             Some(context.now_ms.saturating_sub(pause_started_at_ms)),
         )
         .await?;
-        self.state.mode = FocusMode::IdlePause;
+        self.enter_mode(FocusMode::IdlePause)?;
         self.state.idle_started_at_ms = Some(pause_started_at_ms);
         self.state.idle_detected_at_ms = Some(context.now_ms);
         self.state.idle_overlay_visible_at_ms = None;
@@ -270,7 +271,7 @@ impl Session {
             Some(returned_at_ms.saturating_sub(pause_started_at_ms)),
         )
         .await?;
-        self.state.mode = FocusMode::Suspended;
+        self.enter_mode(FocusMode::Suspended)?;
         self.state.suspend_started_at_ms = Some(pause_started_at_ms);
         self.state.suspend_returned_at_ms = Some(returned_at_ms);
         self.state.paused_prompts_dismissed = false;
@@ -323,7 +324,7 @@ impl Session {
             .unwrap_or(&run.configuration)
             != &commitment.configuration;
         if deadline_changed {
-            sqlx::query(
+            let refreshed = sqlx::query(
                 "UPDATE pomodoro_runs SET planned_end = ? WHERE id = ? AND ended_at IS NULL",
             )
             .bind(format_timestamp(commitment.end_ms)?)
@@ -331,6 +332,7 @@ impl Session {
             .execute(&mut **tx)
             .await
             .map_err(|error| format!("Refresh canonical Focus event deadline: {error}"))?;
+            expect_one_row(refreshed, "Refresh canonical Focus event deadline")?;
             self.run
                 .as_mut()
                 .ok_or_else(|| invalid_state("Focus run disappeared"))?
@@ -383,7 +385,7 @@ impl Session {
             // still gated by explicit return; no zero-duration phase is fabricated.
             self.close_segment(tx, context.now_ms, "completed", "completed")
                 .await?;
-            self.state.mode = FocusMode::ReturnWait;
+            self.enter_mode(FocusMode::ReturnWait)?;
             self.state.return_started_at_ms = Some(context.now_ms);
             return Ok(true);
         }
@@ -412,7 +414,7 @@ impl Session {
             };
             self.pause(tx, context.now_ms, context.now_ms, reason)
                 .await?;
-            self.state.mode = prior_mode;
+            self.enter_mode(prior_mode)?;
             self.state.paused_prompts_dismissed = prior_prompts_dismissed;
             if prior_mode == FocusMode::IdlePause {
                 self.state.idle_started_at_ms = Some(context.now_ms);
@@ -518,7 +520,7 @@ impl Session {
                 let ended_at_ms = segment.planned_end_ms;
                 self.close_segment(tx, ended_at_ms, "completed", "completed")
                     .await?;
-                self.state.mode = FocusMode::ReturnWait;
+                self.enter_mode(FocusMode::ReturnWait)?;
                 self.state.return_started_at_ms = Some(ended_at_ms);
             }
         }

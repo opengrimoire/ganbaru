@@ -905,3 +905,82 @@ fn execution_competing_starts_accept_only_one_expected_revision() {
         assert_eq!(count, 1);
     });
 }
+
+const ALL_MODES: [FocusMode; 8] = [
+    FocusMode::Stopped,
+    FocusMode::Running,
+    FocusMode::ManualPause,
+    FocusMode::IdlePause,
+    FocusMode::IdleFailed,
+    FocusMode::Suspended,
+    FocusMode::ReturnWait,
+    FocusMode::Expired,
+];
+
+/// The rule each table entry must follow, stated independently of the table.
+fn expected_focus_move(from: FocusMode, to: FocusMode) -> bool {
+    use FocusMode::*;
+    match (from, to) {
+        (Stopped | Expired, next) => next == Running,
+        (_, Stopped | Expired) => true,
+        (Running, Running | ManualPause | IdlePause | Suspended | ReturnWait) => true,
+        (ManualPause | Suspended, Running | ReturnWait) => true,
+        (IdlePause, Running | IdleFailed | ReturnWait) => true,
+        (IdleFailed | ReturnWait, Running) => true,
+        _ => false,
+    }
+}
+
+#[test]
+fn every_focus_mode_pair_is_legal_only_when_the_lifecycle_allows_it() {
+    for from in ALL_MODES {
+        for to in ALL_MODES {
+            assert_eq!(
+                from.can_transition_to(to),
+                expected_focus_move(from, to),
+                "{from:?} -> {to:?}"
+            );
+        }
+    }
+    assert!(
+        FOCUS_MODE_TRANSITIONS
+            .iter()
+            .all(|(from, to)| !(is_closed(*from) && is_closed(*to))),
+        "a closed mode can only start a run"
+    );
+}
+
+fn is_closed(mode: FocusMode) -> bool {
+    matches!(mode, FocusMode::Stopped | FocusMode::Expired)
+}
+
+#[test]
+fn an_illegal_focus_mode_move_is_rejected_without_changing_the_mode() {
+    let mut session = super::mutations::Session {
+        state: ExecutionState {
+            mode: FocusMode::ReturnWait,
+            ..ExecutionState::default()
+        },
+        run: None,
+        segment: None,
+        changed_segments: Vec::new(),
+        local_time: None,
+        planned_blocks: Vec::new(),
+        adaptive_degraded: None,
+    };
+    for illegal in [
+        FocusMode::ManualPause,
+        FocusMode::IdlePause,
+        FocusMode::IdleFailed,
+        FocusMode::Suspended,
+        FocusMode::ReturnWait,
+    ] {
+        let error = session.enter_mode(illegal).unwrap_err();
+        assert_eq!(error.code, FocusErrorCode::InvalidState);
+        assert_eq!(session.state.mode, FocusMode::ReturnWait);
+    }
+    session.enter_mode(FocusMode::Running).unwrap();
+    session.enter_mode(FocusMode::Expired).unwrap();
+    assert!(session.enter_mode(FocusMode::Stopped).is_err());
+    assert_eq!(session.state.mode, FocusMode::Expired);
+}

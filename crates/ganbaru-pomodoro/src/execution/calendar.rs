@@ -4,7 +4,7 @@ use chrono::{Datelike, NaiveDate};
 use sqlx::{Sqlite, Transaction};
 
 use super::models::*;
-use super::mutations::Session;
+use super::mutations::{Session, expect_one_row};
 use super::persistence::*;
 
 /// Native plan output, never a deserializable WebView mutation command.
@@ -170,7 +170,7 @@ async fn apply_reference(
             session.reconcile_calendar(tx, context).await?;
         }
         ReferenceAction::Complete { end_ms, .. } => {
-            sqlx::query(
+            let completed = sqlx::query(
                 "UPDATE pomodoro_runs SET planned_end = ? WHERE id = ? AND ended_at IS NULL",
             )
             .bind(format_timestamp(end_ms)?)
@@ -178,6 +178,7 @@ async fn apply_reference(
             .execute(&mut **tx)
             .await
             .map_err(|error| format!("Apply native Calendar completion deadline: {error}"))?;
+            expect_one_row(completed, "Apply native Calendar completion deadline")?;
             session
                 .run
                 .as_mut()

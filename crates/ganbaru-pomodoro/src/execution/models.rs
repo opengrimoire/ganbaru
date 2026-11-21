@@ -51,6 +51,48 @@ pub enum FocusMode {
     Expired,
 }
 
+/// Every legal Focus mode change. `Stopped` and `Expired` hold no open run; every other
+/// mode belongs to exactly one open run, so only a run start leaves a closed mode and any
+/// open mode can close. `Running` to `Running` is a phase change inside the same run, and
+/// `Running` to a pause mode also restores a pause across a Calendar reconfiguration.
+pub(super) const FOCUS_MODE_TRANSITIONS: &[(FocusMode, FocusMode)] = &[
+    (FocusMode::Stopped, FocusMode::Running),
+    (FocusMode::Expired, FocusMode::Running),
+    (FocusMode::Running, FocusMode::Running),
+    (FocusMode::Running, FocusMode::ManualPause),
+    (FocusMode::Running, FocusMode::IdlePause),
+    (FocusMode::Running, FocusMode::Suspended),
+    (FocusMode::Running, FocusMode::ReturnWait),
+    (FocusMode::Running, FocusMode::Stopped),
+    (FocusMode::Running, FocusMode::Expired),
+    (FocusMode::ManualPause, FocusMode::Running),
+    (FocusMode::ManualPause, FocusMode::ReturnWait),
+    (FocusMode::ManualPause, FocusMode::Stopped),
+    (FocusMode::ManualPause, FocusMode::Expired),
+    (FocusMode::IdlePause, FocusMode::Running),
+    (FocusMode::IdlePause, FocusMode::IdleFailed),
+    (FocusMode::IdlePause, FocusMode::ReturnWait),
+    (FocusMode::IdlePause, FocusMode::Stopped),
+    (FocusMode::IdlePause, FocusMode::Expired),
+    (FocusMode::IdleFailed, FocusMode::Running),
+    (FocusMode::IdleFailed, FocusMode::Stopped),
+    (FocusMode::IdleFailed, FocusMode::Expired),
+    (FocusMode::Suspended, FocusMode::Running),
+    (FocusMode::Suspended, FocusMode::ReturnWait),
+    (FocusMode::Suspended, FocusMode::Stopped),
+    (FocusMode::Suspended, FocusMode::Expired),
+    (FocusMode::ReturnWait, FocusMode::Running),
+    (FocusMode::ReturnWait, FocusMode::Stopped),
+    (FocusMode::ReturnWait, FocusMode::Expired),
+];
+
+impl FocusMode {
+    /// Whether [`FOCUS_MODE_TRANSITIONS`] allows moving from this mode to `next`.
+    pub(super) fn can_transition_to(self, next: Self) -> bool {
+        FOCUS_MODE_TRANSITIONS.contains(&(self, next))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FocusPhase {

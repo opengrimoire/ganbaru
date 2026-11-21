@@ -8,13 +8,15 @@
 use super::support::{json_error, now_timestamp, persistence_error};
 use crate::chat::send_commands::ResolveChatApprovalCommand;
 use ganbaru_chat::coordination::remembered_approvals::{
-    approval_is_live, channel_run_scope, remember_approval, rememberable_approval,
+    RememberedApprovalScope, approval_is_live, channel_run_scope, remember_approval,
+    rememberable_approval,
 };
 use ganbaru_chat::runtime::{ChatRuntimeRegistry, OpenRequestKind};
 use ganbaru_chat_contracts::events::ApprovalDecisionOption;
 use ganbaru_chat_contracts::models::*;
 use serde_json::Value;
 use sqlx::SqlitePool;
+use std::future::Future;
 use std::time::Duration;
 use tauri::Manager;
 
@@ -103,18 +105,26 @@ pub(crate) async fn offered_rule(
         .map(|_| rule))
 }
 
-/// Records the rule of the request a person allows once and chose not to be asked about again,
-/// under the channel's current access. Only an allow-once choice of a request that offers a
-/// rule can be remembered.
+/// The rule an "Allow and don't ask again" choice records, with the channel access it is
+/// recorded under. It is derived and checked before the provider receives the choice.
+#[derive(Debug)]
+pub(super) struct RememberedChoice {
+    scope: RememberedApprovalScope,
+    rule: ChatRememberableApprovalRead,
+}
+
+/// Checks that the request a person allows once and chose not to be asked about again can be
+/// remembered, and derives the rule it records under the channel's current access. Only an
+/// allow-once choice of a request that offers a rule can be remembered.
 ///
 /// # Errors
 ///
-/// Returns a validation error when the request cannot be remembered and a persistence error
-/// when a read or the write fails.
-pub(super) async fn remember_choice(
+/// Returns a validation error when the request cannot be remembered, a conflict when it is no
+/// longer open, and a persistence error when a read fails.
+pub(super) async fn prepare_choice(
     pool: &SqlitePool,
     request: &ResolveChatApprovalCommand,
-) -> ChatResult<()> {
+) -> ChatResult<RememberedChoice> {
     if request.decision.kind != ApprovalDecisionKind::AllowOnce {
         return Err(not_rememberable(
             "Only an allow once choice can be remembered",
@@ -131,15 +141,55 @@ pub(super) async fn remember_choice(
         .ok_or_else(|| {
             not_rememberable("Only requests of agents working in a channel can be remembered")
         })?;
+    Ok(RememberedChoice { scope, rule })
+}
+
+/// Records `choice` for the local person.
+///
+/// # Errors
+///
+/// Returns a persistence error when the write fails.
+async fn record_choice(pool: &SqlitePool, choice: &RememberedChoice) -> ChatResult<()> {
+    let mut connection = pool.acquire().await.map_err(persistence_error)?;
     let now = now_timestamp()?;
     remember_approval(
         &mut connection,
-        &scope,
-        &rule,
+        &choice.scope,
+        &choice.rule,
         LOCAL_PARTICIPANT_ID,
         now.as_str(),
     )
     .await
+}
+
+/// Sends a person's approval choice through `resolve` and records `choice`, when there is one,
+/// only after the provider accepted the choice, so a remembered rule never exists for an
+/// approval the provider did not receive or refused.
+///
+/// # Errors
+///
+/// Returns the error of `resolve`, or a persistence error that says the approval was sent but
+/// not remembered when the rule cannot be recorded after the provider accepted it.
+pub(super) async fn resolve_then_remember(
+    pool: &SqlitePool,
+    choice: Option<RememberedChoice>,
+    resolve: impl Future<Output = ChatResult<DriverOperationReceipt>>,
+) -> ChatResult<DriverOperationReceipt> {
+    let receipt = resolve.await?;
+    let Some(choice) = choice.filter(|_| receipt.accepted) else {
+        return Ok(receipt);
+    };
+    record_choice(pool, &choice).await.map_err(|error| {
+        ChatError::new(
+            ChatErrorCode::Persistence,
+            format!(
+                "The approval was sent, but Ganbaru could not remember it: {}",
+                error.message
+            ),
+            false,
+        )
+    })?;
+    Ok(receipt)
 }
 
 fn not_rememberable(message: &str) -> ChatError {

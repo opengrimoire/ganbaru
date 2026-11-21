@@ -1,6 +1,6 @@
 //! "Allow and don't ask again": which open approvals offer a rule, and which choices record one.
 
-use super::super::remembered_approvals::{offered_rule, remember_choice};
+use super::super::remembered_approvals::{offered_rule, prepare_choice, resolve_then_remember};
 use super::*;
 use crate::chat::send_commands::ResolveChatApprovalCommand;
 
@@ -106,18 +106,33 @@ async fn only_channel_runs_offering_allow_once_offer_a_rule() {
     }
 }
 
+fn receipt(accepted: bool) -> DriverOperationReceipt {
+    DriverOperationReceipt {
+        accepted,
+        operation_id: "resolve-remember".to_string(),
+        detail: None,
+    }
+}
+
 #[tokio::test]
 async fn remembering_records_the_derived_rule_for_a_person_only_with_allow_once() {
     let pool = crate::chat::revocation::tests::pool_with_folder_runs().await;
     open_approval(&pool, &display("command", "pnpm test")).await;
 
-    let denied = remember_choice(&pool, &resolve(ApprovalDecisionKind::Deny, "deny"))
+    let denied = prepare_choice(&pool, &resolve(ApprovalDecisionKind::Deny, "deny"))
         .await
         .unwrap_err();
     assert_eq!(denied.code, ChatErrorCode::Validation);
     assert!(remembered_rules(&pool).await.is_empty());
 
-    remember_choice(&pool, &resolve(ApprovalDecisionKind::AllowOnce, "allow"))
+    let choice = prepare_choice(&pool, &resolve(ApprovalDecisionKind::AllowOnce, "allow"))
+        .await
+        .unwrap();
+    assert!(
+        remembered_rules(&pool).await.is_empty(),
+        "checking a choice records nothing"
+    );
+    resolve_then_remember(&pool, Some(choice), async { Ok(receipt(true)) })
         .await
         .unwrap();
     assert_eq!(
@@ -131,24 +146,70 @@ async fn remembering_records_the_derived_rule_for_a_person_only_with_allow_once(
 }
 
 #[tokio::test]
+async fn no_rule_is_remembered_for_an_approval_the_provider_did_not_accept() {
+    let pool = crate::chat::revocation::tests::pool_with_folder_runs().await;
+    open_approval(&pool, &display("command", "pnpm test")).await;
+    let allow = resolve(ApprovalDecisionKind::AllowOnce, "allow");
+
+    let choice = prepare_choice(&pool, &allow).await.unwrap();
+    let error = resolve_then_remember(&pool, Some(choice), async {
+        Err(ChatError::new(
+            ChatErrorCode::Protocol,
+            "The provider refused the choice",
+            true,
+        ))
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, ChatErrorCode::Protocol);
+    assert!(remembered_rules(&pool).await.is_empty(), "provider error");
+
+    let choice = prepare_choice(&pool, &allow).await.unwrap();
+    let declined = resolve_then_remember(&pool, Some(choice), async { Ok(receipt(false)) })
+        .await
+        .unwrap();
+    assert!(!declined.accepted);
+    assert!(remembered_rules(&pool).await.is_empty(), "declined receipt");
+}
+
+#[tokio::test]
+async fn a_rule_that_cannot_be_recorded_after_the_provider_accepted_reports_the_sent_approval() {
+    let pool = crate::chat::revocation::tests::pool_with_folder_runs().await;
+    open_approval(&pool, &display("command", "pnpm test")).await;
+    let choice = prepare_choice(&pool, &resolve(ApprovalDecisionKind::AllowOnce, "allow"))
+        .await
+        .unwrap();
+    sqlx::query("DROP TABLE chat_remembered_approvals")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let error = resolve_then_remember(&pool, Some(choice), async { Ok(receipt(true)) })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ChatErrorCode::Persistence);
+    assert!(error.message.starts_with("The approval was sent"));
+}
+
+#[tokio::test]
 async fn remembering_is_refused_without_a_rule_or_a_channel_run() {
     let channel = crate::chat::revocation::tests::pool_with_folder_runs().await;
     open_approval(&channel, &display("path", "src/main.rs")).await;
-    let error = remember_choice(&channel, &resolve(ApprovalDecisionKind::AllowOnce, "allow"))
+    let error = prepare_choice(&channel, &resolve(ApprovalDecisionKind::AllowOnce, "allow"))
         .await
         .unwrap_err();
     assert_eq!(error.code, ChatErrorCode::Validation);
 
     let direct = pool_with_thread().await;
     open_approval(&direct, &display("command", "pnpm test")).await;
-    let error = remember_choice(&direct, &resolve(ApprovalDecisionKind::AllowOnce, "allow"))
+    let error = prepare_choice(&direct, &resolve(ApprovalDecisionKind::AllowOnce, "allow"))
         .await
         .unwrap_err();
     assert_eq!(error.code, ChatErrorCode::Validation);
     assert!(remembered_rules(&direct).await.is_empty());
 
     let stale = pool_with_thread().await;
-    let error = remember_choice(&stale, &resolve(ApprovalDecisionKind::AllowOnce, "allow"))
+    let error = prepare_choice(&stale, &resolve(ApprovalDecisionKind::AllowOnce, "allow"))
         .await
         .unwrap_err();
     assert_eq!(error.code, ChatErrorCode::Conflict);

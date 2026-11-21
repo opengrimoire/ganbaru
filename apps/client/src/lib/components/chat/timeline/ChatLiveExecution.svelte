@@ -3,14 +3,13 @@
   import type { ChatParticipantRead, ChatWorkAssignmentId, ChatWorkAssignmentRead } from "$lib/chat/contracts";
   import { liveExecutionShowsWholeMessages, liveExecutionTimelinePage } from "$lib/chat/timeline/live-execution";
   import { LiveExecutionFollower, type LiveExecutionView } from "$lib/chat/timeline/live-execution-follower";
-  import { getLocalization } from "$lib/i18n/translator.svelte";
   import ChatExecutionTimeline from "./ChatExecutionTimeline.svelte";
   import ChatRemoteWorkRow from "./ChatRemoteWorkRow.svelte";
 
   /**
    * Shows the run of work a linked desktop executes, read from that desktop over the LAN while this thread is open and
    * the app is in the foreground: rows render read-only as they happen and stay once the run settles. While the work
-   * is active, the work row below keeps its state and Stop; while no row arrives, such as off the LAN, the work row
+   * is active, the work row below keeps Stop, and its state while the rows do not already show it; while no row arrives, such as off the LAN, the work row
    * stands alone and the replies arrive by sync.
    */
   let {
@@ -31,7 +30,6 @@
     onShown?: (runId: string | null) => void;
   } = $props();
 
-  const { t } = getLocalization();
   let view = $state<LiveExecutionView>({ state: null, status: "connecting", claimExpected: true });
   let foreground = $state(typeof document === "undefined" || document.visibilityState === "visible");
   const follower = new LiveExecutionFollower({
@@ -43,12 +41,6 @@
   const shownRunId = $derived(view.state && timelinePage && liveExecutionShowsWholeMessages(view.state)
     ? view.state.runId
     : null);
-  // Work reads as queued here until the desktop's claim syncs, which trails the run it already streams.
-  const stateLabel = $derived(work?.state !== "queued"
-    ? null
-    : timelinePage
-      ? t("chat.delegation.states.working")
-      : view.claimExpected ? t("chat.delegation.starting") : null);
 
   $effect(() => {
     const updateForeground = (): void => { foreground = document.visibilityState === "visible"; };
@@ -79,5 +71,7 @@
   />
 {/if}
 {#if work}
-  <ChatRemoteWorkRow {work} {agent} {agentName} {onActionError} identity={timelinePage === null} {stateLabel} />
+  <ChatRemoteWorkRow {work} {agent} {agentName} {onActionError} identity={timelinePage === null}
+    live={{ rowsShown: timelinePage !== null, claimExpected: view.claimExpected }}
+  />
 {/if}

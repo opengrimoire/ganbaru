@@ -457,3 +457,61 @@ describe("notes block persistence after a remote change", () => {
     expect(persistence.readBlockConflict(blockId)?.theirs).toMatchObject({ type: "heading_1" });
   });
 });
+
+describe("notes block persistence while an edit is held", () => {
+  const base = { ...paragraph("Base"), content_revision: "a".repeat(64) };
+  const canonical = { ...paragraph("Theirs"), content_revision: "b".repeat(64) };
+
+  async function held() {
+    updateNotesBlock.mockReset().mockRejectedValueOnce(refused())
+      .mockImplementation(async (_id: string, update: NotesBlockUpdate) => applyBlockUpdate(canonical, update));
+    appendNotesBlockChildren.mockReset().mockResolvedValue({ results: [] });
+    trashNotesBlock.mockReset();
+    const harness = conflictHarness(base, canonical);
+    const draft = blockWithText(base, "Mine");
+    harness.persistence.localApplyBlockUpdate(blockId, draft);
+    await harness.persistence.saveBlockNow(blockId, draft);
+    expect(harness.persistence.readBlockConflict(blockId)).toBeDefined();
+    return harness;
+  }
+
+  it("keeps typing made in a held block as the held text without saving it", async () => {
+    const { persistence, conflicts, read } = await held();
+    const later = blockWithText(base, "Mine and more");
+    persistence.localApplyBlockUpdate(blockId, later);
+    persistence.scheduleBlockSave(blockId, later);
+    await persistence.flushPendingBlockSaves();
+
+    expect(updateNotesBlock).toHaveBeenCalledOnce();
+    expect(presentText(read())).toBe("Mine and more");
+    expect(notesText(persistence.readBlockConflict(blockId)?.mine)).toBe("Mine and more");
+    expect(notesText(conflicts.at(-1)?.mine)).toBe("Mine and more");
+  });
+
+  it("keeps a held block unsaved when a structural edit commits", async () => {
+    const { persistence } = await held();
+    await persistence.enqueueEditorMutation(async () => undefined);
+    expect(persistence.hasLocalChanges(blockId)).toBe(true);
+    expect(persistence.readBlockConflict(blockId)).toBeDefined();
+  });
+
+  it("lets a later choice settle a held edit after a failed choice", async () => {
+    const { persistence, read } = await held();
+    updateNotesBlock.mockRejectedValueOnce(new Error("Disk unavailable"));
+    await expect(persistence.resolveBlockConflict(blockId, "mine")).rejects.toThrow("Disk unavailable");
+    expect(persistence.readBlockConflict(blockId)).toBeDefined();
+
+    await persistence.resolveBlockConflict(blockId, "theirs");
+
+    expect(persistence.readBlockConflict(blockId)).toBeUndefined();
+    expect(presentText(read())).toBe("Theirs");
+    const later = vi.fn(async () => undefined);
+    await persistence.enqueueEditorMutation(later);
+    expect(later).toHaveBeenCalledOnce();
+  });
+});
+
+/** Plain text of a block update, or `null` when absent. */
+function notesText(update: NotesBlockUpdate | undefined): string | null {
+  return update ? blockPlainText(applyBlockUpdate(paragraph(""), update)) : null;
+}

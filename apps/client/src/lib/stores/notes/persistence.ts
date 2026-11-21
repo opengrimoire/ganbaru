@@ -275,7 +275,7 @@ export function createNotesBlockPersistence(
   function resolveBlockConflict(blockId: string, choice: NotesBlockConflictChoice): Promise<void> {
     const held = heldConflicts.get(blockId);
     if (!held) return Promise.resolve();
-    return enqueue(async () => {
+    return runChoice(async () => {
       const local = context.readBlock(blockId);
       const mine = local ? blockUpdateFromBlock(local) : held.mine;
       const canonical = context.readCanonicalBlock
@@ -310,6 +310,14 @@ export function createNotesBlockPersistence(
   }
 
   function scheduleBlockSave(blockId: string, update: NotesBlockUpdate): void {
+    const held = heldConflicts.get(blockId);
+    if (held) {
+      // Typing in a held block waits for the user's choice; it becomes the held text instead of a save.
+      const conflict = { ...held, mine: update };
+      heldConflicts.set(blockId, conflict);
+      context.onBlockConflict?.(blockId, conflict);
+      return;
+    }
     const pending = pendingBlockSaves.get(blockId);
     if (pending) clearTimeout(pending.timer);
     const revision = blockRevisions.get(blockId) ?? 0;
@@ -379,6 +387,28 @@ export function createNotesBlockPersistence(
     return result;
   }
 
+  /**
+   * Run a held-edit choice after the writes queued so far. The conflict card reports its failure and keeps the
+   * edit held, so a failed choice is neither retained for Retry nor allowed to pause later writes.
+   */
+  function runChoice(choice: () => Promise<void>): Promise<void> {
+    const operationGeneration = queueGeneration;
+    const previous = mutationChain;
+    const result = previous.then(async () => {
+      if (operationGeneration !== queueGeneration) return;
+      try {
+        await choice();
+      } catch (error) {
+        if (!isNotesEditConflict(error)) throw error;
+        if (operationGeneration === queueGeneration) context.onConflict?.();
+        return;
+      }
+      if (operationGeneration === queueGeneration) context.onCommitted?.();
+    });
+    mutationChain = result.then(() => undefined, () => previous);
+    return result;
+  }
+
   /** Retries retained writes in order without replacing the user's local draft. */
   function retryEditorMutations(): Promise<void> {
     if (!failed) return flushPendingBlockSaves();
@@ -427,7 +457,7 @@ export function createNotesBlockPersistence(
         throw error;
       }
       for (const [id, revision] of revisions) {
-        if (blockRevisions.get(id) === revision) dirtyBlocks.delete(id);
+        if (blockRevisions.get(id) === revision && !heldConflicts.has(id)) dirtyBlocks.delete(id);
       }
     });
   }

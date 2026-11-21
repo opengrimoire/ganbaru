@@ -397,33 +397,44 @@ pub async fn resolve_comment_thread(
     load_thread(pool, discussion_id).await
 }
 
+/// The outcome of a guarded discussion status write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ThreadStatusWrite {
+    /// The discussion moved between open and resolved.
+    Applied,
+    /// The discussion already had the requested status, so nothing was written.
+    AlreadyInState,
+}
+
 /// Resolves or reopens a discussion inside the caller's transaction.
 ///
-/// The caller ensures the project history baseline of the discussion's page before it opens
-/// the transaction, as [`resolve_comment_thread`] does.
+/// Resolving moves only an open discussion and reopening only a resolved one, so a repeated
+/// request keeps the recorded resolver and time and writes no history entry. The caller ensures
+/// the project history baseline of the discussion's page before it opens the transaction, as
+/// [`resolve_comment_thread`] does.
 pub(crate) async fn resolve_comment_thread_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     discussion_id: &str,
     resolved: bool,
-) -> Result<(), String> {
+) -> Result<ThreadStatusWrite, String> {
     require_uuid(discussion_id, "discussion_id")?;
     let thread = load_thread_row(tx, discussion_id).await?;
     ensure_thread_target_active(tx, &thread).await?;
     let local_user = local_user::current_local_user_tx(tx).await?;
-    if resolved {
+    let written = if resolved {
         sqlx::query(
             "UPDATE notes_comment_threads
              SET status = 'resolved',
                  resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                  resolved_by = ?,
                  last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-             WHERE id = ?",
+             WHERE id = ? AND status = 'open'",
         )
         .bind(&local_user.id)
         .bind(discussion_id)
         .execute(&mut **tx)
         .await
-        .map_err(|e| format!("resolve notes comment thread: {e}"))?;
+        .map_err(|e| format!("resolve notes comment thread: {e}"))?
     } else {
         sqlx::query(
             "UPDATE notes_comment_threads
@@ -431,12 +442,18 @@ pub(crate) async fn resolve_comment_thread_tx(
                  resolved_at = NULL,
                  resolved_by = NULL,
                  last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-             WHERE id = ?",
+             WHERE id = ? AND status = 'resolved'",
         )
         .bind(discussion_id)
         .execute(&mut **tx)
         .await
-        .map_err(|e| format!("reopen notes comment thread: {e}"))?;
+        .map_err(|e| format!("reopen notes comment thread: {e}"))?
+    };
+    if written.rows_affected() == 0 {
+        // The row exists (it was just loaded), and the status column only holds the two
+        // statuses, so the discussion already has the requested one.
+        mark_thread_read_for_current_user_tx(tx, discussion_id).await?;
+        return Ok(ThreadStatusWrite::AlreadyInState);
     }
     let operation_type = if resolved {
         "comment_thread_resolve"
@@ -445,7 +462,7 @@ pub(crate) async fn resolve_comment_thread_tx(
     };
     crate::project_history::mark_page_dirty_tx(tx, &thread.page_id, operation_type, false).await?;
     mark_thread_read_for_current_user_tx(tx, discussion_id).await?;
-    Ok(())
+    Ok(ThreadStatusWrite::Applied)
 }
 
 /// Adds the current person's emoji reaction to a comment, or removes it when they already chose it.

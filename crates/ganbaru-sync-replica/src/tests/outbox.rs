@@ -9,8 +9,8 @@ use crate::outbox::{
     ChainFacts, IllegalOutboxMove, MAX_OUTBOX_PROPOSALS, Outbox, OutboxEvent, OutboxState, is_final,
 };
 use crate::writer::{
-    MemoryKeyStore, SelectedHead, SequencedCheck, SequencedEntry, SuccessorPlan, WriterCheck,
-    create_writer, read_record, sequenced_check,
+    MemoryKeyStore, RestorePhase, SelectedHead, SequencedCheck, SequencedEntry, SuccessorPlan,
+    WriterCheck, create_writer, read_record, restore_phase, sequenced_check,
 };
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -487,7 +487,7 @@ fn a_record_one_entry_ahead_is_a_rolled_back_seal_and_further_ahead_is_a_restore
         epoch,
         revision,
         entry_hash: URL_SAFE_NO_PAD.encode([2; 32]),
-        restored: false,
+        restored_at_ms: None,
     };
     let head = |epoch: u32, revision: u64| SelectedHead {
         charter: [1; 32],
@@ -512,7 +512,7 @@ fn a_record_one_entry_ahead_is_a_rolled_back_seal_and_further_ahead_is_a_restore
     assert_eq!(
         sequenced_check(
             Some(&SequencedEntry {
-                restored: true,
+                restored_at_ms: Some(1),
                 ..at(0, 8)
             }),
             head(1, 7)
@@ -524,7 +524,7 @@ fn a_record_one_entry_ahead_is_a_rolled_back_seal_and_further_ahead_is_a_restore
         SequencedCheck::RolledBack
     );
     let restored = SequencedEntry {
-        restored: true,
+        restored_at_ms: Some(1),
         ..at(0, 8)
     };
     assert_eq!(
@@ -625,7 +625,7 @@ fn a_restored_anchor_sees_its_lost_entries_and_hands_over_to_itself() {
         let WriterCheck::Successor(plan) = check(&engine, &mut conn, &ctx, &directory).await else {
             panic!("a database behind the high-water keeps no writer");
         };
-        assert!(plan.sequenced().is_some_and(|entry| entry.restored));
+        assert!(plan.sequenced().is_some_and(SequencedEntry::restored));
         let old_writer = read_record(&files.record_path())
             .expect("read record")
             .expect("record")
@@ -633,6 +633,47 @@ fn a_restored_anchor_sees_its_lost_entries_and_hands_over_to_itself() {
         let mut writer = create_writer(&files, &keys, plan, &device(), DEVICE_ID, NOW_MS)
             .expect("create successor");
         assert_ne!(writer.id().to_hex(), old_writer);
+
+        // The start of the catch-up window is persisted with the successor, so a restart
+        // checks the writer again and keeps it instead of restarting the window.
+        let since = writer
+            .record()
+            .sequenced
+            .as_ref()
+            .and_then(|entry| entry.restored_at_ms)
+            .expect("the successor keeps when the restore was found");
+        let persisted = read_record(&files.record_path())
+            .expect("read record")
+            .expect("record");
+        assert_eq!(
+            persisted.sequenced.as_ref().and_then(|entry| entry.restored_at_ms),
+            Some(since)
+        );
+        let WriterCheck::Successor(after_restart) =
+            check(&engine, &mut conn, &ctx, &directory).await
+        else {
+            panic!("a database behind the high-water keeps no writer after a restart");
+        };
+        assert_eq!(
+            after_restart.sequenced().and_then(|entry| entry.restored_at_ms),
+            Some(since)
+        );
+        assert_eq!(
+            SuccessorPlan::after_restore(&writer, since + 10)
+                .sequenced()
+                .and_then(|entry| entry.restored_at_ms),
+            Some(since),
+            "a later rotation keeps the first restore"
+        );
+        let restored_check = SequencedCheck::Restored { recorded: 3 };
+        assert_eq!(
+            restore_phase(restored_check, persisted.sequenced.as_ref(), since + WINDOW - 1, true, WINDOW),
+            RestorePhase::CatchingUp { recorded: 3, since_ms: since }
+        );
+        assert_eq!(
+            restore_phase(restored_check, persisted.sequenced.as_ref(), since + WINDOW, true, WINDOW),
+            RestorePhase::HandOver { recorded: 3 }
+        );
         assert_eq!(
             authority::restore_check(&engine, &mut conn, &ctx, writer.record())
                 .await
@@ -1053,5 +1094,64 @@ fn settling_a_gated_proposal_changes_nothing() {
     assert_eq!(
         Outbox::load(&path).expect("reload").entries(),
         outbox.entries()
+    );
+}
+
+const WINDOW: u64 = 1_000;
+
+#[test]
+fn a_restored_anchor_rotates_once_then_catches_up_until_the_window_or_no_member_is_left() {
+    let entry = |restored_at_ms: Option<u64>| SequencedEntry {
+        charter: URL_SAFE_NO_PAD.encode([1; 32]),
+        epoch: 0,
+        revision: 8,
+        entry_hash: URL_SAFE_NO_PAD.encode([2; 32]),
+        restored_at_ms,
+    };
+    let since = 5_000;
+    let restored = SequencedCheck::Restored { recorded: 8 };
+    for check in [SequencedCheck::Current, SequencedCheck::RolledBack, restored] {
+        for sequenced in [None, Some(entry(None)), Some(entry(Some(since)))] {
+            for now in [0, since - 1, since, since + WINDOW - 1, since + WINDOW, u64::MAX] {
+                for reachable in [false, true] {
+                    let expected = match (check, sequenced.as_ref().and_then(|e| e.restored_at_ms)) {
+                        (SequencedCheck::Restored { recorded }, None) => {
+                            RestorePhase::Rotate { recorded }
+                        }
+                        (SequencedCheck::Restored { recorded }, Some(start))
+                            if reachable && now.saturating_sub(start) < WINDOW =>
+                        {
+                            RestorePhase::CatchingUp { recorded, since_ms: start }
+                        }
+                        (SequencedCheck::Restored { recorded }, Some(_)) => {
+                            RestorePhase::HandOver { recorded }
+                        }
+                        _ => RestorePhase::Ready,
+                    };
+                    assert_eq!(
+                        restore_phase(check, sequenced.as_ref(), now, reachable, WINDOW),
+                        expected,
+                        "{check:?} {sequenced:?} {now} {reachable}"
+                    );
+                }
+            }
+        }
+    }
+    // Spot checks of the rules the table encodes.
+    let started = Some(entry(Some(since)));
+    assert_eq!(
+        restore_phase(restored, started.as_ref(), since - 1, true, WINDOW),
+        RestorePhase::CatchingUp { recorded: 8, since_ms: since },
+        "a clock set back before the start counts as no time passed"
+    );
+    assert_eq!(
+        restore_phase(restored, started.as_ref(), since, false, WINDOW),
+        RestorePhase::HandOver { recorded: 8 },
+        "without members to return the log the anchor hands over at once"
+    );
+    assert_eq!(
+        restore_phase(SequencedCheck::Current, started.as_ref(), since, true, WINDOW),
+        RestorePhase::Ready,
+        "a log that caught up is ready even while the record keeps the restore"
     );
 }

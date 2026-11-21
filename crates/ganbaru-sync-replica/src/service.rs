@@ -52,7 +52,7 @@ use crate::records::{FreeSpace, RecordExchange};
 use crate::recovery::RecoveryChoice;
 use crate::reset;
 #[cfg(desktop)]
-use crate::writer::SequencedCheck;
+use crate::writer::{RestorePhase, SequencedCheck, restore_phase};
 use crate::writer::{
     ActiveWriter, SyncFiles, SyncKeyStore, ensure_device_key as ensure_stored_device_key,
 };
@@ -910,10 +910,6 @@ struct ServiceState {
     /// A link to an anchor that is not the coordinator and answered the last exchange, which
     /// the pass sends waiting proposals to instead of the coordinator.
     anchor_link: Option<transport::MemberTransport>,
-    /// When this anchor first found its database restored behind its own log, in Unix
-    /// milliseconds; it sequences nothing until the log catches up or it hands over to itself.
-    #[cfg(desktop)]
-    restored_since: Option<u64>,
     /// Final rejections this desktop gave proposals an anchor server forwarded, which the next
     /// forward request reports to the server.
     #[cfg(desktop)]
@@ -1004,15 +1000,16 @@ impl ServiceState {
         (expiry > now).then(|| Duration::from_millis(expiry - now))
     }
 
-    /// Whether this installation may sequence for the space. An anchor whose database holds
-    /// less of the log than its writer record says it sealed was restored from a backup or
-    /// copied: it moves to a successor writer at once, so nothing it seals reuses a sequence of
-    /// the lost entries members may hold, and sequences nothing while members push back what it
-    /// lost. Once the catch-up window passes, or at once when `members_reachable` is false, it
-    /// seals a handover to itself so the next epoch supersedes the entries it never got back.
-    /// The coordinator passes whether it has linked devices; a linked desktop that anchors
-    /// always has the coordinator. A device that is not the anchor is always ready, since it
-    /// sequences nothing.
+    /// Whether this installation may sequence for the space, following [`RestorePhase`]. An
+    /// anchor whose database holds less of the log than its writer record says it sealed was
+    /// restored from a backup or copied: it moves to a successor writer at once, so nothing it
+    /// seals reuses a sequence of the lost entries members may hold, and sequences nothing while
+    /// members push back what it lost. Once the catch-up window, counted from the restore the
+    /// writer record keeps, passes, or at once when `members_reachable` is false, it seals a
+    /// handover to itself so the next epoch supersedes the entries it never got back. The
+    /// coordinator passes whether it has linked devices; a linked desktop that anchors always
+    /// has the coordinator. A device that is not the anchor is always ready, since it sequences
+    /// nothing.
     #[cfg(desktop)]
     async fn anchor_ready(
         &mut self,
@@ -1020,46 +1017,54 @@ impl ServiceState {
         manager: &PairingManager,
         members_reachable: bool,
     ) -> Result<bool, String> {
-        let Some(active) = self.writer.as_ref() else {
-            return Ok(true);
-        };
-        if !session.anchors_here(manager).await? {
-            self.restored_since = None;
+        if self.writer.is_none() || !session.anchors_here(manager).await? {
             return Ok(true);
         }
-        let check = {
-            let mut conn = acquire(&session.pool).await?;
-            authority::restore_check(&session.engine, &mut conn, &session.ctx, active.record())
-                .await?
-        };
-        let SequencedCheck::Restored { recorded } = check else {
-            self.restored_since = None;
-            return Ok(true);
-        };
-        // The writer check retires a writer whose database is behind its log; a restore found
-        // while the writer was already active retires it here.
-        if !active
-            .record()
-            .sequenced
-            .as_ref()
-            .is_some_and(|entry| entry.restored)
-            && !session.rotate_restored(&mut self.writer).await?
-        {
-            return Ok(false);
-        }
-        let now = now_ms()?;
-        let since = *self.restored_since.get_or_insert(now);
         let window = u64::try_from(RESTORE_CATCH_UP_WINDOW.as_millis()).unwrap_or(u64::MAX);
-        if now.saturating_sub(since) < window && members_reachable {
-            eprintln!(
-                "sync: the database was restored behind authorization revision {recorded}; \
-                 waiting for linked devices to return the log"
-            );
-            return Ok(false);
-        }
+        let mut rotated = false;
+        let (recorded, now) = loop {
+            let Some(active) = self.writer.as_ref() else {
+                return Ok(false);
+            };
+            let check = {
+                let mut conn = acquire(&session.pool).await?;
+                authority::restore_check(&session.engine, &mut conn, &session.ctx, active.record())
+                    .await?
+            };
+            let now = now_ms()?;
+            let sequenced = active.record().sequenced.as_ref();
+            match restore_phase(check, sequenced, now, members_reachable, window) {
+                RestorePhase::Ready => return Ok(true),
+                // The writer check retires a writer whose database is behind its log; a restore
+                // found while the writer was already active retires it here, once.
+                RestorePhase::Rotate { .. } if !rotated => {
+                    if !session.rotate_restored(&mut self.writer, now).await? {
+                        return Ok(false);
+                    }
+                    rotated = true;
+                }
+                RestorePhase::Rotate { .. } => {
+                    return Err("the restored anchor's successor lost its restore".to_string());
+                }
+                RestorePhase::CatchingUp { recorded, .. } => {
+                    eprintln!(
+                        "sync: the database was restored behind authorization revision \
+                         {recorded}; waiting for linked devices to return the log"
+                    );
+                    return Ok(false);
+                }
+                RestorePhase::HandOver { recorded } => break (recorded, now),
+            }
+        };
         let Some(active) = self.writer.as_mut() else {
             return Ok(false);
         };
+        let since = active
+            .record()
+            .sequenced
+            .as_ref()
+            .and_then(|entry| entry.restored_at_ms)
+            .unwrap_or(now);
         let mut conn = acquire(&session.pool).await?;
         let head = session
             .engine
@@ -1096,16 +1101,19 @@ impl ServiceState {
              the anchor continued the log in a new epoch at revision {revision}"
         );
         // A record of a lost epoch the handover only reached can still name a later revision;
-        // the next pass then seals one more handover, whose epoch passes it.
+        // the next pass then seals one more handover, whose epoch passes it. The handover's
+        // entry replaced the restored one, so the writer is replaced again with the window it
+        // already waited out.
         let mut conn = acquire(&session.pool).await?;
         let check =
             authority::restore_check(&session.engine, &mut conn, &session.ctx, active.record())
                 .await?;
-        let ready = !matches!(check, SequencedCheck::Restored { .. });
-        if ready {
-            self.restored_since = None;
+        drop(conn);
+        if !matches!(check, SequencedCheck::Restored { .. }) {
+            return Ok(true);
         }
-        Ok(ready)
+        session.rotate_restored(&mut self.writer, since).await?;
+        Ok(false)
     }
 
     /// Runs one pass once `gate` lets it, then publishes the status and wakes hub waits.

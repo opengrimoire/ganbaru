@@ -70,10 +70,12 @@ pub const SESSION_TRANSITIONS: &[(ProviderSessionState, ProviderSessionState)] =
 ];
 
 /// Legal turn moves. A send stores the turn as `Pending`, and every provider reports the start
-/// it dispatched as `Active`, so `Pending` moves to `Active` directly.
+/// it dispatched as `Active`, so `Pending` moves to `Active` directly. Codex can report a turn
+/// completion before its start notification, so `Pending` also settles as `Completed`.
 pub const TURN_TRANSITIONS: &[(ChatTurnState, ChatTurnState)] = &[
     (ChatTurnState::Pending, ChatTurnState::Dispatching),
     (ChatTurnState::Pending, ChatTurnState::Active),
+    (ChatTurnState::Pending, ChatTurnState::Completed),
     (ChatTurnState::Pending, ChatTurnState::Interrupted),
     (ChatTurnState::Pending, ChatTurnState::Failed),
     (ChatTurnState::Dispatching, ChatTurnState::Active),

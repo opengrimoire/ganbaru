@@ -88,6 +88,14 @@ fn pending_turns_start_directly_when_the_provider_reports_activity() {
 }
 
 #[test]
+fn pending_turns_settle_when_the_provider_completes_before_reporting_a_start() {
+    assert!(can_transition_turn(
+        ChatTurnState::Pending,
+        ChatTurnState::Completed
+    ));
+}
+
+#[test]
 fn turn_sources_list_exactly_the_states_that_may_move_to_each_target() {
     for to in ChatTurnState::ALL {
         let sources: Vec<ChatTurnState> = turn_sources(to).collect();

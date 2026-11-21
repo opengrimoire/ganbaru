@@ -1827,3 +1827,35 @@ fn device_certificates_name_no_device() {
     assert!(contains(DEVICE_CERTIFICATE_NAME.as_bytes()));
     assert_eq!(identity.device_id, device_id);
 }
+
+#[test]
+fn a_revoked_member_needs_a_new_copy_when_it_links_again() {
+    let (phone_root, phone, invitation, certificate) = linked_phone("revoked-copy");
+    let pending = PendingAcknowledgement {
+        vault_id: "vault-1".to_string(),
+        device_id: "device-phone".to_string(),
+        transfer_id: "transfer-1".to_string(),
+    };
+    phone.record_activation(pending).expect("activate copy");
+    phone
+        .clear_pending_acknowledgement("transfer-1")
+        .expect("acknowledge copy");
+    assert!(phone.replica_ready().expect("ready"));
+
+    phone
+        .accept_coordinator_revocation(&pin_of(&phone))
+        .expect("revocation");
+    assert!(phone.revoked_by_coordinator().expect("revoked"));
+    assert!(!phone.replica_ready().expect("copy readiness"));
+
+    let restarted = PairingManager::default();
+    restarted
+        .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+        .expect("restart");
+    assert!(!restarted.replica_ready().expect("copy readiness"));
+    restarted
+        .record_coordinator(&invitation, &certificate, None)
+        .expect("link again");
+    assert!(!restarted.revoked_by_coordinator().expect("revoked"));
+    assert!(!restarted.replica_ready().expect("copy readiness"));
+}

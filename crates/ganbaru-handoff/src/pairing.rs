@@ -808,6 +808,7 @@ impl PairingManager {
         }
         state.coordinator = None;
         state.revoked_by_coordinator = true;
+        state.replica_ready = false;
         state.pending_acknowledgement = None;
         state.outgoing_transfer = None;
         state.completed_activation = None;

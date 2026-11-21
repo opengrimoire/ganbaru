@@ -9,6 +9,7 @@
   import { ONBOARDING_SECONDARY_BUTTON_CLASS } from "$lib/vault/welcome-layout";
   import FocusAccessGuide from "./focus-access/FocusAccessGuide.svelte";
   import MobileOnboardingProgress from "./MobileOnboardingProgress.svelte";
+  import { NO_FOCUS_ACCESS_REVIEW, transitionFocusAccessReview, type FocusAccessReview } from "./focus-access-review";
   import {
     FOCUS_ACCESS_STEP_ORDER,
     focusAccessGranted,
@@ -60,8 +61,7 @@
   let opening = $state(false);
   let openFailed = $state(false);
   let unavailable = $state(false);
-  let pendingReview = $state<FocusAccessStep | null>(null);
-  let leftForReview = $state(false);
+  let review = $state<FocusAccessReview>(NO_FOCUS_ACCESS_REVIEW);
   let grantedTimer = 0;
 
   const current = $derived(steps?.[index] ?? null);
@@ -154,11 +154,14 @@
     }
   }
 
+  function leaveForReview(): void {
+    review = transitionFocusAccessReview(review, { type: "left" });
+  }
+
   async function finishReturnedReview(): Promise<void> {
-    const step = pendingReview;
-    if (!step || !leftForReview) return;
-    pendingReview = null;
-    leftForReview = false;
+    if (review.phase !== "away") return;
+    const step = review.step;
+    review = transitionFocusAccessReview(review, { type: "returned" });
     recordReviewed(step);
     await refresh();
     settle(step);
@@ -176,11 +179,10 @@
         settle(step);
         return;
       }
-      pendingReview = step;
-      leftForReview = false;
+      review = transitionFocusAccessReview(review, { type: "opened", step });
       await openSettings(step);
     } catch (error) {
-      pendingReview = null;
+      review = transitionFocusAccessReview(review, { type: "failed" });
       openFailed = true;
       console.warn(`Android settings for ${step} failed to open`, error);
     } finally {
@@ -256,11 +258,11 @@
 
   onMount(() => {
     const handleVisibility = (): void => {
-      if (document.visibilityState === "hidden" && pendingReview) leftForReview = true;
+      if (document.visibilityState === "hidden") leaveForReview();
       else if (document.visibilityState === "visible") void finishReturnedReview();
     };
     const handleBlur = (): void => {
-      if (pendingReview) leftForReview = true;
+      leaveForReview();
     };
     const handleFocus = (): void => {
       void finishReturnedReview();

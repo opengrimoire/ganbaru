@@ -12,6 +12,7 @@ import type {
   PostChatMessageResult,
 } from "$lib/chat/contracts";
 import * as chatApi from "$lib/api/chat";
+import { en } from "$lib/i18n/messages/en";
 import { chatPaneEvents } from "$lib/chat/pane-events";
 import { getChat } from "$lib/stores/chat.svelte";
 import ChatMessageComposer from "./ChatMessageComposer.svelte";
@@ -232,7 +233,7 @@ describe("ChatMessageComposer", () => {
     expect(send?.disabled).toBe(false);
     send?.click();
     await vi.waitFor(() => expect(post).toHaveBeenCalledOnce());
-    expect(post.mock.calls[0]?.[1]).toEqual({ alsoSendToChannel: false, followupRouting: "queue" });
+    expect(post.mock.calls[0]?.[1]).toEqual({ alsoSendToChannel: false, followupRouting: "queue", onWritten: expect.any(Function) });
   });
 
   /** Presses Enter in the composer, with the platform shortcut modifier when `modified`. */
@@ -284,9 +285,36 @@ describe("ChatMessageComposer", () => {
     await pressEnter(root, true);
     await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(2));
     expect(post.mock.calls.map((call) => call[1])).toEqual([
-      { alsoSendToChannel: false },
-      { alsoSendToChannel: false },
+      { alsoSendToChannel: false, onWritten: expect.any(Function) },
+      { alsoSendToChannel: false, onWritten: expect.any(Function) },
     ]);
+  });
+
+  it("clears once the post is written, without waiting for the reads after it, and says so when those reads fail", async () => {
+    const page = workingReplyThread();
+    const idle = { ...page, assignment: page.assignment ? { ...page.assignment, state: "completed" as const } : null };
+    vi.spyOn(chatApi, "listChatAssignmentInputs").mockResolvedValue([]);
+    let failRefresh: (cause: Error) => void = () => undefined;
+    const post = vi.spyOn(chat, "postOrganizationalMessage").mockImplementation((_destination, options) => {
+      options?.onWritten?.(routedResult(idle, null));
+      return new Promise((_resolve, reject) => { failRefresh = reject; });
+    });
+    const root = mountActiveWork(idle);
+    await tick();
+
+    await typeReply(root, "Thanks");
+    await pressEnter(root, false);
+    await vi.waitFor(() => expect(post).toHaveBeenCalledOnce());
+    await tick();
+    expect(root.querySelector("[data-chat-composer]")?.textContent).not.toContain("Thanks");
+    expect(root.querySelector<HTMLButtonElement>(".send-button")?.disabled).toBe(true);
+
+    await typeReply(root, "One more thing");
+    expect(root.querySelector<HTMLButtonElement>(".send-button")?.disabled).toBe(false);
+    failRefresh(new Error("read failed"));
+    await vi.waitFor(() => expect(root.textContent).toContain(en.chatErrors.actions.refreshAfterSend));
+    expect(root.textContent).not.toContain(en.chatErrors.actions.sendMessage);
+    expect(root.querySelector("[data-chat-composer]")?.textContent).toContain("One more thing");
   });
 
   it("edits a waiting reply in the composer and restores the draft after saving", async () => {

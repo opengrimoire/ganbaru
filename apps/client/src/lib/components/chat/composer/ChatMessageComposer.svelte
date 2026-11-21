@@ -1566,6 +1566,7 @@
     }
     sending = true;
     error = null;
+    let delivered = false;
     try {
       const blocker = await validateChannelDisclosures();
       if (blocker) {
@@ -1590,17 +1591,26 @@
         const result = await chat.postOrganizationalMessage(destination, {
           alsoSendToChannel: threadComposer && alsoSendToChannel,
           ...(routing ? { followupRouting: routing } : {}),
+          // The post is in the vault once written, so the composer clears and takes the next message without waiting for
+          // the reads after it.
+          onWritten: () => {
+            delivered = true;
+            sending = false;
+            clearComposerAfterDelivery();
+          },
         });
         routingNotice = routing === "steer" && result.routedAs === "queue"
           ? t("chat.composer.routing.downgraded")
           : null;
         onRequestScrollToBottom();
       }
-      clearComposerAfterDelivery();
+      if (!delivered) clearComposerAfterDelivery();
     } catch (cause: unknown) {
-      error = chatErrorMessage(cause, t("chatErrors.actions.sendMessage"));
+      error = delivered
+        ? t("chatErrors.actions.refreshAfterSend")
+        : chatErrorMessage(cause, t("chatErrors.actions.sendMessage"));
     } finally {
-      sending = false;
+      if (!delivered) sending = false;
     }
   }
 

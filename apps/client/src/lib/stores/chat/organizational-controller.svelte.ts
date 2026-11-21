@@ -34,6 +34,11 @@ export interface ChatOrganizationalPostOptions {
   alsoSendToChannel?: boolean;
   /** How a reply reaches active work in its thread. */
   followupRouting?: ChatFollowupRouting;
+  /**
+   * Runs once the post is written to the vault, before the channel and thread are read again, so the composer can
+   * clear at once instead of after those reads.
+   */
+  onWritten?: (result: PostChatMessageResult) => void;
 }
 
 export interface ChatOrganizationalControllerOptions {
@@ -103,6 +108,7 @@ export class ChatOrganizationalController {
       ...(options.followupRouting ? { followupRouting: options.followupRouting } : {}),
     });
     this.setDraft(destination, emptyOrganizationalDraft());
+    options.onWritten?.(result);
     await this.options.loadChannelMessages(channel.id, true);
     if ((replyThreadId || result.assignment) && result.replyThreadId) {
       await this.options.openReplyThread(result.replyThreadId);

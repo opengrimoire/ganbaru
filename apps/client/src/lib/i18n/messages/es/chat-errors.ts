@@ -48,6 +48,7 @@ export const chatErrors = {
     loadDraft: "No se pudo cargar el borrador.",
     saveDraft: "No se pudo guardar el borrador.",
     sendMessage: "No se pudo enviar el mensaje.",
+    refreshAfterSend: "El mensaje se envió, pero la conversación no se pudo actualizar.",
     updateMessage: "No se pudo actualizar el mensaje.",
     channelAction: "No se pudo actualizar el canal.",
     loadLayout: "No se pudo restaurar la disposición del chat.",

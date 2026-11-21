@@ -48,6 +48,7 @@ export const chatErrors = {
     loadDraft: "The draft could not be loaded.",
     saveDraft: "The draft could not be saved.",
     sendMessage: "The message could not be sent.",
+    refreshAfterSend: "The message was sent, but the conversation could not be refreshed.",
     updateMessage: "The message could not be updated.",
     channelAction: "The channel could not be updated.",
     loadLayout: "The Chat layout could not be restored.",

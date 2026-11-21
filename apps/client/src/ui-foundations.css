@@ -6,6 +6,8 @@
 :root {
   /* Outer radius of floating surfaces. */
   --floating-radius: calc(var(--radius) + 4px);
+  /* Top corners of a bottom sheet: rounder than a floating surface, since a sheet spans the screen width. */
+  --sheet-radius: calc(var(--floating-radius) + 6px);
   /* Inset between a floating surface edge and its rows. */
   --floating-padding: 0.375rem;
   /* Rows and fields stay concentric with the surface corner. */
@@ -58,6 +60,7 @@ html[data-shell="mobile"] {
   --container-floating-lg: min(320px, 100vw - 1rem);
   --radius-floating: var(--floating-radius);
   --radius-floating-item: var(--floating-item-radius);
+  --radius-sheet: var(--sheet-radius);
   --shadow-floating: var(--floating-shadow);
 }
 

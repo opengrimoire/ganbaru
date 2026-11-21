@@ -969,7 +969,7 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div
     bind:this={geometry.panelEl}
-    class={cn("panel-root flex flex-col", mobileLayout && !parked && "rounded-t-floating")}
+    class={cn("panel-root flex flex-col", mobileLayout && !parked && "rounded-t-sheet")}
     data-layout={activePanelLayout}
     data-mobile={mobileLayout || undefined}
     data-sheet-motion={(mobileLayout && sheet.motion) || undefined}

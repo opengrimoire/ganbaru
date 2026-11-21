@@ -5,6 +5,7 @@
 -->
 <script lang="ts">
   import { onMount } from "svelte";
+  import { getLocalization } from "$lib/i18n/translator.svelte";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { createBackdropPress } from "$lib/utils/backdrop-press";
@@ -14,6 +15,7 @@
 
   let { onClose }: { onClose: () => void } = $props();
 
+  const { t } = getLocalization();
   const androidSystemBackAvailable = platformHasCapability(BUILD_PLATFORM_PROFILE, "system.android-back");
   const mobileBackStack = getMobileBackStack();
   const backdropPress = createBackdropPress();
@@ -43,14 +45,14 @@
   <div bind:this={track} class="thread-sheet-track">
     <div
       bind:this={sheetElement}
-      class="thread-sheet rounded-t-floating"
+      class="thread-sheet rounded-t-sheet"
       data-reply-thread-sheet
       data-sheet-motion={sheet.motion ?? undefined}
       style:height={`${sheet.visibleHeight}px`}
       inert={sheet.closing}
     >
       <div class="thread-sheet-content" style:height={`${sheet.contentHeight}px`}>
-        <div class="thread-sheet-handle" data-reply-thread-sheet-handle aria-hidden="true"><span></span></div>
+        <div class="thread-sheet-handle" data-reply-thread-sheet-handle aria-hidden="true"><span class="thread-sheet-grabber"></span><span class="thread-sheet-title">{t("chat.organization.thread")}</span></div>
         <div class="min-h-0 flex-1"><ChatReplyThreadPanel presentation="dialog" onClose={() => sheet.close()} /></div>
       </div>
     </div>
@@ -65,7 +67,9 @@
   .thread-sheet { position:absolute; right:0; bottom:0; left:0; max-height:100%; overflow:clip; background:var(--cal-bg); box-shadow:var(--floating-shadow); pointer-events:auto; }
   .thread-sheet[data-sheet-motion="settle"], .thread-sheet-backdrop[data-sheet-motion="settle"] { transition:height var(--thread-sheet-settle) cubic-bezier(0.2, 0.8, 0.2, 1), opacity var(--thread-sheet-settle) ease; }
   .thread-sheet-content { display:flex; flex-direction:column; }
-  .thread-sheet-handle { display:flex; height:1.125rem; flex:0 0 auto; justify-content:center; padding-top:0.25rem; background:var(--cal-bg); touch-action:none; }
-  .thread-sheet-handle span { width:2.25rem; height:0.25rem; border-radius:9999px; background:color-mix(in srgb, var(--muted-foreground) 40%, var(--cal-bg)); }
+  /* The grabber and the sheet name: the whole strip moves the sheet, and the name says what the sheet holds. */
+  .thread-sheet-handle { display:flex; flex:0 0 auto; flex-direction:column; align-items:center; gap:0.3rem; padding-block:0.375rem 0.25rem; background:var(--cal-bg); touch-action:none; user-select:none; }
+  .thread-sheet-grabber { width:2.25rem; height:0.25rem; border-radius:9999px; background:color-mix(in srgb, var(--muted-foreground) 40%, var(--cal-bg)); }
+  .thread-sheet-title { color:var(--muted-foreground); font-size:calc(0.75rem * var(--type-scale)); font-weight:600; line-height:1; }
   @media (prefers-reduced-motion: reduce) { .thread-sheet[data-sheet-motion="settle"], .thread-sheet-backdrop[data-sheet-motion="settle"] { transition:none; } }
 </style>

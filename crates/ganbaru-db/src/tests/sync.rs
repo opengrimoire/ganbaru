@@ -584,3 +584,56 @@ fn space_keys_keep_one_bounded_row_per_epoch_and_go_with_their_space() {
         assert_eq!(left, 0, "space keys go with their space");
     });
 }
+
+#[test]
+fn only_operations_held_as_invalid_name_an_exclusion() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO sync_spaces (space_id, vault_id, created_at_ms)
+             VALUES (zeroblob(16), 'vault-a', 1);
+             INSERT INTO sync_writers
+                 (space_id, writer_id, public_key, device_id, certificate, state, stored_seq,
+                  applied_seq, head_hash, head_clock, created_at_ms)
+             VALUES (zeroblob(16), zeroblob(16), zeroblob(32), 'device-a', x'00', 'active', 9,
+                     0, zeroblob(32), 9, 1);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let insert = |seq: i64, state: &'static str, reason: Option<&'static str>| {
+            sqlx::query(
+                "INSERT INTO sync_ops
+                     (space_id, writer_id, seq, kind, hash, clock, context, envelope, state,
+                      hold_reason, stored_at_ms, excluded_revision)
+                 VALUES (zeroblob(16), zeroblob(16), ?, 1, zeroblob(32), 1, x'', x'01', ?, ?,
+                         1, 3)",
+            )
+            .bind(seq)
+            .bind(state)
+            .bind(reason)
+        };
+        insert(1, "held", Some("invalid"))
+            .execute(&pool)
+            .await
+            .expect("an excluded operation is held as invalid");
+        for (seq, state, reason) in [
+            (2, "waiting", None),
+            (3, "applied", None),
+            (4, "held", Some("newer_format")),
+            (5, "held", Some("newer_manifest")),
+        ] {
+            assert!(
+                insert(seq, state, reason).execute(&pool).await.is_err(),
+                "{state} {reason:?} cannot name an exclusion"
+            );
+        }
+        assert!(
+            sqlx::query("UPDATE sync_ops SET state = 'waiting', hold_reason = NULL")
+                .execute(&pool)
+                .await
+                .is_err(),
+            "releasing an operation clears its exclusion"
+        );
+    });
+}

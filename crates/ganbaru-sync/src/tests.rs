@@ -26,6 +26,7 @@ mod music;
 mod notes;
 mod notes_assets;
 mod notes_comments;
+mod op_state;
 mod owned;
 mod preferences;
 mod projects;

@@ -42,6 +42,7 @@ use sqlx::{Connection, SqliteConnection};
 use crate::error::{SyncResult, corrupt};
 use crate::log::{self, clamp_ms, seq_i64, stored_u64};
 use crate::merge::{self, Batch, RowState};
+use crate::op_state::OpMove;
 use crate::visibility::Visibility;
 use crate::{Engine, SpaceContext};
 use crate::{authorization, exclusion, seal, sql};
@@ -776,10 +777,12 @@ pub(crate) async fn drop_branch(
     .await?
     .ok_or_else(|| corrupt("the kept head of a forked writer is missing"))?;
     if keep == 0 {
-        sqlx::query(
+        // An excluded genesis already never applies, so the guard leaves it as it is.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "UPDATE sync_ops SET state = 'held', hold_reason = 'invalid'
-             WHERE space_id = ? AND writer_id = ? AND seq = 1",
-        )
+             WHERE space_id = ? AND writer_id = ? AND seq = 1 AND {}",
+            OpMove::DropGenesis.source()
+        )))
         .bind(space.as_bytes().as_slice())
         .bind(writer.as_bytes().as_slice())
         .execute(&mut *conn)

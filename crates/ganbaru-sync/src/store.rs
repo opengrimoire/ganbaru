@@ -18,6 +18,7 @@ use crate::authorization::{self, Enrollment};
 use crate::error::{SyncResult, corrupt, failpoint};
 use crate::exclusion;
 use crate::log::{self, WriterRow, WriterState, clamp_ms, seq_i64};
+use crate::op_state::OpState;
 use crate::{Engine, SpaceContext, fork, records, validate};
 
 /// Why a stored operation cannot be applied yet or ever.
@@ -292,8 +293,7 @@ async fn insert_op(
     bytes: &[u8],
     header: StoredHeader,
     context: Option<&VersionVector>,
-    held: Option<HoldReason>,
-    excluded: Option<u64>,
+    stored: OpState,
     now_ms: u64,
 ) -> SyncResult<()> {
     let StoredHeader {
@@ -301,7 +301,7 @@ async fn insert_op(
         revision,
         continues,
     } = header;
-    let state = if held.is_some() { "held" } else { "waiting" };
+    let (state, hold_reason) = stored.columns();
     let order = log::next_stored_order(conn, &ctx.space).await?;
     sqlx::query(
         "INSERT INTO sync_ops
@@ -320,10 +320,10 @@ async fn insert_op(
     .bind(log::encode_context(context))
     .bind(bytes)
     .bind(state)
-    .bind(held.map(HoldReason::as_str))
+    .bind(hold_reason)
     .bind(clamp_ms(now_ms))
     .bind(order)
-    .bind(excluded.map(seq_i64).transpose()?)
+    .bind(stored.excluded_revision().map(seq_i64).transpose()?)
     .bind(continues)
     .execute(&mut *conn)
     .await?;
@@ -457,8 +457,7 @@ async fn store_genesis(
             continues: false,
         },
         Some(&VersionVector::new()),
-        held,
-        excluded,
+        OpState::stored(held, excluded),
         now_ms,
     )
     .await?;
@@ -631,8 +630,7 @@ async fn store_next(
             continues: classified.continues(),
         },
         context.as_ref(),
-        held,
-        excluded,
+        OpState::stored(held, excluded),
         now_ms,
     )
     .await?;

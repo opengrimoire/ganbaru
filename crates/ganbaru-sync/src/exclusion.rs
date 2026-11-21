@@ -33,6 +33,7 @@ use crate::authorization::{self, Selection};
 use crate::error::{SyncResult, corrupt};
 use crate::log::{self, seq_i64, stored_u64};
 use crate::merge::{self, Batch, table_param};
+use crate::op_state::{self, OpMove, OpState};
 use crate::{Engine, SpaceContext, records, reseal, store};
 
 mod late;
@@ -407,7 +408,10 @@ pub(crate) async fn reconcile(
     // Writers with newly excluded operations: their cutoff, removal revision, and whether any
     // of them is applied.
     let mut writers: BTreeMap<WriterId, (Seq, u64, bool)> = BTreeMap::new();
+    // How many operations of each writer the guarded update below must exclude.
+    let mut excluding: BTreeMap<WriterId, u64> = BTreeMap::new();
     for (writer, _, state, revision, cutoff) in &rows {
+        *excluding.entry(log::writer_id(writer)?).or_default() += 1;
         let entry = writers.entry(log::writer_id(writer)?).or_insert((
             stored_u64(*cutoff, "removal cutoff")?,
             stored_u64(*revision, "removal revision")?,
@@ -427,17 +431,32 @@ pub(crate) async fn reconcile(
         }
     }
     for (writer, (cutoff, revision, _)) in &writers {
-        sqlx::query(
-            "UPDATE sync_ops SET state = 'held', hold_reason = 'invalid', excluded_revision = ?1
-             WHERE space_id = ?2 AND writer_id = ?3 AND seq > ?4
-                AND excluded_revision IS NOT ?1",
-        )
+        let attempted = OpMove::Exclude {
+            revision: *revision,
+        };
+        let (state, hold_reason) = OpState::Excluded {
+            revision: *revision,
+        }
+        .columns();
+        let affected = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE sync_ops SET state = ?2, hold_reason = ?3, excluded_revision = ?1
+             WHERE space_id = ?4 AND writer_id = ?5 AND seq > ?6 AND {}",
+            attempted.source()
+        )))
         .bind(seq_i64(*revision)?)
+        .bind(state)
+        .bind(hold_reason)
         .bind(ctx.space.as_bytes().as_slice())
         .bind(writer.as_bytes().as_slice())
         .bind(seq_i64(*cutoff)?)
         .execute(&mut *conn)
-        .await?;
+        .await?
+        .rows_affected();
+        if Some(&affected) != excluding.get(writer) {
+            return Err(corrupt(
+                "the operations to exclude changed while their removal was applied",
+            ));
+        }
     }
     let removed: Vec<(WriterId, Seq)> = writers
         .iter()
@@ -530,17 +549,22 @@ async fn release(
             Ok(envelope) => store::classify(engine, &envelope, device).hold(),
             Err(_) => Some(store::HoldReason::Invalid),
         };
-        sqlx::query(
+        let attempted = OpMove::Release(hold);
+        let (state, hold_reason) = OpState::stored(hold, None).columns();
+        let affected = sqlx::query(sqlx::AssertSqlSafe(format!(
             "UPDATE sync_ops SET excluded_revision = NULL, state = ?, hold_reason = ?
-             WHERE space_id = ? AND writer_id = ? AND seq = ?",
-        )
-        .bind(if hold.is_some() { "held" } else { "waiting" })
-        .bind(hold.map(store::HoldReason::as_str))
+             WHERE space_id = ? AND writer_id = ? AND seq = ? AND {}",
+            attempted.source()
+        )))
+        .bind(state)
+        .bind(hold_reason)
         .bind(ctx.space.as_bytes().as_slice())
         .bind(writer.as_slice())
         .bind(seq)
         .execute(&mut *conn)
-        .await?;
+        .await?
+        .rows_affected();
+        op_state::expect_one(affected, attempted)?;
     }
     Ok(!rows.is_empty())
 }

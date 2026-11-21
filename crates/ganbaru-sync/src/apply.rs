@@ -21,6 +21,7 @@ use crate::hooks::ChangeNotice;
 use crate::log::{self, WriterState, seq_i64, stored_u64};
 use crate::materialize::{Execution, Materialized};
 use crate::merge::{self, Batch};
+use crate::op_state::{self, OpMove, OpState};
 use crate::refused::Refusals;
 use crate::seal::{self, SealReport, SealSlot};
 use crate::store::HoldReason;
@@ -321,7 +322,7 @@ async fn chain_position(
 }
 
 /// Up to `limit` stored operations of `writer` after `after`, in sequence order, with the
-/// columns `seq, kind, state, hold_reason, excluded_revision IS NOT NULL, group_continues,
+/// columns `seq, kind, state, hold_reason, excluded_revision, group_continues,
 /// length(envelope), clock, context, authorization_revision, stored_order`.
 async fn chain_rows(
     conn: &mut SqliteConnection,
@@ -331,7 +332,7 @@ async fn chain_rows(
     limit: usize,
 ) -> SyncResult<Vec<SqliteRow>> {
     Ok(sqlx::query(
-        "SELECT seq, kind, state, hold_reason, excluded_revision IS NOT NULL, group_continues,
+        "SELECT seq, kind, state, hold_reason, excluded_revision, group_continues,
             length(envelope), clock, context, authorization_revision, stored_order
          FROM sync_ops
          WHERE space_id = ? AND writer_id = ? AND seq > ?
@@ -371,11 +372,15 @@ fn chain_extent(
             return Ok(None);
         }
         let state: String = row.try_get(2)?;
-        if state == "held" {
-            let excluded: bool = row.try_get(4)?;
-            let reason: Option<String> = row.try_get(3)?;
-            let invalid = reason.as_deref() == Some(HoldReason::Invalid.as_str());
-            return Ok((excluded || invalid).then_some(count));
+        let reason: Option<String> = row.try_get(3)?;
+        match OpState::from_columns(&state, reason.as_deref(), row.try_get(4)?)? {
+            OpState::Excluded { .. } | OpState::Held(HoldReason::Invalid) => {
+                return Ok(Some(count));
+            }
+            OpState::Held(HoldReason::NewerFormat | HoldReason::NewerManifest) => {
+                return Ok(None);
+            }
+            OpState::Waiting | OpState::Applied => {}
         }
         if !row.try_get::<bool, _>(5)? {
             return Ok(Some(count + 1));
@@ -511,16 +516,21 @@ async fn hold_invalid(
     writer: WriterId,
     seq: Seq,
 ) -> SyncResult<()> {
-    sqlx::query(
-        "UPDATE sync_ops SET state = 'held', hold_reason = 'invalid'
-         WHERE space_id = ? AND writer_id = ? AND seq = ?",
-    )
+    let (state, hold_reason) = op_state::target(OpState::Waiting, OpMove::HoldInvalid)?.columns();
+    let affected = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "UPDATE sync_ops SET state = ?, hold_reason = ?
+         WHERE space_id = ? AND writer_id = ? AND seq = ? AND {}",
+        OpMove::HoldInvalid.source()
+    )))
+    .bind(state)
+    .bind(hold_reason)
     .bind(ctx.space.as_bytes().as_slice())
     .bind(writer.as_bytes().as_slice())
     .bind(seq_i64(seq)?)
     .execute(&mut *conn)
-    .await?;
-    Ok(())
+    .await?
+    .rows_affected();
+    op_state::expect_one(affected, OpMove::HoldInvalid)
 }
 
 /// Derives and stores the context of a candidate whose context was unknown when it was stored.
@@ -948,16 +958,21 @@ async fn mark_applied(
     context: VersionVector,
     retention: &mut Retention,
 ) -> SyncResult<()> {
-    sqlx::query(
-        "UPDATE sync_ops SET state = 'applied', context = ?
-         WHERE space_id = ? AND writer_id = ? AND seq = ?",
-    )
+    let (state, _) = op_state::target(OpState::Waiting, OpMove::Apply)?.columns();
+    let affected = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "UPDATE sync_ops SET state = ?, context = ?
+         WHERE space_id = ? AND writer_id = ? AND seq = ? AND {}",
+        OpMove::Apply.source()
+    )))
+    .bind(state)
     .bind(context.encode())
     .bind(ctx.space.as_bytes().as_slice())
     .bind(candidate.writer.as_bytes().as_slice())
     .bind(seq_i64(candidate.seq)?)
     .execute(&mut *conn)
-    .await?;
+    .await?
+    .rows_affected();
+    op_state::expect_one(affected, OpMove::Apply)?;
     batch.applied.set(candidate.writer, candidate.seq);
     retention.confirm(candidate.writer, &context);
     retention.release(candidate.writer, candidate.seq);

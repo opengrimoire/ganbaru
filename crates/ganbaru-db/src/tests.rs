@@ -306,3 +306,36 @@ fn current_schema_validation_rejects_changed_migration_history() {
         std::fs::remove_dir_all(directory).unwrap();
     });
 }
+
+#[test]
+fn pool_registry_refuses_to_create_a_database_beside_its_orphaned_journal() {
+    block_on(async {
+        for journal in ["-wal", "-journal"] {
+            let directory = registry_test_directory("orphaned-journal");
+            let path = directory.join("ganbaru.sqlite");
+            let orphan = directory.join(format!("ganbaru.sqlite{journal}"));
+            std::fs::write(&orphan, b"committed pages").unwrap();
+            let registry = crate::DatabasePoolRegistry::default();
+            let error = registry.connect_path(&path).await.unwrap_err();
+            assert!(error.contains("journal"), "{journal}: {error}");
+            assert!(!path.exists(), "{journal}: no empty database may be created");
+            assert_eq!(std::fs::read(&orphan).unwrap(), b"committed pages");
+            assert!(registry.access(&path).await.is_none());
+            std::fs::remove_dir_all(directory).unwrap();
+        }
+    });
+}
+
+#[test]
+fn pool_registry_creates_a_missing_database_beside_a_leftover_shared_memory_file() {
+    block_on(async {
+        let directory = registry_test_directory("leftover-shm");
+        let path = directory.join("ganbaru.sqlite");
+        std::fs::write(directory.join("ganbaru.sqlite-shm"), b"").unwrap();
+        let registry = crate::DatabasePoolRegistry::default();
+        let pool = registry.connect_path(&path).await.unwrap();
+        crate::validate_current_schema(&pool).await.unwrap();
+        registry.close_all().await.unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    });
+}

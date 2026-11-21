@@ -9,7 +9,15 @@
   import { ONBOARDING_SECONDARY_BUTTON_CLASS } from "$lib/vault/welcome-layout";
   import FocusAccessGuide from "./focus-access/FocusAccessGuide.svelte";
   import MobileOnboardingProgress from "./MobileOnboardingProgress.svelte";
-  import { NO_FOCUS_ACCESS_REVIEW, transitionFocusAccessReview, type FocusAccessReview } from "./focus-access-review";
+  import {
+    FIRST_FOCUS_STEP,
+    NO_FOCUS_ACCESS_REVIEW,
+    transitionFocusAccessReview,
+    transitionFocusStep,
+    type FocusAccessReview,
+    type FocusStepEvent,
+    type FocusStepState,
+  } from "./focus-access-review";
   import {
     FOCUS_ACCESS_STEP_ORDER,
     focusAccessGranted,
@@ -51,15 +59,13 @@
   const { t } = getLocalization();
   const storage = safeStorage();
 
-  /** Where the current step stands: untouched, back from settings with the access still off, or with the access on. */
-  type StepOutcome = "idle" | "returned" | "granted";
-
   let statuses = $state<FocusAccessStatuses>({ background: null, notifications: null, distractions: null });
   let steps = $state<FocusAccessStep[] | null>(null);
-  let index = $state(0);
-  let outcome = $state<StepOutcome>("idle");
-  let opening = $state(false);
-  let openFailed = $state(false);
+  let stepState = $state.raw<FocusStepState>(FIRST_FOCUS_STEP);
+  const index = $derived(stepState.index);
+  const outcome = $derived(stepState.outcome);
+  const opening = $derived(stepState.open === "opening");
+  const openFailed = $derived(stepState.open === "failed");
   let unavailable = $state(false);
   let review = $state<FocusAccessReview>(NO_FOCUS_ACCESS_REVIEW);
   let grantedTimer = 0;
@@ -120,14 +126,16 @@
     onComplete();
   }
 
+  function dispatchStep(event: FocusStepEvent): void {
+    stepState = transitionFocusStep(stepState, event);
+  }
+
   /** Shows the step at `next`, already marked as on when Android reports its access on. */
   function arrive(next: number): void {
     window.clearTimeout(grantedTimer);
     const step = steps?.[next];
     if (!step) return;
-    index = next;
-    outcome = focusAccessGranted(step, statuses) === true ? "granted" : "idle";
-    openFailed = false;
+    dispatchStep({ type: "arrived", index: next, granted: focusAccessGranted(step, statuses) === true });
   }
 
   function advance(): void {
@@ -146,12 +154,9 @@
   /** Records what the person did on the current step, and moves on by itself once Android reports the access on. */
   function settle(step: FocusAccessStep): void {
     if (current !== step) return;
-    if (focusAccessGranted(step, statuses) === true) {
-      outcome = "granted";
-      grantedTimer = window.setTimeout(advance, GRANTED_HOLD_MS);
-    } else {
-      outcome = "returned";
-    }
+    const granted = focusAccessGranted(step, statuses) === true;
+    dispatchStep({ type: "settled", granted });
+    if (granted) grantedTimer = window.setTimeout(advance, GRANTED_HOLD_MS);
   }
 
   function leaveForReview(): void {
@@ -170,8 +175,7 @@
   /** Opens the system screen for the step, or asks for notifications in place while Android still can. */
   async function openStep(step: FocusAccessStep): Promise<void> {
     if (opening) return;
-    opening = true;
-    openFailed = false;
+    dispatchStep({ type: "openStarted" });
     try {
       if (step === "notifications" && statuses.notifications?.permission === "prompt") {
         statuses = { ...statuses, notifications: await requestMobileNotificationPermission() };
@@ -183,10 +187,10 @@
       await openSettings(step);
     } catch (error) {
       review = transitionFocusAccessReview(review, { type: "failed" });
-      openFailed = true;
+      dispatchStep({ type: "openFailed" });
       console.warn(`Android settings for ${step} failed to open`, error);
     } finally {
-      opening = false;
+      dispatchStep({ type: "openEnded" });
     }
   }
 
